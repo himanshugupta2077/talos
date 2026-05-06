@@ -77,6 +77,48 @@ Replay Engine → Diff Engine → Attack Modules
 
 ---
 
+## Installation
+
+> **Platform**: Built and tested on **Windows 11** (PowerShell). Linux *should* work given the stack, but hasn't been tested, good luck!
+
+### Prerequisites
+
+- **Python 3.11+**, **git** and a browser you can configure with a manual proxy
+
+### Steps
+
+```powershell
+# 1. Clone the repository
+git clone https://github.com/himanshugupta2077/talos.git
+cd talos
+
+# 2. Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate
+
+# 3. Install TALOS and all dependencies
+pip install -e .
+
+# 4. Verify the installation
+talos --help
+```
+
+### Proxy Certificate Setup (required for TLS interception)
+
+TALOS intercepts HTTPS traffic via mitmproxy. Without trusting its CA certificate, your browser will throw TLS errors on every HTTPS site.
+
+1. Start the proxy once: `talos proxy start --port 8080`
+2. Configure your browser to use `127.0.0.1:8080` as the HTTP and HTTPS proxy
+3. Visit `http://mitm.it` in that browser: it will detect the proxy and show download links
+4. Download the certificate for your OS, then:
+   - Open **certmgr.msc** (Windows Certificate Manager)
+   - Navigate to **Trusted Root Certification Authorities → Certificates**
+   - Right-click → **All Tasks → Import** and import the downloaded `.cer` file
+
+> **Firefox users**: skip the Windows cert store steps above. Instead, go to `Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import` and import the certificate directly there.
+
+Once trusted, TALOS will silently intercept and capture all HTTPS traffic routed through the proxy.
+
 ## Quick Start
 
 ```bash
