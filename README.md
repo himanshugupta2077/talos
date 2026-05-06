@@ -213,4 +213,4 @@ Commercial licensing is available for organizations that need to use TALOS in pr
 
 ## Contributing
 
-Contributions are welcome. By submitting a pull request you agree to the Contributor License Agreement (CLA), which grants the maintainer the right to relicense your contribution under commercial terms. See [CLA.md](CLA.md) for details.
+Contributions are welcome. By submitting a pull request you agree to the Contributor License Agreement (CLA), which grants the maintainer the right to relicense your contribution under commercial terms. See [CLA.md](https://gist.github.com/himanshugupta2077/765a9e6fadaaf18ffdc2046fd07f1852) for details.
