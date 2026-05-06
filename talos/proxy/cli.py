@@ -43,8 +43,9 @@ def cmd_start(manager: ProjectManager, args: argparse.Namespace) -> None:
         - Replaces current process with mitmdump (POSIX) or blocks until
           mitmdump exits (Windows).
     """
-    # Enable capture logging unless --quiet is set.
-    # Sets INFO on the talos logger so addon CAPTURE lines reach stderr.
+    # Enable INFO-level logging for the talos logger unless --quiet is set.
+    # CAPTURE/SKIP logs are at DEBUG level and not visible by default.
+    # Worker shutdown log shows processed count for capture verification.
     if not args.quiet:
         logging.getLogger("talos").setLevel(logging.INFO)
 
@@ -133,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument(
         "--quiet", "-q",
         action="store_true",
-        help="Suppress per-flow capture log lines.",
+        help="Suppress addon startup and worker shutdown logs.",
     )
 
     return parser

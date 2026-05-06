@@ -40,11 +40,11 @@ CLI (talos.__main__)
     │               ├── Scope check (talos.proxy.scope)
     │               │       Exact: "example.com"
     │               │       Wildcard: "*.api.example.com"
-    │               │       Out-of-scope → SKIP (coloured stdout), return
+    │               │       Out-of-scope → silent return (no log, no queue)
     │               │
     │               ├── Out-of-scope override (talos.proxy.scope.is_out_of_scope)
     │               │       Loaded from out_of_scope_domains table once at startup
-    │               │       host == domain OR host.endswith('.<domain>') → SKIP
+    │               │       host == domain OR host.endswith('.<domain>') → silent return
     │               │       Overrides scope allow-list — checked after in_scope()
     │               │
     │               ├── Extraction (_extract_flow)

@@ -35,7 +35,8 @@ Side effects:
     - Reads the active project from the registry on addon instantiation.
     - Reads the project's headers_drop.txt once at startup.
     - Enqueues flow dicts into the module-level FlowQueue.
-    - Emits CAPTURE/SKIP events via the standard logger at DEBUG level.
+    - Emits CAPTURE/SKIP events at DEBUG level (not visible by default).
+      FlowWorker shutdown log shows processed count for verification.
 """
 
 import logging

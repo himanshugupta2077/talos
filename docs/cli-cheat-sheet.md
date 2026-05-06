@@ -254,6 +254,16 @@ Start the capture proxy for the active project.
 talos proxy start --listen-host 127.0.0.1 --port 8080
 ```
 
+**Verifying capture is working:**
+
+When you stop the proxy (Ctrl+C), the final log line shows capture statistics:
+```
+FlowWorker stopped — project=X processed=16 dropped=0 db_errors=0 queue_drops=0
+```
+
+- `processed=N` indicates N flows were successfully captured and stored in the database
+- Check the UI or database to see flows and endpoints
+
 ## UI Command
 
 ### `talos ui [--host HOST] [--port PORT]`
