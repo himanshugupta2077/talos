@@ -108,6 +108,40 @@ talos auth test <endpoint_id> --right-now
 
 ---
 
+## Interface
+
+TALOS is primarily a CLI tool: every operation is available through `talos` commands. For operators who prefer a visual overview, TALOS also ships a locally-served web UI.
+
+### CLI
+
+The CLI is the core interface. All project management, proxy control, replay, auth testing, scheduling, and mutation operations are available as commands. It is the recommended interface for scripting, automation, and headless environments.
+
+### Web UI
+
+```bash
+talos ui                          # default: http://127.0.0.1:8000
+talos ui --host 127.0.0.1 --port 8010
+```
+
+The UI is **local-only**: it is never exposed to the network and is strictly an operator tool. It provides:
+
+- **Project overview**: scope, flow counts, archive size, active role and module
+- **Flow viewer**: paginated, filterable list of all captured flows with live-sync via SSE (new flows appear in-place without page reload)
+- **Flow detail**: Burp-style split view of raw request and response
+- **Endpoint viewer**: clustered endpoint list with parameter profiles and linked flows; live-sync as new endpoints are discovered
+- **Proxy control panel**: start and stop the capture proxy from the browser; live log stream
+- **Roles and modules**: create and activate roles/modules without restarting anything
+- **Access matrix**: visual two-layer (client/server) access map per `(role, module)` pair; edit inline
+- **Replay controls**: enqueue or immediately execute flow and endpoint replays
+- **Scheduler**: monitor queue depth, pending jobs, execution metrics; adjust jitter and queue size config
+- **Mutations**: add, toggle, and delete request header injections
+- **Out-of-scope domains**: manage the block list without touching the CLI
+- **Attack modules**: per-endpoint auth bypass coverage dashboard with `SECURE` / `BYPASS` / `UNKNOWN` verdicts; enable auto-run to have the scheduler continuously test untested endpoints
+
+The UI and CLI share the same underlying database and engine: anything triggered from the UI is executed by the same replay and auth-strip code that the CLI uses.
+
+---
+
 ## CLI Reference
 
 ```
