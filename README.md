@@ -2,7 +2,7 @@
 
 **MITM-Based Web Application Penetration Testing Automation**
 
-TALOS is an open-source web application pentest automation framework built around a MITM proxy as the central intelligence layer. It captures real, authenticated browser traffic, structures it into a queryable attack surface, and runs deterministic security tests — IDOR detection, auth bypass testing, parameter tampering, and more — without requiring manual request crafting.
+TALOS is an open-source web application pentest automation framework built around a MITM proxy as the central intelligence layer. It captures real, authenticated browser traffic, structures it into a queryable attack surface, and runs deterministic security tests: IDOR detection, auth bypass testing, parameter tampering, and more: without requiring manual request crafting.
 
 > Deterministic engine first. AI layered on top.
 
@@ -17,11 +17,11 @@ Browser (manual)
     ↓
 mitmproxy (mitmdump)
     ↓
-TALOS Addon — capture only
+TALOS Addon: capture only
     ↓
 Flow Queue
     ↓
-Worker Pipeline — normalize, persist, parametrize
+Worker Pipeline: normalize, persist, parametrize
     ↓
 SQLite DB + Raw Archive
     ↓
@@ -37,7 +37,7 @@ Replay Engine → Diff Engine → Attack Modules
 - Scoped capture with exact and wildcard host patterns (`*.api.example.com`)
 - Out-of-scope domain block list that overrides the allow-list
 - Configurable body size limits and noise header filtering
-- Bounded in-memory queue — proxy thread is never blocked
+- Bounded in-memory queue: proxy thread is never blocked
 
 ### Normalization
 - Strips tracking parameters (`utm_*`, `fbclid`, `gclid`, cache busters)
@@ -50,13 +50,13 @@ Replay Engine → Diff Engine → Attack Modules
 - `access coverage` and `access signals` commands surface privilege confusion candidates and enforcement gaps
 
 ### Replay Engine
-- Exact (Type 1) replay — every request reconstructed from DB and sent via httpx
-- Auth-stripped (Type 2) replay — strips configured cookies and headers before replaying
+- Exact (Type 1) replay: every request reconstructed from DB and sent via httpx
+- Auth-stripped (Type 2) replay: strips configured cookies and headers before replaying
 - Diff engine compares status code, response length, and JSON structure; verdict: `SAME`, `DIFFERENT`, or `ERROR`
 - Replay scheduler with priority queue, jitter, and annotation-based safety guards
 
 ### Attack Modules
-- **Unauthenticated execution** — strips auth from each endpoint's best captured flow, replays, verdicts: `SECURE`, `BYPASS`, `UNKNOWN`
+- **Unauthenticated execution**: strips auth from each endpoint's best captured flow, replays, verdicts: `SECURE`, `BYPASS`, `UNKNOWN`
 - Auto-run mode: scheduler continuously enqueues auth tests for untested endpoints
 - Endpoint safety annotations: mark endpoints `logout` or `dangerous` to block automated replay
 
@@ -67,7 +67,7 @@ Replay Engine → Diff Engine → Attack Modules
 
 ### Inspection UI
 - Local-only FastAPI + Jinja2 web UI (`talos ui`)
-- Paginated flow and endpoint views with SSE live-sync — table updates in-place as traffic is captured
+- Paginated flow and endpoint views with SSE live-sync: table updates in-place as traffic is captured
 - Burp-style split request/response flow detail view
 - Attack module coverage dashboard with per-endpoint verdict tracking
 
@@ -143,30 +143,30 @@ talos
 ## Roadmap
 
 - [ ] Session detection and identity separation
-- [ ] IDOR module — cross-session identifier swapping
-- [ ] BAC engine — broken access control at scale
+- [ ] IDOR module: cross-session identifier swapping
+- [ ] BAC engine: broken access control at scale
 - [ ] Parameter tampering module
 - [ ] Redis-backed queue (Stage 2)
-- [ ] State graph — workflow reconstruction and sequence attacks
+- [ ] State graph: workflow reconstruction and sequence attacks
 - [ ] Race condition testing
 - [ ] JS endpoint extraction
-- [ ] AI layer (MPC) — target selection, strategy, result chaining
+- [ ] AI layer (MPC): target selection, strategy, result chaining
 
 ---
 
 ## Design Principles
 
-- The proxy thread does **zero** heavy processing — it only captures and enqueues
-- Sessions are never mixed — role separation is strict
+- The proxy thread does **zero** heavy processing: it only captures and enqueues
+- Sessions are never mixed: role separation is strict
 - Deterministic modules run first; AI operates on clean, structured data
-- Every replay attempt is stored — nothing is silently discarded
+- Every replay attempt is stored: nothing is silently discarded
 - The system must work fully without AI
 
 ---
 
 ## License
 
-GNU Affero General Public License v3.0 — see [LICENSE](LICENSE) for details.
+GNU Affero General Public License v3.0: see [LICENSE](LICENSE) for details.
 
 Commercial licensing is available for organizations that need to use TALOS in proprietary or closed-source products. Contact the maintainer for commercial inquiries.
 
