@@ -78,6 +78,8 @@ def in_scope(host: str, scope: list[str]) -> bool:
     for pattern in scope:
         if matches_domain(pattern.lower(), host_clean):
             return True
+    
+    return False
 
 
 def is_out_of_scope(host: str, blocked: frozenset[str]) -> bool:
@@ -109,7 +111,5 @@ def is_out_of_scope(host: str, blocked: frozenset[str]) -> bool:
     for domain in blocked:
         if host_clean == domain or host_clean.endswith("." + domain):
             return True
-
-    return False
 
     return False
