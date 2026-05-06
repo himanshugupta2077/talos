@@ -6,6 +6,10 @@ TALOS is an open-source web application pentest automation framework built aroun
 
 > Deterministic engine first. AI layered on top.
 
+> ⚠️ **Early Development**: TALOS is in active early-stage development. Core capture, replay, auth bypass, and scheduling subsystems are functional. Several attack modules and the AI layer are not yet implemented. Expect breaking changes.
+
+> 🤖 **Zero AI: by design**: The current version contains no AI whatsoever. TALOS is a fully deterministic automation tool: every decision, test, and result comes from structured logic, not a model. AI integration is planned for a future phase and will operate on top of the deterministic engine: not replace it.
+
 ---
 
 ## How It Works
@@ -183,6 +187,7 @@ talos
 - [ ] Redis-backed queue (Stage 2)
 - [ ] State graph: workflow reconstruction and sequence attacks
 - [ ] Race condition testing
+- [ ] Injection testing module: automated payload injection across discovered parameters; user defines payload lists or selects built-in sets (SQLi, XSS, SSTI, path traversal, command injection, etc.); engine distributes payloads across all matching parameters in bulk, respects rate limits and per-request jitter, and diffs every response to surface anomalies: error messages, length deltas, status code changes, reflection, timing differences; results grouped by parameter and endpoint, ranked by signal strength for triage
 - [ ] JS endpoint extraction
 - [ ] AI layer (MPC): target selection, strategy, result chaining
 
