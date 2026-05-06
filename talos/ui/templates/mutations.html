@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'mutations') }}{% endblock %}
+
+{% block title %}Mutations — {{ project.id }} — Talos{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  mutations
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Mutations</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  <span>static header injections</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div class="note note-yellow">Proxy restart required for mutation changes to take effect.</div>
+
+<div class="panel">
+  <div class="panel-title">Add Header Mutation</div>
+  <div class="form-row">
+    <label class="fl">Header Name</label>
+    <input class="fi fi-wide" id="mut-key" type="text" placeholder="X-Role" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Value</label>
+    <input class="fi fi-wide" id="mut-val" type="text" placeholder="admin" />
+    <button class="btn btn-green" onclick="addMutation()">Add</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Configured Mutations</div>
+  <div id="mutations-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _renderMutations(rows) {
+  if (!rows.length) {
+    document.getElementById('mutations-container').innerHTML = '<p class="empty">No mutations defined.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th>Header</th><th>Value</th>
+    <th style="width:80px;">State</th>
+    <th style="width:170px;"></th>
+  </tr></thead><tbody>`;
+  rows.forEach(m => {
+    const enabled = m.enabled === 1 || m.enabled === true;
+    const stateCol = enabled ? 'var(--green)' : 'var(--muted)';
+    html += `<tr>
+      <td style="color:var(--blue);">${_esc(m.key)}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(m.value)}</td>
+      <td><span style="font-size:11px;font-weight:700;color:${stateCol};">${enabled ? 'enabled' : 'disabled'}</span></td>
+      <td>
+        <button class="btn btn-yellow" onclick="toggleMutation(${JSON.stringify(m.id)})">${enabled ? 'Disable' : 'Enable'}</button>
+        <button class="btn btn-red" onclick="deleteMutation(${JSON.stringify(m.id)})">Delete</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('mutations-container').innerHTML = html;
+}
+
+async function load() {
+  if (!_ACTIVE) {
+    document.getElementById('mutations-container').innerHTML =
+      '<p class="empty">Open the project to manage mutations.</p>';
+    return;
+  }
+  const data = await _api('GET', '/mutations');
+  if (data) _renderMutations(data);
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function addMutation() {
+  if (!_ACTIVE) { _toast('Open the project first', 'err'); return; }
+  const key   = document.getElementById('mut-key').value.trim();
+  const value = document.getElementById('mut-val').value.trim();
+  if (!key) { _toast('Header name required', 'err'); return; }
+  const r = await _api('POST', '/mutations', { type: 'header', key, value });
+  if (r) {
+    _toast('Added: ' + key);
+    document.getElementById('mut-key').value = '';
+    document.getElementById('mut-val').value = '';
+    load();
+  }
+}
+
+async function toggleMutation(id) {
+  const r = await _api('PATCH', '/mutations/' + id);
+  if (r) { _toast(r.enabled ? 'Enabled' : 'Disabled'); load(); }
+}
+
+async function deleteMutation(id) {
+  if (!confirm('Delete this mutation?')) return;
+  const r = await _api('DELETE', '/mutations/' + id);
+  if (r) { _toast('Deleted'); load(); }
+}
+
+document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}

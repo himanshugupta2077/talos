@@ -1,0 +1,12 @@
+{% macro project_nav(project_id, active='') %}
+<div class="nav-strip">
+  <a href="/project/{{ project_id }}"{% if active == 'overview' %} class="active"{% endif %}>About</a>
+  <a href="/project/{{ project_id }}/proxy"{% if active == 'proxy' %} class="active"{% endif %}>Proxy</a>
+  <a href="/project/{{ project_id }}/flows"{% if active == 'flows' %} class="active"{% endif %}>Flows</a>
+  <a href="/project/{{ project_id }}/endpoints"{% if active == 'endpoints' %} class="active"{% endif %}>Endpoints</a>
+  <a href="/project/{{ project_id }}/replay"{% if active == 'replay' %} class="active"{% endif %}>Replay</a>
+  <a href="/project/{{ project_id }}/access"{% if active == 'access' %} class="active"{% endif %}>Access</a>
+  <a href="/project/{{ project_id }}/scheduler"{% if active == 'scheduler' %} class="active"{% endif %}>Scheduler</a>
+  <a href="/project/{{ project_id }}/attacks"{% if active == 'attacks' %} class="active"{% endif %}>Attacks</a>
+</div>
+{% endmacro %}

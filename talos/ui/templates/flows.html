@@ -1,0 +1,740 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Flows — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}
+<style>
+  main { max-width: 100%; padding-top: 8px; }
+
+  /* Compact header bar */
+  .page-header { margin-bottom: 6px; }
+
+  /* Scrollable table box */
+  .flow-table-wrap {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .flow-table-wrap::-webkit-scrollbar        { width: 6px; }
+  .flow-table-wrap::-webkit-scrollbar-track  { background: #080808; }
+  .flow-table-wrap::-webkit-scrollbar-thumb  { background: #2a2a2a; border-radius: 3px; }
+  .flow-table-wrap thead th {
+    position: sticky; top: 0;
+    background: var(--bg); z-index: 1;
+  }
+  .flow-table-wrap table { border-bottom: none; }
+  .flow-table-wrap tbody tr { cursor: pointer; }
+  .flow-table-wrap tbody tr.flow-active { background: #0e1f0e !important; }
+
+  /* Inline detail panel */
+  .flow-detail-panel { margin-top: 10px; display: none; }
+  .flow-detail-panel.visible { display: block; }
+
+  .detail-meta {
+    border: 1px solid var(--border);
+    border-bottom: none;
+    padding: 5px 12px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  /* HTTP split panes — fills remaining viewport below the panel meta bar */
+  .http-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: #1a1a1a;
+    border: 1px solid #1e1e1e;
+    /* nav ~38px + subnav ~35px + main padding ~8px + page-header ~32px +
+       table-wrap max-height ~260px + pagination ~0 + detail-meta ~30px +
+       small margins ~16px = ~419px; rest goes to the panes */
+    height: calc(100vh - 419px);
+    min-height: 300px;
+  }
+  .http-pane {
+    background: #080808;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pane-hdr {
+    padding: 7px 14px;
+    border-bottom: 1px solid #1e1e1e;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--green);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pane-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 16px 20px;
+    font-size: 12px;
+    line-height: 1.65;
+  }
+  .pane-content::-webkit-scrollbar        { width: 6px; }
+  .pane-content::-webkit-scrollbar-track  { background: #080808; }
+  .pane-content::-webkit-scrollbar-thumb  { background: #2a2a2a; border-radius: 3px; }
+  .pane-content::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+
+  .http-first    { font-weight: 700; margin-bottom: 2px; word-break: break-all; }
+  .req-first     { color: var(--green); }
+  .http-hdr-row  { line-height: 1.5; word-break: break-all; display: flex; gap: 0; align-items: baseline; }
+  .hname         { color: #4a9eff; flex-shrink: 0; }
+  .hsep          { color: #333; flex-shrink: 0; }
+  .hval          { color: #999; min-width: 0; word-break: break-all; overflow-wrap: anywhere; }
+  .http-body-sep { height: 14px; border-top: 1px solid #1a1a1a; margin: 2px 0 8px; }
+  .http-body     { color: var(--text); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+
+  /* Cookie expansion */
+  .ck { color: #c8a0f0; }
+  .cp { color: #444; }
+  .cv { color: #888; word-break: break-all; overflow-wrap: anywhere; }
+
+  /* JSON syntax */
+  .jk  { color: #7ec8e3; }
+  .jqs { color: #e6db74; }
+  .jn  { color: #ae81ff; }
+  .jl  { color: #f92672; }
+  .jp  { color: #444; }
+
+  /* HTML/XML syntax */
+  .xt { color: var(--green); }
+  .xa { color: #4a9eff; }
+  .xv { color: #e6db74; }
+  .xc { color: #555; }
+  .xd { color: #888; }
+
+  /* Live sync UI */
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted); display: inline-block;
+    transition: background 0.4s;
+    vertical-align: middle; margin-left: 4px;
+  }
+  .live-dot.connected { background: var(--green); }
+  .live-dot.error     { background: var(--red); }
+
+  .flow-new-badge {
+    display: none;
+    padding: 3px 10px;
+    background: #0a1a0a;
+    color: var(--green);
+    border: 1px solid var(--green-dim);
+    border-radius: var(--radius);
+    font-size: 11px;
+    cursor: pointer;
+    margin-bottom: 6px;
+    user-select: none;
+  }
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .filter-bar select, .filter-bar input[type="text"] {
+    background: #0e0e0e;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 3px 6px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .filter-bar select:focus, .filter-bar input[type="text"]:focus {
+    outline: 1px solid var(--green-dim);
+  }
+  .filter-bar .filter-apply {
+    background: #0a1a0a;
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    border-radius: var(--radius);
+    padding: 3px 10px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .filter-bar .filter-apply:hover { background: #0e2a0e; }
+  .filter-bar .filter-clear {
+    color: var(--muted);
+    font-size: 11px;
+    text-decoration: none;
+  }
+  .filter-bar .filter-clear:hover { color: var(--text); }
+  .filter-active-badge {
+    display: inline-block;
+    background: #0a1a0a;
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    border-radius: var(--radius);
+    padding: 2px 7px;
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+</style>
+<script>
+(function () {
+  "use strict";
+
+  /* ---- Helpers ---- */
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /* ---- JSON highlighter ---- */
+  function hlJSON(text) {
+    let out = "", i = 0, len = text.length;
+    while (i < len) {
+      const c = text[i];
+      if (c === '"') {
+        let j = i + 1;
+        while (j < len) {
+          if (text[j] === "\\") { j += 2; continue; }
+          if (text[j] === '"')  { j++; break; }
+          j++;
+        }
+        const raw = esc(text.slice(i, j));
+        let k = j;
+        while (k < len && (text[k] === " " || text[k] === "\t" || text[k] === "\r" || text[k] === "\n")) k++;
+        out += text[k] === ":" ? `<span class="jk">${raw}</span>` : `<span class="jqs">${raw}</span>`;
+        i = j;
+      } else if ((c >= "0" && c <= "9") || (c === "-" && i + 1 < len && text[i + 1] >= "0" && text[i + 1] <= "9")) {
+        let j = i + 1;
+        while (j < len && /[0-9.eE+\-]/.test(text[j])) j++;
+        out += `<span class="jn">${esc(text.slice(i, j))}</span>`;
+        i = j;
+      } else if (text.slice(i, i + 4) === "true" || text.slice(i, i + 4) === "null") {
+        out += `<span class="jl">${text.slice(i, i + 4)}</span>`;
+        i += 4;
+      } else if (text.slice(i, i + 5) === "false") {
+        out += `<span class="jl">false</span>`;
+        i += 5;
+      } else if ("{[]}:,".includes(c)) {
+        out += `<span class="jp">${esc(c)}</span>`;
+        i++;
+      } else {
+        out += esc(c);
+        i++;
+      }
+    }
+    return out;
+  }
+
+  /* ---- HTML/XML highlighter ---- */
+  function hlHTML(text) {
+    return esc(text)
+      .replace(/(&lt;!DOCTYPE[^&]*?&gt;)/gi,   '<span class="xd">$1</span>')
+      .replace(/(&lt;!--[\s\S]*?--&gt;)/g,     '<span class="xc">$1</span>')
+      .replace(/(&lt;\/)([\w:-]+)(&gt;)/g,     '$1<span class="xt">$2</span>$3')
+      .replace(/(&lt;)([\w:-]+)([\s\S]*?)(\/?&gt;)/g, function (_, open, tag, attrs, close) {
+        const hAttrs = attrs.replace(
+          /([\w:-]+)(=)(&quot;[^&]*&quot;|&#39;[^&]*&#39;|[\w.-]+)/g,
+          '<span class="xa">$1</span><span class="jp">$2</span><span class="xv">$3</span>'
+        );
+        return `${open}<span class="xt">${tag}</span>${hAttrs}${close}`;
+      });
+  }
+
+  /* ---- Cookie header expansion ---- */
+  function expandCookie(rawVal) {
+    return rawVal.split(/;\s*/).filter(Boolean).map(function (pair) {
+      const eq = pair.indexOf("=");
+      if (eq === -1) return `<span class="ck">${esc(pair.trim())}</span>`;
+      return `<span class="ck">${esc(pair.slice(0, eq).trim())}</span><span class="cp">=</span><span class="cv">${esc(pair.slice(eq + 1))}</span>`;
+    }).join("\n");
+  }
+
+  /* ---- Apply syntax highlight to a .http-body element ---- */
+  function applyBodyHighlight(el) {
+    const text = el.textContent;
+    const t = text.trim();
+    if (!t || t === "(no body)") return;
+    try {
+      if (t[0] === "{" || t[0] === "[") el.innerHTML = hlJSON(text);
+      else if (t[0] === "<") el.innerHTML = hlHTML(text);
+    } catch (e) {}
+  }
+
+  /* ---- Render one HTTP pane from JSON data ---- */
+  function renderPane(contentEl, hdrEl, data, isReq) {
+    /* Reset header label; remove any previous truncation badge */
+    hdrEl.textContent = isReq ? "REQUEST" : "RESPONSE";
+    if (data.truncated) {
+      const badge = document.createElement("span");
+      badge.className = "badge badge-truncated";
+      badge.textContent = "body truncated";
+      hdrEl.appendChild(badge);
+    }
+
+    contentEl.innerHTML = "";
+
+    /* First line (method+path or status) */
+    const first = document.createElement("div");
+    first.className = "http-first" + (isReq ? " req-first" : " " + (data.status_class || ""));
+    first.textContent = data.first_line;
+    contentEl.appendChild(first);
+
+    /* Headers */
+    data.headers.forEach(function (pair) {
+      const name = pair[0], val = pair[1];
+      const row = document.createElement("div");
+      row.className = "http-hdr-row";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "hname";
+      nameSpan.textContent = name;
+
+      const sepSpan = document.createElement("span");
+      sepSpan.className = "hsep";
+      sepSpan.textContent = ": ";
+
+      const valSpan = document.createElement("span");
+      valSpan.className = "hval";
+
+      row.appendChild(nameSpan);
+      row.appendChild(sepSpan);
+      row.appendChild(valSpan);
+
+      const lname = name.toLowerCase();
+      if (lname === "cookie" || lname === "set-cookie") {
+        valSpan.innerHTML = expandCookie(val);
+        valSpan.style.whiteSpace = "pre-wrap";
+        valSpan.style.overflowWrap = "anywhere";
+        row.style.alignItems = "flex-start";
+      } else {
+        valSpan.textContent = val;
+      }
+      contentEl.appendChild(row);
+    });
+
+    /* Body */
+    if (data.body && data.body !== "(no body)") {
+      const sep = document.createElement("div");
+      sep.className = "http-body-sep";
+      contentEl.appendChild(sep);
+
+      const body = document.createElement("div");
+      body.className = "http-body";
+      body.textContent = data.body;
+      applyBodyHighlight(body);
+      contentEl.appendChild(body);
+    }
+  }
+
+  /* ---- Format an ISO timestamp to IST DD Mon YYYY HH:MM:SS ---- */
+  var _IST_SUFFIX = [
+    "st", "nd", "rd",
+  ];
+  var _MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function fmtIST(iso) {
+    if (!iso) return "";
+    /* Parse as UTC then add 5h30m */
+    var ms = Date.parse(iso);
+    if (isNaN(ms)) return iso;
+    var d = new Date(ms + (5 * 60 + 30) * 60 * 1000);
+    var day  = d.getUTCDate();
+    var suf  = (day === 1 || day === 21 || day === 31) ? "st"
+             : (day === 2 || day === 22) ? "nd"
+             : (day === 3 || day === 23) ? "rd" : "th";
+    var mon  = _MONTHS[d.getUTCMonth()];
+    var yr   = d.getUTCFullYear();
+    var hh   = String(d.getUTCHours()).padStart(2, "0");
+    var mm   = String(d.getUTCMinutes()).padStart(2, "0");
+    var ss   = String(d.getUTCSeconds()).padStart(2, "0");
+    return day + suf + " " + mon + " " + yr + " " + hh + ":" + mm + ":" + ss;
+  }
+
+  /* ---- Fetch and display a flow inline ---- */
+  function loadFlow(flowId, row) {
+    /* Highlight selected row */
+    document.querySelectorAll(".flow-active").forEach(function (r) { r.classList.remove("flow-active"); });
+    row.classList.add("flow-active");
+
+    const panel      = document.getElementById("flow-detail-panel");
+    const metaEl     = document.getElementById("flow-detail-meta");
+    const reqHdrEl   = document.getElementById("req-pane-hdr");
+    const reqContent = document.getElementById("req-pane-content");
+    const respHdrEl  = document.getElementById("resp-pane-hdr");
+    const respContent = document.getElementById("resp-pane-content");
+
+    /* Show panel with loading state */
+    metaEl.textContent = "loading\u2026";
+    reqContent.innerHTML = "";
+    respContent.innerHTML = "";
+    panel.classList.add("visible");
+
+    const projectId = document.getElementById("flows-root").dataset.projectId;
+
+    fetch("/project/" + projectId + "/flows/" + flowId + "/json")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        /* Build meta bar */
+        metaEl.innerHTML = "";
+        const add = function (html) { metaEl.insertAdjacentHTML("beforeend", html); };
+        if (data.captured_at) {
+          add(`<span>${esc(fmtIST(data.captured_at))}</span><span class="ph-sep">\xb7</span>`);
+        }
+        add(`<span style="font-size:10px; color:var(--muted);">${esc(flowId.slice(0, 8))}</span>`);
+        if (data.role_name)   add(`<span class="ph-sep">\xb7</span><span style="color:var(--yellow);">role: ${esc(data.role_name)}</span>`);
+        if (data.module_name) add(`<span class="ph-sep">\xb7</span><span style="color:var(--blue);">module: ${esc(data.module_name)}</span>`);
+        if (data.endpoint_id) {
+          add(`<span class="ph-sep">\xb7</span><span>ep \u2192 <a href="/project/${projectId}/endpoints/${esc(data.endpoint_id)}">${esc(data.endpoint_id.slice(0, 8))}</a></span>`);
+        }
+
+        renderPane(reqContent, reqHdrEl, data.req, true);
+        renderPane(respContent, respHdrEl, data.resp, false);
+      })
+      .catch(function () {
+        metaEl.textContent = "Failed to load flow.";
+      });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll(".flow-table-wrap tbody tr[data-flow-id]").forEach(function (row) {
+      row.addEventListener("click", function () { loadFlow(row.dataset.flowId, row); });
+    });
+  });
+
+  /* ================================================================
+   * SSE live-sync layer
+   * Connects to /api/stream and patches the DOM without re-rendering.
+   * ================================================================ */
+
+  /* ---- status dot ---- */
+  function _dotState(state) {
+    var dot = document.getElementById("live-dot");
+    if (!dot) return;
+    dot.className = "live-dot " + state;
+    dot.title = state === "connected" ? "live" :
+                state === "error"     ? "stream error \u2014 reconnecting" : "";
+  }
+
+  /* ---- total counter in page-header ---- */
+  function _setTotal(n) {
+    var el = document.getElementById("flow-total");
+    if (el) el.textContent = n + " total";
+  }
+
+  /* ---- badge above the table ---- */
+  var _pendingFlows = [];
+
+  function _isAtTop() {
+    var wrap = document.getElementById("flow-table-wrap");
+    return wrap ? wrap.scrollTop < 60 : true;
+  }
+
+  function _showBadge() {
+    var b = document.getElementById("flow-new-badge");
+    if (b) {
+      b.style.display = "block";
+      b.textContent = "\u2191 " + _pendingFlows.length + " new";
+    }
+  }
+
+  function _hideBadge() {
+    var b = document.getElementById("flow-new-badge");
+    if (b) b.style.display = "none";
+  }
+
+  /* ---- build a <tr> from a flow JSON object ---- */
+  /* ---- status + source label helpers ---- */
+  function _statusCls(s) {
+    if (s == null) return "status-null";
+    if (s >= 200 && s < 300) return "status-2xx";
+    if (s >= 300 && s < 400) return "status-3xx";
+    if (s >= 400 && s < 500) return "status-4xx";
+    if (s >= 500) return "status-5xx";
+    return "";
+  }
+
+  var _srcLabels = {proxy_capture: "proxy", manual_replay: "replay", auto_replay: "auto replay"};
+  function _srcLabel(s) { return _srcLabels[s] || s || "\u2014"; }
+
+  /* ---- read active filters from DOM ---- */
+  var _activeFilters = {};
+  (function () {
+    var root = document.getElementById("flows-root");
+    if (root && root.dataset.filters) {
+      try { _activeFilters = JSON.parse(root.dataset.filters); } catch (e) {}
+    }
+  })();
+
+  function _flowMatchesFilters(flow) {
+    if (_activeFilters.source && flow.source !== _activeFilters.source) return false;
+    if (_activeFilters.method && flow.method !== _activeFilters.method) return false;
+    if (_activeFilters.host && flow.host !== _activeFilters.host) return false;
+    if (_activeFilters.status && String(flow.status_code) !== _activeFilters.status) return false;
+    if (_activeFilters.role && flow.role_name !== _activeFilters.role) return false;
+    if (_activeFilters.module && flow.module_name !== _activeFilters.module) return false;
+    return true;
+  }
+
+  function _buildFlowRow(flow) {
+    var tr = document.createElement("tr");
+    tr.setAttribute("data-flow-id", flow.id);
+
+    var td1 = document.createElement("td");
+    td1.innerHTML = "<span class=\"method method-" + esc(flow.method) + "\">" + esc(flow.method) + "</span>";
+
+    var td2 = document.createElement("td");
+    td2.setAttribute("style", "color:var(--muted); font-size:11px;");
+    td2.textContent = flow.host || "";
+
+    var td3 = document.createElement("td");
+    td3.setAttribute("style", "word-break: break-all; max-width: 400px;");
+    td3.textContent = flow.query ? (flow.path + "?" + flow.query) : (flow.path || "");
+
+    var td4 = document.createElement("td");
+    if (flow.status_code != null) {
+      td4.innerHTML = "<span class=\"status " + _statusCls(flow.status_code) + "\">" + esc(String(flow.status_code)) + "</span>";
+    } else {
+      td4.innerHTML = "<span class=\"status status-null\">\u2014</span>";
+    }
+
+    var td5 = document.createElement("td");
+    td5.setAttribute("style", "font-size:11px; color:var(--muted);");
+    td5.textContent = _srcLabel(flow.source);
+
+    var td6 = document.createElement("td");
+    td6.setAttribute("style", "font-size:11px; color:var(--yellow);");
+    td6.textContent = flow.role_name || "\u2014";
+
+    var td7 = document.createElement("td");
+    td7.setAttribute("style", "font-size:11px; color:var(--blue);");
+    td7.textContent = flow.module_name || "\u2014";
+
+    tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+    tr.appendChild(td4); tr.appendChild(td5); tr.appendChild(td6); tr.appendChild(td7);
+
+    /* Wire row click so the detail panel works for live-inserted rows. */
+    tr.addEventListener("click", function () { loadFlow(flow.id, tr); });
+    return tr;
+  }
+
+  /* ---- flush pending rows into the tbody ---- */
+  function _flushPending() {
+    var tbody = document.getElementById("flow-tbody");
+    if (!tbody || !_pendingFlows.length) return;
+
+    /* Hide the server-rendered "no flows" message on first arrival. */
+    var empty = document.getElementById("flow-empty");
+    if (empty) empty.style.display = "none";
+
+    /* Reveal the table-wrap if the page loaded with zero flows. */
+    var wrap = document.getElementById("flow-table-wrap");
+    if (wrap) wrap.style.display = "";
+
+    /* Prepend in reverse so the newest row ends up at the top (DESC order). */
+    for (var i = _pendingFlows.length - 1; i >= 0; i--) {
+      tbody.insertBefore(_buildFlowRow(_pendingFlows[i]), tbody.firstChild);
+    }
+    _pendingFlows = [];
+    _hideBadge();
+  }
+
+  /* ---- receive a new flow event ---- */
+  function _onFlowEvent(flow) {
+    /* Drop SSE flows that don't match current filter selections. */
+    if (!_flowMatchesFilters(flow)) return;
+
+    _pendingFlows.push(flow);
+    /* Increment the displayed total immediately; DOM is the running tally. */
+    var totalEl = document.getElementById("flow-total");
+    _setTotal(totalEl ? ((parseInt(totalEl.textContent, 10) || 0) + 1) : 1);
+
+    if (_isAtTop()) {
+      _flushPending();
+    } else {
+      _showBadge();
+    }
+  }
+
+  /* ---- open SSE connection ---- */
+  function _connectStream() {
+    if (typeof EventSource === "undefined") return;
+    var es = new EventSource("/api/stream");
+
+    es.addEventListener("connected", function () { _dotState("connected"); });
+
+    es.addEventListener("flow", function (evt) {
+      try { _onFlowEvent(JSON.parse(evt.data)); } catch (e) {}
+    });
+
+    /* onerror fires on any connection drop; EventSource auto-reconnects. */
+    es.onerror = function () { _dotState("error"); };
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    /* Badge click: scroll table to top then insert pending rows. */
+    var badge = document.getElementById("flow-new-badge");
+    if (badge) {
+      badge.addEventListener("click", function () {
+        var wrap = document.getElementById("flow-table-wrap");
+        if (wrap) wrap.scrollTop = 0;
+        _flushPending();
+      });
+    }
+
+    /* Auto-flush when user scrolls back to the top. */
+    var wrap = document.getElementById("flow-table-wrap");
+    if (wrap) {
+      wrap.addEventListener("scroll", function () {
+        if (_pendingFlows.length && wrap.scrollTop < 60) _flushPending();
+      });
+    }
+
+    _connectStream();
+  });
+
+})();
+</script>
+{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'flows') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  flows
+{% endblock %}
+
+{% block content %}
+<div id="flows-root" data-project-id="{{ project.id }}" data-filters="{{ active_filters_json | e }}">
+
+<div class="page-header">
+  <span id="flow-total">{{ total }} total</span>
+  {% if active_filters %}<span class="filter-active-badge">filtered</span>{% endif %}
+  <span id="live-dot" class="live-dot" title="connecting…"></span>
+  <span class="ph-sep">·</span>
+  {% if page > 1 %}<a href="/project/{{ project.id }}/flows?page={{ page - 1 }}&limit={{ limit }}{{ filter_qs }}">&larr; prev</a>{% endif %}
+  <span>{{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}<a href="/project/{{ project.id }}/flows?page={{ page + 1 }}&limit={{ limit }}{{ filter_qs }}">next &rarr;</a>{% endif %}
+</div>
+
+<form class="filter-bar" method="get" action="">
+  <input type="hidden" name="page" value="1">
+  <input type="hidden" name="limit" value="{{ limit }}">
+  <select name="source">
+    <option value="">all sources</option>
+    {% for s in filter_opts.sources %}
+    <option value="{{ s }}"{% if active_filters.get('source') == s %} selected{% endif %}>{{ s | source_label }}</option>
+    {% endfor %}
+  </select>
+  <select name="method">
+    <option value="">all methods</option>
+    {% for m in filter_opts.methods %}
+    <option value="{{ m }}"{% if active_filters.get('method') == m %} selected{% endif %}>{{ m }}</option>
+    {% endfor %}
+  </select>
+  <select name="host">
+    <option value="">all hosts</option>
+    {% for h in filter_opts.hosts %}
+    <option value="{{ h }}"{% if active_filters.get('host') == h %} selected{% endif %}>{{ h }}</option>
+    {% endfor %}
+  </select>
+  <select name="status">
+    <option value="">all statuses</option>
+    {% for sc in filter_opts.statuses %}
+    <option value="{{ sc }}"{% if active_filters.get('status') == sc|string %} selected{% endif %}>{{ sc }}</option>
+    {% endfor %}
+  </select>
+  <select name="role">
+    <option value="">all roles</option>
+    {% for r in filter_opts.roles %}
+    <option value="{{ r }}"{% if active_filters.get('role') == r %} selected{% endif %}>{{ r }}</option>
+    {% endfor %}
+  </select>
+  <select name="module">
+    <option value="">all modules</option>
+    {% for mod in filter_opts.modules %}
+    <option value="{{ mod }}"{% if active_filters.get('module') == mod %} selected{% endif %}>{{ mod }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="filter-apply">filter</button>
+  {% if active_filters %}<a href="/project/{{ project.id }}/flows?limit={{ limit }}" class="filter-clear">clear</a>{% endif %}
+</form>
+
+<div id="flow-new-badge" class="flow-new-badge"></div>
+
+{% if not flows %}
+<p class="empty" id="flow-empty">No flows captured yet.</p>
+{% endif %}
+
+<div class="flow-table-wrap" id="flow-table-wrap"{% if not flows %} style="display:none;"{% endif %}>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:60px;">Method</th>
+        <th>Host</th>
+        <th>Path</th>
+        <th style="width:70px;">Status</th>
+        <th style="width:80px;">Source</th>
+        <th style="width:120px;">Role</th>
+        <th style="width:120px;">Module</th>
+      </tr>
+    </thead>
+    <tbody id="flow-tbody">
+      {% for f in flows %}
+      <tr data-flow-id="{{ f.id }}">
+        <td><span class="method method-{{ f.method }}">{{ f.method }}</span></td>
+        <td style="color:var(--muted); font-size:11px;">{{ f.host }}</td>
+        <td style="word-break: break-all; max-width: 400px;">
+          {{ f.path }}{% if f.query %}?{{ f.query }}{% endif %}
+        </td>
+        <td>
+          {% if f.status_code is not none %}
+            {% set s = f.status_code %}
+            {% if s >= 200 and s < 300 %}<span class="status status-2xx">{{ s }}</span>
+            {% elif s >= 300 and s < 400 %}<span class="status status-3xx">{{ s }}</span>
+            {% elif s >= 400 and s < 500 %}<span class="status status-4xx">{{ s }}</span>
+            {% elif s >= 500 %}<span class="status status-5xx">{{ s }}</span>
+            {% else %}<span class="status">{{ s }}</span>
+            {% endif %}
+          {% else %}<span class="status status-null">—</span>{% endif %}
+        </td>
+        <td style="font-size:11px; color:var(--muted);">{{ f.source | source_label }}</td>
+        <td style="font-size:11px; color:var(--yellow);">{{ f.role_name }}</td>
+        <td style="font-size:11px; color:var(--blue);">{{ f.module_name }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div id="flow-detail-panel" class="flow-detail-panel">
+  <div class="detail-meta" id="flow-detail-meta"></div>
+  <div class="http-split">
+    <div class="http-pane">
+      <div class="pane-hdr" id="req-pane-hdr">REQUEST</div>
+      <div class="pane-content" id="req-pane-content"></div>
+    </div>
+    <div class="http-pane">
+      <div class="pane-hdr" id="resp-pane-hdr">RESPONSE</div>
+      <div class="pane-content" id="resp-pane-content"></div>
+    </div>
+  </div>
+</div>
+
+</div>{# /flows-root #}
+{% endblock %}

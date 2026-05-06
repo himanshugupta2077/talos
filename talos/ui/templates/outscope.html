@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Outscope — {{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'outscope') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  outscope
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Out-of-Scope Domains</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-title">Add Domain</div>
+  <div class="form-row">
+    <label class="fl">Domain</label>
+    <input class="fi fi-wide" id="domain-input" type="text" placeholder="cdn.example.com" />
+    <button class="btn btn-green" onclick="addDomain()">Add</button>
+  </div>
+  <p style="color:var(--muted);font-size:11px;margin-top:8px;">
+    Both the exact domain and all subdomains are blocked.
+    E.g. adding <code>stripe.com</code> also blocks <code>api.stripe.com</code>.
+  </p>
+</div>
+
+<div class="section">
+  <div class="section-title">Blocked Domains</div>
+  <div id="outscope-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _renderDomains(rows) {
+  const el = document.getElementById('outscope-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No out-of-scope domains configured.</p>';
+    return;
+  }
+  let html = `<table>
+    <thead><tr>
+      <th>Domain</th>
+      <th>Added</th>
+      <th style="width:80px;"></th>
+    </tr></thead><tbody>`;
+  rows.forEach(r => {
+    html += `<tr>
+      <td>${_esc(r.domain)}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—')}</td>
+      <td>
+        <button class="btn btn-red" data-domain="${_esc(r.domain)}" onclick="removeDomainBtn(this)">Remove</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function load() {
+  if (!_ACTIVE) {
+    document.getElementById('outscope-container').innerHTML =
+      '<p class="empty">Open the project to manage out-of-scope domains.</p>';
+    return;
+  }
+  const data = await _api('GET', '/outscope');
+  if (data) _renderDomains(data);
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function addDomain() {
+  if (!_ACTIVE) { _toast('Open the project first', 'err'); return; }
+  const domain = document.getElementById('domain-input').value.trim();
+  if (!domain) { _toast('Enter a domain', 'err'); return; }
+  const r = await _api('POST', '/outscope', { domain });
+  if (r) {
+    if (r.inserted) {
+      _toast('Added: ' + r.domain);
+    } else {
+      _toast('Already in list: ' + r.domain);
+    }
+    document.getElementById('domain-input').value = '';
+    load();
+  }
+}
+
+function removeDomainBtn(btn) {
+  removeDomain(btn.dataset.domain);
+}
+
+async function removeDomain(domain) {
+  const r = await _api('DELETE', '/outscope/' + encodeURIComponent(domain));
+  if (r) { _toast('Removed: ' + domain); load(); }
+}
+
+/* Enter key on input triggers add */
+document.addEventListener('DOMContentLoaded', () => {
+  load();
+  document.getElementById('domain-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addDomain();
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Proxy — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}
+<style>
+main { max-width: 100%; }
+
+/* Status indicator dot */
+.proxy-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; vertical-align: middle;
+  background: var(--muted);
+  transition: background 0.3s;
+  margin-right: 6px;
+}
+.proxy-dot.running { background: var(--green); }
+.proxy-dot.stopped { background: var(--muted); }
+
+/* Log pane — fills vertical space, append-only */
+.log-pane {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  line-height: 1.55;
+  padding: 10px 14px;
+  height: calc(100vh - 340px);
+  min-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
+}
+.log-pane::-webkit-scrollbar       { width: 6px; }
+.log-pane::-webkit-scrollbar-track { background: #080808; }
+.log-pane::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+
+/* Individual log line — prefix tinted green for talos internal lines */
+.log-line { display: block; }
+.log-line.talos-line { color: var(--green); }
+
+/* Live dot reuse */
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted); display: inline-block;
+  transition: background 0.4s; vertical-align: middle; margin-left: 4px;
+}
+.live-dot.connected { background: var(--green); }
+.live-dot.error     { background: var(--red); }
+</style>
+{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'proxy') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  proxy
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Proxy</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span id="live-dot" class="live-dot" title="connecting…"></span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active — proxy cannot be started.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<!-- Control panel -->
+<div class="panel">
+  <div class="panel-title">Control</div>
+
+  <div class="form-row">
+    <label class="fl">Status</label>
+    <span>
+      <span id="proxy-dot" class="proxy-dot stopped"></span>
+      <span id="proxy-status-text" style="font-size:12px; color:var(--muted);">stopped</span>
+      <span id="proxy-pid" style="font-size:11px; color:var(--muted); margin-left:10px;"></span>
+    </span>
+  </div>
+
+  <div class="form-row">
+    <label class="fl">Port</label>
+    <input class="fi" id="cfg-port" type="text" value="8080" style="max-width:90px;" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Listen Host</label>
+    <input class="fi" id="cfg-host" type="text" value="127.0.0.1" style="max-width:160px;" />
+  </div>
+
+  <div class="form-row" style="margin-top:12px;">
+    <button id="btn-start" class="btn btn-green" onclick="startProxy()">Start</button>
+    <button id="btn-stop"  class="btn btn-red"  onclick="stopProxy()" style="display:none;">Stop</button>
+  </div>
+</div>
+
+<!-- Log view -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <span class="section-title" style="margin-bottom:0;">Log</span>
+    <button class="btn btn-ghost" onclick="clearLog()">Clear</button>
+  </div>
+  <div id="log-pane" class="log-pane"><span style="color:var(--muted); font-size:11px;">Waiting for proxy output…</span></div>
+</div>
+
+<script>
+const _PID_VAL    = "{{ project.id }}";
+const _ACTIVE     = {{ 'true' if project.status == 'active' else 'false' }};
+
+let _autoScroll = true;   // follow new lines unless user scrolled up
+let _logSeeded  = false;  // true once the first real log lines arrive
+
+// ── DOM refs ─────────────────────────────────────────────────────────────
+const _dot       = document.getElementById('proxy-dot');
+const _statusTxt = document.getElementById('proxy-status-text');
+const _pidTxt    = document.getElementById('proxy-pid');
+const _btnStart  = document.getElementById('btn-start');
+const _btnStop   = document.getElementById('btn-stop');
+const _logPane   = document.getElementById('log-pane');
+
+// ── Scroll tracking — disable auto-scroll if user scrolled up ───────────
+_logPane.addEventListener('scroll', function () {
+  const atBottom = _logPane.scrollHeight - _logPane.scrollTop - _logPane.clientHeight < 40;
+  _autoScroll = atBottom;
+});
+
+// ── Render helpers ───────────────────────────────────────────────────────
+function _applyStatus(status, pid) {
+  const running = status === 'running';
+  _dot.className       = 'proxy-dot ' + (running ? 'running' : 'stopped');
+  _statusTxt.textContent = status;
+  _statusTxt.style.color = running ? 'var(--green)' : 'var(--muted)';
+  _pidTxt.textContent  = pid ? 'pid ' + pid : '';
+  _btnStart.style.display = running ? 'none'  : '';
+  _btnStop.style.display  = running ? ''      : 'none';
+  // Disable controls if project not active.
+  _btnStart.disabled = !_ACTIVE;
+}
+
+function _appendLine(line) {
+  if (!_logSeeded) {
+    // Remove the placeholder "waiting" span on first real content.
+    _logPane.innerHTML = '';
+    _logSeeded = true;
+  }
+  const span = document.createElement('span');
+  span.className = 'log-line' + (line.startsWith('[talos]') ? ' talos-line' : '');
+  span.textContent = line + '\n';
+  _logPane.appendChild(span);
+  if (_autoScroll) {
+    _logPane.scrollTop = _logPane.scrollHeight;
+  }
+}
+
+function clearLog() {
+  _logPane.innerHTML = '';
+  _logSeeded = false;
+}
+
+// ── Fetch current status on load ─────────────────────────────────────────
+async function loadStatus() {
+  const data = await _api('GET', '/proxy/status');
+  if (data) _applyStatus(data.status, data.pid);
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────
+async function startProxy() {
+  const port = parseInt(document.getElementById('cfg-port').value, 10) || 8080;
+  const host = document.getElementById('cfg-host').value.trim() || '127.0.0.1';
+  _btnStart.disabled = true;
+  const r = await _api('POST', '/proxy/start', { port, listen_host: host });
+  if (r) {
+    if (r.ok) {
+      _toast(r.detail);
+    } else {
+      _toast(r.detail, 'err');
+      _btnStart.disabled = false;
+    }
+  } else {
+    _btnStart.disabled = false;
+  }
+}
+
+async function stopProxy() {
+  _btnStop.disabled = true;
+  const r = await _api('POST', '/proxy/stop');
+  if (r) {
+    if (r.ok) {
+      _toast(r.detail);
+    } else {
+      _toast(r.detail, 'err');
+    }
+  }
+  _btnStop.disabled = false;
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID_VAL + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+// ── SSE live connection ───────────────────────────────────────────────────
+(function () {
+  function _dotState(state) {
+    const d = document.getElementById('live-dot');
+    if (!d) return;
+    d.className = 'live-dot ' + state;
+    d.title = state === 'connected' ? 'live'
+            : state === 'error'     ? 'stream error — reconnecting'
+            : '';
+  }
+
+  function _connect() {
+    if (typeof EventSource === 'undefined') return;
+    var es = new EventSource('/api/stream');
+
+    es.addEventListener('connected', function () { _dotState('connected'); });
+
+    // Proxy log line — append to log pane.
+    es.addEventListener('proxy_log', function (e) {
+      try {
+        const d = JSON.parse(e.data);
+        _appendLine(d.line || '');
+      } catch (_) {}
+    });
+
+    // Proxy running state changed.
+    es.addEventListener('proxy_status', function (e) {
+      try {
+        const d = JSON.parse(e.data);
+        // Re-fetch full status (includes pid) rather than using partial data.
+        loadStatus();
+      } catch (_) {}
+    });
+
+    es.onerror = function () { _dotState('error'); };
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    loadStatus();
+    _connect();
+  });
+})();
+</script>
+{% endblock %}

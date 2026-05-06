@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Endpoints — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}
+<style>
+main { max-width: 100%; }
+.path-cell { word-break: break-all; overflow-wrap: anywhere; }
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted); display: inline-block;
+  transition: background 0.4s; vertical-align: middle; margin-left: 4px;
+}
+.live-dot.connected { background: var(--green); }
+.live-dot.error     { background: var(--red); }
+.ep-new-badge {
+  display: none; padding: 3px 10px;
+  background: #0a1a0a; color: var(--green);
+  border: 1px solid var(--green-dim); border-radius: var(--radius);
+  font-size: 11px; cursor: pointer; margin-bottom: 6px; user-select: none;
+}
+.ep-new-badge:hover { background: #0e2a0e; }
+</style>
+<script>
+(function () {
+  "use strict";
+  var _PID = "{{ project.id }}";
+  var _lastCount = {{ total }};
+
+  function _esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function _setTotal(n) {
+    var el = document.getElementById("ep-total");
+    if (el) el.textContent = n + " normalized";
+  }
+
+  function _dotState(state) {
+    var dot = document.getElementById("live-dot");
+    if (!dot) return;
+    dot.className = "live-dot " + state;
+    dot.title = state === "connected" ? "live" : state === "error" ? "stream error \u2014 reconnecting" : "";
+  }
+
+  function _showBadge() {
+    var b = document.getElementById("ep-new-badge");
+    if (b) { b.style.display = "block"; b.textContent = "\u2191 new endpoints \u2014 click to refresh"; }
+  }
+
+  function _hideBadge() {
+    var b = document.getElementById("ep-new-badge");
+    if (b) b.style.display = "none";
+  }
+
+  /* Re-fetch page 1 of endpoints and re-render just the tbody rows. */
+  function _reloadTable() {
+    fetch("/api/endpoints?page=1&limit=50", { headers: { "Accept": "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var tbody = document.getElementById("ep-tbody");
+        if (!tbody) return;
+
+        /* Reveal table if page loaded empty. */
+        var empty = document.getElementById("ep-empty");
+        if (empty) empty.style.display = "none";
+        var wrap = document.getElementById("ep-table-wrap");
+        if (wrap) wrap.style.display = "";
+
+        /* Re-render rows from API response — only the data layer changes. */
+        var html = "";
+        (data.items || []).forEach(function (e) {
+          html += "<tr>";
+          html += "<td><span class=\"method method-" + _esc(e.method) + "\">" + _esc(e.method) + "</span></td>";
+          html += "<td style=\"color:var(--muted); font-size:11px;\">" + _esc(e.host) + "</td>";
+          html += "<td class=\"path-cell\"><a href=\"/project/" + _PID + "/endpoints/" + _esc(e.id) + "\">" + _esc(e.normalized_path) + "</a></td>";
+          html += "<td style=\"color:var(--green);\">" + (e.hit_count || 0) + "</td>";
+          html += "<td style=\"font-size:11px; color:var(--yellow);\">" + _esc(e.roles || "\u2014") + "</td>";
+          html += "<td style=\"font-size:11px; color:var(--blue);\">" + _esc(e.modules || "\u2014") + "</td>";
+          html += "</tr>";
+        });
+        tbody.innerHTML = html;
+
+        _setTotal(data.total || 0);
+        _lastCount = data.total || 0;
+        _hideBadge();
+      })
+      .catch(function () {});
+  }
+
+  function _connectStream() {
+    if (typeof EventSource === "undefined") return;
+    var es = new EventSource("/api/stream");
+
+    es.addEventListener("connected", function () { _dotState("connected"); });
+
+    es.addEventListener("endpoint_count", function (evt) {
+      try {
+        var payload = JSON.parse(evt.data);
+        var n = payload.total || 0;
+        if (n !== _lastCount) {
+          _lastCount = n;
+          _setTotal(n);
+          _showBadge();
+        }
+      } catch (e) {}
+    });
+
+    es.onerror = function () { _dotState("error"); };
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var badge = document.getElementById("ep-new-badge");
+    if (badge) badge.addEventListener("click", function () { _reloadTable(); });
+    _connectStream();
+  });
+})();
+</script>
+{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'endpoints') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  endpoints
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Endpoints</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  <span id="ep-total">{{ total }} normalized</span>
+  <span id="live-dot" class="live-dot" title="connecting…"></span>
+  <span class="ph-sep">·</span>
+  {% if page > 1 %}<a href="/project/{{ project.id }}/endpoints?page={{ page - 1 }}&limit={{ limit }}">&larr; prev</a>{% endif %}
+  <span>{{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}<a href="/project/{{ project.id }}/endpoints?page={{ page + 1 }}&limit={{ limit }}">next &rarr;</a>{% endif %}
+</div>
+
+<div id="ep-new-badge" class="ep-new-badge"></div>
+
+{% if not endpoints %}
+<p class="empty" id="ep-empty">No endpoints yet. Run the normalization step after capturing flows.</p>
+{% endif %}
+
+<div id="ep-table-wrap"{% if not endpoints %} style="display:none;"{% endif %}>
+
+{# Pagination macro — bottom only #}
+{% macro pagination() %}
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="/project/{{ project.id }}/endpoints?page={{ page - 1 }}&limit={{ limit }}">&larr; prev</a>
+  {% endif %}
+  <span class="current">{{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}
+    <a href="/project/{{ project.id }}/endpoints?page={{ page + 1 }}&limit={{ limit }}">next &rarr;</a>
+  {% endif %}
+  <span>— {{ total }} endpoints — {{ limit }} per page</span>
+</div>
+{% endmacro %}
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:70px;">Method</th>
+      <th>Host</th>
+      <th>Normalized Path</th>
+      <th style="width:60px;">Hits</th>
+      <th style="width:140px;">Roles</th>
+      <th style="width:140px;">Modules</th>
+    </tr>
+  </thead>
+  <tbody id="ep-tbody">
+    {% for e in endpoints %}
+    <tr>
+      <td><span class="method method-{{ e.method }}">{{ e.method }}</span></td>
+      <td style="color:var(--muted); font-size:11px;">{{ e.host }}</td>
+      <td class="path-cell">
+        <a href="/project/{{ project.id }}/endpoints/{{ e.id }}">
+          {{ e.normalized_path }}
+        </a>
+      </td>
+      <td style="color:var(--green);">{{ e.hit_count }}</td>
+      <td style="font-size:11px; color:var(--yellow);">{{ e.roles or "—" }}</td>
+      <td style="font-size:11px; color:var(--blue);">{{ e.modules or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if endpoints %}{{ pagination() }}{% endif %}
+
+</div>{# /ep-table-wrap #}
+{% endblock %}

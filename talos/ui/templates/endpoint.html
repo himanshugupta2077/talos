@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}{{ endpoint.method }} {{ endpoint.normalized_path }} — {{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'endpoints') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}/endpoints">endpoints</a>
+  <span class="sep">/</span>
+  {{ endpoint.id[:8] }}
+{% endblock %}
+
+{% block extra_head %}
+<style>
+  main { max-width: 100%; }
+
+  /* Ensure long values in kv-table and table cells wrap */
+  .kv-table td:last-child { word-break: break-all; overflow-wrap: anywhere; }
+  table td { word-break: break-all; overflow-wrap: anywhere; }
+
+  /* Endpoint prev/next nav */
+  .ep-nav {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .ep-nav a, .ep-nav .disabled {
+    display: inline-block;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    border-radius: 2px;
+    border: 1px solid;
+  }
+  .ep-nav a { border-color: var(--green-dim); color: var(--green); }
+  .ep-nav a:hover { border-color: var(--green); text-decoration: none; }
+  .ep-nav .disabled { border-color: #1e1e1e; color: #333; pointer-events: none; }
+
+  /* Make flow ID link stand out in linked flows table */
+  .flow-open-link {
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title"><span class="method method-{{ endpoint.method }}">{{ endpoint.method }}</span></span>
+  <span class="ph-sep">·</span>
+  <span>{{ endpoint.host }}</span>
+  <span class="ph-sep">·</span>
+  <span style="color:var(--green);">{{ endpoint.normalized_path }}</span>
+  <span class="ph-sep">·</span>
+  <span style="color:var(--muted); font-size:10px;">{{ endpoint.id[:8] }}</span>
+  <span class="ph-sep">·</span>
+  {% if prev_id %}<a href="/project/{{ project.id }}/endpoints/{{ prev_id }}">&#8592; prev</a>{% else %}<span style="color:#333;">&#8592; prev</span>{% endif %}
+  {% if next_id %}<a href="/project/{{ project.id }}/endpoints/{{ next_id }}">next &#8594;</a>{% else %}<span style="color:#333;">next &#8594;</span>{% endif %}
+</div>
+
+<!-- Endpoint info -->
+<div class="section">
+  <div class="section-title">Endpoint Info</div>
+  <table class="kv-table">
+    <tr><td>Method</td><td><span class="method method-{{ endpoint.method }}">{{ endpoint.method }}</span></td></tr>
+    <tr><td>Host</td><td>{{ endpoint.host }}</td></tr>
+    <tr><td>Raw Path</td><td>{{ endpoint.path }}</td></tr>
+    <tr><td>Normalized Path</td><td style="color:var(--green);">{{ endpoint.normalized_path }}</td></tr>
+    <tr><td>Content-Type</td><td>{{ endpoint.content_type or "—" }}</td></tr>
+    <tr><td>Auth Required</td><td>
+      {% if endpoint.auth_required %}
+        <span style="color:var(--yellow);">yes</span>
+      {% else %}
+        <span style="color:var(--muted);">no</span>
+      {% endif %}
+    </td></tr>
+    {% if endpoint_roles %}
+    <tr><td>Roles Seen</td><td>{{ endpoint_roles | join(", ") }}</td></tr>
+    {% endif %}
+    <tr><td>First Seen</td><td>{{ endpoint.first_seen }}</td></tr>
+    <tr><td>Last Seen</td><td>{{ endpoint.last_seen }}</td></tr>
+  </table>
+</div>
+
+<!-- Parameters -->
+<div class="section">
+  <div class="section-title">Parameters ({{ parameters | length }})</div>
+  {% if parameters %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th style="width:80px;">Location</th>
+        <th style="width:80px;">Type</th>
+        <th style="width:80px;">Source</th>
+        <th style="width:80px;">Volatility</th>
+        <th style="width:90px;">Sensitivity</th>
+        <th>Sample Values</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in parameters %}
+      <tr>
+        <td style="color:var(--green);">{{ p.name }}</td>
+        <td style="color:var(--muted); font-size:11px;">{{ p.location }}</td>
+        <td style="font-size:11px;">{{ p.param_type }}</td>
+        <td style="font-size:11px;">{{ p.source }}</td>
+        <td style="font-size:11px;">{{ p.volatility }}</td>
+        <td style="font-size:11px;">{{ p.sensitivity }}</td>
+        <td style="font-size:11px; color:var(--muted);">
+          {% if p.example_values_parsed %}
+            {{ p.example_values_parsed | join(", ") }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No parameters extracted yet.</p>
+  {% endif %}
+</div>
+
+<!-- Linked flows -->
+<div class="section">
+  <div class="section-title">Linked Flows (up to 20)</div>
+  {% if linked_flows %}
+  <table>
+    <thead>
+      <tr>
+        <th style="width:70px;">Method</th>
+        <th>Path</th>
+        <th style="width:70px;">Status</th>
+        <th style="width:110px;">Role</th>
+        <th style="width:110px;">Module</th>
+        <th style="width:160px;">Timestamp</th>
+        <th style="width:100px;">Flow</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in linked_flows %}
+      <tr>
+        <td><span class="method method-{{ f.method }}">{{ f.method }}</span></td>
+        <td><a href="/project/{{ project.id }}/flows/{{ f.id }}">{{ f.path }}</a></td>
+        <td>
+          {% if f.status_code is not none %}
+            {% set s = f.status_code %}
+            {% if s >= 200 and s < 300 %}
+              <span class="status status-2xx">{{ s }}</span>
+            {% elif s >= 300 and s < 400 %}
+              <span class="status status-3xx">{{ s }}</span>
+            {% elif s >= 400 and s < 500 %}
+              <span class="status status-4xx">{{ s }}</span>
+            {% else %}
+              <span class="status status-5xx">{{ s }}</span>
+            {% endif %}
+          {% else %}
+            <span class="status status-null">—</span>
+          {% endif %}
+        </td>
+        <td style="font-size:11px; color:var(--yellow);">{{ f.role_name }}</td>
+        <td style="font-size:11px; color:var(--blue);">{{ f.module_name }}</td>
+        <td style="color:var(--muted); font-size:11px;">{{ f.captured_at }}</td>
+        <td>
+          <a class="flow-open-link" href="/project/{{ project.id }}/flows/{{ f.id }}">
+            {{ f.id[:8] }} &#8594;
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No flows linked to this endpoint yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Flow {{ flow.id[:8] }} — {{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'flows') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}/flows">flows</a>
+  <span class="sep">/</span>
+  {{ flow.id[:8] }}
+{% endblock %}
+
+{% block extra_head %}
+<style>
+  main { max-width: 100%; padding-bottom: 0; }
+
+  .http-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: #1a1a1a;
+    border: 1px solid #1e1e1e;
+    height: calc(100vh - 170px);
+    min-height: 420px;
+  }
+  .http-pane {
+    background: #080808;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pane-hdr {
+    padding: 7px 14px;
+    border-bottom: 1px solid #1e1e1e;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--green);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pane-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 16px 20px;
+    font-size: 12px;
+    line-height: 1.65;
+  }
+  /* Custom scrollbar */
+  .pane-content::-webkit-scrollbar        { width: 6px; }
+  .pane-content::-webkit-scrollbar-track  { background: #080808; }
+  .pane-content::-webkit-scrollbar-thumb  { background: #2a2a2a; border-radius: 3px; }
+  .pane-content::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+
+  .http-first    { font-weight: 700; margin-bottom: 2px; word-break: break-all; }
+  .req-first     { color: var(--green); }
+  .http-hdr-row  { line-height: 1.5; word-break: break-all; display: flex; gap: 0; align-items: baseline; }
+  .hname         { color: #4a9eff; flex-shrink: 0; }
+  .hsep          { color: #333; flex-shrink: 0; }
+  .hval          { color: #999; min-width: 0; word-break: break-all; overflow-wrap: anywhere; }
+  .http-body-sep { height: 14px; border-top: 1px solid #1a1a1a; margin: 2px 0 8px; }
+  .http-body     { color: var(--text); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+
+  /* Cookie expansion */
+  .ck  { color: #c8a0f0; }   /* cookie name — purple */
+  .cp  { color: #444; }      /* = separator */
+  .cv  { color: #888; word-break: break-all; overflow-wrap: anywhere; }
+
+  /* Prev/next nav */
+  .flow-nav {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .flow-nav a {
+    display: inline-block;
+    padding: 3px 12px;
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    border-radius: 2px;
+  }
+  .flow-nav a:hover { border-color: var(--green); text-decoration: none; }
+  .flow-nav .disabled { border-color: #1e1e1e; color: #333; pointer-events: none; }
+
+  /* JSON syntax */
+  .jk  { color: #7ec8e3; }   /* key */
+  .jqs { color: #e6db74; }   /* string value (quoted) */
+  .jn  { color: #ae81ff; }   /* number */
+  .jl  { color: #f92672; }   /* literal: true/false/null */
+  .jp  { color: #444; }      /* punctuation: {}[],:  */
+
+  /* HTML/XML syntax */
+  .xt  { color: var(--green); }    /* tag name */
+  .xa  { color: #4a9eff; }         /* attribute name */
+  .xv  { color: #e6db74; }         /* attribute value */
+  .xc  { color: #555; }            /* comment */
+  .xd  { color: #888; }            /* doctype */
+</style>
+<script>
+(function () {
+  "use strict";
+
+  /* ---- helpers ---- */
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /* ---- JSON highlighter ---- */
+  function hlJSON(text) {
+    let out = "", i = 0, len = text.length;
+    while (i < len) {
+      const c = text[i];
+      if (c === '"') {
+        /* scan full string including escapes */
+        let j = i + 1;
+        while (j < len) {
+          if (text[j] === "\\") { j += 2; continue; }
+          if (text[j] === '"')  { j++; break; }
+          j++;
+        }
+        const raw = esc(text.slice(i, j));
+        /* look ahead past whitespace for colon → it's a key */
+        let k = j;
+        while (k < len && (text[k] === " " || text[k] === "\t" || text[k] === "\r" || text[k] === "\n")) k++;
+        out += text[k] === ":" ? `<span class="jk">${raw}</span>` : `<span class="jqs">${raw}</span>`;
+        i = j;
+      } else if ((c >= "0" && c <= "9") || (c === "-" && i + 1 < len && text[i + 1] >= "0" && text[i + 1] <= "9")) {
+        let j = i + 1;
+        while (j < len && /[0-9.eE+\-]/.test(text[j])) j++;
+        out += `<span class="jn">${esc(text.slice(i, j))}</span>`;
+        i = j;
+      } else if (text.slice(i, i + 4) === "true" || text.slice(i, i + 4) === "null") {
+        out += `<span class="jl">${text.slice(i, i + 4)}</span>`;
+        i += 4;
+      } else if (text.slice(i, i + 5) === "false") {
+        out += `<span class="jl">false</span>`;
+        i += 5;
+      } else if ("{[]}:,".includes(c)) {
+        out += `<span class="jp">${esc(c)}</span>`;
+        i++;
+      } else {
+        out += esc(c);
+        i++;
+      }
+    }
+    return out;
+  }
+
+  /* ---- HTML/XML highlighter ---- */
+  function hlHTML(text) {
+    return esc(text)
+      /* doctype */
+      .replace(/(&lt;!DOCTYPE[^&]*?&gt;)/gi,   '<span class="xd">$1</span>')
+      /* comments */
+      .replace(/(&lt;!--[\s\S]*?--&gt;)/g,     '<span class="xc">$1</span>')
+      /* closing tags */
+      .replace(/(&lt;\/)([\w:-]+)(&gt;)/g,     '$1<span class="xt">$2</span>$3')
+      /* opening/self-closing tags */
+      .replace(/(&lt;)([\w:-]+)([\s\S]*?)(\/?&gt;)/g, function (_, open, tag, attrs, close) {
+        const hAttrs = attrs
+          .replace(/([\w:-]+)(=)(&quot;[^&]*&quot;|&#39;[^&]*&#39;|[\w.-]+)/g,
+            '<span class="xa">$1</span><span class="jp">$2</span><span class="xv">$3</span>');
+        return `${open}<span class="xt">${tag}</span>${hAttrs}${close}`;
+      });
+  }
+
+  /* ---- Cookie header expansion ---- */
+  function expandCookie(rawVal) {
+    return rawVal.split(/;\s*/).filter(Boolean).map(pair => {
+      const eq = pair.indexOf("=");
+      if (eq === -1) return `<span class="ck">${esc(pair.trim())}</span>`;
+      return `<span class="ck">${esc(pair.slice(0, eq).trim())}</span><span class="cp">=</span><span class="cv">${esc(pair.slice(eq + 1))}</span>`;
+    }).join("\n");
+  }
+
+  /* ---- Apply on load ---- */
+  document.addEventListener("DOMContentLoaded", function () {
+
+    /* Body syntax highlighting */
+    document.querySelectorAll(".http-body").forEach(function (el) {
+      const text = el.textContent;
+      const t = text.trim();
+      if (!t || t === "(no body)") return;
+      try {
+        if (t[0] === "{" || t[0] === "[") {
+          el.innerHTML = hlJSON(text);
+        } else if (t[0] === "<") {
+          el.innerHTML = hlHTML(text);
+        }
+      } catch (e) { /* leave as plain text on any error */ }
+    });
+
+    /* Cookie header expansion */
+    document.querySelectorAll(".http-hdr-row").forEach(function (row) {
+      const nameEl = row.querySelector(".hname");
+      const valEl  = row.querySelector(".hval");
+      if (!nameEl || !valEl) return;
+      const name = nameEl.textContent.trim().toLowerCase();
+      if (name === "cookie" || name === "set-cookie") {
+            valEl.innerHTML = expandCookie(valEl.textContent);
+        valEl.style.whiteSpace = "pre-wrap";
+        valEl.style.overflowWrap = "anywhere";
+        row.style.alignItems = "flex-start";
+      }
+    });
+
+  });
+})();
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span>{{ flow.captured_at }}</span>
+  <span class="ph-sep">·</span>
+  <span style="color:var(--muted); font-size:10px;">{{ flow.id[:8] }}</span>
+  {% if flow.role_name %}<span class="ph-sep">·</span><span style="color:var(--yellow);">role: {{ flow.role_name }}</span>{% endif %}
+  {% if flow.module_name %}<span class="ph-sep">·</span><span style="color:var(--blue);">module: {{ flow.module_name }}</span>{% endif %}
+  {% if flow.endpoint_id %}<span class="ph-sep">·</span><span>ep → <a href="/project/{{ project.id }}/endpoints/{{ flow.endpoint_id }}">{{ flow.endpoint_id[:8] }}</a></span>{% endif %}
+  {% if flow.session_id %}<span class="ph-sep">·</span><span>session → {{ flow.session_id[:8] }}</span>{% endif %}
+  <span class="ph-sep">·</span>
+  {% if prev_id %}<a href="/project/{{ project.id }}/flows/{{ prev_id }}">&#8592; prev</a>{% else %}<span style="color:#333;">&#8592; prev</span>{% endif %}
+  {% if next_id %}<a href="/project/{{ project.id }}/flows/{{ next_id }}">next &#8594;</a>{% else %}<span style="color:#333;">next &#8594;</span>{% endif %}
+</div>
+
+<div class="http-split">
+
+  <div class="http-pane">
+    <div class="pane-hdr">
+      REQUEST
+      {% if req.truncated %}<span class="badge badge-truncated">body truncated</span>{% endif %}
+    </div>
+    <div class="pane-content">
+      <div class="http-first req-first">{{ req.first_line }}</div>
+      {% for name, val in req.headers %}
+      <div class="http-hdr-row"><span class="hname">{{ name }}</span><span class="hsep">: </span><span class="hval">{{ val }}</span></div>
+      {% endfor %}
+      {% if req.body != "(no body)" %}
+      <div class="http-body-sep"></div>
+      <div class="http-body">{{ req.body }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="http-pane">
+    <div class="pane-hdr">
+      RESPONSE
+      {% if resp.truncated %}<span class="badge badge-truncated">body truncated</span>{% endif %}
+    </div>
+    <div class="pane-content">
+      <div class="http-first {{ resp.status_class }}">{{ resp.first_line }}</div>
+      {% for name, val in resp.headers %}
+      <div class="http-hdr-row"><span class="hname">{{ name }}</span><span class="hsep">: </span><span class="hval">{{ val }}</span></div>
+      {% endfor %}
+      {% if resp.body != "(no body)" %}
+      <div class="http-body-sep"></div>
+      <div class="http-body">{{ resp.body }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

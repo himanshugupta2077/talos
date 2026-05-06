@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Roles — {{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'roles') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  roles
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Roles</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-title">Create Role</div>
+  <div class="form-row">
+    <label class="fl">Name</label>
+    <input class="fi fi-wide" id="role-name" type="text" placeholder="admin" />
+    <button class="btn btn-green" onclick="createRole()">Create</button>
+  </div>
+</div>
+
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Roles</span>
+    <button class="btn btn-ghost" onclick="resetRole()">Reset to Global</button>
+  </div>
+  <div id="roles-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _renderRoles(rows) {
+  if (!rows.length) {
+    document.getElementById('roles-container').innerHTML = '<p class="empty">No roles yet. Create one above.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th style="width:80px;"></th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const activateBtn = r.is_active
+      ? '<span style="color:var(--muted);font-size:11px;">current</span>'
+      : `<button class="btn btn-green" data-name="${_esc(r.name)}" onclick="activateRoleBtn(this)">Activate</button>`;
+    html += `<tr>
+      <td>${_esc(r.name)}${r.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td>${activateBtn}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('roles-container').innerHTML = html;
+}
+
+function activateRoleBtn(btn) { activateRole(btn.dataset.name); }
+
+async function load() {
+  if (!_ACTIVE) {
+    document.getElementById('roles-container').innerHTML = '<p class="empty">Open the project to manage roles.</p>';
+    return;
+  }
+  const data = await _api('GET', '/roles');
+  if (data) _renderRoles(data);
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function createRole() {
+  if (!_ACTIVE) { _toast('Open the project first', 'err'); return; }
+  const name = document.getElementById('role-name').value.trim();
+  if (!name) { _toast('Name required', 'err'); return; }
+  const r = await _api('POST', '/roles', { name });
+  if (r) { _toast('Created: ' + name); document.getElementById('role-name').value = ''; load(); }
+}
+
+async function activateRole(name) {
+  const r = await _api('POST', '/roles/' + encodeURIComponent(name) + '/activate');
+  if (r) { _toast('Active role: ' + name); load(); }
+}
+
+async function resetRole() {
+  const r = await _api('DELETE', '/roles/active');
+  if (r) { _toast('Reset to global'); load(); }
+}
+
+document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}

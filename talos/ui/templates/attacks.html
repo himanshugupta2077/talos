@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'attacks') }}{% endblock %}
+
+{% block title %}Attacks — {{ project.id }} — Talos{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  attacks
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Attacks</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  <span>deterministic attack modules</span>
+</div>
+
+<!-- Attack selector -->
+<div class="panel" style="margin-bottom:20px;">
+  <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;">
+    <span>Attack Module</span>
+    <button id="cfg-btn" class="btn btn-ghost"
+            style="padding:2px 7px;font-size:13px;line-height:1;"
+            title="Host exclusions" onclick="toggleConfig()">⚙</button>
+  </div>
+  <div class="form-row">
+    <label class="fl">Test Case</label>
+    <select class="fi" id="attack-selector" onchange="onAttackChange()">
+      <option value="unauth">Unauthenticated Execution</option>
+    </select>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- Exclusions panel (hidden by default, toggled by ⚙)              -->
+<!-- ================================================================ -->
+<div id="panel-exclusions" style="display:none;margin-bottom:20px;">
+  <div class="panel">
+    <div class="panel-title">Host Exclusions — Unauthenticated Execution</div>
+    <p style="font-size:11px;color:var(--muted);margin:0 0 12px;">
+      Entries here are skipped by the unauth test even when in-scope.
+      Works at host level (<code>api.example.com</code>) or host+path prefix
+      (<code>test.com/api/v1</code>).  Adding an entry cancels any queued jobs for it.
+    </p>
+
+    <div class="form-row" style="gap:8px;align-items:center;">
+      <label class="fl">Add Target</label>
+      <input class="fi fi-wide" id="excl-host-input" type="text"
+             placeholder="e.g. api.example.com  or  test.com/api/v1"
+             onkeydown="if(event.key==='Enter') addExclusion()" />
+      <button class="btn btn-yellow" onclick="addExclusion()">Add</button>
+    </div>
+    <div id="excl-msg" style="font-size:11px;margin:4px 0 10px 0;min-height:14px;"></div>
+
+    <div id="excl-table-wrap">
+      <span class="loading" id="excl-loading">Loading…</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- Unauthenticated Execution panel                                   -->
+<!-- ================================================================ -->
+<div id="panel-unauth">
+
+  <!-- Coverage summary -->
+  <div class="panel" style="margin-bottom:20px;">
+    <div class="panel-title">Coverage</div>
+    <div id="coverage-bar" style="display:flex;gap:20px;flex-wrap:wrap;padding:6px 0 2px;">
+      <span class="loading">Loading…</span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="panel" style="margin-bottom:20px;">
+    <div class="panel-title">Controls</div>
+
+    <div class="form-row" style="align-items:center;gap:16px;">
+      <label class="fl">Auto-Run</label>
+      <span id="auto-run-status" style="font-size:11px;color:var(--muted);">—</span>
+      <button class="btn btn-yellow" id="auto-run-btn" onclick="toggleAutoRun()">…</button>
+      <span style="font-size:11px;color:var(--muted);">
+        When enabled, the scheduler automatically enqueues untested endpoints.
+      </span>
+    </div>
+
+    <div class="form-row" style="margin-top:10px;">
+      <label class="fl">Bulk Enqueue</label>
+      <button class="btn btn-green" onclick="runAllUntested()">Run All Untested</button>
+      <span id="bulk-result" style="font-size:11px;color:var(--muted);margin-left:10px;"></span>
+    </div>
+  </div>
+
+  <!-- Endpoint table -->
+  <div class="section">
+    <div class="section-title">Endpoint Status</div>
+    <div id="endpoints-container" class="loading">Loading…</div>
+  </div>
+
+  <!-- Quick-run -->
+  <div class="panel" style="margin-top:20px;">
+    <div class="panel-title">Quick Run</div>
+    <div class="form-row">
+      <label class="fl">Endpoint ID</label>
+      <input class="fi fi-wide" id="quick-endpoint-id" type="text"
+             placeholder="paste endpoint UUID" />
+      <button class="btn btn-green" onclick="quickRun()">Run Auth Test</button>
+    </div>
+    <div id="quick-result" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
+  </div>
+
+</div><!-- #panel-unauth -->
+
+<script>
+const _PID  = "{{ project.id }}";
+let _autoRunEnabled = false;
+let _cfgOpen = false;
+
+// ------------------------------------------------------------------ //
+// Helpers                                                              //
+// ------------------------------------------------------------------ //
+
+function _verdictColor(verdict) {
+  if (!verdict) return 'var(--muted)';
+  if (verdict === 'BYPASS')  return 'var(--red)';
+  if (verdict === 'SECURE')  return 'var(--green)';
+  if (verdict === 'UNKNOWN') return 'var(--yellow)';
+  return 'var(--muted)';
+}
+
+function _statusColor(status) {
+  if (status === 'done')       return 'var(--muted)';
+  if (status === 'running')    return 'var(--blue)';
+  if (status === 'queued')     return 'var(--yellow)';
+  if (status === 'not_tested') return 'var(--muted)';
+  return 'var(--muted)';
+}
+
+function _coverageStat(label, value, color) {
+  return `<span style="display:inline-flex;flex-direction:column;align-items:center;
+                        min-width:72px;background:var(--bg-row);border:1px solid var(--border);
+                        padding:6px 14px;gap:2px;">
+    <span style="font-size:18px;font-weight:700;color:${color};">${value}</span>
+    <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">${label}</span>
+  </span>`;
+}
+
+// ------------------------------------------------------------------ //
+// Render                                                               //
+// ------------------------------------------------------------------ //
+
+function _renderCoverage(c) {
+  document.getElementById('coverage-bar').innerHTML =
+    _coverageStat('total',      c.total,      'var(--text)')  +
+    _coverageStat('not tested', c.not_tested, 'var(--muted)') +
+    _coverageStat('queued',     c.queued,     'var(--yellow)')+
+    _coverageStat('running',    c.running,    'var(--blue)')  +
+    _coverageStat('bypass',     c.bypass,     'var(--red)')   +
+    _coverageStat('secure',     c.secure,     'var(--green)') +
+    _coverageStat('unknown',    c.unknown,    'var(--yellow)');
+}
+
+function _renderAutoRun(enabled) {
+  _autoRunEnabled = enabled;
+  const statusEl = document.getElementById('auto-run-status');
+  const btnEl    = document.getElementById('auto-run-btn');
+  if (enabled) {
+    statusEl.textContent = 'enabled';
+    statusEl.style.color = 'var(--green)';
+    btnEl.textContent    = 'Disable';
+    btnEl.className      = 'btn btn-red';
+  } else {
+    statusEl.textContent = 'disabled';
+    statusEl.style.color = 'var(--muted)';
+    btnEl.textContent    = 'Enable';
+    btnEl.className      = 'btn btn-green';
+  }
+}
+
+function _renderEndpoints(rows) {
+  if (!rows.length) {
+    document.getElementById('endpoints-container').innerHTML =
+      '<p class="empty">No endpoints found.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th style="width:70px;">Method</th>
+    <th>Host</th>
+    <th>Path</th>
+    <th style="width:90px;">Status</th>
+    <th style="width:80px;">Verdict</th>
+    <th style="width:90px;">Last Run</th>
+    <th style="width:110px;"></th>
+  </tr></thead><tbody>`;
+  rows.forEach(ep => {
+    const statusColor  = _statusColor(ep.unauth_status);
+    const verdictColor = _verdictColor(ep.unauth_verdict);
+    const lastRun = ep.last_run
+      ? ep.last_run.replace('T', ' ').slice(0, 16)
+      : '—';
+    const canRun = ep.unauth_status !== 'running' && ep.unauth_status !== 'queued';
+    html += `<tr>
+      <td style="color:var(--blue);font-weight:700;">${_esc(ep.method)}</td>
+      <td style="color:var(--muted);">${_esc(ep.host)}</td>
+      <td style="font-size:11px;">${_esc(ep.normalized_path)}</td>
+      <td><span style="font-size:11px;font-weight:600;color:${statusColor};">
+        ${ep.unauth_status.replace('_', ' ')}</span></td>
+      <td><span style="font-size:11px;font-weight:700;color:${verdictColor};">
+        ${ep.unauth_verdict || '—'}</span></td>
+      <td style="font-size:11px;color:var(--muted);">${_esc(lastRun)}</td>
+      <td>
+        ${canRun
+          ? `<button class="btn btn-green" onclick="runEndpoint(${JSON.stringify(ep.endpoint_id)})">
+               Run Test
+             </button>`
+          : `<span style="font-size:11px;color:var(--muted);">${ep.unauth_status}</span>`
+        }
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('endpoints-container').innerHTML = html;
+}
+
+function _renderExclusions(entries) {
+  const wrap = document.getElementById('excl-table-wrap');
+  if (!entries.length) {
+    wrap.innerHTML = '<p class="empty" style="margin:0;">No exclusions.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th>Target</th>
+    <th style="width:90px;">Scope</th>
+    <th style="width:160px;">Added</th>
+    <th style="width:70px;"></th>
+  </tr></thead><tbody>`;
+  entries.forEach(e => {
+    const ts     = e.created_at ? e.created_at.replace('T', ' ').slice(0, 16) : '—';
+    const target = e.path ? e.host + e.path : e.host;
+    const scope  = e.path ? 'host+path' : 'host';
+    // Encode the full target (host+path) as a single path segment
+    const encoded = encodeURIComponent(target);
+    html += `<tr>
+      <td style="font-size:12px;">${_esc(target)}</td>
+      <td style="font-size:11px;color:var(--muted);">${_esc(scope)}</td>
+      <td style="font-size:11px;color:var(--muted);">${_esc(ts)}</td>
+      <td><button class="btn btn-red" style="padding:2px 8px;font-size:11px;"
+            onclick="removeExclusion(${JSON.stringify(target)})">Remove</button></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+// ------------------------------------------------------------------ //
+// Config panel toggle                                                  //
+// ------------------------------------------------------------------ //
+
+function toggleConfig() {
+  _cfgOpen = !_cfgOpen;
+  const panel = document.getElementById('panel-exclusions');
+  const btn   = document.getElementById('cfg-btn');
+  panel.style.display = _cfgOpen ? 'block' : 'none';
+  btn.style.color = _cfgOpen ? 'var(--green)' : '';
+  if (_cfgOpen) loadExclusions();
+}
+
+// ------------------------------------------------------------------ //
+// Actions                                                              //
+// ------------------------------------------------------------------ //
+
+async function load() {
+  const data = await _api('GET', '/attacks/unauth');
+  if (!data) return;
+  _renderCoverage(data.coverage);
+  _renderAutoRun(data.auto_run);
+  _renderEndpoints(data.endpoints);
+}
+
+async function loadExclusions() {
+  document.getElementById('excl-loading') && (document.getElementById('excl-table-wrap').innerHTML = '<span class="loading">Loading…</span>');
+  const data = await _api('GET', '/attacks/unauth/exclusions');
+  if (data) _renderExclusions(data.exclusions || []);
+}
+
+async function addExclusion() {
+  const input = document.getElementById('excl-host-input');
+  const msgEl = document.getElementById('excl-msg');
+  const host  = input.value.trim().toLowerCase();
+  if (!host) { msgEl.textContent = 'Enter a hostname.'; msgEl.style.color = 'var(--red)'; return; }
+
+  const r = await _api('POST', '/attacks/unauth/exclusions', { host });
+  if (!r) return;
+
+  if (r.already_present) {
+    msgEl.textContent = `${host} is already excluded.`;
+    msgEl.style.color = 'var(--yellow)';
+  } else {
+    const label = r.path ? r.host + r.path : r.host;
+    const extra = r.jobs_cancelled ? ` · ${r.jobs_cancelled} job(s) cancelled.` : '';
+    msgEl.textContent = `Added: ${label}${extra}`;
+    msgEl.style.color = 'var(--green)';
+    input.value = '';
+    loadExclusions();
+    setTimeout(load, 400);  // refresh endpoint table
+  }
+}
+
+async function removeExclusion(target) {
+  const msgEl = document.getElementById('excl-msg');
+  const r = await _api('DELETE', '/attacks/unauth/exclusions/' + encodeURIComponent(target));
+  if (r) {
+    const label = r.path ? r.host + r.path : r.host;
+    msgEl.textContent = `Removed: ${label}`;
+    msgEl.style.color = 'var(--muted)';
+    loadExclusions();
+    setTimeout(load, 400);  // refresh endpoint table
+  }
+}
+
+async function toggleAutoRun() {
+  const next = !_autoRunEnabled;
+  const r = await _api('PUT', '/attacks/unauth/auto', { enabled: next });
+  if (r) {
+    _renderAutoRun(r.enabled);
+    _toast(r.enabled ? 'Auto-run enabled' : 'Auto-run disabled');
+  }
+}
+
+async function runAllUntested() {
+  const r = await _api('POST', '/attacks/unauth/run-untested');
+  if (r) {
+    const msg = `Enqueued ${r.enqueued}, skipped ${r.skipped} (already queued)`;
+    document.getElementById('bulk-result').textContent = msg;
+    _toast(`Enqueued ${r.enqueued} jobs`);
+    setTimeout(load, 600);
+  }
+}
+
+async function runEndpoint(endpointId) {
+  const r = await _api('POST', '/attacks/unauth/' + encodeURIComponent(endpointId));
+  if (r) { _toast('Enqueued auth test'); setTimeout(load, 400); }
+}
+
+async function quickRun() {
+  const eid = document.getElementById('quick-endpoint-id').value.trim();
+  if (!eid) { _toast('Endpoint ID required', 'err'); return; }
+  const r = await _api('POST', '/attacks/unauth/' + encodeURIComponent(eid));
+  const el = document.getElementById('quick-result');
+  if (r) {
+    el.textContent = 'Enqueued.';
+    el.style.color = 'var(--green)';
+    _toast('Enqueued auth test');
+    setTimeout(load, 400);
+  } else {
+    el.textContent = 'Error — check that the endpoint ID is valid and not already queued.';
+    el.style.color = 'var(--red)';
+  }
+}
+
+function onAttackChange() {
+  // Future: hide/show attack-specific panels here.
+}
+
+// Auto-reload coverage every 10 s while running jobs may be active
+setInterval(() => {
+  _api('GET', '/attacks/unauth').then(data => {
+    if (!data) return;
+    _renderCoverage(data.coverage);
+    _renderAutoRun(data.auto_run);
+    _renderEndpoints(data.endpoints);
+  });
+}, 10000);
+
+document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}

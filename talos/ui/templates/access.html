@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Access — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}<style>
+main { max-width: 100%; }
+.tab-bar { display:flex; gap:0; margin-bottom:20px; border-bottom:1px solid var(--border); }
+.tab-bar button {
+  background:transparent; border:none; border-bottom:2px solid transparent;
+  color:var(--muted); font:inherit; font-size:12px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.08em;
+  padding:6px 16px; cursor:pointer; margin-bottom:-1px;
+}
+.tab-bar button:hover { color:var(--text); }
+.tab-bar button.tab-active { color:var(--green); border-bottom-color:var(--green); }
+.tab-pane { display:none; }
+.tab-pane.tab-active { display:block; }
+.sig-section { margin-bottom:28px; }
+.sig-title { color:var(--yellow); font-size:11px; font-weight:700;
+  letter-spacing:0.1em; text-transform:uppercase; margin-bottom:10px; }
+.sig-ok { color:var(--muted); font-size:12px; padding:8px 0; }
+</style>{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'access') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  access
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Access</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  <span>role × module BAC</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div class="tab-bar">
+  <button id="tab-matrix"   class="tab-active" onclick="switchTab('matrix')">Matrix</button>
+  <button id="tab-coverage"                    onclick="switchTab('coverage')">Coverage</button>
+  <button id="tab-signals"                     onclick="switchTab('signals')">Signals</button>
+</div>
+
+<!-- ── Matrix tab ─────────────────────────────────────────── -->
+<div id="pane-matrix" class="tab-pane tab-active">
+  <p style="color:var(--muted);font-size:11px;margin-bottom:12px;">
+    Click <strong>C:</strong> to cycle client_allowed (what the UI exposes).
+    Click <strong>S:</strong> to cycle server_expected (what the backend should enforce).
+    States: <span style="color:var(--muted);">unknown</span> → <span style="color:var(--green);">allow</span> → <span style="color:var(--red);">deny</span> → …
+  </p>
+  <div id="access-container" class="loading">Loading…</div>
+</div>
+
+<!-- ── Coverage tab ───────────────────────────────────────── -->
+<div id="pane-coverage" class="tab-pane">
+  <p style="color:var(--muted);font-size:11px;margin-bottom:12px;">
+    Expected vs observed for every (role, module) pair that has an access rule.
+    flow_count = 0 means no traffic was captured for that pair.
+  </p>
+  <div id="coverage-container" class="loading">Loading…</div>
+</div>
+
+<!-- ── Signals tab ────────────────────────────────────────── -->
+<div id="pane-signals" class="tab-pane">
+  <div id="signals-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+/* ---- tab switching ---- */
+function switchTab(name) {
+  ['matrix','coverage','signals'].forEach(t => {
+    document.getElementById('pane-' + t).classList.toggle('tab-active', t === name);
+    document.getElementById('tab-' + t).classList.toggle('tab-active', t === name);
+  });
+  if (name === 'coverage') loadCoverage();
+  if (name === 'signals')  loadSignals();
+}
+
+/* ---- state helpers ---- */
+function _nextState(s) {
+  // s is already lowercase; cycles unknown→allow→deny→unknown
+  return s === 'unknown' ? 'allow' : s === 'allow' ? 'deny' : 'unknown';
+}
+function _stateColor(v) {
+  const s = (v || 'unknown').toLowerCase();
+  return s === 'allow' ? 'var(--green)' : s === 'deny' ? 'var(--red)' : 'var(--muted)';
+}
+
+/* ─────────────────── MATRIX ─────────────────────────────── */
+function _renderMatrix(roles, modules, accessRows) {
+  const mat = {};
+  roles.forEach(r => { mat[r.name] = {}; });
+  accessRows.forEach(row => {
+    if (!mat[row.role_name]) mat[row.role_name] = {};
+    mat[row.role_name][row.module_name] = {
+      // DB stores uppercase; normalise to lowercase for display + cycling
+      client: (row.client_allowed || 'unknown').toLowerCase(),
+      server: (row.server_expected || 'unknown').toLowerCase(),
+    };
+  });
+
+  if (!roles.length || !modules.length) {
+    document.getElementById('access-container').innerHTML =
+      '<p class="empty">Define roles and modules first, then return here to set access rules.</p>';
+    return;
+  }
+
+  let html = '<table class="access-grid"><thead><tr><th>Role \\ Module</th>';
+  modules.forEach(m => { html += `<th>${_esc(m.name)}</th>`; });
+  html += '</tr></thead><tbody>';
+
+  roles.forEach(role => {
+    html += `<tr><td class="role-label">${_esc(role.name)}</td>`;
+    modules.forEach(mod => {
+      const cell = (mat[role.name] || {})[mod.name] || {};
+      const c = cell.client || 'unknown';
+      const s = cell.server || 'unknown';
+      // data attributes avoid any quoting collision in inline handlers
+      html += `<td>
+        <div class="ac-pair">
+          <span class="ac-item ac-${c}"
+            data-role="${_esc(role.name)}" data-module="${_esc(mod.name)}"
+            data-layer="client" data-state="${c}"
+            onclick="toggleAccessBtn(this)">C: ${c}</span>
+          <span class="ac-item ac-${s}"
+            data-role="${_esc(role.name)}" data-module="${_esc(mod.name)}"
+            data-layer="server" data-state="${s}"
+            onclick="toggleAccessBtn(this)">S: ${s}</span>
+        </div>
+      </td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('access-container').innerHTML = html;
+}
+
+async function loadMatrix() {
+  if (!_ACTIVE) {
+    document.getElementById('access-container').innerHTML =
+      '<p class="empty">Open the project to manage access rules.</p>';
+    return;
+  }
+  const [roles, modules, access] = await Promise.all([
+    _api('GET', '/roles'),
+    _api('GET', '/modules'),
+    _api('GET', '/access'),
+  ]);
+  if (roles && modules && access) _renderMatrix(roles, modules, access);
+}
+
+function toggleAccessBtn(el) {
+  const next = _nextState(el.dataset.state);
+  _api('PUT', '/access', {
+    role: el.dataset.role,
+    module: el.dataset.module,
+    layer: el.dataset.layer,
+    state: next,
+  }).then(r => {
+    if (r) { _toast(`${el.dataset.role} → ${el.dataset.module} ${el.dataset.layer}: ${next}`); loadMatrix(); }
+  });
+}
+
+/* ─────────────────── COVERAGE ───────────────────────────── */
+function _renderCoverage(rows) {
+  const el = document.getElementById('coverage-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No access rules defined yet.</p>';
+    return;
+  }
+  let html = `<table>
+    <thead><tr>
+      <th>Role</th><th>Module</th>
+      <th>Client</th><th>Server</th>
+      <th>Flows</th><th>Endpoints</th>
+    </tr></thead><tbody>`;
+  rows.forEach(r => {
+    const c = (r.client_allowed || 'unknown').toLowerCase();
+    const s = (r.server_expected || 'unknown').toLowerCase();
+    html += `<tr>
+      <td style="color:var(--yellow);">${_esc(r.role_name)}</td>
+      <td>${_esc(r.module_name)}</td>
+      <td style="color:${_stateColor(c)};">${c}</td>
+      <td style="color:${_stateColor(s)};">${s}</td>
+      <td style="color:${r.flow_count > 0 ? 'var(--green)' : 'var(--muted)'};">${r.flow_count}</td>
+      <td style="color:${r.endpoint_count > 0 ? 'var(--text)' : 'var(--muted)'};">${r.endpoint_count}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function loadCoverage() {
+  if (!_ACTIVE) {
+    document.getElementById('coverage-container').innerHTML =
+      '<p class="empty">Open the project to view coverage.</p>';
+    return;
+  }
+  const data = await _api('GET', '/access/coverage');
+  if (data) _renderCoverage(data);
+}
+
+/* ─────────────────── SIGNALS ────────────────────────────── */
+function _renderSignals(data) {
+  const el = document.getElementById('signals-container');
+  let html = '';
+
+  /* 1 — cross-role exposure */
+  html += '<div class="sig-section"><div class="sig-title">Cross-Role Exposure — endpoints hit by multiple roles</div>';
+  if (!data.multi_role.length) {
+    html += '<p class="sig-ok">None detected.</p>';
+  } else {
+    html += `<table><thead><tr>
+      <th>Method</th><th>Host</th><th>Path</th><th>Roles</th><th>Count</th>
+    </tr></thead><tbody>`;
+    data.multi_role.forEach(r => {
+      html += `<tr>
+        <td><span class="method method-${r.method}">${_esc(r.method)}</span></td>
+        <td style="color:var(--muted);">${_esc(r.host)}</td>
+        <td>${_esc(r.normalized_path)}</td>
+        <td>${_esc(r.role_names)}</td>
+        <td style="color:var(--yellow);">${r.role_count}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  /* 2 — server=DENY but traffic reached endpoint */
+  html += '<div class="sig-section"><div class="sig-title">Server Boundary Violation — server_expected=DENY but traffic reached endpoint</div>';
+  if (!data.server_deny.length) {
+    html += '<p class="sig-ok">None detected.</p>';
+  } else {
+    html += `<table><thead><tr>
+      <th>Role</th><th>Module</th><th>Method</th><th>Host</th><th>Path</th><th>Flows</th>
+    </tr></thead><tbody>`;
+    data.server_deny.forEach(r => {
+      html += `<tr>
+        <td style="color:var(--yellow);">${_esc(r.role_name)}</td>
+        <td>${_esc(r.module_name)}</td>
+        <td><span class="method method-${r.method}">${_esc(r.method)}</span></td>
+        <td style="color:var(--muted);">${_esc(r.host)}</td>
+        <td>${_esc(r.normalized_path)}</td>
+        <td style="color:var(--red);">${r.flow_count}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  /* 3 — client=DENY but flows observed */
+  html += '<div class="sig-section"><div class="sig-title">Client DENY with Traffic — UI blocks role but traffic was captured</div>';
+  if (!data.client_deny_with_flows.length) {
+    html += '<p class="sig-ok">None detected.</p>';
+  } else {
+    html += `<table><thead><tr>
+      <th>Role</th><th>Module</th><th>Client</th><th>Server</th><th>Flows</th>
+    </tr></thead><tbody>`;
+    data.client_deny_with_flows.forEach(r => {
+      html += `<tr>
+        <td style="color:var(--yellow);">${_esc(r.role_name)}</td>
+        <td>${_esc(r.module_name)}</td>
+        <td style="color:var(--red);">${(r.client_allowed||'?').toLowerCase()}</td>
+        <td style="color:${_stateColor(r.server_expected)};">${(r.server_expected||'unknown').toLowerCase()}</td>
+        <td style="color:var(--red);">${r.flow_count}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  /* 4 — client=ALLOW but no flows */
+  html += '<div class="sig-section"><div class="sig-title">Client ALLOW Without Coverage — access granted but no traffic captured</div>';
+  if (!data.client_allow_without_flows.length) {
+    html += '<p class="sig-ok">None detected.</p>';
+  } else {
+    html += `<table><thead><tr>
+      <th>Role</th><th>Module</th><th>Client</th><th>Server</th>
+    </tr></thead><tbody>`;
+    data.client_allow_without_flows.forEach(r => {
+      html += `<tr>
+        <td style="color:var(--yellow);">${_esc(r.role_name)}</td>
+        <td>${_esc(r.module_name)}</td>
+        <td style="color:var(--green);">${(r.client_allowed||'?').toLowerCase()}</td>
+        <td style="color:${_stateColor(r.server_expected)};">${(r.server_expected||'unknown').toLowerCase()}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+async function loadSignals() {
+  if (!_ACTIVE) {
+    document.getElementById('signals-container').innerHTML =
+      '<p class="empty">Open the project to view signals.</p>';
+    return;
+  }
+  const data = await _api('GET', '/access/signals');
+  if (data) _renderSignals(data);
+}
+
+/* ─────────────────── shared ─────────────────────────────── */
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+document.addEventListener('DOMContentLoaded', loadMatrix);
+</script>
+{% endblock %}
+

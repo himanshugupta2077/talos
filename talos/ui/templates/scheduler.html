@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Scheduler — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}
+<style>
+main { max-width: 100%; }
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted); display: inline-block;
+  transition: background 0.4s; vertical-align: middle; margin-left: 4px;
+}
+.live-dot.connected { background: var(--green); }
+.live-dot.error     { background: var(--red); }
+</style>
+{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'scheduler') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  scheduler
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Scheduler</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span id="live-dot" class="live-dot" title="connecting…"></span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div id="stats-row" class="stat-row section loading">Loading…</div>
+
+<div class="panel">
+  <div class="panel-title">Config</div>
+  <div class="form-row">
+    <label class="fl">Min Delay (s)</label>
+    <input class="fi" id="cfg-min" type="text" style="max-width:90px;" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Max Delay (s)</label>
+    <input class="fi" id="cfg-max" type="text" style="max-width:90px;" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Max Queue</label>
+    <input class="fi" id="cfg-size" type="text" style="max-width:90px;" />
+    <button class="btn btn-green" onclick="saveConfig()">Save</button>
+  </div>
+</div>
+
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Pending Jobs</span>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-ghost" onclick="load()">Refresh</button>
+      <button class="btn btn-red" onclick="clearQueue()">Clear Queue</button>
+    </div>
+  </div>
+  <div id="jobs-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _renderStats(counts) {
+  const order = ['pending', 'running', 'done', 'failed', 'skipped'];
+  let html = '';
+  order.forEach(k => {
+    const v = counts[k] || 0;
+    const col = k === 'done' ? 'var(--green)' : k === 'failed' ? 'var(--red)' : k === 'running' ? 'var(--yellow)' : 'var(--text)';
+    html += `<div class="stat"><span class="label">${k}</span><span class="value" style="color:${col};">${v}</span></div>`;
+  });
+  const el = document.getElementById('stats-row');
+  el.innerHTML = html;
+  el.className = 'stat-row section';
+}
+
+function _renderJobs(jobs) {
+  if (!jobs.length) {
+    document.getElementById('jobs-container').innerHTML = '<p class="empty">No pending jobs.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th style="width:90px;">Job ID</th>
+    <th style="width:90px;">Type</th>
+    <th>Target</th>
+    <th style="width:80px;">Priority</th>
+    <th style="width:160px;">Created</th>
+  </tr></thead><tbody>`;
+  jobs.forEach(j => {
+    const target = j.flow_id ? j.flow_id.slice(0, 8) : j.endpoint_id ? j.endpoint_id.slice(0, 8) : '—';
+    const type = j.job_type === 'replay_flow' ? 'flow' : j.job_type === 'replay_endpoint' ? 'endpoint' : _esc(j.job_type);
+    html += `<tr>
+      <td style="color:var(--muted);font-size:11px;">${_esc(j.job_id.slice(0, 8))}</td>
+      <td style="font-size:11px;">${type}</td>
+      <td style="color:var(--blue);font-size:11px;">${_esc(target)}</td>
+      <td style="color:var(--yellow);">${j.priority}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(j.created_at || '—')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('jobs-container').innerHTML = html;
+}
+
+async function load() {
+  if (!_ACTIVE) {
+    document.getElementById('stats-row').innerHTML = '';
+    document.getElementById('stats-row').className = 'stat-row section';
+    document.getElementById('jobs-container').innerHTML = '<p class="empty">Open the project to view the scheduler.</p>';
+    return;
+  }
+  const data = await _api('GET', '/scheduler');
+  if (!data) return;
+  _renderStats(data.counts || {});
+  _renderJobs(data.pending || []);
+  const cfg = data.config || {};
+  document.getElementById('cfg-min').value  = cfg.min_delay      ?? '';
+  document.getElementById('cfg-max').value  = cfg.max_delay      ?? '';
+  document.getElementById('cfg-size').value = cfg.max_queue_size ?? '';
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function saveConfig() {
+  const body = {};
+  const min  = parseFloat(document.getElementById('cfg-min').value);
+  const max  = parseFloat(document.getElementById('cfg-max').value);
+  const size = parseInt(document.getElementById('cfg-size').value, 10);
+  if (!isNaN(min))  body.min_delay       = min;
+  if (!isNaN(max))  body.max_delay       = max;
+  if (!isNaN(size)) body.max_queue_size  = size;
+  const r = await _api('PUT', '/scheduler/config', body);
+  if (r) { _toast('Config saved'); load(); }
+}
+
+async function clearQueue() {
+  if (!confirm('Clear all pending jobs?')) return;
+  const r = await _api('DELETE', '/scheduler/queue');
+  if (r) { _toast('Cleared ' + r.cleared + ' jobs'); load(); }
+}
+
+document.addEventListener('DOMContentLoaded', load);
+
+/* ---- SSE live-sync: refresh stats + jobs when scheduler counts change ---- */
+(function () {
+  function _dotState(state) {
+    var dot = document.getElementById('live-dot');
+    if (!dot) return;
+    dot.className = 'live-dot ' + state;
+    dot.title = state === 'connected' ? 'live' : state === 'error' ? 'stream error \u2014 reconnecting' : '';
+  }
+
+  function _connectStream() {
+    if (typeof EventSource === 'undefined') return;
+    var es = new EventSource('/api/stream');
+
+    es.addEventListener('connected', function () { _dotState('connected'); });
+
+    /* sched_counts arrives whenever any scheduler status counter changes.
+       Re-fetch the full scheduler view so stats + pending jobs stay current. */
+    es.addEventListener('sched_counts', function () {
+      load();
+    });
+
+    es.onerror = function () { _dotState('error'); };
+  }
+
+  document.addEventListener('DOMContentLoaded', function () { _connectStream(); });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,27 @@
+# Talos — Default headers to drop from captured flows.
+#
+# This is the global template. A copy is placed into each project directory
+# at <project_data_dir>/headers_drop.txt when the project is created.
+# Edit the per-project copy to customize filtering without affecting other projects.
+# Edit this file to change the default applied to all newly created projects.
+#
+# One header name per line. Case-insensitive. Lines starting with # are ignored.
+
+# ── Proxy-injected headers ──────────────────────────────────────────────────
+# Added by intermediary proxies. Not sent by the browser to the target app.
+Proxy-Connection
+Via
+X-Forwarded-For
+X-Forwarded-Host
+X-Forwarded-Proto
+X-Real-IP
+Forwarded
+
+# ── Connection-management noise ─────────────────────────────────────────────
+# TCP/HTTP-layer mechanics. Irrelevant to application-level analysis.
+Connection
+Keep-Alive
+Transfer-Encoding
+TE
+Trailer
+Upgrade

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Replay — {{ project.id }} — Talos{% endblock %}
+
+{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'replay') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  replay
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Replay</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  <span>Now = immediate · Queue = scheduled</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div id="result-panel" class="panel" style="display:none;">
+  <div class="panel-title">Last Result</div>
+  <div id="result-body"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Recent Flows</div>
+  <div id="flows-container" class="loading">Loading…</div>
+</div>
+
+<div class="section">
+  <div class="section-title">Endpoints</div>
+  <div id="endpoints-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _showResult(outcome) {
+  const panel = document.getElementById('result-panel');
+  const body  = document.getElementById('result-body');
+  const v = outcome.verdict || 'unknown';
+  const vClass = v === 'match' ? 'v-match' : v === 'mismatch' ? 'v-mismatch' : 'v-unknown';
+  body.innerHTML = `<table class="kv-table">
+    <tr><td>Original Flow</td><td style="font-size:11px;">${_esc(outcome.original_flow_id || '—')}</td></tr>
+    <tr><td>Replayed Flow</td><td style="font-size:11px;">${_esc(outcome.replayed_flow_id || '—')}</td></tr>
+    <tr><td>Status Code</td><td>${_esc(String(outcome.status_code || '—'))}</td></tr>
+    <tr><td>Verdict</td><td class="${vClass}" style="font-weight:700;">${_esc(v)}</td></tr>
+    ${outcome.failure_reason ? `<tr><td>Failure</td><td style="color:var(--red);">${_esc(outcome.failure_reason)}</td></tr>` : ''}
+  </table>`;
+  panel.style.display = 'block';
+}
+
+function _renderFlows(flows) {
+  if (!flows.length) {
+    document.getElementById('flows-container').innerHTML = '<p class="empty">No flows captured yet.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th style="width:70px;">Method</th><th>Host</th><th>Path</th>
+    <th style="width:70px;">Status</th><th style="width:120px;">Role</th>
+    <th style="width:190px;"></th>
+  </tr></thead><tbody>`;
+  flows.forEach(f => {
+    const sc = f.status_code;
+    const cls = !sc ? 'status-null' : sc < 300 ? 'status-2xx' : sc < 400 ? 'status-3xx' : sc < 500 ? 'status-4xx' : 'status-5xx';
+    html += `<tr>
+      <td><span class="method method-${_esc(f.method)}">${_esc(f.method)}</span></td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(f.host)}</td>
+      <td style="word-break:break-all;max-width:280px;"><a href="/project/${_esc(_PID)}/flows/${_esc(f.id)}">${_esc(f.path)}${f.query ? '?' + _esc(f.query) : ''}</a></td>
+      <td><span class="status ${cls}">${sc || '—'}</span></td>
+      <td style="font-size:11px;color:var(--yellow);">${_esc(f.role_name || '—')}</td>
+      <td>
+        <button class="btn btn-green" onclick='replayFlowNow(${JSON.stringify(f.id)})'>Now</button>
+        <button class="btn btn-ghost" onclick='enqueueFlow(${JSON.stringify(f.id)})'>Queue</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('flows-container').innerHTML = html;
+}
+
+function _renderEndpoints(eps) {
+  if (!eps.length) {
+    document.getElementById('endpoints-container').innerHTML = '<p class="empty">No endpoints discovered yet.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th style="width:70px;">Method</th><th>Host</th><th>Normalized Path</th>
+    <th style="width:50px;">Hits</th><th style="width:190px;"></th>
+  </tr></thead><tbody>`;
+  eps.forEach(e => {
+    html += `<tr>
+      <td><span class="method method-${_esc(e.method)}">${_esc(e.method)}</span></td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(e.host)}</td>
+      <td style="word-break:break-all;"><a href="/project/${_esc(_PID)}/endpoints/${_esc(e.id)}">${_esc(e.normalized_path)}</a></td>
+      <td style="color:var(--green);">${e.hit_count}</td>
+      <td>
+        <button class="btn btn-green" onclick='replayEndpointNow(${JSON.stringify(e.id)})'>Now</button>
+        <button class="btn btn-ghost" onclick='enqueueEndpoint(${JSON.stringify(e.id)})'>Queue</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('endpoints-container').innerHTML = html;
+}
+
+async function load() {
+  if (!_ACTIVE) {
+    const msg = '<p class="empty">Open the project to replay flows.</p>';
+    document.getElementById('flows-container').innerHTML = msg;
+    document.getElementById('endpoints-container').innerHTML = msg;
+    return;
+  }
+  const [flowsData, epsData] = await Promise.all([
+    _api('GET', '/flows?limit=50'),
+    _api('GET', '/endpoints?limit=50'),
+  ]);
+  if (flowsData) _renderFlows(flowsData.items || []);
+  if (epsData)   _renderEndpoints(epsData.items || []);
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function replayFlowNow(id) {
+  _toast('Replaying…');
+  const r = await _api('POST', '/replay/flow/' + id + '/now');
+  if (r) { _showResult(r); _toast('Done: ' + (r.verdict || 'unknown')); }
+}
+
+async function enqueueFlow(id) {
+  const r = await _api('POST', '/replay/flow/' + id);
+  if (r) { _toast('Queued: ' + r.job_id.slice(0, 8)); }
+}
+
+async function replayEndpointNow(id) {
+  _toast('Replaying…');
+  const r = await _api('POST', '/replay/endpoint/' + id + '/now');
+  if (r) { _showResult(r); _toast('Done: ' + (r.verdict || 'unknown')); }
+}
+
+async function enqueueEndpoint(id) {
+  const r = await _api('POST', '/replay/endpoint/' + id);
+  if (r) { _toast('Queued: ' + r.job_id.slice(0, 8)); }
+}
+
+document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}

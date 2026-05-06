@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block title %}Modules — {{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'modules') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  <a href="/project/{{ project.id }}">{{ project.id }}</a>
+  <span class="sep">/</span>
+  modules
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">Modules</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+</div>
+
+{% if project.status != "active" %}
+<div class="note note-yellow">
+  Project not active.
+  <button class="btn btn-green" style="margin-left:8px;" onclick="activateProject()">Open Project</button>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-title">Create Module</div>
+  <div class="form-row">
+    <label class="fl">Name</label>
+    <input class="fi fi-wide" id="mod-name" type="text" placeholder="auth" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Description</label>
+    <input class="fi fi-wide" id="mod-desc" type="text" placeholder="optional" />
+    <button class="btn btn-green" onclick="createModule()">Create</button>
+  </div>
+</div>
+
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Modules</span>
+    <button class="btn btn-ghost" onclick="resetModule()">Reset to Global</button>
+  </div>
+  <div id="modules-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
+
+function _renderModules(rows) {
+  if (!rows.length) {
+    document.getElementById('modules-container').innerHTML = '<p class="empty">No modules yet. Create one above.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th>Description</th><th style="width:80px;"></th></tr></thead><tbody>';
+  rows.forEach(m => {
+    const activateBtn = m.is_active
+      ? '<span style="color:var(--muted);font-size:11px;">current</span>'
+      : `<button class="btn btn-green" data-name="${_esc(m.name)}" onclick="activateModuleBtn(this)">Activate</button>`;
+    html += `<tr>
+      <td>${_esc(m.name)}${m.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(m.description || '—')}</td>
+      <td>${activateBtn}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('modules-container').innerHTML = html;
+}
+
+function activateModuleBtn(btn) { activateModule(btn.dataset.name); }
+
+async function load() {
+  if (!_ACTIVE) {
+    document.getElementById('modules-container').innerHTML = '<p class="empty">Open the project to manage modules.</p>';
+    return;
+  }
+  const data = await _api('GET', '/modules');
+  if (data) _renderModules(data);
+}
+
+async function activateProject() {
+  const r = await _api('POST', '/projects/' + _PID + '/open');
+  if (r) { _toast('Project opened'); setTimeout(() => location.reload(), 900); }
+}
+
+async function createModule() {
+  if (!_ACTIVE) { _toast('Open the project first', 'err'); return; }
+  const name = document.getElementById('mod-name').value.trim();
+  if (!name) { _toast('Name required', 'err'); return; }
+  const r = await _api('POST', '/modules', {
+    name,
+    description: document.getElementById('mod-desc').value.trim(),
+  });
+  if (r) {
+    _toast('Created: ' + name);
+    document.getElementById('mod-name').value = '';
+    document.getElementById('mod-desc').value = '';
+    load();
+  }
+}
+
+async function activateModule(name) {
+  const r = await _api('POST', '/modules/' + encodeURIComponent(name) + '/activate');
+  if (r) { _toast('Active module: ' + name); load(); }
+}
+
+async function resetModule() {
+  const r = await _api('DELETE', '/modules/active');
+  if (r) { _toast('Reset to global'); load(); }
+}
+
+document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}

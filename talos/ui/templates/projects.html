@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Projects — Talos{% endblock %}
+
+{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+
+{% block breadcrumb %}<a href="/">projects</a>{% endblock %}
+
+{% block content %}
+<div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start;">
+  <div>
+    <h1>Projects</h1>
+    <div class="sub">{{ projects | length }} registered</div>
+  </div>
+  <button class="btn btn-green" onclick="toggleNewForm()">+ New</button>
+</div>
+
+<div id="new-project-panel" class="panel" style="display:none;">
+  <div class="panel-title">Create Project</div>
+  <div class="form-row">
+    <label class="fl">Name</label>
+    <input class="fi fi-wide" id="np-name" type="text" placeholder="my-project" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Description</label>
+    <input class="fi fi-wide" id="np-desc" type="text" placeholder="optional" />
+  </div>
+  <div class="form-row">
+    <label class="fl">Scope</label>
+    <input class="fi fi-wide" id="np-scope" type="text" placeholder="api.example.com, example.com" />
+  </div>
+  <div class="form-row">
+    <button class="btn btn-green" onclick="createProject()">Create</button>
+    <button class="btn btn-ghost" onclick="toggleNewForm()">Cancel</button>
+  </div>
+</div>
+
+{% if projects %}
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Name</th>
+      <th>Status</th>
+      <th style="width:60px;">Scope</th>
+      <th>Storage</th>
+      <th style="width:110px;"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in projects %}
+    <tr>
+      <td><a href="/project/{{ p.id }}">{{ p.id }}</a></td>
+      <td>{{ p.name }}</td>
+      <td>
+        {% if p.status == "active" %}
+          <span class="badge badge-active">active</span>
+        {% else %}
+          <span class="badge badge-inactive">inactive</span>
+        {% endif %}
+      </td>
+      <td>{{ p.scope | length }}</td>
+      <td style="color: var(--muted); font-size: 11px;">{{ p.data_dir }}</td>
+      <td>
+        {% if p.status == "active" %}
+          <button class="btn btn-ghost" onclick="closeProject('{{ p.id }}')">Close</button>
+        {% else %}
+          <button class="btn btn-green" onclick="openProject('{{ p.id }}')">Open</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No projects yet.</p>
+{% endif %}
+
+<script>
+function toggleNewForm() {
+  const p = document.getElementById('new-project-panel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+async function createProject() {
+  const name = document.getElementById('np-name').value.trim();
+  if (!name) { _toast('Name required', 'err'); return; }
+  const scopeRaw = document.getElementById('np-scope').value.trim();
+  const scope = scopeRaw ? scopeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const r = await _api('POST', '/projects', {
+    name,
+    description: document.getElementById('np-desc').value.trim(),
+    scope,
+  });
+  if (r) { _toast('Created: ' + r.id); setTimeout(() => location.reload(), 900); }
+}
+async function openProject(id) {
+  const r = await _api('POST', '/projects/' + id + '/open');
+  if (r) { _toast('Opened: ' + id); setTimeout(() => location.reload(), 900); }
+}
+async function closeProject(id) {
+  const r = await _api('POST', '/projects/' + id + '/close');
+  if (r) { _toast('Closed: ' + id); setTimeout(() => location.reload(), 900); }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,796 @@
+{% extends "base.html" %}
+{% from "_nav.html" import project_nav %}
+
+{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+
+{% block title %}{{ project.id }} — Talos{% endblock %}
+
+{% block subnav %}{{ project_nav(project.id, 'overview') }}{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/">projects</a>
+  <span class="sep">/</span>
+  {{ project.id }}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <span class="ph-title">{{ project.name }}</span>
+  <span class="ph-sep">·</span>
+  <span>{{ project.id }}</span>
+  <span class="ph-sep">·</span>
+  {% if project.status == "active" %}
+    <span class="badge badge-active">active</span>
+    <span class="ph-right"><button class="btn btn-ghost" onclick="closeProject('{{ project.id }}')">Close Project</button></span>
+  {% else %}
+    <span class="badge badge-inactive">inactive</span>
+    <span class="ph-right"><button class="btn btn-green" onclick="openProject('{{ project.id }}')">Open Project</button></span>
+  {% endif %}
+</div>
+
+<!-- Stats row -->
+<div class="stat-row section">
+  <div class="stat">
+    <span class="label">Total Flows</span>
+    <span class="value">{{ flow_count }}</span>
+  </div>
+  <div class="stat">
+    <span class="label">Endpoints</span>
+    <span class="value">{{ endpoint_count }}</span>
+  </div>
+  <div class="stat">
+    <span class="label">Archive Size</span>
+    <span class="value dim">{{ archive_size }}</span>
+  </div>
+  <div class="stat">
+    <span class="label">DB</span>
+    <span class="value dim">{% if db_exists %}present{% else %}absent{% endif %}</span>
+  </div>
+</div>
+
+<!-- Metadata -->
+<div class="section">
+  <div class="section-title">Project Info</div>
+  <table class="kv-table">
+    <tr><td>Created</td><td>{{ project.created_at }}</td></tr>
+    <tr><td>Description</td><td>{{ project.description or "—" }}</td></tr>
+    <tr><td>Storage path</td><td style="font-size:11px; color:var(--muted);">{{ project.data_dir }}</td></tr>
+  </table>
+</div>
+
+<!-- Scope -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Scope (<span id="scope-count">{{ project.scope | length }}</span> entries)</span>
+    <button class="btn btn-ghost" onclick="toggleScopeEdit()">Edit</button>
+  </div>
+
+  <!-- read-only view -->
+  <div id="scope-view">
+  {% if project.scope %}
+  <table>
+    <thead><tr><th>#</th><th>Pattern</th></tr></thead>
+    <tbody>
+      {% for entry in project.scope %}
+      <tr>
+        <td style="color:var(--muted); width:40px;">{{ loop.index }}</td>
+        <td>{{ entry }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No scope entries. Traffic will not be captured.</p>
+  {% endif %}
+  </div>
+
+  <!-- edit panel -->
+  <div id="scope-edit" style="display:none;">
+    <div class="panel">
+      <div id="scope-list" style="margin-bottom:10px;"></div>
+      <div class="form-row">
+        <input class="fi fi-wide" id="scope-new-entry" type="text" placeholder="example.com or *.api.example.com" />
+        <button class="btn btn-green" onclick="scopeAddEntry()">Add</button>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <button class="btn btn-green" onclick="scopeSave()">Save</button>
+        <button class="btn btn-ghost" onclick="toggleScopeEdit()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Out-of-scope domains -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Out-of-Scope Domains (<span id="outscope-count">…</span>)</span>
+    <button class="btn btn-ghost" onclick="toggleOutscopeEdit()">Edit</button>
+  </div>
+
+  <!-- read-only view -->
+  <div id="outscope-view">
+    <div id="outscope-container" class="loading">Loading…</div>
+  </div>
+
+  <!-- edit panel -->
+  <div id="outscope-edit" style="display:none;">
+    <div class="panel">
+      <div id="outscope-edit-list" style="margin-bottom:10px;"></div>
+      <div class="form-row">
+        <input class="fi fi-wide" id="outscope-new-domain" type="text" placeholder="cdn.example.com" />
+        <button class="btn btn-green" onclick="outscopeAdd()">Add</button>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <button class="btn btn-ghost" onclick="toggleOutscopeEdit()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Constraints -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Constraints</span>
+    <button class="btn btn-ghost" onclick="toggleConstraintsEdit()">Edit</button>
+  </div>
+
+  <!-- read-only view -->
+  <div id="constraints-view">
+  <table class="kv-table">
+    <tr>
+      <td>Store Bodies</td>
+      <td id="cv-store-bodies">
+        {% if project.constraints.store_bodies %}
+          <span style="color:var(--green);">true</span>
+        {% else %}
+          <span style="color:var(--muted);">false</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td>Max Body Size</td>
+      <td id="cv-max-body">{{ "{:,}".format(project.constraints.max_body_size) }} bytes</td>
+    </tr>
+    <tr>
+      <td>Capture In-Scope Only</td>
+      <td id="cv-in-scope">
+        {% if project.constraints.capture_in_scope_only %}
+          <span style="color:var(--green);">true</span>
+        {% else %}
+          <span style="color:var(--red);">false</span>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+  </div>
+
+  <!-- edit panel -->
+  <div id="constraints-edit" style="display:none;">
+    <div class="panel">
+      <div class="form-row">
+        <label class="fl">Store Bodies</label>
+        <select class="fi" id="ce-store-bodies">
+          <option value="true" {% if project.constraints.store_bodies %}selected{% endif %}>true</option>
+          <option value="false" {% if not project.constraints.store_bodies %}selected{% endif %}>false</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="fl">Max Body Size (bytes)</label>
+        <input class="fi" id="ce-max-body" type="number" min="1024" max="10485760"
+               value="{{ project.constraints.max_body_size }}" />
+      </div>
+      <div class="form-row">
+        <label class="fl">Capture In-Scope Only</label>
+        <select class="fi" id="ce-in-scope">
+          <option value="true" {% if project.constraints.capture_in_scope_only %}selected{% endif %}>true</option>
+          <option value="false" {% if not project.constraints.capture_in_scope_only %}selected{% endif %}>false</option>
+        </select>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <button class="btn btn-green" onclick="constraintsSave()">Save</button>
+        <button class="btn btn-ghost" onclick="toggleConstraintsEdit()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Roles -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Roles</span>
+    <button class="btn btn-ghost" onclick="toggleRolesEdit()">Edit</button>
+  </div>
+
+  <!-- read-only view -->
+  <div id="roles-view">
+    <div id="roles-view-container" class="loading">Loading…</div>
+  </div>
+
+  <!-- edit panel -->
+  <div id="roles-edit" style="display:none;">
+    <div class="panel">
+      <div class="form-row">
+        <input class="fi fi-wide" id="role-name" type="text" placeholder="admin" />
+        <button class="btn btn-green" onclick="createRole()">Create</button>
+      </div>
+    </div>
+    <div id="roles-edit-container" style="margin-top:8px;"></div>
+    <div style="margin-top:8px;">
+      <button class="btn btn-ghost" onclick="resetRole()">Reset to Global</button>
+      <button class="btn btn-ghost" onclick="toggleRolesEdit()" style="margin-left:8px;">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Auth -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Auth Config</span>
+    <div>
+      <button class="btn btn-ghost" onclick="toggleAuthEdit()">Edit</button>
+      <button class="btn btn-red" style="margin-left:6px;" onclick="authClear()">Clear</button>
+    </div>
+  </div>
+
+  <!-- read-only view -->
+  <div id="auth-view">
+    <div id="auth-view-container" class="loading">Loading…</div>
+  </div>
+
+  <!-- edit panel -->
+  <div id="auth-edit" style="display:none;">
+    <div class="panel">
+      <div class="form-row">
+        <label class="fl">Cookie name</label>
+        <input class="fi fi-wide" id="auth-new-cookie" type="text" placeholder="sessionid" />
+        <button class="btn btn-green" onclick="authAddCookie()">Add</button>
+      </div>
+      <div class="form-row">
+        <label class="fl">Header name</label>
+        <input class="fi fi-wide" id="auth-new-header" type="text" placeholder="Authorization" />
+        <button class="btn btn-green" onclick="authAddHeader()">Add</button>
+      </div>
+      <div style="margin-top:8px;">
+        <button class="btn btn-ghost" onclick="toggleAuthEdit()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modules -->
+<div class="section">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <span class="section-title" style="margin-bottom:0;">Modules</span>
+    <button class="btn btn-ghost" onclick="toggleModulesEdit()">Edit</button>
+  </div>
+
+  <!-- read-only view -->
+  <div id="modules-view">
+    <div id="modules-view-container" class="loading">Loading…</div>
+  </div>
+
+  <!-- edit panel -->
+  <div id="modules-edit" style="display:none;">
+    <div class="panel">
+      <div class="form-row">
+        <input class="fi fi-wide" id="mod-name" type="text" placeholder="auth" />
+        <input class="fi fi-wide" id="mod-desc" type="text" placeholder="description (optional)" />
+        <button class="btn btn-green" onclick="createModule()">Create</button>
+      </div>
+    </div>
+    <div id="modules-edit-container" style="margin-top:8px;"></div>
+    <div style="margin-top:8px;">
+      <button class="btn btn-ghost" onclick="resetModule()">Reset to Global</button>
+      <button class="btn btn-ghost" onclick="toggleModulesEdit()" style="margin-left:8px;">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mutations -->
+<div class="section">
+  <div class="section-title">Header Mutations</div>
+  <div class="note note-yellow" style="margin-bottom:12px;">Proxy restart required for mutation changes to take effect.</div>
+  {% if project.status == "active" %}
+  <div class="panel">
+    <div class="panel-title">Add Header Mutation</div>
+    <div class="form-row">
+      <label class="fl">Header Name</label>
+      <input class="fi fi-wide" id="mut-key" type="text" placeholder="X-Role" />
+    </div>
+    <div class="form-row">
+      <label class="fl">Value</label>
+      <input class="fi fi-wide" id="mut-val" type="text" placeholder="admin" />
+      <button class="btn btn-green" onclick="addMutation()">Add</button>
+    </div>
+  </div>
+  {% endif %}
+  <div id="mutations-container" class="loading">Loading…</div>
+</div>
+
+<script>
+const _PID = "{{ project.id }}";
+
+async function openProject(id) {
+  const r = await _api('POST', '/projects/' + id + '/open');
+  if (r) { _toast('Opened: ' + id); setTimeout(() => location.reload(), 900); }
+}
+async function closeProject(id) {
+  const r = await _api('POST', '/projects/' + id + '/close');
+  if (r) { _toast('Closed: ' + id); setTimeout(() => location.reload(), 900); }
+}
+
+/* ---- Outscope ---- */
+let _outscopeEditing = false;
+
+function toggleOutscopeEdit() {
+  _outscopeEditing = !_outscopeEditing;
+  document.getElementById('outscope-view').style.display = _outscopeEditing ? 'none' : '';
+  document.getElementById('outscope-edit').style.display = _outscopeEditing ? '' : 'none';
+  if (_outscopeEditing) outscopeEditLoad();
+}
+
+async function outscopeLoad() {
+  const el = document.getElementById('outscope-container');
+  const cntEl = document.getElementById('outscope-count');
+  {% if project.status != "active" %}
+  el.innerHTML = '<p class="empty">Open the project to manage out-of-scope domains.</p>';
+  cntEl.textContent = '—';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/outscope');
+  if (!rows) return;
+  cntEl.textContent = rows.length;
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No out-of-scope domains. Domains added here are never captured.</p>';
+    return;
+  }
+  let html = '<table><tbody>';
+  rows.forEach(r => {
+    html += `<tr>
+      <td>${_esc(r.domain)}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function outscopeEditLoad() {
+  const el = document.getElementById('outscope-edit-list');
+  {% if project.status != "active" %}
+  el.innerHTML = '<p class="empty">Open the project to manage out-of-scope domains.</p>';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/outscope');
+  if (!rows) return;
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty" style="margin-bottom:0;">No domains yet.</p>';
+    return;
+  }
+  let html = '<table><tbody>';
+  rows.forEach(r => {
+    html += `<tr>
+      <td>${_esc(r.domain)}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—')}</td>
+      <td style="width:80px;">
+        <button class="btn btn-red" style="padding:1px 8px;"
+          data-domain="${_esc(r.domain)}" onclick="outscopeRemoveBtn(this)">Remove</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function outscopeRemoveBtn(btn) {
+  _api('DELETE', '/outscope/' + encodeURIComponent(btn.dataset.domain))
+    .then(r => { if (r) { _toast('Removed: ' + btn.dataset.domain); outscopeLoad(); outscopeEditLoad(); } });
+}
+
+async function outscopeAdd() {
+  const inp = document.getElementById('outscope-new-domain');
+  const domain = inp.value.trim();
+  if (!domain) { _toast('Enter a domain', 'err'); return; }
+  const r = await _api('POST', '/outscope', { domain });
+  if (r) {
+    _toast(r.inserted ? 'Added: ' + r.domain : 'Already in list: ' + r.domain);
+    inp.value = '';
+    outscopeLoad();
+    outscopeEditLoad();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', outscopeLoad);
+
+/* ---- Scope edit ---- */
+let _scopeEntries = {{ project.scope | tojson }};
+
+function toggleScopeEdit() {
+  const editing = document.getElementById('scope-edit').style.display === 'none';
+  document.getElementById('scope-view').style.display = editing ? 'none' : '';
+  document.getElementById('scope-edit').style.display = editing ? '' : 'none';
+  if (editing) _renderScopeList();
+}
+
+function _renderScopeList() {
+  if (!_scopeEntries.length) {
+    document.getElementById('scope-list').innerHTML =
+      '<p class="empty" style="margin-bottom:0;">No entries yet.</p>';
+    return;
+  }
+  let html = '<table><tbody>';
+  _scopeEntries.forEach((e, i) => {
+    html += `<tr>
+      <td>${_esc(e)}</td>
+      <td style="width:50px;">
+        <button class="btn btn-red" style="padding:1px 6px;"
+          data-idx="${i}" onclick="scopeRemoveEntry(this)">✕</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('scope-list').innerHTML = html;
+}
+
+function scopeRemoveEntry(btn) {
+  _scopeEntries.splice(parseInt(btn.dataset.idx), 1);
+  _renderScopeList();
+}
+
+function scopeAddEntry() {
+  const val = document.getElementById('scope-new-entry').value.trim();
+  if (!val) { _toast('Enter a pattern', 'err'); return; }
+  if (_scopeEntries.includes(val)) { _toast('Already in list', 'err'); return; }
+  _scopeEntries.push(val);
+  document.getElementById('scope-new-entry').value = '';
+  _renderScopeList();
+}
+
+async function scopeSave() {
+  const r = await _api('PUT', '/projects/' + _PID + '/scope', { scope: _scopeEntries });
+  if (r) { _toast('Scope saved'); setTimeout(() => location.reload(), 900); }
+}
+
+/* ---- Constraints edit ---- */
+function toggleConstraintsEdit() {
+  const editing = document.getElementById('constraints-edit').style.display === 'none';
+  document.getElementById('constraints-view').style.display = editing ? 'none' : '';
+  document.getElementById('constraints-edit').style.display = editing ? '' : 'none';
+}
+
+async function constraintsSave() {
+  const store_bodies       = document.getElementById('ce-store-bodies').value === 'true';
+  const capture_in_scope_only = document.getElementById('ce-in-scope').value === 'true';
+  const max_body_size      = parseInt(document.getElementById('ce-max-body').value, 10);
+  if (isNaN(max_body_size) || max_body_size < 1) {
+    _toast('Invalid max body size', 'err'); return;
+  }
+  const r = await _api('PUT', '/projects/' + _PID + '/constraints',
+    { store_bodies, max_body_size, capture_in_scope_only });
+  if (r) { _toast('Constraints saved'); setTimeout(() => location.reload(), 900); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const oi = document.getElementById('outscope-new-domain');
+  if (oi) oi.addEventListener('keydown', e => { if (e.key === 'Enter') outscopeAdd(); });
+  const ri = document.getElementById('role-name');
+  if (ri) ri.addEventListener('keydown', e => { if (e.key === 'Enter') createRole(); });
+  const mi = document.getElementById('mod-name');
+  if (mi) mi.addEventListener('keydown', e => { if (e.key === 'Enter') createModule(); });
+  const ac = document.getElementById('auth-new-cookie');
+  if (ac) ac.addEventListener('keydown', e => { if (e.key === 'Enter') authAddCookie(); });
+  const ah = document.getElementById('auth-new-header');
+  if (ah) ah.addEventListener('keydown', e => { if (e.key === 'Enter') authAddHeader(); });
+});
+
+/* ---- Roles ---- */
+function toggleRolesEdit() {
+  const editing = document.getElementById('roles-edit').style.display === 'none';
+  document.getElementById('roles-view').style.display = editing ? 'none' : '';
+  document.getElementById('roles-edit').style.display = editing ? '' : 'none';
+  if (editing) rolesEditLoad();
+}
+
+function _renderRolesView(rows) {
+  const el = document.getElementById('roles-view-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No roles configured.</p>';
+    return;
+  }
+  let html = '<table><tbody>';
+  rows.forEach(r => {
+    html += `<tr><td>${_esc(r.name)}${r.is_active ? '<span class="active-tag">active</span>' : ''}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function _renderRolesEdit(rows) {
+  const el = document.getElementById('roles-edit-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No roles yet.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th style="width:80px;"></th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const btn = r.is_active
+      ? '<span style="color:var(--muted);font-size:11px;">current</span>'
+      : `<button class="btn btn-green" data-name="${_esc(r.name)}" onclick="activateRoleBtn(this)">Activate</button>`;
+    html += `<tr>
+      <td>${_esc(r.name)}${r.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td>${btn}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function rolesLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('roles-view-container').innerHTML = '<p class="empty">Open the project to manage roles.</p>';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/roles');
+  if (rows) _renderRolesView(rows);
+}
+
+async function rolesEditLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('roles-edit-container').innerHTML = '<p class="empty">Open the project to manage roles.</p>';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/roles');
+  if (rows) _renderRolesEdit(rows);
+}
+
+async function createRole() {
+  const name = document.getElementById('role-name').value.trim();
+  if (!name) { _toast('Name required', 'err'); return; }
+  const r = await _api('POST', '/roles', { name });
+  if (r) {
+    _toast('Created: ' + name);
+    document.getElementById('role-name').value = '';
+    rolesLoad();
+    rolesEditLoad();
+  }
+}
+
+function activateRoleBtn(btn) { activateRole(btn.dataset.name); }
+
+async function activateRole(name) {
+  const r = await _api('POST', '/roles/' + encodeURIComponent(name) + '/activate');
+  if (r) { _toast('Active role: ' + name); rolesLoad(); rolesEditLoad(); }
+}
+
+async function resetRole() {
+  const r = await _api('DELETE', '/roles/active');
+  if (r) { _toast('Reset to global'); rolesLoad(); rolesEditLoad(); }
+}
+
+document.addEventListener('DOMContentLoaded', rolesLoad);
+
+/* ---- Modules ---- */
+function toggleModulesEdit() {
+  const editing = document.getElementById('modules-edit').style.display === 'none';
+  document.getElementById('modules-view').style.display = editing ? 'none' : '';
+  document.getElementById('modules-edit').style.display = editing ? '' : 'none';
+  if (editing) modulesEditLoad();
+}
+
+function _renderModulesView(rows) {
+  const el = document.getElementById('modules-view-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No modules configured.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>';
+  rows.forEach(m => {
+    html += `<tr>
+      <td>${_esc(m.name)}${m.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(m.description || '—')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function _renderModulesEdit(rows) {
+  const el = document.getElementById('modules-edit-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No modules yet.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th>Description</th><th style="width:80px;"></th></tr></thead><tbody>';
+  rows.forEach(m => {
+    const btn = m.is_active
+      ? '<span style="color:var(--muted);font-size:11px;">current</span>'
+      : `<button class="btn btn-green" data-name="${_esc(m.name)}" onclick="activateModuleBtn(this)">Activate</button>`;
+    html += `<tr>
+      <td>${_esc(m.name)}${m.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(m.description || '—')}</td>
+      <td>${btn}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function modulesLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('modules-view-container').innerHTML = '<p class="empty">Open the project to manage modules.</p>';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/modules');
+  if (rows) _renderModulesView(rows);
+}
+
+async function modulesEditLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('modules-edit-container').innerHTML = '<p class="empty">Open the project to manage modules.</p>';
+  return;
+  {% endif %}
+  const rows = await _api('GET', '/modules');
+  if (rows) _renderModulesEdit(rows);
+}
+
+async function createModule() {
+  const name = document.getElementById('mod-name').value.trim();
+  if (!name) { _toast('Name required', 'err'); return; }
+  const r = await _api('POST', '/modules', {
+    name,
+    description: document.getElementById('mod-desc').value.trim(),
+  });
+  if (r) {
+    _toast('Created: ' + name);
+    document.getElementById('mod-name').value = '';
+    document.getElementById('mod-desc').value = '';
+    modulesLoad();
+    modulesEditLoad();
+  }
+}
+
+function activateModuleBtn(btn) { activateModule(btn.dataset.name); }
+
+async function activateModule(name) {
+  const r = await _api('POST', '/modules/' + encodeURIComponent(name) + '/activate');
+  if (r) { _toast('Active module: ' + name); modulesLoad(); modulesEditLoad(); }
+}
+
+async function resetModule() {
+  const r = await _api('DELETE', '/modules/active');
+  if (r) { _toast('Reset to global'); modulesLoad(); modulesEditLoad(); }
+}
+
+document.addEventListener('DOMContentLoaded', modulesLoad);
+
+/* ---- Auth ---- */
+function toggleAuthEdit() {
+  const editing = document.getElementById('auth-edit').style.display === 'none';
+  document.getElementById('auth-view').style.display = editing ? 'none' : '';
+  document.getElementById('auth-edit').style.display = editing ? '' : 'none';
+}
+
+function _renderAuthView(data) {
+  const el = document.getElementById('auth-view-container');
+  const cookies = data.cookies || [];
+  const headers = data.headers || [];
+  if (!cookies.length && !headers.length) {
+    el.innerHTML = '<p class="empty">No auth config. Add cookie or header names used for authentication.</p>';
+    return;
+  }
+  let html = '<table><tbody>';
+  cookies.forEach(c => {
+    html += `<tr>
+      <td style="color:var(--muted);width:70px;font-size:11px;">cookie</td>
+      <td>${_esc(c)}</td>
+    </tr>`;
+  });
+  headers.forEach(h => {
+    html += `<tr>
+      <td style="color:var(--muted);width:70px;font-size:11px;">header</td>
+      <td>${_esc(h)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function authLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('auth-view-container').innerHTML = '<p class="empty">Open the project to manage auth config.</p>';
+  return;
+  {% endif %}
+  const data = await _api('GET', '/auth');
+  if (data) _renderAuthView(data);
+}
+
+async function authAddCookie() {
+  const inp = document.getElementById('auth-new-cookie');
+  const name = inp.value.trim();
+  if (!name) { _toast('Enter a cookie name', 'err'); return; }
+  const data = await _api('POST', '/auth', { cookies: [name], headers: [] });
+  if (data) { _toast('Added cookie: ' + name); inp.value = ''; _renderAuthView(data); authLoad(); }
+}
+
+async function authAddHeader() {
+  const inp = document.getElementById('auth-new-header');
+  const name = inp.value.trim();
+  if (!name) { _toast('Enter a header name', 'err'); return; }
+  const data = await _api('POST', '/auth', { cookies: [], headers: [name] });
+  if (data) { _toast('Added header: ' + name); inp.value = ''; _renderAuthView(data); authLoad(); }
+}
+
+async function authClear() {
+  if (!confirm('Clear all auth config entries?')) return;
+  const data = await _api('DELETE', '/auth');
+  if (data !== null) { _toast('Auth config cleared'); authLoad(); }
+}
+
+document.addEventListener('DOMContentLoaded', authLoad);
+
+/* ---- Mutations ---- */
+function _renderMutations(rows) {
+  const el = document.getElementById('mutations-container');
+  if (!rows.length) {
+    el.innerHTML = '<p class="empty">No mutations defined.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th>Header</th><th>Value</th>
+    <th style="width:80px;">State</th>
+    <th style="width:170px;"></th>
+  </tr></thead><tbody>`;
+  rows.forEach(m => {
+    const enabled = m.enabled === 1 || m.enabled === true;
+    const stateCol = enabled ? 'var(--green)' : 'var(--muted)';
+    html += `<tr>
+      <td style="color:var(--blue);">${_esc(m.key)}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(m.value)}</td>
+      <td><span style="font-size:11px;font-weight:700;color:${stateCol};">${enabled ? 'enabled' : 'disabled'}</span></td>
+      <td>
+        <button class="btn btn-yellow" onclick="toggleMutation(${JSON.stringify(m.id)})">${enabled ? 'Disable' : 'Enable'}</button>
+        <button class="btn btn-red" onclick="deleteMutation(${JSON.stringify(m.id)})">Delete</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function mutationsLoad() {
+  {% if project.status != "active" %}
+  document.getElementById('mutations-container').innerHTML =
+    '<p class="empty">Open the project to manage mutations.</p>';
+  return;
+  {% endif %}
+  const data = await _api('GET', '/mutations');
+  if (data) _renderMutations(data);
+}
+
+async function addMutation() {
+  const key   = document.getElementById('mut-key').value.trim();
+  const value = document.getElementById('mut-val').value.trim();
+  if (!key) { _toast('Header name required', 'err'); return; }
+  const r = await _api('POST', '/mutations', { type: 'header', key, value });
+  if (r) {
+    _toast('Added: ' + key);
+    document.getElementById('mut-key').value = '';
+    document.getElementById('mut-val').value = '';
+    mutationsLoad();
+  }
+}
+
+async function toggleMutation(id) {
+  const r = await _api('PATCH', '/mutations/' + id);
+  if (r) { _toast(r.enabled ? 'Enabled' : 'Disabled'); mutationsLoad(); }
+}
+
+async function deleteMutation(id) {
+  if (!confirm('Delete this mutation?')) return;
+  const r = await _api('DELETE', '/mutations/' + id);
+  if (r) { _toast('Deleted'); mutationsLoad(); }
+}
+
+document.addEventListener('DOMContentLoaded', mutationsLoad);
+</script>
+{% endblock %}
