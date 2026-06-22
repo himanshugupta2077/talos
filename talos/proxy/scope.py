@@ -9,6 +9,8 @@ Matching rules:
     - Bare domain : "example.com"       → matches ONLY "example.com" exactly.
     - Wildcard    : "*.api.example.com" → matches "sub.api.example.com"
                     but NOT "api.example.com" (a leading subdomain label is required)
+    - Full URL    : "https://example.com/path" → hostname ("example.com") is extracted
+                    before matching, so URL-style scope entries work correctly.
     - Out-of-scope hosts are silently dropped — no logging, no partial handling.
     - Empty scope list means nothing is in scope (strict opt-in).
 
@@ -17,6 +19,30 @@ Data flow:
     proxy addon calls in_scope(host, project.scope) per flow before extraction.
 Side effects: None — pure filter logic.
 """
+
+from urllib.parse import urlsplit
+
+
+def _extract_host_from_pattern(pattern: str) -> str:
+    """
+    Purpose:
+        Normalize a scope pattern to a bare hostname/wildcard string.
+        Handles three input forms:
+          - Full URL  : "https://example.com:8080/path" → "example.com"
+          - host:port : "example.com:8080"              → "example.com"
+          - bare host : "example.com" / "*.example.com" → unchanged
+    Input:
+        pattern — raw scope entry, already lowercased.
+    Output:
+        Hostname portion only (port stripped), ready for matches_domain().
+    """
+    if "://" in pattern:
+        parsed = urlsplit(pattern)
+        # urlsplit.hostname already strips the port.
+        return parsed.hostname or pattern
+    # Bare "host:port" — strip the port.  Wildcard patterns like "*.example.com"
+    # contain no ":" so this is a no-op for them.
+    return pattern.split(":")[0]
 
 
 def matches_domain(pattern: str, host: str) -> bool:
@@ -76,9 +102,10 @@ def in_scope(host: str, scope: list[str]) -> bool:
     host_clean = host.split(":")[0].lower()
 
     for pattern in scope:
-        if matches_domain(pattern.lower(), host_clean):
+        normalized = _extract_host_from_pattern(pattern.lower())
+        if matches_domain(normalized, host_clean):
             return True
-    
+
     return False
 
 
