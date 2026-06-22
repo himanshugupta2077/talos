@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -309,7 +309,34 @@ CREATE TABLE IF NOT EXISTS attack_host_exclusions (
     path       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     PRIMARY KEY (attack, host, path)
-);"""
+);
+
+-- ------------------------------------------------------------------ --
+-- role_auth: per-role login and checkpoint flow assignments           --
+-- login_flow_id      : flow to replay to obtain a new session token  --
+-- checkpoint_flow_id : flow to replay to validate an existing token  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS role_auth (
+    role_id            TEXT PRIMARY KEY REFERENCES roles(id),
+    login_flow_id      TEXT,   -- FK to flows.id (nullable until assigned)
+    checkpoint_flow_id TEXT    -- FK to flows.id (nullable until assigned)
+);
+
+-- ------------------------------------------------------------------ --
+-- role_session_tokens: generated session tokens per role             --
+-- token  : the raw extracted JWT or session string                   --
+-- active : boolean; at most one row per role should be 1 at a time  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS role_session_tokens (
+    id         TEXT    PRIMARY KEY,   -- UUID
+    role_id    TEXT    NOT NULL REFERENCES roles(id),
+    token      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,      -- UTC ISO-8601
+    active     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_role_session_tokens_role
+    ON role_session_tokens (role_id);"""
 
 
 def init_project_db(db_path: Path) -> None:
@@ -430,6 +457,7 @@ def migrate_project_db(db_path: Path) -> None:
         v15 → v16: Add attack_config table.
         v16 → v17: Add attack_host_exclusions table.
         v17 → v18: Add path column to attack_host_exclusions; update PRIMARY KEY.
+        v18 → v19: Add role_auth and role_session_tokens tables.
     """
     if not db_path.exists():
         return
@@ -655,6 +683,38 @@ def migrate_project_db(db_path: Path) -> None:
                 " RENAME TO attack_host_exclusions"
             )
             conn.execute("UPDATE schema_version SET version = 18")
+            conn.commit()
+
+        if current < 19:
+            # Add role_auth and role_session_tokens tables for the
+            # role-based session management system.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS role_auth (
+                    role_id            TEXT PRIMARY KEY REFERENCES roles(id),
+                    login_flow_id      TEXT,
+                    checkpoint_flow_id TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS role_session_tokens (
+                    id         TEXT    PRIMARY KEY,
+                    role_id    TEXT    NOT NULL REFERENCES roles(id),
+                    token      TEXT    NOT NULL,
+                    created_at TEXT    NOT NULL,
+                    active     INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_role_session_tokens_role
+                    ON role_session_tokens (role_id)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 19")
             conn.commit()
 
 

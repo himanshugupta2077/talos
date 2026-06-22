@@ -173,6 +173,41 @@ CLI (talos.__main__)
     │                            → compute auth verdict (SECURE | BYPASS | UNKNOWN)
     │                            → store in auth_test_results
     │
+    │       ├── talos auth mark-login <role_id> <flow_id>
+    │       │       → validate role exists (exit 1 if not)
+    │       │       → validate flow exists (exit 1 if not)
+    │       │       → upsert role_auth.login_flow_id
+    │       │
+    │       ├── talos auth mark-checkpoint <role_id> <flow_id>
+    │       │       → validate role exists (exit 1 if not)
+    │       │       → validate flow exists (exit 1 if not)
+    │       │       → upsert role_auth.checkpoint_flow_id
+    │       │
+    │       ├── talos auth generate <role_id>
+    │       │       → exit 1 if no login_flow_id assigned to role
+    │       │       → replay login flow (source=manual_replay, replay_reason=session_generate)
+    │       │       → exit 1 if replay failed
+    │       │       → search response body for JWT regex (eyJ…)
+    │       │       → exit 1 if no JWT found
+    │       │       → store_session_token() → deactivate old tokens, insert new active token
+    │       │       → print token_id and masked token
+    │       │
+    │       ├── talos auth inject-session-token <role_id> <session_token_id>
+    │       │       → validate role exists (exit 1 if not)
+    │       │       → exit 1 if token not found for this role
+    │       │       → deactivate all other tokens for role → activate selected token
+    │       │
+    │       └── talos auth validate <role_id>
+    │               → exit 1 if role not found
+    │               → get_active_session_token()
+    │               if no token: → _auto_generate() (same path as 'generate')
+    │               if token exists:
+    │                   → exit 1 if no checkpoint_flow_id assigned
+    │                   → replay checkpoint flow (source=auto_replay, replay_reason=session_validate)
+    │                   → exit 1 if replay failed
+    │                   if status 200:   → print "Token valid"
+    │                   if status 401/403: → _auto_generate() → print new token details
+    │
     ├── talos scheduler
     │       │
     │       ├── Hard gate: requires active project (exits 1 if none)
@@ -717,6 +752,18 @@ endpoint_annotations  safety tags applied manually per endpoint
   created_at        TEXT — UTC ISO-8601
   PRIMARY KEY (endpoint_id, tag)
 
+role_auth           per-role login and checkpoint flow assignments
+  role_id           PK FK → roles.id
+  login_flow_id     TEXT (nullable) — FK → flows.id; flow replayed to generate a token
+  checkpoint_flow_id TEXT (nullable) — FK → flows.id; flow replayed to validate a token
+
+role_session_tokens  generated session tokens per role
+  id                TEXT PK — UUID
+  role_id           TEXT NOT NULL FK → roles.id
+  token             TEXT NOT NULL — raw extracted JWT or session string
+  created_at        TEXT — UTC ISO-8601
+  active            INTEGER — boolean; at most one active token per role at any time
+
 scheduler_jobs      replay job queue
   job_id            TEXT PK
   job_type          TEXT — 'replay_flow' | 'replay_endpoint' | 'auth_test'
@@ -769,6 +816,10 @@ in-place. Called automatically by `talos.replay.db` on every replay operation.
 | v11 → v12 | Add `scheduler_jobs` table |
 | v12 → v13 | Add `scheduled_at` column to `scheduler_jobs`; add `scheduler_config` table |
 | v14 → v15 | Add `request_mutations` table |
+| v15 → v16 | Add `attack_config` table |
+| v16 → v17 | Add `attack_host_exclusions` table |
+| v17 → v18 | Rebuild `attack_host_exclusions` with `path` column; update PRIMARY KEY |
+| v18 → v19 | Add `role_auth` and `role_session_tokens` tables |
 
 ---
 

@@ -62,7 +62,12 @@ talos
    ├─ set
    ├─ show
    ├─ clear
-   └─ test
+   ├─ test
+   ├─ mark-login
+   ├─ mark-checkpoint
+   ├─ generate
+   ├─ inject-session-token
+   └─ validate
 └─ endpoint
    ├─ mark
    ├─ unmark
@@ -501,6 +506,58 @@ Exits 1 if endpoint not found (both modes). `--right-now` also exits 1 if no qua
 ```powershell
 talos auth test 9e8d7c6b-0000-0000-0000-000000000002
 talos auth test 9e8d7c6b-0000-0000-0000-000000000002 --right-now
+```
+
+## Role-Based Session Management Commands
+
+- All commands require an active project.
+- Purpose: enable automated replay, BAC, and IDOR testing without manual login by giving Talos a way to obtain and validate authenticated sessions for each role.
+- Session tokens are extracted from the login flow response body using a JWT regex (`eyJ…`). Non-JWT token formats are not supported at this time.
+- At most one token per role is active at any time. `inject-session-token` and `generate` both set the active token.
+- `validate` handles the full lifecycle: check → validate → regenerate on expiry.
+
+### `talos auth mark-login <role_id> <flow_id>`
+
+Assign a login flow to a role. Talos replays this flow when it needs to obtain a new session token for the role.
+
+```powershell
+talos auth mark-login <role_uuid> <flow_uuid>
+```
+
+### `talos auth mark-checkpoint <role_id> <flow_id>`
+
+Assign a checkpoint flow to a role (e.g. `GET /api/me`). Talos replays this flow to check whether a stored token is still valid. A `200` response means valid; `401` or `403` means expired.
+
+```powershell
+talos auth mark-checkpoint <role_uuid> <flow_uuid>
+```
+
+### `talos auth generate <role_id>`
+
+Replay the login flow for a role, extract the JWT from the response body, store it in the database, and mark it active.
+
+```powershell
+talos auth generate <role_uuid>
+```
+
+### `talos auth inject-session-token <role_id> <session_token_id>`
+
+Set a previously generated token (by its UUID) as the active token for a role. All other tokens for the role are deactivated.
+
+```powershell
+talos auth inject-session-token <role_uuid> <token_uuid>
+```
+
+### `talos auth validate <role_id>`
+
+Full validation lifecycle for a role's session:
+1. If no active token exists — generate one via the login flow.
+2. If an active token exists — replay the checkpoint flow.
+3. If checkpoint returns `200` — token is valid; print confirmation.
+4. If checkpoint returns `401` or `403` — token is expired; automatically generate a fresh one.
+
+```powershell
+talos auth validate <role_uuid>
 ```
 
 ## Endpoint Commands
