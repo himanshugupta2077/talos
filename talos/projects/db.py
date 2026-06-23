@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -241,7 +241,8 @@ CREATE TABLE IF NOT EXISTS scheduler_jobs (
     finished_at        TEXT,
     failure_reason     TEXT,
     replayed_flow_id   TEXT,
-    verdict            TEXT
+    verdict            TEXT,
+    meta               TEXT                            -- JSON; attack-type metadata
 );
 
 CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_status_priority
@@ -336,7 +337,27 @@ CREATE TABLE IF NOT EXISTS role_session_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_role_session_tokens_role
-    ON role_session_tokens (role_id);"""
+    ON role_session_tokens (role_id);
+
+-- ------------------------------------------------------------------ --
+-- bac_results: verdict for each BAC attack replay                     --
+-- attack_type: bac_session_swap | bac_method_fuzz | etc.              --
+-- variant    : specific mutation applied (e.g. 'GET_to_POST')        --
+-- verdict    : POSSIBLE_BAC | SECURE | UNKNOWN                        --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS bac_results (
+    replay_flow_id   TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id TEXT NOT NULL,
+    attack_type      TEXT NOT NULL,
+    variant          TEXT NOT NULL,
+    attacker_role_id TEXT NOT NULL,
+    target_role_id   TEXT NOT NULL,
+    module_id        TEXT NOT NULL,
+    verdict          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bac_results_verdict
+    ON bac_results (verdict, attack_type);"""
 
 
 def init_project_db(db_path: Path) -> None:
@@ -458,6 +479,7 @@ def migrate_project_db(db_path: Path) -> None:
         v16 → v17: Add attack_host_exclusions table.
         v17 → v18: Add path column to attack_host_exclusions; update PRIMARY KEY.
         v18 → v19: Add role_auth and role_session_tokens tables.
+        v19 → v20: Add meta column to scheduler_jobs; add bac_results table.
     """
     if not db_path.exists():
         return
@@ -715,6 +737,42 @@ def migrate_project_db(db_path: Path) -> None:
                 """
             )
             conn.execute("UPDATE schema_version SET version = 19")
+            conn.commit()
+
+        if current < 20:
+            # Add meta JSON column to scheduler_jobs for BAC attack metadata.
+            existing_sj = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(scheduler_jobs)"
+                ).fetchall()
+            }
+            if "meta" not in existing_sj:
+                conn.execute(
+                    "ALTER TABLE scheduler_jobs ADD COLUMN meta TEXT"
+                )
+            # Add bac_results table for BAC attack verdicts.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bac_results (
+                    replay_flow_id   TEXT PRIMARY KEY REFERENCES flows(id),
+                    original_flow_id TEXT NOT NULL,
+                    attack_type      TEXT NOT NULL,
+                    variant          TEXT NOT NULL,
+                    attacker_role_id TEXT NOT NULL,
+                    target_role_id   TEXT NOT NULL,
+                    module_id        TEXT NOT NULL,
+                    verdict          TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bac_results_verdict
+                    ON bac_results (verdict, attack_type)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 20")
             conn.commit()
 
 

@@ -83,6 +83,20 @@ talos
    ├─ add
    ├─ list
    └─ delete
+└─ attack
+   ├─ unauth
+   │  └─ exclude
+   │     ├─ add
+   │     ├─ remove
+   │     └─ list
+   └─ bac
+      ├─ session-swap  [--role NAME] [--auto-generate]
+      ├─ method-fuzz   [--role NAME] [--auto-generate]
+      ├─ content-type  [--role NAME] [--auto-generate]
+      ├─ url-fuzz      [--role NAME] [--auto-generate]
+      ├─ header-inject [--role NAME] [--auto-generate]
+      ├─ host-fuzz     [--role NAME] [--auto-generate]
+      └─ role-inject   [--role NAME] [--auto-generate]
 ```
 
 ## Top-Level Commands
@@ -703,18 +717,39 @@ talos access signals
 
 ---
 
-## Attack Modules (UI only — no CLI commands)
+## Attack Modules
 
-Attack modules are managed exclusively through the Talos UI at
-`/project/<id>/attacks`. There are no CLI commands for them.
+### Unauthenticated Execution (`talos attack unauth`)
 
-### Unauthenticated Execution
+Strips auth credentials from captured flows, replays them, and diffs the response
+to detect endpoints that serve data without authentication (forced browsing).
 
-Strips auth credentials from a captured 200 OK flow for each endpoint, replays
-it, and diffs the response to determine whether the endpoint enforces
-authentication.
+#### `talos attack unauth exclude add <target>`
 
-**Verdicts**
+Exclude a host or host+path prefix from unauthenticated testing.
+
+```powershell
+talos attack unauth exclude add api.internal.example.com
+talos attack unauth exclude add test.com/api/v1
+```
+
+#### `talos attack unauth exclude remove <target>`
+
+Remove an exclusion.
+
+```powershell
+talos attack unauth exclude remove test.com/api/v1
+```
+
+#### `talos attack unauth exclude list`
+
+List all exclusions.
+
+```powershell
+talos attack unauth exclude list
+```
+
+**Verdicts** stored in `auth_test_results`:
 
 | Verdict | Meaning |
 |---------|---------|
@@ -722,13 +757,105 @@ authentication.
 | `BYPASS` | Replay returned 200 — auth is NOT enforced (finding) |
 | `UNKNOWN` | Replay returned 5xx, error, or original was not 200 OK |
 
-**Auto-Run**
+---
 
-When enabled via the Attacks page toggle, the scheduler automatically
-enqueues `AUTH_TEST` jobs for untested endpoints every ~30 seconds (30 idle
-polling ticks). The setting is stored in `attack_config` key `unauth_auto_run`
-in the project database. No proxy restart required.
+### BAC Attack Modules (`talos attack bac`)
 
-**Coverage is derived**, not stored — status is calculated on-the-fly from the
-`auth_test_results` and `scheduler_jobs` tables. Rerunning a test overwrites
-the previous result.
+BAC (Broken Access Control) attacks scan the access matrix for role pairs where
+one role should NOT have access to a module but another role does.  For each
+candidate, Talos generates scheduler jobs that replay target-role flows with
+the attacker role's session token and/or an additional HTTP mutation.
+
+**Auth prerequisites per attacker role (checked before job generation):**
+1. `login_flow_id` configured — `talos auth mark-login <role_id> <flow_id>`
+2. `checkpoint_flow_id` configured — `talos auth mark-checkpoint <role_id> <flow_id>`
+3. Auth config non-empty — `talos auth set --cookie <name>` or `--header <name>`
+4. Active session token — `talos auth generate <role_id>` or `--auto-generate`
+
+**Candidate logic:**
+- Target role: `server_expected = ALLOW` for a module
+- Attacker role: `server_expected = DENY` or `UNKNOWN` for the same module
+- At least one 200 OK `proxy_capture` flow exists for (target_role, module)
+
+**Verdicts** stored in `bac_results`:
+
+| Verdict | Meaning |
+|---------|---------|
+| `POSSIBLE_BAC` | Attacker received 200 — access was NOT blocked (finding) |
+| `SECURE` | Attacker received 401, 403, or a redirect |
+| `UNKNOWN` | Network error, 5xx, or original baseline was not 200 |
+
+#### `talos attack bac session-swap [--role NAME] [--auto-generate]`
+
+Direct session swap. Replays all target-role flows for a module using the
+attacker role's session token. This is the core BAC test.
+
+```powershell
+talos attack bac session-swap
+talos attack bac session-swap --role customer
+talos attack bac session-swap --role customer --auto-generate
+```
+
+#### `talos attack bac method-fuzz [--role NAME] [--auto-generate]`
+
+HTTP Method Manipulation. Applies all method variants on top of the session swap:
+`GET→POST`, `GET→PUT`, `GET→HEAD`, `POST→GET`, `POST→PUT`, `POST→PATCH`,
+`PUT→PATCH`, `X-HTTP-Method-Override: PUT/DELETE`.
+
+```powershell
+talos attack bac method-fuzz
+talos attack bac method-fuzz --role customer --auto-generate
+```
+
+#### `talos attack bac content-type [--role NAME] [--auto-generate]`
+
+Content-Type Confusion. Changes the Content-Type header to confuse server-side
+parsers: JSON→Form, JSON→Multipart, Form→JSON, XML→JSON, invalid type.
+
+```powershell
+talos attack bac content-type
+talos attack bac content-type --role customer
+```
+
+#### `talos attack bac url-fuzz [--role NAME] [--auto-generate]`
+
+URL Manipulation. Applies path transformations to bypass path-based controls:
+trailing slash, double slash, dot segment, back-traversal, percent-encoded
+first char, mixed case.
+
+```powershell
+talos attack bac url-fuzz
+talos attack bac url-fuzz --role customer
+```
+
+#### `talos attack bac header-inject [--role NAME] [--auto-generate]`
+
+Header Manipulation. Injects proxy/routing headers to exploit reverse-proxy
+misconfiguration: `X-Original-URL`, `X-Rewrite-URL`, `X-Forwarded-For`,
+`X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`.
+
+```powershell
+talos attack bac header-inject
+talos attack bac header-inject --role customer
+```
+
+#### `talos attack bac host-fuzz [--role NAME] [--auto-generate]`
+
+Host Header Changes. Replaces the `Host` header with `example.com`, `localhost`,
+or `127.0.0.1` to test Host-based routing bypass.
+
+```powershell
+talos attack bac host-fuzz
+talos attack bac host-fuzz --role customer
+```
+
+#### `talos attack bac role-inject [--role NAME] [--auto-generate]`
+
+Role Parameter Injection. Injects role-escalation parameters via query string
+and headers: `isAdmin=true`, `role=admin`, `admin=1`, `access_level=999`,
+`permissions=["admin"]`, duplicate `role` param, `X-Role: admin`, `X-Admin: true`.
+
+```powershell
+talos attack bac role-inject
+talos attack bac role-inject --role customer
+```

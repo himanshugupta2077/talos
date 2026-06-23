@@ -68,6 +68,9 @@ from talos.replay.auth_strip import AuthTestOutcome, run_auth_bypass_test
 from talos.replay.engine import ReplayOutcome, replay_endpoint, replay_flow
 from talos.scheduler.job import (
     AUTH_TEST,
+    BAC_SESSION_SWAP, BAC_METHOD_FUZZ, BAC_CONTENT_TYPE,
+    BAC_URL_FUZZ, BAC_HEADER_INJECT, BAC_HOST_FUZZ, BAC_ROLE_INJECT,
+    BAC_JOB_TYPES,
     PRIORITY_AUTO,
     REPLAY_ENDPOINT,
     REPLAY_FLOW,
@@ -343,6 +346,9 @@ class ReplayScheduler:
                 )
                 self._settle_auth_outcome(job, auth_outcome)
 
+            elif job.job_type in BAC_JOB_TYPES:
+                self._execute_bac_job(job)
+
             else:
                 _log.error(
                     "Unknown job_type '%s' for job %s — skipping.",
@@ -432,5 +438,103 @@ class ReplayScheduler:
             job.job_id[:8],
             outcome.auth_verdict,
             outcome.diff_verdict,
+        )
+
+    # ------------------------------------------------------------------ #
+    # BAC job execution                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _execute_bac_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute a BAC attack job: deserialise meta, call bac.engine, settle state.
+        Input:   job — ReplayJob with a BAC job type and meta JSON string.
+        Side effects:
+            Sends outbound HTTP; writes replay flow + diff + bac_result;
+            marks job done/failed/skipped.
+        """
+        import json as _json
+        from talos.projects.bac.engine import BacOutcome, execute_bac_job
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "bac_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "bac_meta_parse_error")
+                return
+
+        try:
+            outcome: BacOutcome = asyncio.run(
+                execute_bac_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    attack_type=job.job_type,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in BAC job %s: %s", job.job_id, exc
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_bac_outcome(job, outcome)
+
+    def _settle_bac_outcome(self, job: ReplayJob, outcome: "BacOutcome") -> None:
+        """
+        Purpose:
+            Map a BacOutcome to the correct terminal job state and persist it.
+        """
+        from talos.projects.bac.engine import BacOutcome  # local import avoids circular
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "variant_not_applicable",
+            "bac_job_missing_flow_id",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.bac_verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  bac=%s  diff=%s  variant=%s",
+            job.job_id[:8],
+            outcome.bac_verdict,
+            outcome.diff_verdict,
+            outcome.variant,
         )
 

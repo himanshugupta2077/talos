@@ -4,22 +4,33 @@ Module: talos.projects.attack_cli
 Purpose:
     Command-line interface for managing per-attack configuration.
     Entry point for: talos attack unauth exclude add|remove|list
+                     talos attack bac <module>
 
     Exclusions work at two granularities:
       host-level  : talos attack unauth exclude add api.internal.example.com
       host+path   : talos attack unauth exclude add test.com/api/v1
                     (excludes all endpoints whose path starts with /api/v1 on test.com)
 
+    BAC modules:
+      session-swap  — Direct session swap (replace target-role token with attacker-role token).
+      method-fuzz   — HTTP Method Manipulation (verb changes, X-HTTP-Method-Override).
+      content-type  — Content-Type Confusion (change request Content-Type).
+      url-fuzz      — URL Manipulation (trailing slash, dot segments, encoding, case).
+      header-inject — Header Manipulation (X-Original-URL, X-Forwarded-For, etc.).
+      host-fuzz     — Host Header Changes (example.com, localhost, 127.0.0.1).
+      role-inject   — Role Parameter Injection (isAdmin=true, role=admin, etc.).
+
     All subcommands require an active project.
 
 Dependencies: argparse, sys, talos.projects.attack_config, talos.scheduler.db,
-              talos.projects.manager
+              talos.projects.manager, talos.projects.bac.cli
 Data flow:
     CLI args → active project lookup → attack_config / scheduler CRUD → stdout
 Side effects:
     - add: inserts into attack_host_exclusions; cancels pending/running auth_test jobs.
     - remove: deletes from attack_host_exclusions.
     - list: read-only.
+    - bac subcommands: read access matrix, validate auth prereqs, insert scheduler_jobs.
 """
 
 import argparse
@@ -32,8 +43,6 @@ from talos.projects.attack_config import (
 )
 from talos.projects.manager import ProjectManager, NoActiveProject
 from talos.scheduler import db as sched_db
-
-
 # ------------------------------------------------------------------ #
 # Internal helpers                                                     #
 # ------------------------------------------------------------------ #
@@ -200,6 +209,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     excl_sub.add_parser("list", help="List all exclusions.")
 
+    # ---- bac ---- #
+    # Import here to avoid circular imports at module load time.
+    from talos.projects.bac.cli import build_bac_parser
+    build_bac_parser(sub)
+
     return parser
 
 
@@ -228,3 +242,7 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
                 cmd_unauth_exclude_remove(manager, args)
             elif args.excl_cmd == "list":
                 cmd_unauth_exclude_list(manager, args)
+
+    elif args.attack_type == "bac":
+        from talos.projects.bac.cli import run_bac_cli
+        run_bac_cli(manager, args)

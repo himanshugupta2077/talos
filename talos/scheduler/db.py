@@ -113,6 +113,7 @@ def _row_to_job(row: sqlite3.Row, db_path: Path, project_id: str) -> ReplayJob:
         replayed_flow_id=row["replayed_flow_id"],
         verdict=row["verdict"],
         scheduled_at=row["scheduled_at"],
+        meta=row["meta"] if "meta" in row.keys() else None,
     )
 
 
@@ -128,6 +129,7 @@ def enqueue_job(
     endpoint_id: Optional[str] = None,
     flow_id: Optional[str] = None,
     priority: int = PRIORITY_AUTO,
+    meta: Optional[str] = None,
 ) -> ReplayJob:
     """
     Purpose:
@@ -135,11 +137,13 @@ def enqueue_job(
     Input:
         db_path     — Path to the project's talos.db.
         job_id      — UUID for the new job (caller generates).
-        job_type    — REPLAY_FLOW | REPLAY_ENDPOINT | AUTH_TEST.
+        job_type    — REPLAY_FLOW | REPLAY_ENDPOINT | AUTH_TEST | BAC_*.
         project_id  — Project identifier.
         endpoint_id — Target endpoint UUID; None for replay_flow jobs.
         flow_id     — Target flow UUID; None for endpoint/auth jobs.
         priority    — Execution priority; higher runs first.
+        meta        — Optional JSON string carrying attack-type metadata.
+                      Required for BAC job types; None for all others.
     Output:
         The constructed ReplayJob reflecting what was written to the DB.
     Side effects:
@@ -154,11 +158,11 @@ def enqueue_job(
             """
             INSERT INTO scheduler_jobs
                 (job_id, endpoint_id, flow_id, job_type, priority,
-                 status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 status, created_at, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (job_id, endpoint_id, flow_id, job_type, priority,
-             STATUS_PENDING, created_at),
+             STATUS_PENDING, created_at, meta),
         )
         conn.commit()
 
@@ -172,6 +176,7 @@ def enqueue_job(
         db_path=db_path,
         project_id=project_id,
         status=STATUS_PENDING,
+        meta=meta,
     )
 
 
@@ -227,6 +232,48 @@ def has_pending_duplicate(
     return row is not None
 
 
+def has_pending_bac_duplicate(
+    db_path: Path,
+    job_type: str,
+    flow_id: str,
+    attacker_role_id: str,
+    variant: str,
+) -> bool:
+    """
+    Purpose:
+        Check whether a pending or running BAC job with the same identity already
+        exists.  BAC jobs are identified by (job_type, flow_id, attacker_role_id,
+        variant); using meta JSON fields prevents duplicate attack runs while still
+        allowing retries after failure/skipped/done.
+    Input:
+        db_path          — Path to the project's talos.db.
+        job_type         — BAC job type constant (e.g. BAC_SESSION_SWAP).
+        flow_id          — Target flow UUID.
+        attacker_role_id — UUID of the attacker role stored in meta JSON.
+        variant          — Variant name stored in meta JSON.
+    Output:
+        True if a matching pending/running job exists; False otherwise.
+    Side effects:
+        None (read-only after migration).
+    """
+    migrate_project_db(db_path)
+
+    with _connect_rw(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM scheduler_jobs
+            WHERE job_type = ?
+              AND flow_id = ?
+              AND status IN ('pending', 'running')
+              AND json_extract(meta, '$.attacker_role_id') = ?
+              AND json_extract(meta, '$.variant') = ?
+            LIMIT 1
+            """,
+            (job_type, flow_id, attacker_role_id, variant),
+        ).fetchone()
+    return row is not None
+
+
 # ------------------------------------------------------------------ #
 # Queue size query                                                     #
 # ------------------------------------------------------------------ #
@@ -277,7 +324,7 @@ def get_next_pending(db_path: Path, project_id: str) -> Optional[ReplayJob]:
             """
             SELECT job_id, endpoint_id, flow_id, job_type, priority,
                    status, created_at, scheduled_at, started_at, finished_at,
-                   failure_reason, replayed_flow_id, verdict
+                   failure_reason, replayed_flow_id, verdict, meta
             FROM scheduler_jobs
             WHERE status = ?
             ORDER BY priority DESC, created_at ASC

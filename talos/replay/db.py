@@ -328,3 +328,48 @@ def insert_auth_test_result(db_path: Path, result_row: dict) -> None:
             ),
         )
         conn.commit()
+
+
+def insert_bac_result(db_path: Path, result_row: dict) -> None:
+    """
+    Purpose:
+        Persist a BAC attack verdict to the bac_results table.
+        Called immediately after insert_replay_diff in bac.engine._send_and_store.
+    Input:
+        db_path    — absolute Path to the project's talos.db.
+        result_row — dict with keys:
+                       replay_flow_id   (str) — PK; UUID of the BAC replay flow.
+                       original_flow_id (str) — UUID of the target-role source flow.
+                       attack_type      (str) — BAC job type constant.
+                       variant          (str) — mutation variant name.
+                       attacker_role_id (str) — UUID of the role performing the attack.
+                       target_role_id   (str) — UUID of the role that legitimately has access.
+                       module_id        (str) — UUID of the module under test.
+                       verdict          (str) — POSSIBLE_BAC | SECURE | UNKNOWN.
+    Output: None
+    Side effects:
+        Inserts one row into bac_results.
+        Raises sqlite3.Error on write failure — caller handles.
+    """
+    with _connect_rw(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO bac_results (
+                replay_flow_id, original_flow_id,
+                attack_type, variant,
+                attacker_role_id, target_role_id, module_id,
+                verdict
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_row["replay_flow_id"],
+                result_row["original_flow_id"],
+                result_row["attack_type"],
+                result_row["variant"],
+                result_row["attacker_role_id"],
+                result_row["target_role_id"],
+                result_row["module_id"],
+                result_row["verdict"],
+            ),
+        )
+        conn.commit()

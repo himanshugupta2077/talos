@@ -29,6 +29,12 @@ talos/projects/mutation_cli.py
 talos/projects/outscope.py
 talos/projects/outscope_cli.py
 talos/projects/parameters.py
+talos/projects/bac/__init__.py
+talos/projects/bac/auth_prereq.py
+talos/projects/bac/candidates.py
+talos/projects/bac/cli.py
+talos/projects/bac/engine.py
+talos/projects/bac/variants.py
 talos/proxy/__init__.py
 talos/proxy/addon.py
 talos/proxy/cli.py

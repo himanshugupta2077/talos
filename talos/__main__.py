@@ -115,7 +115,15 @@ def _print_usage() -> None:
         "  endpoint   Manage endpoint annotations (mark, unmark, show)\n"
         "  scheduler  Control the replay scheduler (status, config, enqueue, clear)\n"
         "  mutation   Manage request mutations (add, list, delete)\n"
-        "  attack     Manage attack module config (unauth exclude add|remove|list)\n"
+        "  attack     Attack modules:\n"
+        "               unauth          — Unauthenticated / forced-browsing tests\n"
+        "               bac session-swap  — Direct session swap (BAC)\n"
+        "               bac method-fuzz   — HTTP Method Manipulation (BAC)\n"
+        "               bac content-type  — Content-Type Confusion (BAC)\n"
+        "               bac url-fuzz      — URL Manipulation (BAC)\n"
+        "               bac header-inject — Header Manipulation (BAC)\n"
+        "               bac host-fuzz     — Host Header Changes (BAC)\n"
+        "               bac role-inject   — Role Parameter Injection (BAC)\n"
     )
 
 

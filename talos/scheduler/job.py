@@ -32,7 +32,42 @@ REPLAY_ENDPOINT = "replay_endpoint"
 AUTH_TEST = "auth_test"
 """Auth-bypass test (Type 2 replay, auth stripped) for an endpoint."""
 
-JOB_TYPES: tuple[str, ...] = (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST)
+# ------------------------------------------------------------------ #
+# BAC job type constants                                               #
+# ------------------------------------------------------------------ #
+
+BAC_SESSION_SWAP = "bac_session_swap"
+"""Direct session swap: replay target-role flow with attacker-role token."""
+
+BAC_METHOD_FUZZ = "bac_method_fuzz"
+"""HTTP Method Manipulation: change verb or inject X-HTTP-Method-Override."""
+
+BAC_CONTENT_TYPE = "bac_content_type"
+"""Content-Type Confusion: change request Content-Type to bypass parsers."""
+
+BAC_URL_FUZZ = "bac_url_fuzz"
+"""URL Manipulation: trailing slash, double slash, dot segments, encoding, case."""
+
+BAC_HEADER_INJECT = "bac_header_inject"
+"""Header Manipulation: inject X-Original-URL, X-Forwarded-For, etc."""
+
+BAC_HOST_FUZZ = "bac_host_fuzz"
+"""Host Header Changes: replace Host with example.com, localhost, or 127.0.0.1."""
+
+BAC_ROLE_INJECT = "bac_role_inject"
+"""Role Parameter Injection: inject isAdmin=true, role=admin, etc."""
+
+BAC_JOB_TYPES: tuple[str, ...] = (
+    BAC_SESSION_SWAP,
+    BAC_METHOD_FUZZ,
+    BAC_CONTENT_TYPE,
+    BAC_URL_FUZZ,
+    BAC_HEADER_INJECT,
+    BAC_HOST_FUZZ,
+    BAC_ROLE_INJECT,
+)
+
+JOB_TYPES: tuple[str, ...] = (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST) + BAC_JOB_TYPES
 
 
 # ------------------------------------------------------------------ #
@@ -112,3 +147,6 @@ class ReplayJob:
     replayed_flow_id: Optional[str] = None
     verdict: Optional[str] = None
     scheduled_at: Optional[str] = None
+    meta: Optional[str] = None
+    """JSON string carrying attack-type metadata (e.g. attacker_role_id, variant).
+    Present on BAC job types; None for all other types."""
