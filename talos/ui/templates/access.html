@@ -251,13 +251,18 @@ function _renderSignals(data) {
       <th>Role</th><th>Module</th><th>Method</th><th>Host</th><th>Path</th><th>Flows</th>
     </tr></thead><tbody>`;
     data.server_deny.forEach(r => {
+      const flowLinks = (r.flow_ids || []).map((fid, i) =>
+        `<a href="/project/${_PID}/flows/${_esc(fid)}" target="_blank"
+            style="color:var(--blue);text-decoration:none;"
+            title="${_esc(fid)}">${i + 1}</a>`
+      ).join('<span style="color:var(--muted);"> </span>');
       html += `<tr>
         <td style="color:var(--yellow);">${_esc(r.role_name)}</td>
         <td>${_esc(r.module_name)}</td>
         <td><span class="method method-${r.method}">${_esc(r.method)}</span></td>
         <td style="color:var(--muted);">${_esc(r.host)}</td>
         <td>${_esc(r.normalized_path)}</td>
-        <td style="color:var(--red);">${r.flow_count}</td>
+        <td style="color:var(--red);">${flowLinks || r.flow_count}</td>
       </tr>`;
     });
     html += '</tbody></table>';

@@ -38,6 +38,7 @@ Side effects:
 """
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +57,9 @@ import logging
 _log = logging.getLogger(__name__)
 
 _REPLAY_TIMEOUT = httpx.Timeout(30.0)
+
+# Compact JWT pattern — used to detect JWT values in auth cookies.
+_JWT_RE = re.compile(r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+")
 
 
 # ------------------------------------------------------------------ #
@@ -184,6 +188,7 @@ async def _execute_stripped_replay(
         Sends outbound HTTP request.
         Writes replay flow, diff row, and auth_test_result row.
     """
+
     original_flow_id: str = flow["id"]
     stripped_headers, stripped_cookies_raw = _strip_auth(flow, auth_config)
 
@@ -310,6 +315,8 @@ async def _execute_stripped_replay(
 # Auth stripping                                                       #
 # ------------------------------------------------------------------ #
 
+
+
 def _strip_auth(flow: dict, auth_config: dict) -> tuple[dict, dict]:
     """
     Purpose:
@@ -327,6 +334,7 @@ def _strip_auth(flow: dict, auth_config: dict) -> tuple[dict, dict]:
     """
     raw_headers = flow.get("request_headers", "{}")
     headers: dict = json.loads(raw_headers) if isinstance(raw_headers, str) else dict(raw_headers)
+    
 
     raw_cookies = flow.get("request_cookies", "{}")
     cookies: dict = json.loads(raw_cookies) if isinstance(raw_cookies, str) else dict(raw_cookies)
@@ -340,25 +348,51 @@ def _strip_auth(flow: dict, auth_config: dict) -> tuple[dict, dict]:
         if k.lower() not in auth_header_names_lower
     }
 
+
     # Strip auth cookies from the parsed cookies dict.
     stripped_cookies = {
         k: v for k, v in cookies.items()
         if k not in auth_cookie_names
     }
 
-    # Rebuild the Cookie header in stripped_headers from the remaining cookies.
+    # Smart JWT cross-reference: when an auth cookie holds a JWT value that also
+    # appears as a Bearer token in any Authorization header, strip that header too.
+    # This handles apps where the same JWT is sent as both a cookie and a header.
+    if auth_cookie_names:
+        jwt_values_from_auth_cookies = {
+            v for k, v in cookies.items()
+            if k in auth_cookie_names and v and _JWT_RE.match(v)
+        }
+        if jwt_values_from_auth_cookies:
+            new_stripped: dict = {}
+            for k, v in stripped_headers.items():
+                if (
+                    k.lower() == "authorization"
+                    and isinstance(v, str)
+                    and v.startswith("Bearer ")
+                    and v[7:].strip() in jwt_values_from_auth_cookies
+                ):
+                    # Authorization header carries the same JWT as an auth cookie — strip it.
+                    continue
+                new_stripped[k] = v
+            stripped_headers = new_stripped
+
+    # Rebuild the Cookie request header from the remaining cookies.
     # This keeps non-auth cookies intact and ensures Cookie header reflects
     # the stripped_cookies dict.
+# Remove any existing Cookie header first.
+    for header_name in list(stripped_headers.keys()):
+        if header_name.lower() == "cookie":
+            stripped_headers.pop(header_name)
+
+    # Rebuild Cookie header from remaining non-auth cookies.
     if auth_cookie_names:
         remaining_cookie_str = "; ".join(
             f"{k}={v}" for k, v in stripped_cookies.items()
         )
+
         if remaining_cookie_str:
-            stripped_headers["cookie"] = remaining_cookie_str
-        else:
-            # All cookies were auth — remove Cookie header entirely.
-            stripped_headers.pop("cookie", None)
-            stripped_headers.pop("Cookie", None)
+            stripped_headers["Cookie"] = remaining_cookie_str
 
     return stripped_headers, stripped_cookies
 

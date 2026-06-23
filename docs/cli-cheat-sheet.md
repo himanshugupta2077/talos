@@ -487,6 +487,8 @@ talos replay endpoint 9e8d7c6b-0000-0000-0000-000000000002 --right-now
 - Config is global per project, not tied to specific endpoints.
 - `set` is additive — re-running with the same names is a no-op (INSERT OR IGNORE).
 - `auth test` enqueues an auth-bypass job by default; use `--right-now` to execute immediately. Stores the result in `auth_test_results` with verdict SECURE, BYPASS, or UNKNOWN.
+- **Smart JWT cross-reference (unauth strip):** When a configured auth cookie contains a JWT value and the same JWT also appears as the Bearer token in an `Authorization` header, the Authorization header is automatically stripped during unauthenticated execution tests. Configure both `--cookie token` and `--header Authorization` to be explicit, or rely on this detection when the cookie JWT and the header Bearer token are the same value.
+- **Dual auth config for BAC session-swap:** When multiple auth credentials are configured (e.g. `--cookie token` and `--header Authorization`), BAC session-swap injects the attacker's token into **all** configured locations, ensuring the server sees the attacker's identity regardless of which credential it prioritises.
 
 ### `talos auth set [--cookie NAME ...] [--header NAME ...]`
 
@@ -494,6 +496,8 @@ Add cookie and/or header names to the auth config. At least one flag required.
 
 ```powershell
 talos auth set --cookie sessionid --cookie auth_token --header Authorization --header X-API-Key
+# Example for apps that use both a cookie and a header carrying the same JWT:
+talos auth set --cookie token --header Authorization
 ```
 
 ### `talos auth show`

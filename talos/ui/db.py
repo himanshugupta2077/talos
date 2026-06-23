@@ -740,7 +740,8 @@ def detect_server_deny_endpoints(db_path: Path) -> list[dict]:
                 m.name            AS module_name,
                 am.client_allowed,
                 am.server_expected,
-                COUNT(f.id)       AS flow_count
+                COUNT(f.id)       AS flow_count,
+                GROUP_CONCAT(f.id) AS flow_ids_raw
             FROM access_map am
             JOIN roles     r ON r.id = am.role_id
             JOIN modules   m ON m.id = am.module_id
@@ -752,7 +753,20 @@ def detect_server_deny_endpoints(db_path: Path) -> list[dict]:
             ORDER BY r.name, m.name, e.normalized_path
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            d = dict(row)
+            # Convert comma-separated UUIDs to a deduplicated list (max 10).
+            raw = d.pop("flow_ids_raw", "") or ""
+            seen: dict = {}
+            for fid in raw.split(","):
+                if fid and fid not in seen:
+                    seen[fid] = True
+                    if len(seen) >= 10:
+                        break
+            d["flow_ids"] = list(seen.keys())
+            result.append(d)
+        return result
 
 
 # ------------------------------------------------------------------ #
@@ -1080,6 +1094,7 @@ _UNAUTH_STATUS_CTE = """
             e.normalized_path,
             atr.verdict           AS unauth_verdict,
             atr.last_run,
+            atr.replay_flow_id    AS unauth_replay_flow_id,
             sj_run.job_id         AS running_job_id,
             sj_pend.job_id        AS queued_job_id,
             CASE
@@ -1090,7 +1105,9 @@ _UNAUTH_STATUS_CTE = """
             END AS unauth_status
         FROM endpoints e
         LEFT JOIN (
-            SELECT f2.endpoint_id, atr2.verdict, MAX(f2.captured_at) AS last_run
+            -- SQLite picks non-aggregated columns from the row with MAX(captured_at).
+            SELECT f2.endpoint_id, atr2.verdict, MAX(f2.captured_at) AS last_run,
+                   atr2.replay_flow_id
             FROM auth_test_results atr2
             JOIN flows f2 ON f2.id = atr2.replay_flow_id
             WHERE f2.endpoint_id IS NOT NULL
@@ -1203,7 +1220,8 @@ def list_endpoint_unauth_status(
                 normalized_path,
                 unauth_status,
                 unauth_verdict,
-                last_run
+                last_run,
+                unauth_replay_flow_id
             FROM unauth
             ORDER BY
                 CASE unauth_verdict WHEN 'BYPASS' THEN 0 ELSE 1 END,

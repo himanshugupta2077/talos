@@ -519,6 +519,54 @@ def list_pending_jobs(db_path: Path, project_id: str) -> list:
     return [_row_to_job(row, db_path, project_id) for row in rows]
 
 
+def list_jobs_by_status(
+    db_path: Path,
+    project_id: str,
+    status: str,
+    limit: int = 200,
+    offset: int = 0,
+) -> list:
+    """
+    Purpose:
+        Return jobs filtered by a specific status, ordered by finished_at DESC
+        for terminal statuses (done/failed/skipped) or created_at DESC otherwise.
+        Used by the UI scheduler page to show per-status job details.
+    Input:
+        db_path    — Path to the project's talos.db.
+        project_id — Project identifier for ReplayJob construction.
+        status     — One of: pending | running | done | failed | skipped.
+        limit      — Maximum rows to return (capped to 500 in caller).
+        offset     — Row offset for pagination.
+    Output:
+        List of ReplayJob instances matching the status.
+    Side effects:
+        None (read-only).
+    """
+    migrate_project_db(db_path)
+
+    order_col = (
+        "finished_at DESC"
+        if status in (STATUS_DONE, STATUS_FAILED, STATUS_SKIPPED)
+        else "created_at DESC"
+    )
+
+    with _connect_rw(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT job_id, endpoint_id, flow_id, job_type, priority,
+                   status, created_at, scheduled_at, started_at, finished_at,
+                   failure_reason, replayed_flow_id, verdict, meta
+            FROM scheduler_jobs
+            WHERE status = ?
+            ORDER BY {order_col}
+            LIMIT ? OFFSET ?
+            """,
+            (status, limit, offset),
+        ).fetchall()
+
+    return [_row_to_job(row, db_path, project_id) for row in rows]
+
+
 # ------------------------------------------------------------------ #
 # Queue management                                                     #
 # ------------------------------------------------------------------ #

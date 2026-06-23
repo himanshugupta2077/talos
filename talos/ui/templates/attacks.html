@@ -1,7 +1,20 @@
 {% extends "base.html" %}
 {% from "_nav.html" import project_nav %}
 
-{% block extra_head %}<style>main { max-width: 100%; }</style>{% endblock %}
+{% block extra_head %}<style>
+main { max-width: 100%; }
+.cov-box {
+  display: inline-flex; flex-direction: column; align-items: center;
+  min-width: 72px; background: var(--bg-row); border: 1px solid var(--border);
+  padding: 6px 14px; gap: 2px; cursor: pointer; user-select: none;
+  transition: border-color 0.15s;
+}
+.cov-box:hover { border-color: var(--green-dim); }
+.cov-box.cov-active { border-color: var(--green); }
+.cov-box .cov-val { font-size: 18px; font-weight: 700; }
+.cov-box .cov-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+#coverage-detail { display: none; margin-top: 10px; }
+</style>{% endblock %}
 
 {% block subnav %}{{ project_nav(project.id, 'attacks') }}{% endblock %}
 
@@ -75,8 +88,16 @@
   <!-- Coverage summary -->
   <div class="panel" style="margin-bottom:20px;">
     <div class="panel-title">Coverage</div>
-    <div id="coverage-bar" style="display:flex;gap:20px;flex-wrap:wrap;padding:6px 0 2px;">
+    <div id="coverage-bar" style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 0 2px;">
       <span class="loading">Loading…</span>
+    </div>
+    <!-- Detail panel shown when a coverage box is clicked -->
+    <div id="coverage-detail">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px;">
+        <span id="coverage-detail-title" style="font-size:11px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.08em;"></span>
+        <button class="btn btn-ghost" style="padding:1px 7px;font-size:11px;" onclick="closeCoverageDetail()">✕</button>
+      </div>
+      <div id="coverage-detail-body"></div>
     </div>
   </div>
 
@@ -145,28 +166,107 @@ function _statusColor(status) {
   return 'var(--muted)';
 }
 
-function _coverageStat(label, value, color) {
-  return `<span style="display:inline-flex;flex-direction:column;align-items:center;
-                        min-width:72px;background:var(--bg-row);border:1px solid var(--border);
-                        padding:6px 14px;gap:2px;">
-    <span style="font-size:18px;font-weight:700;color:${color};">${value}</span>
-    <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">${label}</span>
-  </span>`;
-}
+// ------------------------------------------------------------------ //
+// Coverage box rendering — clickable stats                            //
+// ------------------------------------------------------------------ //
 
-// ------------------------------------------------------------------ //
-// Render                                                               //
-// ------------------------------------------------------------------ //
+// Mapping from coverage key to endpoint filter predicate.
+const _COV_FILTERS = {
+  total:      () => true,
+  not_tested: ep => ep.unauth_status === 'not_tested',
+  queued:     ep => ep.unauth_status === 'queued',
+  running:    ep => ep.unauth_status === 'running',
+  bypass:     ep => ep.unauth_verdict === 'BYPASS',
+  secure:     ep => ep.unauth_verdict === 'SECURE',
+  unknown:    ep => ep.unauth_status === 'done' && ep.unauth_verdict === 'UNKNOWN',
+};
+
+// Cache of all loaded endpoints for client-side coverage filtering.
+let _allEndpoints = [];
+let _activeCovKey = null;
 
 function _renderCoverage(c) {
-  document.getElementById('coverage-bar').innerHTML =
-    _coverageStat('total',      c.total,      'var(--text)')  +
-    _coverageStat('not tested', c.not_tested, 'var(--muted)') +
-    _coverageStat('queued',     c.queued,     'var(--yellow)')+
-    _coverageStat('running',    c.running,    'var(--blue)')  +
-    _coverageStat('bypass',     c.bypass,     'var(--red)')   +
-    _coverageStat('secure',     c.secure,     'var(--green)') +
-    _coverageStat('unknown',    c.unknown,    'var(--yellow)');
+  const labels = {
+    total: 'total', not_tested: 'not tested', queued: 'queued',
+    running: 'running', bypass: 'bypass', secure: 'secure', unknown: 'unknown',
+  };
+  const colors = {
+    total: 'var(--text)', not_tested: 'var(--muted)', queued: 'var(--yellow)',
+    running: 'var(--blue)', bypass: 'var(--red)', secure: 'var(--green)',
+    unknown: 'var(--yellow)',
+  };
+  let html = '';
+  for (const [key, label] of Object.entries(labels)) {
+    const val   = c[key] ?? 0;
+    const color = colors[key];
+    html += `<span class="cov-box${_activeCovKey === key ? ' cov-active' : ''}"
+                   id="cov-box-${key}" onclick="showCoverageDetail('${key}')">
+      <span class="cov-val" style="color:${color};">${val}</span>
+      <span class="cov-lbl">${label}</span>
+    </span>`;
+  }
+  document.getElementById('coverage-bar').innerHTML = html;
+}
+
+function showCoverageDetail(key) {
+  const labels = {
+    total: 'All Endpoints', not_tested: 'Not Tested', queued: 'Queued',
+    running: 'Running', bypass: 'Bypass', secure: 'Secure', unknown: 'Unknown',
+  };
+  const pred = _COV_FILTERS[key];
+  if (!pred) return;
+
+  // Toggle off if same box is clicked again.
+  if (_activeCovKey === key) {
+    _activeCovKey = null;
+    document.querySelectorAll('.cov-box').forEach(b => b.classList.remove('cov-active'));
+    document.getElementById('coverage-detail').style.display = 'none';
+    return;
+  }
+
+  _activeCovKey = key;
+  document.querySelectorAll('.cov-box').forEach(b => b.classList.remove('cov-active'));
+  const box = document.getElementById('cov-box-' + key);
+  if (box) box.classList.add('cov-active');
+
+  const filtered = _allEndpoints.filter(pred);
+  document.getElementById('coverage-detail-title').textContent = labels[key] + ' — ' + filtered.length + ' endpoint(s)';
+
+  const detail = document.getElementById('coverage-detail');
+  const body   = document.getElementById('coverage-detail-body');
+  detail.style.display = 'block';
+
+  if (!filtered.length) {
+    body.innerHTML = '<p class="empty" style="margin:0;">No endpoints in this category.</p>';
+    return;
+  }
+
+  let html = `<table><thead><tr>
+    <th style="width:70px;">Method</th><th>Host</th><th>Path</th>
+    <th style="width:80px;">Verdict</th><th style="width:100px;">Flow</th>
+  </tr></thead><tbody>`;
+  filtered.forEach(ep => {
+    const vcolor = _verdictColor(ep.unauth_verdict);
+    const flowCell = ep.unauth_replay_flow_id
+      ? `<a href="/project/${_PID}/flows/${ep.unauth_replay_flow_id}" target="_blank"
+              style="color:var(--blue);" title="${_esc(ep.unauth_replay_flow_id)}">view</a>`
+      : '<span style="color:var(--muted);">—</span>';
+    html += `<tr>
+      <td style="color:var(--blue);font-weight:700;">${_esc(ep.method)}</td>
+      <td style="color:var(--muted);">${_esc(ep.host)}</td>
+      <td style="font-size:11px;">${_esc(ep.normalized_path)}</td>
+      <td><span style="font-size:11px;font-weight:700;color:${vcolor};">${ep.unauth_verdict || '—'}</span></td>
+      <td style="font-size:11px;">${flowCell}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  body.innerHTML = html;
+}
+
+function closeCoverageDetail() {
+  _activeCovKey = null;
+  document.querySelectorAll('.cov-box').forEach(b => b.classList.remove('cov-active'));
+  document.getElementById('coverage-detail').style.display = 'none';
 }
 
 function _renderAutoRun(enabled) {
@@ -219,7 +319,7 @@ function _renderEndpoints(rows) {
       <td style="font-size:11px;color:var(--muted);">${_esc(lastRun)}</td>
       <td>
         ${canRun
-          ? `<button class="btn btn-green" onclick="runEndpoint(${JSON.stringify(ep.endpoint_id)})">
+          ? `<button class="btn btn-green" onclick="runEndpoint('${ep.endpoint_id}')">
                Run Test
              </button>`
           : `<span style="font-size:11px;color:var(--muted);">${ep.unauth_status}</span>`
@@ -281,9 +381,12 @@ function toggleConfig() {
 async function load() {
   const data = await _api('GET', '/attacks/unauth');
   if (!data) return;
+  _allEndpoints = data.endpoints || [];
   _renderCoverage(data.coverage);
   _renderAutoRun(data.auto_run);
   _renderEndpoints(data.endpoints);
+  // Refresh open coverage detail panel if one is active.
+  if (_activeCovKey) showCoverageDetail(_activeCovKey);
 }
 
 async function loadExclusions() {
@@ -375,9 +478,11 @@ function onAttackChange() {
 setInterval(() => {
   _api('GET', '/attacks/unauth').then(data => {
     if (!data) return;
+    _allEndpoints = data.endpoints || [];
     _renderCoverage(data.coverage);
     _renderAutoRun(data.auto_run);
     _renderEndpoints(data.endpoints);
+    if (_activeCovKey) showCoverageDetail(_activeCovKey);
   });
 }, 10000);
 

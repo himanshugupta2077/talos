@@ -393,7 +393,7 @@
         if (data.captured_at) {
           add(`<span>${esc(fmtIST(data.captured_at))}</span><span class="ph-sep">\xb7</span>`);
         }
-        add(`<span style="font-size:10px; color:var(--muted);">${esc(flowId.slice(0, 8))}</span>`);
+        add(`<span style="font-size:10px; color:var(--muted);">${esc(flowId)}</span>`);
         if (data.role_name)   add(`<span class="ph-sep">\xb7</span><span style="color:var(--yellow);">role: ${esc(data.role_name)}</span>`);
         if (data.module_name) add(`<span class="ph-sep">\xb7</span><span style="color:var(--blue);">module: ${esc(data.module_name)}</span>`);
         if (data.endpoint_id) {

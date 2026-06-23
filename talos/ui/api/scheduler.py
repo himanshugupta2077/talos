@@ -16,12 +16,13 @@ Side effects:
     DELETE /api/scheduler/queue — deletes pending rows from scheduler_jobs.
 
 Routes:
-    GET    /api/scheduler         → queue status + pending jobs + current config
-    PUT    /api/scheduler/config  → update scheduler config
-    DELETE /api/scheduler/queue   → clear all pending jobs
+    GET    /api/scheduler              → queue status + pending jobs + current config
+    GET    /api/scheduler/jobs         → jobs filtered by ?status=<status>
+    PUT    /api/scheduler/config       → update scheduler config
+    DELETE /api/scheduler/queue        → clear all pending jobs
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 
@@ -59,6 +60,42 @@ class _ConfigBody(BaseModel):
     min_delay: Optional[float] = None
     max_delay: Optional[float] = None
     max_queue_size: Optional[int] = None
+
+
+@router.get("/jobs")
+def get_jobs_by_status(
+    project: ActiveProject,
+    status: str = Query(..., description="Job status: pending|running|done|failed|skipped"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """
+    Purpose:
+        Return scheduler jobs filtered by a single status value.
+        Used by the UI to show per-status detail tables on the scheduler page.
+    Input:
+        status — one of pending | running | done | failed | skipped.
+        limit  — max rows (1–500, default 200).
+        offset — row offset for pagination.
+    Output:
+        Dict: jobs (list of job dicts), total (count for that status).
+    Side effects: None.
+    Raises:  HTTPException(422) for invalid status values.
+    """
+    valid = {"pending", "running", "done", "failed", "skipped"}
+    if status not in valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status '{status}'. Must be one of: {', '.join(sorted(valid))}.",
+        )
+    jobs = sched_db.list_jobs_by_status(
+        project.db_path, project.id, status, limit=limit, offset=offset
+    )
+    counts = sched_db.get_queue_status(project.db_path)
+    return {
+        "jobs": [_job_to_dict(j) for j in jobs],
+        "total": counts.get(status, 0),
+    }
 
 
 @router.get("")

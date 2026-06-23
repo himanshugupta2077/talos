@@ -13,6 +13,17 @@ main { max-width: 100%; }
 }
 .live-dot.connected { background: var(--green); }
 .live-dot.error     { background: var(--red); }
+.stat-box {
+  display: flex; flex-direction: column; gap: 2px;
+  cursor: pointer; padding: 6px 14px;
+  border: 1px solid transparent; border-radius: 2px;
+  transition: border-color 0.15s;
+}
+.stat-box:hover { border-color: var(--green-dim); }
+.stat-box.stat-active { border-color: var(--green); }
+.stat-box .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-box .value { font-size: 18px; font-weight: 700; }
+#stat-detail { margin-bottom: 20px; display: none; }
 </style>
 {% endblock %}
 
@@ -42,6 +53,17 @@ main { max-width: 100%; }
 {% endif %}
 
 <div id="stats-row" class="stat-row section loading">Loading…</div>
+
+<!-- Per-status detail panel (shown when a stat box is clicked) -->
+<div id="stat-detail">
+  <div class="section">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span id="stat-detail-title" class="section-title" style="margin-bottom:0;"></span>
+      <button class="btn btn-ghost" style="padding:1px 7px;font-size:11px;" onclick="closeStatDetail()">✕</button>
+    </div>
+    <div id="stat-detail-body" class="loading">Loading…</div>
+  </div>
+</div>
 
 <div class="panel">
   <div class="panel-title">Config</div>
@@ -75,17 +97,106 @@ main { max-width: 100%; }
 const _PID = "{{ project.id }}";
 const _ACTIVE = {{ 'true' if project.status == 'active' else 'false' }};
 
+let _activeStatKey = null;
+
 function _renderStats(counts) {
   const order = ['pending', 'running', 'done', 'failed', 'skipped'];
   let html = '';
   order.forEach(k => {
     const v = counts[k] || 0;
     const col = k === 'done' ? 'var(--green)' : k === 'failed' ? 'var(--red)' : k === 'running' ? 'var(--yellow)' : 'var(--text)';
-    html += `<div class="stat"><span class="label">${k}</span><span class="value" style="color:${col};">${v}</span></div>`;
+    html += `<div class="stat-box${_activeStatKey === k ? ' stat-active' : ''}"
+                  id="statbox-${k}" onclick="showStatDetail('${k}')">
+      <span class="label">${k}</span>
+      <span class="value" style="color:${col};">${v}</span>
+    </div>`;
   });
   const el = document.getElementById('stats-row');
   el.innerHTML = html;
   el.className = 'stat-row section';
+}
+
+async function showStatDetail(key) {
+  // Toggle off if same box clicked again.
+  if (_activeStatKey === key) {
+    closeStatDetail();
+    return;
+  }
+
+  _activeStatKey = key;
+  document.querySelectorAll('.stat-box').forEach(b => b.classList.remove('stat-active'));
+  const box = document.getElementById('statbox-' + key);
+  if (box) box.classList.add('stat-active');
+
+  const detail = document.getElementById('stat-detail');
+  const body   = document.getElementById('stat-detail-body');
+  const title  = document.getElementById('stat-detail-title');
+  detail.style.display = 'block';
+  body.textContent = 'Loading…';
+  body.className   = 'loading';
+  title.textContent = key.toUpperCase() + ' jobs';
+
+  const data = await _api('GET', '/scheduler/jobs?status=' + encodeURIComponent(key));
+  if (!data) { body.textContent = 'Failed to load.'; body.className = ''; return; }
+
+  title.textContent = key.toUpperCase() + ' jobs — ' + data.total + ' total';
+  _renderStatDetail(data.jobs, body);
+}
+
+function _renderStatDetail(jobs, bodyEl) {
+  bodyEl.className = '';
+  if (!jobs.length) {
+    bodyEl.innerHTML = '<p class="empty">No jobs in this state.</p>';
+    return;
+  }
+  let html = `<table><thead><tr>
+    <th style="width:90px;">Job ID</th>
+    <th style="width:110px;">Type</th>
+    <th style="width:100px;">Target</th>
+    <th style="width:80px;">Verdict</th>
+    <th style="width:110px;">Flow</th>
+    <th style="width:160px;">Finished</th>
+    <th style="width:120px;">Reason</th>
+  </tr></thead><tbody>`;
+  jobs.forEach(j => {
+    const target = j.flow_id
+      ? j.flow_id.slice(0, 8)
+      : j.endpoint_id
+        ? j.endpoint_id.slice(0, 8)
+        : '—';
+    const type = j.job_type === 'replay_flow'
+      ? 'flow'
+      : j.job_type === 'replay_endpoint'
+        ? 'endpoint'
+        : j.job_type === 'auth_test'
+          ? 'auth test'
+          : _esc(j.job_type);
+    const flowCell = j.replayed_flow_id
+      ? `<a href="/project/${_PID}/flows/${_esc(j.replayed_flow_id)}" target="_blank"
+              style="color:var(--blue);" title="${_esc(j.replayed_flow_id)}">view</a>`
+      : '<span style="color:var(--muted);">—</span>';
+    const ts  = j.finished_at ? j.finished_at.replace('T', ' ').slice(0, 16) : '—';
+    const reason = j.failure_reason
+      ? `<span style="color:var(--red);font-size:10px;">${_esc(j.failure_reason)}</span>`
+      : '—';
+    html += `<tr>
+      <td style="color:var(--muted);font-size:11px;">${_esc(j.job_id.slice(0, 8))}</td>
+      <td style="font-size:11px;">${_esc(type)}</td>
+      <td style="color:var(--blue);font-size:11px;">${_esc(target)}</td>
+      <td style="font-size:11px;font-weight:700;color:${j.verdict === 'BYPASS' ? 'var(--red)' : j.verdict === 'SECURE' ? 'var(--green)' : 'var(--muted)'};">${j.verdict || '—'}</td>
+      <td style="font-size:11px;">${flowCell}</td>
+      <td style="color:var(--muted);font-size:11px;">${_esc(ts)}</td>
+      <td style="font-size:11px;">${reason}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  bodyEl.innerHTML = html;
+}
+
+function closeStatDetail() {
+  _activeStatKey = null;
+  document.querySelectorAll('.stat-box').forEach(b => b.classList.remove('stat-active'));
+  document.getElementById('stat-detail').style.display = 'none';
 }
 
 function _renderJobs(jobs) {
@@ -176,6 +287,8 @@ document.addEventListener('DOMContentLoaded', load);
        Re-fetch the full scheduler view so stats + pending jobs stay current. */
     es.addEventListener('sched_counts', function () {
       load();
+      // Refresh open stat-detail panel if one is active.
+      if (_activeStatKey) showStatDetail(_activeStatKey);
     });
 
     es.onerror = function () { _dotState('error'); };

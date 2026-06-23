@@ -310,6 +310,24 @@
 <script>
 const _PID = "{{ project.id }}";
 
+function _copyUUID(uuid) {
+  // Copy UUID to clipboard and show brief toast confirmation.
+  navigator.clipboard.writeText(uuid).then(() => {
+    _toast('Copied: ' + uuid);
+  }).catch(() => {
+    // Fallback for non-secure contexts.
+    const el = document.createElement('textarea');
+    el.value = uuid;
+    el.style.position = 'fixed';
+    el.style.opacity  = '0';
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    _toast('Copied: ' + uuid);
+  });
+}
+
 async function openProject(id) {
   const r = await _api('POST', '/projects/' + id + '/open');
   if (r) { _toast('Opened: ' + id); setTimeout(() => location.reload(), 900); }
@@ -499,7 +517,14 @@ function _renderRolesView(rows) {
   }
   let html = '<table><tbody>';
   rows.forEach(r => {
-    html += `<tr><td>${_esc(r.name)}${r.is_active ? '<span class="active-tag">active</span>' : ''}</td></tr>`;
+    html += `<tr>
+      <td>${_esc(r.name)}${r.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td style="color:var(--muted);font-size:11px;font-family:monospace;">${_esc(r.id)}</td>
+      <td style="width:58px;">
+        <button class="btn btn-ghost" style="padding:1px 6px;font-size:10px;"
+          title="Copy UUID" onclick="_copyUUID('${_esc(r.id)}')">copy</button>
+      </td>
+    </tr>`;
   });
   html += '</tbody></table>';
   el.innerHTML = html;
@@ -583,11 +608,16 @@ function _renderModulesView(rows) {
     el.innerHTML = '<p class="empty">No modules configured.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Name</th><th>ID</th><th>Description</th><th style="width:58px;"></th></tr></thead><tbody>';
   rows.forEach(m => {
     html += `<tr>
       <td>${_esc(m.name)}${m.is_active ? '<span class="active-tag">active</span>' : ''}</td>
+      <td style="color:var(--muted);font-size:11px;font-family:monospace;">${_esc(m.id)}</td>
       <td style="color:var(--muted);font-size:11px;">${_esc(m.description || '—')}</td>
+      <td>
+        <button class="btn btn-ghost" style="padding:1px 6px;font-size:10px;"
+          title="Copy UUID" onclick="_copyUUID('${_esc(m.id)}')">copy</button>
+      </td>
     </tr>`;
   });
   html += '</tbody></table>';
