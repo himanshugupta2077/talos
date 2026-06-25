@@ -60,14 +60,31 @@ talos
    └─ endpoint
 └─ auth
    ├─ set
+   ├─ unset
    ├─ show
    ├─ clear
+   └─ test
+└─ auth-config
+   ├─ add-flow
+   ├─ remove-flow
+   ├─ list-flows
+   ├─ set-extractor
+   ├─ show-extractor
+   ├─ edit-extractor
+   ├─ remove-extractor
    ├─ test
-   ├─ mark-login
-   ├─ mark-checkpoint
-   ├─ generate
-   ├─ inject-session-token
-   └─ validate
+   ├─ validate
+   ├─ refresh
+   ├─ status
+   ├─ show
+   ├─ set-ttl
+   ├─ add-expiry-signal
+   ├─ clear-expiry-signals
+   ├─ set-validation
+   ├─ clear-validation
+   ├─ add-control-flow
+   ├─ remove-control-flow
+   └─ list-control-flows
 └─ endpoint
    ├─ mark
    ├─ unmark
@@ -483,26 +500,35 @@ talos replay endpoint 9e8d7c6b-0000-0000-0000-000000000002 --right-now
 ## Auth Commands
 
 - All commands require an active project.
-- Auth config stores **names only** (cookie names, header names) — never credential values.
+- Auth config stores **required artifact names only** (cookie names, header names) — never credential values.
 - Config is global per project, not tied to specific endpoints.
 - `set` is additive — re-running with the same names is a no-op (INSERT OR IGNORE).
-- `auth test` enqueues an auth-bypass job by default; use `--right-now` to execute immediately. Stores the result in `auth_test_results` with verdict SECURE, BYPASS, or UNKNOWN.
-- **Smart JWT cross-reference (unauth strip):** When a configured auth cookie contains a JWT value and the same JWT also appears as the Bearer token in an `Authorization` header, the Authorization header is automatically stripped during unauthenticated execution tests. Configure both `--cookie token` and `--header Authorization` to be explicit, or rely on this detection when the cookie JWT and the header Bearer token are the same value.
-- **Dual auth config for BAC session-swap:** When multiple auth credentials are configured (e.g. `--cookie token` and `--header Authorization`), BAC session-swap injects the attacker's token into **all** configured locations, ensuring the server sees the attacker's identity regardless of which credential it prioritises.
+- `unset` removes specific names without clearing the entire config.
+- `auth test` runs Type 2 unauth bypass testing (strips auth, replays, diffs). It does NOT manage session tokens.
+- For role-based session management, token generation, and session health — use `talos auth-config`.
 
 ### `talos auth set [--cookie NAME ...] [--header NAME ...]`
 
-Add cookie and/or header names to the auth config. At least one flag required.
+Add cookie and/or header artifact names to the auth requirements. At least one flag required. Additive.
 
 ```powershell
-talos auth set --cookie sessionid --cookie auth_token --header Authorization --header X-API-Key
-# Example for apps that use both a cookie and a header carrying the same JWT:
-talos auth set --cookie token --header Authorization
+talos auth set --cookie sessionid --header Authorization
+talos auth set --cookie sessionid --cookie csrf --header Authorization --header X-API-Key
+```
+
+### `talos auth unset [--cookie NAME ...] [--header NAME ...]`
+
+Remove specific cookie and/or header names from the auth requirements.
+
+```powershell
+talos auth unset --cookie sessionid
+talos auth unset --header Authorization
+talos auth unset --cookie csrf --header X-API-Key
 ```
 
 ### `talos auth show`
 
-Display the current auth config for the active project.
+Display the current required auth artifacts for the active project.
 
 ```powershell
 talos auth show
@@ -510,7 +536,7 @@ talos auth show
 
 ### `talos auth clear`
 
-Remove all auth config entries for the active project.
+Remove all auth requirement entries for the active project.
 
 ```powershell
 talos auth clear
@@ -526,57 +552,123 @@ talos auth test 9e8d7c6b-0000-0000-0000-000000000002
 talos auth test 9e8d7c6b-0000-0000-0000-000000000002 --right-now
 ```
 
-## Role-Based Session Management Commands
+## Auth-Config Commands
 
 - All commands require an active project.
-- Purpose: enable automated replay, BAC, and IDOR testing without manual login by giving Talos a way to obtain and validate authenticated sessions for each role.
-- Session tokens are extracted from the login flow response body using a JWT regex (`eyJ…`). Non-JWT token formats are not supported at this time.
-- At most one token per role is active at any time. `inject-session-token` and `generate` both set the active token.
-- `validate` handles the full lifecycle: check → validate → regenerate on expiry.
+- The auth-config model replaces the old `mark-login` / `generate` / `validate` single-flow approach.
+- Supports multiple login flows per role, each with a Python extractor that returns `{artifact_name: value}` pairs.
+- The Session Health Engine automatically refreshes auth state before it expires, preventing stale sessions during long attack queues.
 
-### `talos auth mark-login <role_id> <flow_id>`
+### Setup Workflow
 
-Assign a login flow to a role. Talos replays this flow when it needs to obtain a new session token for the role.
-
-```powershell
-talos auth mark-login <role_uuid> <flow_uuid>
+```
+1. talos auth set --cookie sessionid --header Authorization   # define what's required
+2. talos auth-config add-flow admin <flow_uuid>               # attach login flow
+3. talos auth-config set-extractor admin <flow_uuid> login.py # attach extractor
+4. talos auth-config refresh admin                            # generate initial auth state
+5. talos attack bac session-swap                              # run attack — health maintained automatically
 ```
 
-### `talos auth mark-checkpoint <role_id> <flow_id>`
+### Extractor Script Format
 
-Assign a checkpoint flow to a role (e.g. `GET /api/me`). Talos replays this flow to check whether a stored token is still valid. A `200` response means valid; `401` or `403` means expired.
-
-```powershell
-talos auth mark-checkpoint <role_uuid> <flow_uuid>
+```python
+def extract(response):
+    # response.status   (int)  — HTTP status code
+    # response.headers  (dict) — lowercase header names
+    # response.body     (str)  — decoded body
+    # response.cookies  (dict) — cookie name → value
+    return {
+        "sessionid": response.cookies.get("sessionid", ""),
+        "Authorization": "Bearer " + response.body.split('"token":"')[1].split('"')[0],
+    }
 ```
 
-### `talos auth generate <role_id>`
-
-Replay the login flow for a role, extract the JWT from the response body, store it in the database, and mark it active.
+### Flow Management
 
 ```powershell
-talos auth generate <role_uuid>
+talos auth-config add-flow <role_id> <flow_id>      # add a login flow
+talos auth-config remove-flow <role_id> <flow_id>   # remove a flow
+talos auth-config list-flows <role_id>              # list configured flows
 ```
 
-### `talos auth inject-session-token <role_id> <session_token_id>`
-
-Set a previously generated token (by its UUID) as the active token for a role. All other tokens for the role are deactivated.
+### Extractor Management
 
 ```powershell
-talos auth inject-session-token <role_uuid> <token_uuid>
+talos auth-config set-extractor <role_id> <flow_id> <extractor.py>   # set extractor from file
+talos auth-config show-extractor <role_id> <flow_id>                 # print extractor code
+talos auth-config edit-extractor <role_id> <flow_id>                 # open in $EDITOR
+talos auth-config remove-extractor <role_id> <flow_id>               # clear extractor
 ```
 
-### `talos auth validate <role_id>`
-
-Full validation lifecycle for a role's session:
-1. If no active token exists — generate one via the login flow.
-2. If an active token exists — replay the checkpoint flow.
-3. If checkpoint returns `200` — token is valid; print confirmation.
-4. If checkpoint returns `401` or `403` — token is expired; automatically generate a fresh one.
+### Runtime
 
 ```powershell
-talos auth validate <role_uuid>
+talos auth-config test <role_id> <flow_id>    # run one flow + extractor, show artifacts (no state stored)
+talos auth-config validate <role_id>          # run all flows, show pass/fail per required artifact
+talos auth-config refresh <role_id>           # force full refresh, store new auth state
+talos auth-config status <role_id>            # show current auth state + TTL age
+talos auth-config show <role_id>              # show complete config (flows, extractors, health settings)
 ```
+
+### Session Health — Layer 1: TTL Configuration
+
+Proactive pre-refresh before token expires. Primary mechanism — catches 90–95% of expirations.
+
+```powershell
+# Refresh 2 minutes before a 20-minute token expires (at the 18-minute mark)
+talos auth-config set-ttl <role_id> --ttl 1200 --refresh-before 120
+
+# Refresh 5 minutes before a 60-minute token expires
+talos auth-config set-ttl <role_id> --ttl 3600 --refresh-before 300
+```
+
+### Session Health — Layer 2: Expiry Signals
+
+Response-based detection. Never triggers refresh directly — increments suspicion counter only.
+
+```powershell
+talos auth-config add-expiry-signal <role_id> --body "session expired" --body "please login"
+talos auth-config add-expiry-signal <role_id> --status 419 --status 440
+talos auth-config add-expiry-signal <role_id> --header location /login
+talos auth-config clear-expiry-signals <role_id>   # remove all signals
+```
+
+### Session Health — Layer 3: Validation Endpoint
+
+Authoritative session check. Runs only when suspicion is detected.
+
+```powershell
+talos auth-config set-validation <role_id> https://api.example.com/api/me \
+    --expected-status 200 \
+    --body-contains '"username"' \
+    --body-not-contains '"login"'
+
+talos auth-config clear-validation <role_id>
+```
+
+### Session Health — Layer 4: Control Flows
+
+Strongest health signal. Replays stable harmless authenticated flows to judge liveness.
+
+```powershell
+talos auth-config add-control-flow <role_id> <flow_id>     # add a control flow
+talos auth-config remove-control-flow <role_id> <flow_id>  # remove a control flow
+talos auth-config list-control-flows <role_id>             # list all control flows
+```
+
+**Rule:** Session is healthy if ≥ 1 control flow returns 200. Dead if all fail.
+
+## Role-Based Session Management (Legacy Reference)
+
+The following commands have been **removed** and replaced by `talos auth-config`:
+
+| Old command | New equivalent |
+|---|---|
+| `talos auth mark-login <role> <flow>` | `talos auth-config add-flow <role> <flow>` + `set-extractor` |
+| `talos auth mark-checkpoint <role> <flow>` | `talos auth-config add-control-flow <role> <flow>` |
+| `talos auth generate <role>` | `talos auth-config refresh <role>` |
+| `talos auth validate <role>` | `talos auth-config validate <role>` |
+| `talos auth inject-session-token <role> <token>` | Replaced by extractor model — not needed |
 
 ## Endpoint Commands
 

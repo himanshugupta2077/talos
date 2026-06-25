@@ -26,6 +26,7 @@ from talos.proxy.cli import run_proxy_cli
 from talos.ui.cli import run_inspect_cli
 from talos.replay.cli import run_replay_cli
 from talos.projects.auth_cli import run_auth_cli
+from talos.projects.auth_config_cli import run_auth_config_cli
 from talos.projects.mutation_cli import run_mutation_cli
 from talos.projects.attack_cli import run_attack_cli
 from talos.scheduler.cli import run_scheduler_cli
@@ -82,6 +83,9 @@ def main(argv: list[str] | None = None) -> None:
     elif subcommand == "auth":
         manager = ProjectManager(projects_root=config.projects_dir)
         run_auth_cli(manager, rest)
+    elif subcommand == "auth-config":
+        manager = ProjectManager(projects_root=config.projects_dir)
+        run_auth_config_cli(manager, rest)
     elif subcommand == "endpoint":
         manager = ProjectManager(projects_root=config.projects_dir)
         run_endpoint_cli(manager, rest)
@@ -111,7 +115,8 @@ def _print_usage() -> None:
         "  module    Manage modules (create/add, list, set, unset)\n"
         "  access    Manage access map (client set/unset, server set/unset, delete, show)\n"
         "  replay     Replay captured flows (flow <id>, endpoint <id>)\n"
-        "  auth       Manage auth config and run auth-bypass tests (set, show, clear, test <id>)\n"
+        "  auth       Define required auth artifacts and run auth-bypass tests (set, unset, show, clear, test)\n"
+        "  auth-config Manage role auth flows, extractors, and session health (see 'talos auth-config --help')\n"
         "  endpoint   Manage endpoint annotations (mark, unmark, show)\n"
         "  scheduler  Control the replay scheduler (status, config, enqueue, clear)\n"
         "  mutation   Manage request mutations (add, list, delete)\n"

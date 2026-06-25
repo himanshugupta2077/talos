@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -357,7 +357,90 @@ CREATE TABLE IF NOT EXISTS bac_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bac_results_verdict
-    ON bac_results (verdict, attack_type);"""
+    ON bac_results (verdict, attack_type);
+
+-- ------------------------------------------------------------------ --
+-- auth_flow_config: per-role ordered list of auth flows with extractors
+-- Replaces the single login_flow_id in role_auth; supports multiple flows
+-- and per-flow Python extractors that return key-value auth artifacts.
+-- extractor_code: Python source of extract(response) function; NULL means
+--                 no extractor set (refresh blocked until assigned).
+-- sort_order: execution order within the role (lower = runs first).
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS auth_flow_config (
+    id             TEXT    PRIMARY KEY,   -- UUID
+    role_id        TEXT    NOT NULL REFERENCES roles(id),
+    flow_id        TEXT    NOT NULL,      -- FK to flows.id
+    extractor_code TEXT,                  -- nullable Python source
+    sort_order     INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT    NOT NULL,
+    UNIQUE (role_id, flow_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_flow_config_role
+    ON auth_flow_config (role_id, sort_order);
+
+-- ------------------------------------------------------------------ --
+-- role_auth_state: current auth key-value pairs per role              --
+-- Populated by auth-config refresh; consumed by the BAC engine.       --
+-- key: artifact name (e.g. "sessionid", "Authorization")             --
+-- value: artifact value (e.g. "abc123", "Bearer eyJ...")             --
+-- collected_at: UTC ISO-8601 timestamp of last successful refresh.   --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS role_auth_state (
+    role_id      TEXT NOT NULL REFERENCES roles(id),
+    key          TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    PRIMARY KEY (role_id, key)
+);
+
+-- ------------------------------------------------------------------ --
+-- session_health_config: per-role TTL and expiry signal configuration --
+-- ttl_seconds: expected token lifetime (default 1200 = 20 min).      --
+-- refresh_before_seconds: pre-refresh window in seconds (default 120).--
+-- expiry_body_signals: JSON list of body substrings that signal expiry.
+-- expiry_header_signals: JSON dict {header: [values]} for header signals.
+-- expiry_status_codes: JSON list of ints; these statuses = suspicious.--
+-- validation_endpoint_url: optional Layer 3 validation URL.          --
+-- validation_expected_status: expected HTTP status from that URL.    --
+-- validation_body_contains: JSON list; all must appear in response.  --
+-- validation_body_not_contains: JSON list; none may appear in response.
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS session_health_config (
+    role_id                      TEXT PRIMARY KEY REFERENCES roles(id),
+    ttl_seconds                  INTEGER NOT NULL DEFAULT 1200,
+    refresh_before_seconds       INTEGER NOT NULL DEFAULT 120,
+    expiry_body_signals          TEXT    NOT NULL DEFAULT '[]',
+    expiry_header_signals        TEXT    NOT NULL DEFAULT '{}',
+    expiry_status_codes          TEXT    NOT NULL DEFAULT '[]',
+    validation_endpoint_url      TEXT,
+    validation_expected_status   INTEGER NOT NULL DEFAULT 200,
+    validation_body_contains     TEXT    NOT NULL DEFAULT '[]',
+    validation_body_not_contains TEXT    NOT NULL DEFAULT '[]'
+);
+
+-- ------------------------------------------------------------------ --
+-- session_health_control_flows: Layer 4 control flows per role        --
+-- Replayed in groups to judge session liveness when suspicion exists. --
+-- Pass threshold: at least one control flow returns expected status.  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS session_health_control_flows (
+    role_id  TEXT NOT NULL REFERENCES roles(id),
+    flow_id  TEXT NOT NULL,
+    PRIMARY KEY (role_id, flow_id)
+);
+
+-- ------------------------------------------------------------------ --
+-- session_suspicion_state: per-role runtime suspicion counter         --
+-- suspicion_count: incremented on each observed expiry signal.        --
+-- last_checked_at: UTC ISO-8601 timestamp of last validation run.    --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS session_suspicion_state (
+    role_id           TEXT PRIMARY KEY REFERENCES roles(id),
+    suspicion_count   INTEGER NOT NULL DEFAULT 0,
+    last_checked_at   TEXT
+);"""
 
 
 def init_project_db(db_path: Path) -> None:
@@ -480,6 +563,8 @@ def migrate_project_db(db_path: Path) -> None:
         v17 → v18: Add path column to attack_host_exclusions; update PRIMARY KEY.
         v18 → v19: Add role_auth and role_session_tokens tables.
         v19 → v20: Add meta column to scheduler_jobs; add bac_results table.
+        v20 → v21: Add auth_flow_config, role_auth_state, session_health_config,
+                   session_health_control_flows, session_suspicion_state tables.
     """
     if not db_path.exists():
         return
@@ -773,6 +858,77 @@ def migrate_project_db(db_path: Path) -> None:
                 """
             )
             conn.execute("UPDATE schema_version SET version = 20")
+            conn.commit()
+
+        if current < 21:
+            # Add auth_flow_config, role_auth_state, session_health_config,
+            # session_health_control_flows, session_suspicion_state tables
+            # for the new auth-config model and Session Health Engine.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_flow_config (
+                    id             TEXT    PRIMARY KEY,
+                    role_id        TEXT    NOT NULL REFERENCES roles(id),
+                    flow_id        TEXT    NOT NULL,
+                    extractor_code TEXT,
+                    sort_order     INTEGER NOT NULL DEFAULT 0,
+                    created_at     TEXT    NOT NULL,
+                    UNIQUE (role_id, flow_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_auth_flow_config_role
+                    ON auth_flow_config (role_id, sort_order)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS role_auth_state (
+                    role_id      TEXT NOT NULL REFERENCES roles(id),
+                    key          TEXT NOT NULL,
+                    value        TEXT NOT NULL,
+                    collected_at TEXT NOT NULL,
+                    PRIMARY KEY (role_id, key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_health_config (
+                    role_id                      TEXT PRIMARY KEY REFERENCES roles(id),
+                    ttl_seconds                  INTEGER NOT NULL DEFAULT 1200,
+                    refresh_before_seconds       INTEGER NOT NULL DEFAULT 120,
+                    expiry_body_signals          TEXT    NOT NULL DEFAULT '[]',
+                    expiry_header_signals        TEXT    NOT NULL DEFAULT '{}',
+                    expiry_status_codes          TEXT    NOT NULL DEFAULT '[]',
+                    validation_endpoint_url      TEXT,
+                    validation_expected_status   INTEGER NOT NULL DEFAULT 200,
+                    validation_body_contains     TEXT    NOT NULL DEFAULT '[]',
+                    validation_body_not_contains TEXT    NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_health_control_flows (
+                    role_id  TEXT NOT NULL REFERENCES roles(id),
+                    flow_id  TEXT NOT NULL,
+                    PRIMARY KEY (role_id, flow_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_suspicion_state (
+                    role_id           TEXT PRIMARY KEY REFERENCES roles(id),
+                    suspicion_count   INTEGER NOT NULL DEFAULT 0,
+                    last_checked_at   TEXT
+                )
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 21")
             conn.commit()
 
 

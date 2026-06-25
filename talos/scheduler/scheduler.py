@@ -17,6 +17,13 @@ Purpose:
         [min_delay, max_delay] seconds (loaded from scheduler_config in the DB).
         Randomisation avoids periodic patterns that server-side heuristics detect.
 
+    Session Health Engine integration:
+        Before each BAC job the scheduler calls session_health.ensure_healthy()
+        for the attacker role.  This runs Layer 1 (TTL) and Layer 2 (suspicion
+        check) and triggers refresh or validation as needed.
+        After each BAC job the scheduler calls session_health.observe_response()
+        with the reply status and response data to feed Layer 2 signals.
+
     Safety pre-check (double layer):
         Before dispatching to the replay engine this layer checks endpoint
         annotations directly so a skippable job is never handed to the engine
@@ -28,25 +35,30 @@ Purpose:
         Scheduler → decide WHEN to replay.
         Engine    → execute the HTTP request.
         Diff      → evaluate the result.
+        Session health → decide whether auth needs refresh.
 
 Design constraints (hard — do not violate):
     - No sleep inside the replay engine.  Delay lives here only.
     - Single-threaded: one job at a time; no parallel execution.
     - No queue writes from this module. DB layer owns persistence.
+    - Session health refresh is triggered here, never from the BAC engine.
 
 Dependencies: asyncio, logging, random, threading, time, pathlib
               talos.scheduler.db, talos.scheduler.job
               talos.replay.engine, talos.replay.auth_strip
-              talos.projects.annotations
+              talos.projects.annotations, talos.projects.session_health
 Data flow:
     TalosAddon.__init__ → ReplayScheduler(project).start()
         → daemon thread: loop: get_next_pending → safety pre-check
+               → [BAC] session_health.ensure_healthy
                → mark_running → _execute_job
+               → [BAC] session_health.observe_response
                → mark_done/failed/skipped → random sleep
 Side effects:
     - Sends outbound HTTP requests (one per job executed).
     - Writes replay flows, diffs, and auth test results to the project DB.
     - Writes job state updates to scheduler_jobs.
+    - Writes role_auth_state on session refresh.
     - Logs execution progress.
 """
 
@@ -58,6 +70,7 @@ import time
 import uuid
 
 import talos.scheduler.db as sched_db
+import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
 from talos.projects.attack_config import (
     get_unauth_auto_run,
@@ -447,14 +460,19 @@ class ReplayScheduler:
     def _execute_bac_job(self, job: ReplayJob) -> None:
         """
         Purpose:
-            Execute a BAC attack job: deserialise meta, call bac.engine, settle state.
+            Execute a BAC attack job: deserialise meta, ensure session health
+            (Layer 1 + 2 gate), call bac.engine, feed response to Layer 2
+            observer, settle state.
         Input:   job — ReplayJob with a BAC job type and meta JSON string.
         Side effects:
-            Sends outbound HTTP; writes replay flow + diff + bac_result;
-            marks job done/failed/skipped.
+            - Calls session_health.ensure_healthy before the job.
+            - Sends outbound HTTP; writes replay flow + diff + bac_result.
+            - Calls session_health.observe_response after the job.
+            - Marks job done/failed/skipped.
         """
         import json as _json
         from talos.projects.bac.engine import BacOutcome, execute_bac_job
+        from talos.projects.session_health import ensure_healthy, observe_response
 
         db_path = self._project.db_path
         project_id = self._project.id
@@ -474,6 +492,26 @@ class ReplayScheduler:
                 sched_db.mark_failed(db_path, job.job_id, "bac_meta_parse_error")
                 return
 
+        attacker_role_id: str = meta.get("attacker_role_id", "")
+
+        # Session Health Engine: Layer 1 (TTL) and Layer 2 (suspicion) gate.
+        if attacker_role_id:
+            try:
+                healthy = ensure_healthy(db_path, attacker_role_id, project_id)
+                if not healthy:
+                    sched_db.mark_failed(
+                        db_path, job.job_id, "session_health_refresh_failed"
+                    )
+                    _log.warning(
+                        "[scheduler] Session health refresh FAILED for role=%s — BAC job skipped.",
+                        attacker_role_id[:8],
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "[scheduler] Session health check error (non-fatal): %s", exc
+                )
+
         try:
             outcome: BacOutcome = asyncio.run(
                 execute_bac_job(
@@ -490,6 +528,37 @@ class ReplayScheduler:
             )
             sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
             return
+
+        # Session Health Engine: Layer 2 — feed response signals.
+        if attacker_role_id and outcome.replay_status is not None:
+            try:
+                # Fetch response headers from the replayed flow for header signal checks.
+                resp_headers: dict = {}
+                resp_body: str = ""
+                if outcome.replayed_flow_id:
+                    rf = replay_db.get_flow_for_replay(db_path, outcome.replayed_flow_id)
+                    if rf:
+                        raw_h = rf.get("response_headers", "{}")
+                        import json as _j
+                        resp_headers = _j.loads(raw_h) if isinstance(raw_h, str) else dict(raw_h)
+                        raw_b = rf.get("response_body", b"")
+                        resp_body = raw_b.decode("utf-8", errors="replace") if isinstance(raw_b, bytes) else str(raw_b or "")
+
+                threshold_reached = observe_response(
+                    db_path,
+                    attacker_role_id,
+                    outcome.replay_status,
+                    resp_headers,
+                    resp_body,
+                )
+                if threshold_reached:
+                    _log.info(
+                        "[scheduler] Session suspicion threshold reached for role=%s — "
+                        "will validate before next BAC job.",
+                        attacker_role_id[:8],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("[scheduler] Layer 2 observe error (non-fatal): %s", exc)
 
         self._settle_bac_outcome(job, outcome)
 

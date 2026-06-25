@@ -48,7 +48,7 @@ import httpx
 
 import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
-from talos.projects.auth import get_auth_config, get_active_session_token
+from talos.projects.auth import get_auth_config, get_role_auth_state
 from talos.replay.diff import DiffResult, compute_diff
 
 _log = logging.getLogger(__name__)
@@ -134,9 +134,10 @@ async def execute_bac_job(
         if "dangerous" in tags:
             return _fail(flow_id, attack_type, variant, "endpoint_annotated_dangerous")
 
-    # Retrieve attacker's session token.
-    token_info = get_active_session_token(db_path, attacker_role_id)
-    if token_info is None:
+    # Retrieve attacker's current auth state.
+    state_info = get_role_auth_state(db_path, attacker_role_id)
+    auth_state = state_info["state"]
+    if not auth_state:
         return _fail(flow_id, attack_type, variant, "no_active_token")
 
     # Verify auth config exists.
@@ -147,7 +148,7 @@ async def execute_bac_job(
     # Apply the mutation.
     try:
         modified = _apply_mutation(
-            flow, auth_config, token_info["token"], attack_type, meta
+            flow, auth_config, auth_state, attack_type, meta
         )
     except Exception as exc:  # noqa: BLE001
         return _fail(flow_id, attack_type, variant, f"mutation_error: {exc}")
@@ -174,21 +175,21 @@ async def execute_bac_job(
 def _apply_mutation(
     flow: dict,
     auth_config: dict,
-    attacker_token: str,
+    auth_state: dict,
     attack_type: str,
     meta: dict,
 ) -> Optional[dict]:
     """
     Purpose:
         Build a modified copy of the flow with the attack mutation applied.
-        All BAC attacks first inject the attacker's session token, then apply
+        All BAC attacks first inject the attacker's full auth state, then apply
         the type-specific mutation.
     Input:
-        flow           — original flow dict from replay_db.
-        auth_config    — {'cookies': [...], 'headers': [...]}.
-        attacker_token — raw session token (JWT) for the attacker role.
-        attack_type    — BAC job type constant.
-        meta           — job metadata dict.
+        flow        — original flow dict from replay_db.
+        auth_config — {'cookies': [...], 'headers': [...]}.
+        auth_state  — {artifact_name: value} dict from role_auth_state.
+        attack_type — BAC job type constant.
+        meta        — job metadata dict.
     Output:
         Modified flow dict ready for dispatch, or None when the variant is not
         applicable to this particular flow (e.g., method mismatch).
@@ -212,8 +213,8 @@ def _apply_mutation(
         json.loads(raw_cookies) if isinstance(raw_cookies, str) else dict(raw_cookies)
     )
 
-    # Step 1: inject attacker's session token (foundation for all BAC attacks).
-    headers, cookies = _inject_session_token(headers, cookies, auth_config, attacker_token)
+    # Step 1: inject attacker's auth state (foundation for all BAC attacks).
+    headers, cookies = _inject_auth_state(headers, cookies, auth_config, auth_state)
 
     # Step 2: apply attack-type-specific mutation.
     if attack_type == BAC_SESSION_SWAP:
@@ -255,25 +256,26 @@ def _apply_mutation(
 
 
 # ------------------------------------------------------------------ #
-# Token injection                                                      #
+# Auth state injection                                                  #
 # ------------------------------------------------------------------ #
 
-def _inject_session_token(
+def _inject_auth_state(
     headers: dict,
     cookies: dict,
     auth_config: dict,
-    token: str,
+    auth_state: dict,
 ) -> tuple[dict, dict]:
     """
     Purpose:
-        Replace configured auth headers and cookies with the attacker's token.
-        Header 'Authorization' is formatted as 'Bearer <token>'.
-        All other auth headers and auth cookies receive the raw token value.
+        Replace configured auth headers and cookies with the attacker's extracted
+        artifact values from role_auth_state.
+        Each artifact value is injected verbatim — the extractor is responsible
+        for including any prefix (e.g. "Bearer " in Authorization values).
     Input:
-        headers    — current request headers dict.
-        cookies    — current request cookies dict.
+        headers     — current request headers dict.
+        cookies     — current request cookies dict.
         auth_config — {'cookies': [...], 'headers': [...]}.
-        token      — raw session token string.
+        auth_state  — {artifact_name: value} dict from role_auth_state.
     Output:
         (headers, cookies) dicts with auth fields replaced.
     Side effects: None.
@@ -283,17 +285,16 @@ def _inject_session_token(
 
     auth_header_names_lower = {n.lower() for n in auth_config["headers"]}
 
-    # Remove existing auth headers (case-insensitive), then add attacker's.
+    # Remove existing auth headers (case-insensitive), then inject attacker's.
     headers = {k: v for k, v in headers.items() if k.lower() not in auth_header_names_lower}
     for header_name in auth_config["headers"]:
-        if header_name.lower() == "authorization":
-            headers[header_name] = f"Bearer {token}"
-        else:
-            headers[header_name] = token
+        if header_name in auth_state:
+            headers[header_name] = auth_state[header_name]
 
-    # Replace auth cookies with attacker's token value.
+    # Replace auth cookies with attacker's extracted values.
     for cookie_name in auth_config["cookies"]:
-        cookies[cookie_name] = token
+        if cookie_name in auth_state:
+            cookies[cookie_name] = auth_state[cookie_name]
 
     # Rebuild the Cookie request header from the updated cookies dict.
     if auth_config["cookies"]:

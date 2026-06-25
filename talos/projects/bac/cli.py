@@ -26,10 +26,9 @@ Purpose:
                        lacks one (replays the login flow inline).
 
     Auth prerequisites (checked per attacker role):
-        - login_flow_id configured    → ERROR + no jobs if missing.
-        - checkpoint_flow_id configured → ERROR + no jobs if missing.
-        - auth_config non-empty       → ERROR + no jobs if missing.
-        - active session token exists → ERROR unless --auto-generate is set.
+        - At least one auth flow with an extractor configured → ERROR + no jobs if missing.
+        - auth_config non-empty      → ERROR + no jobs if missing.
+        - auth state (role_auth_state) covers all required artifacts → ERROR unless --auto-generate.
 
 Dependencies: argparse, json, sys, uuid
               talos.projects.manager, talos.projects.access,
@@ -156,7 +155,7 @@ def _enqueue_bac_jobs(
     total_dedup_skipped = 0
 
     # Group candidates by attacker role to check prereqs once per role.
-    prereq_cache: dict[str, str | None] = {}  # role_id → active_token or None (failed)
+    prereq_cache: dict[str, bool] = {}  # role_id → passed (True/False)
     prereq_errors_printed: set[str] = set()
 
     for candidate in candidates:
@@ -173,7 +172,7 @@ def _enqueue_bac_jobs(
                 auto_generate=auto_generate,
             )
             if not result.passed:
-                prereq_cache[attk_id] = None
+                prereq_cache[attk_id] = False
                 if attk_id not in prereq_errors_printed:
                     prereq_errors_printed.add(attk_id)
                     print(
@@ -184,13 +183,11 @@ def _enqueue_bac_jobs(
                         print(f"  ERROR: {err}", file=sys.stderr)
                     print("  No jobs generated for this role.", file=sys.stderr)
             else:
-                prereq_cache[attk_id] = result.active_token
+                prereq_cache[attk_id] = True
                 if auto_generate:
-                    print(
-                        f"  Session token ready for role: {attk_name}"
-                    )
+                    print(f"  Auth state ready for role: {attk_name}")
 
-        if prereq_cache.get(attk_id) is None:
+        if not prereq_cache.get(attk_id, False):
             total_auth_skipped += len(candidate.flow_ids) * len(variants)
             continue
 
@@ -368,10 +365,9 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
             "auth prerequisites for each attacker role, and enqueue scheduler\n"
             "jobs that the scheduler executes and reports on.\n\n"
             "Auth prerequisites per attacker role:\n"
-            "  - login_flow_id assigned  (talos auth mark-login)\n"
-            "  - checkpoint_flow_id assigned  (talos auth mark-checkpoint)\n"
-            "  - auth config configured  (talos auth set)\n"
-            "  - active session token exists  (talos auth generate, or --auto-generate)"
+            "  - At least one auth flow + extractor  (talos auth-config add-flow + set-extractor)\n"
+            "  - Auth requirements configured         (talos auth set)\n"
+            "  - Auth state collected                 (talos auth-config refresh, or --auto-generate)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
