@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -344,6 +344,10 @@ CREATE INDEX IF NOT EXISTS idx_role_session_tokens_role
 -- attack_type: bac_session_swap | bac_method_fuzz | etc.              --
 -- variant    : specific mutation applied (e.g. 'GET_to_POST')        --
 -- verdict    : POSSIBLE_BAC | SECURE | UNKNOWN                        --
+-- matched_section: 'passed_detection' | 'failed_detection' | NULL    --
+-- matched_group  : group_id or auto-label that matched; NULL if none  --
+-- matched_rules  : JSON array of matched rule descriptions; NULL if   --
+--                  no filter was used (heuristic path)                --
 -- ------------------------------------------------------------------ --
 CREATE TABLE IF NOT EXISTS bac_results (
     replay_flow_id   TEXT PRIMARY KEY REFERENCES flows(id),
@@ -353,7 +357,10 @@ CREATE TABLE IF NOT EXISTS bac_results (
     attacker_role_id TEXT NOT NULL,
     target_role_id   TEXT NOT NULL,
     module_id        TEXT NOT NULL,
-    verdict          TEXT NOT NULL
+    verdict          TEXT NOT NULL,
+    matched_section  TEXT,
+    matched_group    TEXT,
+    matched_rules    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bac_results_verdict
@@ -565,6 +572,8 @@ def migrate_project_db(db_path: Path) -> None:
         v19 → v20: Add meta column to scheduler_jobs; add bac_results table.
         v20 → v21: Add auth_flow_config, role_auth_state, session_health_config,
                    session_health_control_flows, session_suspicion_state tables.
+        v21 → v22: Add matched_section, matched_group, matched_rules columns to
+                   bac_results for rich decision evidence storage.
     """
     if not db_path.exists():
         return
@@ -929,6 +938,28 @@ def migrate_project_db(db_path: Path) -> None:
                 """
             )
             conn.execute("UPDATE schema_version SET version = 21")
+            conn.commit()
+
+        if current < 22:
+            # Add matched_section, matched_group, matched_rules to bac_results
+            # for rich BAC decision explainability.
+            existing_br = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(bac_results)").fetchall()
+            }
+            if "matched_section" not in existing_br:
+                conn.execute(
+                    "ALTER TABLE bac_results ADD COLUMN matched_section TEXT"
+                )
+            if "matched_group" not in existing_br:
+                conn.execute(
+                    "ALTER TABLE bac_results ADD COLUMN matched_group TEXT"
+                )
+            if "matched_rules" not in existing_br:
+                conn.execute(
+                    "ALTER TABLE bac_results ADD COLUMN matched_rules TEXT"
+                )
+            conn.execute("UPDATE schema_version SET version = 22")
             conn.commit()
 
 

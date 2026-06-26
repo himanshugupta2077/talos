@@ -27,6 +27,7 @@ Design constraints (hard — do not violate):
 
 Dependencies: asyncio, json, httpx, uuid, pathlib, urllib.parse
               talos.projects.auth, talos.projects.bac.variants
+              talos.projects.bac.decision_filter (DecisionResult)
               talos.replay.db, talos.replay.diff
 Data flow:
     scheduler._execute_job → execute_bac_job(flow_id, meta, attack_type, db_path, project_id)
@@ -708,13 +709,20 @@ async def _send_and_store(
     # Compute BAC verdict.
     # Network / protocol errors never reach the filter — no HTTP response to evaluate.
     if replayed.get("replay_error"):
-        bac_verdict = "UNKNOWN"
+        from talos.projects.bac.decision_filter import DecisionResult
+        decision: DecisionResult = DecisionResult(
+            verdict="UNKNOWN",
+            matched_section=None,
+            matched_group_id=None,
+            matched_rules=[],
+        )
     else:
-        bac_verdict = _compute_bac_verdict_with_filter(
+        decision = _compute_bac_verdict_with_filter(
             original_flow=original_flow,
             replayed=replayed,
             project_data_dir=db_path.parent,
         )
+    bac_verdict = decision.verdict
 
     # Persist BAC result.
     try:
@@ -727,6 +735,12 @@ async def _send_and_store(
             "target_role_id": meta.get("target_role_id", ""),
             "module_id": meta.get("module_id", ""),
             "verdict": bac_verdict,
+            "matched_section": decision.matched_section,
+            "matched_group": decision.matched_group_id,
+            "matched_rules": (
+                json.dumps(decision.matched_rules)
+                if decision.matched_rules else None
+            ),
         })
     except Exception as exc:  # noqa: BLE001
         _log.error("Failed to store BAC result for replay %s: %s", replayed_flow_id, exc)
@@ -752,29 +766,31 @@ def _compute_bac_verdict_with_filter(
     original_flow: dict,
     replayed: dict,
     project_data_dir: Path,
-) -> str:
+) -> "DecisionResult":
     """
     Purpose:
         Compute the BAC verdict using the project's decision filter when available,
         falling back to the built-in heuristic when no filter is configured.
 
-        This function is called only when no network/protocol error occurred
-        (replay_error is None), so the response is guaranteed to exist.
+        Returns a DecisionResult preserving both the verdict and the evidence
+        (matched section, group, and rules) so callers never discard the reasoning.
+
+        Called only when no network/protocol error occurred (replay_error is None).
 
     Input:
-        original_flow    — original flow dict (used for baseline status check in fallback).
+        original_flow    — original flow dict (baseline status for heuristic fallback).
         replayed         — replayed flow dict with status_code, response_headers, response_body.
         project_data_dir — directory containing BAC-decision-filter.yaml (db_path.parent).
     Output:
-        'POSSIBLE_BAC' | 'SECURE' | 'UNKNOWN'
+        DecisionResult with verdict, matched_section, matched_group_id, matched_rules.
     Side effects:
-        Reads BAC-decision-filter.yaml from disk on first call per engine run
-        (subsequent calls within the same scheduler cycle hit the same path).
+        Reads BAC-decision-filter.yaml from disk on each call.
     """
     from talos.projects.bac.decision_filter import (
         load_filter,
         build_response_data,
         evaluate_response,
+        DecisionResult,
     )
 
     bac_filter = load_filter(project_data_dir)
@@ -783,10 +799,16 @@ def _compute_bac_verdict_with_filter(
         response_data = build_response_data(replayed)
         return evaluate_response(bac_filter, response_data)
 
-    # No filter configured — use built-in heuristic.
-    return _compute_bac_verdict_heuristic(
+    # No filter configured — use built-in heuristic; no section/group/rule evidence.
+    verdict = _compute_bac_verdict_heuristic(
         original_status=original_flow.get("status_code"),
         replay_status=replayed.get("status_code"),
+    )
+    return DecisionResult(
+        verdict=verdict,
+        matched_section=None,
+        matched_group_id=None,
+        matched_rules=[],
     )
 
 

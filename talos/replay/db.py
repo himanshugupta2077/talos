@@ -338,14 +338,17 @@ def insert_bac_result(db_path: Path, result_row: dict) -> None:
     Input:
         db_path    — absolute Path to the project's talos.db.
         result_row — dict with keys:
-                       replay_flow_id   (str) — PK; UUID of the BAC replay flow.
-                       original_flow_id (str) — UUID of the target-role source flow.
-                       attack_type      (str) — BAC job type constant.
-                       variant          (str) — mutation variant name.
-                       attacker_role_id (str) — UUID of the role performing the attack.
-                       target_role_id   (str) — UUID of the role that legitimately has access.
-                       module_id        (str) — UUID of the module under test.
-                       verdict          (str) — POSSIBLE_BAC | SECURE | UNKNOWN.
+                       replay_flow_id   (str)       — PK; UUID of the BAC replay flow.
+                       original_flow_id (str)       — UUID of the target-role source flow.
+                       attack_type      (str)       — BAC job type constant.
+                       variant          (str)       — mutation variant name.
+                       attacker_role_id (str)       — UUID of the role performing the attack.
+                       target_role_id   (str)       — UUID of the role with legitimate access.
+                       module_id        (str)       — UUID of the module under test.
+                       verdict          (str)       — POSSIBLE_BAC | SECURE | UNKNOWN.
+                       matched_section  (str|None)  — 'passed_detection' | 'failed_detection' | None.
+                       matched_group    (str|None)  — group_id or auto-label; None when heuristic.
+                       matched_rules    (str|None)  — JSON array of rule description strings.
     Output: None
     Side effects:
         Inserts one row into bac_results.
@@ -358,8 +361,8 @@ def insert_bac_result(db_path: Path, result_row: dict) -> None:
                 replay_flow_id, original_flow_id,
                 attack_type, variant,
                 attacker_role_id, target_role_id, module_id,
-                verdict
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                verdict, matched_section, matched_group, matched_rules
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result_row["replay_flow_id"],
@@ -370,6 +373,9 @@ def insert_bac_result(db_path: Path, result_row: dict) -> None:
                 result_row["target_role_id"],
                 result_row["module_id"],
                 result_row["verdict"],
+                result_row.get("matched_section"),
+                result_row.get("matched_group"),
+                result_row.get("matched_rules"),
             ),
         )
         conn.commit()

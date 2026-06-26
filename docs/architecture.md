@@ -819,7 +819,7 @@ in-place. Called automatically by `talos.replay.db` on every replay operation.
 | v15 → v16 | Add `attack_config` table |
 | v16 → v17 | Add `attack_host_exclusions` table |
 | v17 → v18 | Rebuild `attack_host_exclusions` with `path` column; update PRIMARY KEY |
-| v18 → v19 | Add `role_auth` and `role_session_tokens` tables |
+| v21 → v22 | Add `matched_section`, `matched_group`, `matched_rules` columns to `bac_results` for rich decision evidence |
 
 ---
 
