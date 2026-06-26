@@ -276,7 +276,7 @@ class ReplayScheduler:
             - dangerous → skip only for auto jobs (priority < PRIORITY_MANUAL).
         Input:   job — pending ReplayJob.
         Output:  Skip reason string if the job should be skipped; None otherwise.
-        Side effects: Reads endpoint_annotations table.
+        Side effects: Reads endpoint_policy table (dangerous/logout columns).
         """
         from talos.scheduler.job import PRIORITY_MANUAL
 

@@ -99,6 +99,10 @@ class EffectivePolicy:
         endpoint_id      — UUID of the endpoint.
         effective_level  — resolved priority: 'CRITICAL'|'HIGH'|'NORMAL'|'LOW'.
         excluded         — True when the endpoint must be skipped in all attack modules.
+        dangerous        — True when the endpoint performs irreversible actions.
+                           Auto-replay skips dangerous endpoints; manual replay is allowed.
+        logout           — True when the endpoint invalidates auth sessions.
+                           All replay modes skip logout endpoints.
         source           — what produced the effective level:
                                'manual'  — explicit manual_priority on endpoint_policy.
                                'rule'    — matching path rule in policy_rules.
@@ -115,6 +119,8 @@ class EffectivePolicy:
     endpoint_id: str
     effective_level: str
     excluded: bool
+    dangerous: bool
+    logout: bool
     source: str
     matching_rule: Optional[str]
     auto_score: int
@@ -214,8 +220,9 @@ def upsert_auto_priority(
         """
         INSERT OR IGNORE INTO endpoint_policy
             (endpoint_id, auto_priority, auto_score, auto_breakdown,
-             manual_priority, excluded, notes, tags, updated_at)
-        VALUES (?, ?, ?, ?, NULL, 0, '', '[]', ?)
+             manual_priority, excluded, dangerous, logout,
+             notes, tags, updated_at)
+        VALUES (?, ?, ?, ?, NULL, 0, 0, 0, '', '[]', ?)
         """,
         (endpoint_id, auto_priority, auto_score, breakdown_json, now),
     )
@@ -271,8 +278,9 @@ def set_manual_priority(
             """
             INSERT INTO endpoint_policy
                 (endpoint_id, auto_priority, auto_score, auto_breakdown,
-                 manual_priority, excluded, notes, tags, updated_at)
-            VALUES (?, 'NORMAL', 0, '{}', ?, 0, '', '[]', ?)
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', ?, 0, 0, 0, '', '[]', ?)
             ON CONFLICT(endpoint_id) DO UPDATE SET
                 manual_priority = excluded.manual_priority,
                 updated_at      = excluded.updated_at
@@ -353,8 +361,9 @@ def set_excluded(
             """
             INSERT INTO endpoint_policy
                 (endpoint_id, auto_priority, auto_score, auto_breakdown,
-                 manual_priority, excluded, notes, tags, updated_at)
-            VALUES (?, 'NORMAL', 0, '{}', NULL, ?, '', '[]', ?)
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', NULL, ?, 0, 0, '', '[]', ?)
             ON CONFLICT(endpoint_id) DO UPDATE SET
                 excluded   = excluded.excluded,
                 updated_at = excluded.updated_at
@@ -398,8 +407,9 @@ def set_notes(
             """
             INSERT INTO endpoint_policy
                 (endpoint_id, auto_priority, auto_score, auto_breakdown,
-                 manual_priority, excluded, notes, tags, updated_at)
-            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, ?, '[]', ?)
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, 0, 0, ?, '[]', ?)
             ON CONFLICT(endpoint_id) DO UPDATE SET
                 notes      = excluded.notes,
                 updated_at = excluded.updated_at
@@ -436,8 +446,9 @@ def set_tags(
             """
             INSERT INTO endpoint_policy
                 (endpoint_id, auto_priority, auto_score, auto_breakdown,
-                 manual_priority, excluded, notes, tags, updated_at)
-            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, '', ?, ?)
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, 0, 0, '', ?, ?)
             ON CONFLICT(endpoint_id) DO UPDATE SET
                 tags       = excluded.tags,
                 updated_at = excluded.updated_at
@@ -447,6 +458,87 @@ def set_tags(
         conn.execute(
             "UPDATE endpoint_policy SET tags = ?, updated_at = ? WHERE endpoint_id = ?",
             (tags_json, now, endpoint_id),
+        )
+        conn.commit()
+
+
+def set_dangerous(
+    db_path: Path,
+    endpoint_id: str,
+    dangerous: bool,
+) -> None:
+    """
+    Purpose:
+        Mark or unmark an endpoint as dangerous.
+        Dangerous endpoints perform irreversible actions.  Auto-replay skips
+        them; manual replay is still allowed.
+    Input:
+        db_path     — Path to the project's talos.db.
+        endpoint_id — UUID of the endpoint.
+        dangerous   — True to mark; False to unmark.
+    Output: None.
+    Side effects: Upserts endpoint_policy; sets dangerous column.
+    """
+    migrate_project_db(db_path)
+    now = _now_iso()
+    val = 1 if dangerous else 0
+    with _connect_rw(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, auto_breakdown,
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, ?, 0, '', '[]', ?)
+            ON CONFLICT(endpoint_id) DO UPDATE SET
+                dangerous  = excluded.dangerous,
+                updated_at = excluded.updated_at
+            """,
+            (endpoint_id, val, now),
+        )
+        conn.execute(
+            "UPDATE endpoint_policy SET dangerous = ?, updated_at = ? WHERE endpoint_id = ?",
+            (val, now, endpoint_id),
+        )
+        conn.commit()
+
+
+def set_logout(
+    db_path: Path,
+    endpoint_id: str,
+    logout: bool,
+) -> None:
+    """
+    Purpose:
+        Mark or unmark an endpoint as a logout endpoint.
+        Logout endpoints invalidate auth sessions.  All replay modes skip them.
+    Input:
+        db_path     — Path to the project's talos.db.
+        endpoint_id — UUID of the endpoint.
+        logout      — True to mark; False to unmark.
+    Output: None.
+    Side effects: Upserts endpoint_policy; sets logout column.
+    """
+    migrate_project_db(db_path)
+    now = _now_iso()
+    val = 1 if logout else 0
+    with _connect_rw(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, auto_breakdown,
+                 manual_priority, excluded, dangerous, logout,
+                 notes, tags, updated_at)
+            VALUES (?, 'NORMAL', 0, '{}', NULL, 0, 0, ?, '', '[]', ?)
+            ON CONFLICT(endpoint_id) DO UPDATE SET
+                logout     = excluded.logout,
+                updated_at = excluded.updated_at
+            """,
+            (endpoint_id, val, now),
+        )
+        conn.execute(
+            "UPDATE endpoint_policy SET logout = ?, updated_at = ? WHERE endpoint_id = ?",
+            (val, now, endpoint_id),
         )
         conn.commit()
 
@@ -613,7 +705,8 @@ def get_effective_policy(
         ep_row = conn.execute(
             """
             SELECT auto_priority, auto_score, auto_breakdown,
-                   manual_priority, excluded, notes, tags
+                   manual_priority, excluded, dangerous, logout,
+                   notes, tags
             FROM endpoint_policy
             WHERE endpoint_id = ?
             """,
@@ -639,6 +732,8 @@ def _default_policy(endpoint_id: str) -> EffectivePolicy:
         endpoint_id=endpoint_id,
         effective_level="NORMAL",
         excluded=False,
+        dangerous=False,
+        logout=False,
         source="default",
         matching_rule=None,
         auto_score=0,
@@ -673,13 +768,17 @@ def _resolve_policy(
     auto_breakdown  = {}
     manual_priority = None
     endpoint_excluded = False
+    endpoint_dangerous = False
+    endpoint_logout = False
     notes = ""
     tags: list[str] = []
 
     if ep_row is not None:
         auto_priority   = ep_row["auto_priority"] or "NORMAL"
         auto_score      = ep_row["auto_score"] or 0
-        endpoint_excluded = bool(ep_row["excluded"])
+        endpoint_excluded  = bool(ep_row["excluded"])
+        endpoint_dangerous = bool(ep_row["dangerous"]) if ep_row["dangerous"] is not None else False
+        endpoint_logout    = bool(ep_row["logout"]) if ep_row["logout"] is not None else False
         manual_priority = ep_row["manual_priority"]
         notes           = ep_row["notes"] or ""
         try:
@@ -737,6 +836,8 @@ def _resolve_policy(
         endpoint_id=endpoint_id,
         effective_level=effective_level,
         excluded=excluded,
+        dangerous=endpoint_dangerous,
+        logout=endpoint_logout,
         source=source,
         matching_rule=matching_rule,
         auto_score=auto_score,
@@ -789,7 +890,8 @@ def get_testable_endpoints(
                    e.content_type, e.auth_required, e.roles_seen,
                    e.first_seen, e.last_seen,
                    ep.auto_priority, ep.auto_score, ep.manual_priority,
-                   ep.excluded, ep.notes, ep.tags
+                   ep.excluded, ep.dangerous, ep.logout,
+                   ep.notes, ep.tags
             FROM endpoints e
             LEFT JOIN endpoint_policy ep ON ep.endpoint_id = e.id
             WHERE e.project_id = ?
@@ -820,6 +922,8 @@ def get_testable_endpoints(
             "auto_breakdown":  "{}",
             "manual_priority": row["manual_priority"],
             "excluded":        row["excluded"],
+            "dangerous":       row["dangerous"],
+            "logout":          row["logout"],
             "notes":           row["notes"] or "",
             "tags":            row["tags"] or "[]",
         }
@@ -848,6 +952,8 @@ def get_testable_endpoints(
             "auto_score":      policy.auto_score or 0,
             "manual_priority": policy.manual_priority,
             "excluded":        policy.excluded,
+            "dangerous":       policy.dangerous,
+            "logout":          policy.logout,
             "source":          policy.source,
         })
 

@@ -134,7 +134,10 @@ class ProxyManager:
             "mitmdump",
             "--listen-host", listen_host,
             "--listen-port", str(port),
-            # Skip upstream TLS verification — required for pentest interception.
+
+            "--mode",
+            "upstream:http://127.0.0.1:8081",
+
             "--ssl-insecure",
             "-s", str(_ADDON_PATH),
         ]

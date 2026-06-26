@@ -42,7 +42,7 @@ Dependencies: argparse, sys, talos.projects.manager, talos.projects.annotations,
 Data flow:
     CLI args → active project DB → annotations / policy modules → stdout
 Side effects:
-    - mark/unmark write to endpoint_annotations table.
+    - mark/unmark write to endpoint_policy (via annotations module).
     - priority/exclude/include write to endpoint_policy or policy_rules.
     - show and rules list are read-only.
     - All commands require an active project.
@@ -267,12 +267,12 @@ def _build_target_parser(parser: argparse.ArgumentParser) -> None:
 def cmd_endpoint_mark(project: object, args: argparse.Namespace) -> None:
     """
     Purpose:
-        Add a safety annotation to an endpoint, or clear all annotations (--safe).
+        Set a safety flag on an endpoint, or clear all flags (--safe).
     Input:
         project — active Project instance.
         args    — parsed args: endpoint_id (str), logout/dangerous/safe (bool).
     Side effects:
-        Writes to endpoint_annotations table.
+        Writes to endpoint_policy (dangerous/logout columns) via annotations module.
         Exits 1 if the endpoint does not exist.
     """
     db_path = project.db_path  # type: ignore[attr-defined]
@@ -299,12 +299,12 @@ def cmd_endpoint_mark(project: object, args: argparse.Namespace) -> None:
 def cmd_endpoint_unmark(project: object, args: argparse.Namespace) -> None:
     """
     Purpose:
-        Remove a specific annotation tag from an endpoint.
+        Clear a specific safety flag from an endpoint.
     Input:
         project — active Project instance.
         args    — parsed args: endpoint_id (str), logout/dangerous (bool).
     Side effects:
-        Deletes tag row from endpoint_annotations. No-op if tag is not present.
+        Clears the flag in endpoint_policy. No-op if already clear.
         Exits 1 if the endpoint does not exist.
     """
     db_path = project.db_path  # type: ignore[attr-defined]
@@ -328,12 +328,13 @@ def cmd_endpoint_unmark(project: object, args: argparse.Namespace) -> None:
 def cmd_endpoint_show(project: object, args: argparse.Namespace) -> None:
     """
     Purpose:
-        Display the endpoint record, safety annotations, and effective policy.
+        Display the endpoint record and its full unified policy (priority,
+        exclusion, dangerous, logout, score breakdown, notes, tags).
     Input:
         project — active Project instance.
         args    — parsed args: endpoint_id (str).
     Side effects:
-        Reads endpoint, annotations, and policy from DB; prints to stdout.
+        Reads endpoint and policy from DB; prints to stdout.
         Exits 1 if the endpoint does not exist.
     """
     db_path = project.db_path  # type: ignore[attr-defined]
@@ -345,9 +346,7 @@ def cmd_endpoint_show(project: object, args: argparse.Namespace) -> None:
         print(f"Error: Endpoint '{endpoint_id}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    tags = annotations_mod.get_annotations(db_path, endpoint_id)
     ep_label = f"{endpoint['method']} {endpoint['host']}{endpoint['normalized_path']}"
-    tag_str = ", ".join(sorted(tags)) if tags else "none"
 
     policy = policy_mod.get_effective_policy(
         db_path=db_path,
@@ -356,9 +355,11 @@ def cmd_endpoint_show(project: object, args: argparse.Namespace) -> None:
         normalized_path=endpoint["normalized_path"],
     )
 
-    excl_str = "YES" if policy.excluded else "no"
-    manual_str = policy.manual_priority or "—"
-    source_str = policy.source
+    excl_str      = "YES" if policy.excluded   else "no"
+    dangerous_str = "YES" if policy.dangerous  else "no"
+    logout_str    = "YES" if policy.logout     else "no"
+    manual_str    = policy.manual_priority or "—"
+    source_str    = policy.source
     if policy.matching_rule:
         source_str += f" (rule: {policy.matching_rule})"
 
@@ -374,11 +375,12 @@ def cmd_endpoint_show(project: object, args: argparse.Namespace) -> None:
     print(
         f"Endpoint  : {endpoint_id}\n"
         f"  {ep_label}\n\n"
-        f"Safety Annotations : {tag_str}\n\n"
         f"--- Endpoint Policy ---\n"
         f"  Effective Priority : {policy.effective_level}  (source: {source_str})\n"
         f"  Manual Override    : {manual_str}\n"
         f"  Excluded           : {excl_str}\n"
+        f"  Dangerous          : {dangerous_str}\n"
+        f"  Logout             : {logout_str}\n"
         f"{breakdown_str}\n"
         f"  Notes : {notes_str}\n"
         f"  Tags  : {tags_policy_str}"

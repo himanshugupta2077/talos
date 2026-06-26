@@ -76,13 +76,25 @@ def cmd_start(manager: ProjectManager, args: argparse.Namespace) -> None:
         "mitmdump",
         "--listen-host", args.listen_host,
         "--listen-port", str(args.port),
-        # Skip upstream TLS verification — required for pentest interception.
-        # mitmproxy's certifi bundle cannot verify all certificate chains
-        # (common with Cloudflare and some CDNs on Windows). This is intentional
-        # for a MITM tool; we are the intended man-in-the-middle.
+
+        "--mode",
+        "upstream:http://127.0.0.1:8081",
+
         "--ssl-insecure",
         "-s", str(addon_path),
     ]
+
+    # mitmdump_cmd = [
+    #     "mitmdump",
+    #     "--listen-host", args.listen_host,
+    #     "--listen-port", str(args.port),
+    #     # Skip upstream TLS verification — required for pentest interception.
+    #     # mitmproxy's certifi bundle cannot verify all certificate chains
+    #     # (common with Cloudflare and some CDNs on Windows). This is intentional
+    #     # for a MITM tool; we are the intended man-in-the-middle.
+    #     "--ssl-insecure",
+    #     "-s", str(addon_path),
+    # ]
 
     if sys.platform == "win32":
         # os.execvp is not available on Windows; subprocess.run blocks instead.

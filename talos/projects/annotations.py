@@ -2,128 +2,135 @@
 Module: talos.projects.annotations
 
 Purpose:
-    CRUD for endpoint safety annotations.
-    Allows users to tag endpoints as 'logout' or 'dangerous' to prevent
-    unsafe automated replay.
+    Public interface for endpoint safety tags (logout, dangerous).
 
-    Valid tags:
-        logout    — never replay this endpoint (any mode).
-        dangerous — skip in automated replay; allowed manually.
+    Previously backed by the endpoint_annotations table.  As of schema v24
+    these flags live in endpoint_policy.dangerous and endpoint_policy.logout.
+    This module is retained as the single entry point so all callers
+    (replay engine, scheduler, BAC engine) continue to work unchanged.
 
-    Absence of both tags means the endpoint is safe (default state).
+    Supported tags:
+        logout    — never replay this endpoint in any mode.
+        dangerous — skip in automated replay; manual replay is still allowed.
 
-Dependencies: sqlite3, pathlib, talos.projects.db
+    Absence of both flags means the endpoint is safe (default state).
+
+Dependencies: pathlib, talos.projects.policy
 Data flow:
-    endpoint_cli   → add_annotation / remove_annotation / clear_annotations / get_annotations
-    replay.engine  → get_annotations (read-only guard before execution)
-    replay.auth_strip → get_annotations (read-only guard before execution)
+    replay.engine  → get_annotations() — read-only guard before execution
+    replay.auth_strip → get_annotations() — read-only guard before execution
+    scheduler.scheduler → get_annotations() — pre-check before job execution
+    bac.engine → get_annotations() — guard before BAC replay
+    endpoint_cli → add_annotation / remove_annotation / clear_annotations
 Side effects:
-    - add_annotation, remove_annotation, clear_annotations write to endpoint_annotations.
-    - get_annotations is read-only after the migration check.
+    - add_annotation, remove_annotation, clear_annotations write to endpoint_policy.
+    - get_annotations is read-only.
 """
 
-import sqlite3
 from pathlib import Path
 
 from talos.projects.db import migrate_project_db
+from talos.projects.policy import set_dangerous, set_logout
 
 
-# Tags recognised by the system.  Any other value is rejected at the boundary.
+# Tags recognised at the public boundary.
 _VALID_TAGS: frozenset[str] = frozenset({"logout", "dangerous"})
 
 
 def add_annotation(db_path: Path, endpoint_id: str, tag: str) -> None:
     """
     Purpose:
-        Add a safety tag to an endpoint.  No-op if the tag already exists.
+        Set a safety flag on an endpoint.  No-op if already set.
     Input:
         db_path     — Path to the project's talos.db.
         endpoint_id — UUID of the target endpoint.
-        tag         — Must be one of: 'logout', 'dangerous'.
-    Output:
-        None
+        tag         — 'logout' or 'dangerous'.
+    Output: None.
     Side effects:
-        Inserts one row into endpoint_annotations (INSERT OR IGNORE — idempotent).
+        Upserts endpoint_policy row; sets the corresponding boolean column.
+    Raises:
+        ValueError when tag is not one of the supported values.
     """
     if tag not in _VALID_TAGS:
         raise ValueError(
             f"Invalid annotation tag: '{tag}'. Valid tags: {sorted(_VALID_TAGS)}"
         )
-    migrate_project_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO endpoint_annotations (endpoint_id, tag, created_at)
-            VALUES (?, ?, datetime('now'))
-            """,
-            (endpoint_id, tag),
-        )
-        conn.commit()
+    if tag == "logout":
+        set_logout(db_path, endpoint_id, logout=True)
+    else:
+        set_dangerous(db_path, endpoint_id, dangerous=True)
 
 
 def remove_annotation(db_path: Path, endpoint_id: str, tag: str) -> None:
     """
     Purpose:
-        Remove a safety tag from an endpoint.  No-op if the tag is not present.
+        Clear a safety flag from an endpoint.  No-op if not set.
     Input:
         db_path     — Path to the project's talos.db.
         endpoint_id — UUID of the target endpoint.
-        tag         — Tag to remove.
-    Output:
-        None
+        tag         — Tag to remove ('logout' or 'dangerous').
+    Output: None.
     Side effects:
-        Deletes the matching row from endpoint_annotations if it exists.
+        Updates endpoint_policy row; clears the corresponding boolean column.
     """
-    migrate_project_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            "DELETE FROM endpoint_annotations WHERE endpoint_id = ? AND tag = ?",
-            (endpoint_id, tag),
-        )
-        conn.commit()
+    if tag == "logout":
+        set_logout(db_path, endpoint_id, logout=False)
+    elif tag == "dangerous":
+        set_dangerous(db_path, endpoint_id, dangerous=False)
 
 
 def clear_annotations(db_path: Path, endpoint_id: str) -> None:
     """
     Purpose:
-        Remove all annotations from an endpoint, restoring the default safe state.
+        Clear both safety flags from an endpoint, restoring the default safe state.
     Input:
         db_path     — Path to the project's talos.db.
         endpoint_id — UUID of the target endpoint.
-    Output:
-        None
+    Output: None.
     Side effects:
-        Deletes all rows for the endpoint from endpoint_annotations.
+        Clears dangerous=0 and logout=0 on the endpoint_policy row.
     """
-    migrate_project_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            "DELETE FROM endpoint_annotations WHERE endpoint_id = ?",
-            (endpoint_id,),
-        )
-        conn.commit()
+    set_dangerous(db_path, endpoint_id, dangerous=False)
+    set_logout(db_path, endpoint_id, logout=False)
 
 
 def get_annotations(db_path: Path, endpoint_id: str) -> frozenset:
     """
     Purpose:
-        Return all active annotation tags for an endpoint.
+        Return the active safety flags for an endpoint as a frozenset of tag strings.
     Input:
         db_path     — Path to the project's talos.db.
         endpoint_id — UUID of the target endpoint.
     Output:
-        frozenset of tag strings.  Empty frozenset if no annotations exist or
-        the database does not exist yet.
+        frozenset of tag strings (subset of {'logout', 'dangerous'}).
+        Empty frozenset when no policy row exists or both flags are clear.
     Side effects:
-        Calls migrate_project_db to ensure the annotations table is present.
+        Calls migrate_project_db to ensure the schema is current.
         Read-only after migration.
     """
+    import sqlite3
+
     migrate_project_db(db_path)
     if not db_path.exists():
         return frozenset()
-    with sqlite3.connect(str(db_path)) as conn:
-        rows = conn.execute(
-            "SELECT tag FROM endpoint_annotations WHERE endpoint_id = ?",
-            (endpoint_id,),
-        ).fetchall()
-    return frozenset(row[0] for row in rows)
+
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as conn:
+            row = conn.execute(
+                "SELECT dangerous, logout FROM endpoint_policy WHERE endpoint_id = ?",
+                (endpoint_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        # Table may not exist on a very old DB that hasn't been migrated yet.
+        return frozenset()
+
+    if row is None:
+        return frozenset()
+
+    tags = set()
+    if row[0]:   # dangerous
+        tags.add("dangerous")
+    if row[1]:   # logout
+        tags.add("logout")
+    return frozenset(tags)

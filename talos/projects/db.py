@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -466,6 +466,8 @@ CREATE TABLE IF NOT EXISTS endpoint_policy (
     auto_breakdown  TEXT    NOT NULL DEFAULT '{}',
     manual_priority TEXT,
     excluded        INTEGER NOT NULL DEFAULT 0,
+    dangerous       INTEGER NOT NULL DEFAULT 0,
+    logout          INTEGER NOT NULL DEFAULT 0,
     notes           TEXT    NOT NULL DEFAULT '',
     tags            TEXT    NOT NULL DEFAULT '[]',
     updated_at      TEXT    NOT NULL
@@ -619,6 +621,8 @@ def migrate_project_db(db_path: Path) -> None:
         v22 → v23: Add endpoint_policy and policy_rules tables for the
                    Endpoint Policy system (auto-priority, manual-priority,
                    exclusion, path-based rules).
+        v23 → v24: Add dangerous and logout columns to endpoint_policy;
+                   migrate data from endpoint_annotations.
     """
     if not db_path.exists():
         return
@@ -1045,6 +1049,59 @@ def migrate_project_db(db_path: Path) -> None:
                 """
             )
             conn.execute("UPDATE schema_version SET version = 23")
+            conn.commit()
+
+        if current < 24:
+            # Add dangerous and logout columns to endpoint_policy.
+            existing_ep = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(endpoint_policy)"
+                ).fetchall()
+            }
+            if "dangerous" not in existing_ep:
+                conn.execute(
+                    "ALTER TABLE endpoint_policy"
+                    " ADD COLUMN dangerous INTEGER NOT NULL DEFAULT 0"
+                )
+            if "logout" not in existing_ep:
+                conn.execute(
+                    "ALTER TABLE endpoint_policy"
+                    " ADD COLUMN logout INTEGER NOT NULL DEFAULT 0"
+                )
+            # Migrate any existing endpoint_annotations rows into endpoint_policy.
+            # For each annotated endpoint that has no policy row yet, insert a
+            # default row first, then apply the boolean flags.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO endpoint_policy
+                    (endpoint_id, auto_priority, auto_score, auto_breakdown,
+                     manual_priority, excluded, dangerous, logout,
+                     notes, tags, updated_at)
+                SELECT DISTINCT ea.endpoint_id,
+                    'NORMAL', 0, '{}', NULL, 0, 0, 0, '', '[]', datetime('now')
+                FROM endpoint_annotations ea
+                """
+            )
+            conn.execute(
+                """
+                UPDATE endpoint_policy
+                SET logout = 1
+                WHERE endpoint_id IN (
+                    SELECT endpoint_id FROM endpoint_annotations WHERE tag = 'logout'
+                )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE endpoint_policy
+                SET dangerous = 1
+                WHERE endpoint_id IN (
+                    SELECT endpoint_id FROM endpoint_annotations WHERE tag = 'dangerous'
+                )
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 24")
             conn.commit()
 
 
