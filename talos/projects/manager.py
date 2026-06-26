@@ -35,6 +35,7 @@ from talos.projects.model import (
     make_project_id,
     utc_now_iso,
 )
+from talos.projects.policy_score import write_default_score_config
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,7 @@ class ProjectManager:
         project.archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_headers_drop_template(project.headers_drop_path)
         init_project_db(project.db_path)
+        write_default_score_config(data_dir)
 
         registry[project_id] = project.to_dict()
         self._save_registry(registry)

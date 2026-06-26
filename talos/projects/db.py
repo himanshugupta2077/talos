@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -447,7 +447,49 @@ CREATE TABLE IF NOT EXISTS session_suspicion_state (
     role_id           TEXT PRIMARY KEY REFERENCES roles(id),
     suspicion_count   INTEGER NOT NULL DEFAULT 0,
     last_checked_at   TEXT
-);"""
+);
+
+-- ------------------------------------------------------------------ --
+-- endpoint_policy: per-endpoint policy record                          --
+-- auto_priority   : computed by policy_score heuristics               --
+-- auto_score      : raw integer score from scoring engine             --
+-- auto_breakdown  : JSON dict {contributor_label: delta}              --
+-- manual_priority : tester override; NULL means auto is used          --
+-- excluded        : 1 = skip in all attack modules regardless of pri  --
+-- notes           : free-form tester notes for UI / reports           --
+-- tags            : JSON array of arbitrary string labels             --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS endpoint_policy (
+    endpoint_id     TEXT PRIMARY KEY REFERENCES endpoints(id),
+    auto_priority   TEXT    NOT NULL DEFAULT 'NORMAL',
+    auto_score      INTEGER NOT NULL DEFAULT 0,
+    auto_breakdown  TEXT    NOT NULL DEFAULT '{}',
+    manual_priority TEXT,
+    excluded        INTEGER NOT NULL DEFAULT 0,
+    notes           TEXT    NOT NULL DEFAULT '',
+    tags            TEXT    NOT NULL DEFAULT '[]',
+    updated_at      TEXT    NOT NULL
+);
+
+-- ------------------------------------------------------------------ --
+-- policy_rules: project-scoped path-pattern policy rules              --
+-- pattern  : path glob (e.g. /static/* or /api/admin/*)              --
+-- priority : NULL | CRITICAL | HIGH | NORMAL | LOW                   --
+-- excluded : 1 = all matching endpoints excluded from candidate gen  --
+-- A NULL priority means the rule only controls exclusion.             --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS policy_rules (
+    id          TEXT    PRIMARY KEY,
+    project_id  TEXT    NOT NULL,
+    pattern     TEXT    NOT NULL,
+    priority    TEXT,
+    excluded    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    UNIQUE (project_id, pattern)
+);
+
+CREATE INDEX IF NOT EXISTS idx_policy_rules_project
+    ON policy_rules (project_id);"""
 
 
 def init_project_db(db_path: Path) -> None:
@@ -574,6 +616,9 @@ def migrate_project_db(db_path: Path) -> None:
                    session_health_control_flows, session_suspicion_state tables.
         v21 → v22: Add matched_section, matched_group, matched_rules columns to
                    bac_results for rich decision evidence storage.
+        v22 → v23: Add endpoint_policy and policy_rules tables for the
+                   Endpoint Policy system (auto-priority, manual-priority,
+                   exclusion, path-based rules).
     """
     if not db_path.exists():
         return
@@ -960,6 +1005,46 @@ def migrate_project_db(db_path: Path) -> None:
                     "ALTER TABLE bac_results ADD COLUMN matched_rules TEXT"
                 )
             conn.execute("UPDATE schema_version SET version = 22")
+            conn.commit()
+
+        if current < 23:
+            # Add endpoint_policy and policy_rules tables for the Endpoint
+            # Policy system — centralised priority, exclusion, and metadata.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endpoint_policy (
+                    endpoint_id     TEXT PRIMARY KEY REFERENCES endpoints(id),
+                    auto_priority   TEXT    NOT NULL DEFAULT 'NORMAL',
+                    auto_score      INTEGER NOT NULL DEFAULT 0,
+                    auto_breakdown  TEXT    NOT NULL DEFAULT '{}',
+                    manual_priority TEXT,
+                    excluded        INTEGER NOT NULL DEFAULT 0,
+                    notes           TEXT    NOT NULL DEFAULT '',
+                    tags            TEXT    NOT NULL DEFAULT '[]',
+                    updated_at      TEXT    NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_rules (
+                    id          TEXT    PRIMARY KEY,
+                    project_id  TEXT    NOT NULL,
+                    pattern     TEXT    NOT NULL,
+                    priority    TEXT,
+                    excluded    INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT    NOT NULL,
+                    UNIQUE (project_id, pattern)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_policy_rules_project
+                    ON policy_rules (project_id)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 23")
             conn.commit()
 
 

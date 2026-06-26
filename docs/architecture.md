@@ -83,6 +83,11 @@ CLI (talos.__main__)
     │       ├── Extract parameters (query params, JSON body, form body)
     │       ├── Upsert parameters per endpoint (type convergence, dedup, 5-sample cap)
     │       ├── COMMIT parameters (failure → rollback param writes only; flow unaffected)
+    │       ├── Compute auto-priority score (policy_score heuristics)
+    │       │       Signals: method, path keywords, path param types, auth, content-type,
+    │       │       response type, parameter names, role visibility
+    │       │       Stores score + contributors + level in endpoint_policy (UPSERT)
+    │       ├── COMMIT auto-priority (failure → log, skipped; flow unaffected)
     │       └── Append to archive/flows-<date>.jsonl
     │               bytes values base64-encoded for JSON portability
     │               Rotates file at UTC midnight
@@ -448,7 +453,112 @@ talos access signals                                      show immediate BAC sig
 talos endpoint mark   <endpoint_id> --logout | --dangerous | --safe
 talos endpoint unmark <endpoint_id> --logout | --dangerous
 talos endpoint show   <endpoint_id>
+
+talos endpoint priority set endpoint <id> <CRITICAL|HIGH|NORMAL|LOW>
+talos endpoint priority set path "<pattern>" <level>
+talos endpoint priority clear endpoint <id>
+talos endpoint priority clear path "<pattern>"
+
+talos endpoint exclude endpoint <id>
+talos endpoint exclude path "<pattern>"
+talos endpoint include endpoint <id>
+talos endpoint include path "<pattern>"
+
+talos endpoint rules list
 ```
+
+---
+
+## Endpoint Policy System
+
+The Endpoint Policy system is the single authority that decides:
+
+- **What is the effective priority of an endpoint?**
+- **Is this endpoint excluded from candidate generation?**
+- **Which rule produced that decision?**
+
+Every attack module, BAC engine, scheduler, and future automation calls
+`get_testable_endpoints(db_path, project_id)` instead of querying the endpoints
+table directly.  The policy engine handles filtering and ordering centrally.
+
+### Policy Types
+
+| Policy | Storage | Purpose |
+|--------|---------|---------|
+| Auto Priority | `endpoint_policy.auto_priority` | Computed by scoring heuristics; updated on every flow |
+| Manual Priority | `endpoint_policy.manual_priority` | Tester override; always supersedes auto |
+| Exclusion (endpoint) | `endpoint_policy.excluded` | This specific endpoint is never a candidate |
+| Exclusion (path rule) | `policy_rules.excluded` | All endpoints matching the pattern are excluded |
+| Path Priority Rule | `policy_rules.priority` | Override priority for all matching endpoints |
+| Notes | `endpoint_policy.notes` | Free-form tester notes |
+| Tags | `endpoint_policy.tags` | Arbitrary labels for filtering/reporting |
+
+### Effective Priority Resolution
+
+```
+For each endpoint:
+
+  1. Does endpoint_policy.manual_priority exist?
+     → YES: use it  (source: manual)
+
+  2. Does any policy_rules row match the normalized_path?
+     → YES: use rule priority  (source: rule; pattern recorded)
+
+  3. Use endpoint_policy.auto_priority  (source: auto)
+```
+
+### Exclusion Resolution (independent of priority)
+
+```
+endpoint_policy.excluded = 1 for this endpoint_id?
+  → YES: excluded
+
+Any policy_rules row with excluded=1 matches normalized_path?
+  → YES: excluded
+
+→ else: included → generate candidates
+```
+
+### Auto-Priority Scoring
+
+Computed by `talos.projects.policy_score.compute_auto_priority()` after each
+endpoint upsert in the FlowWorker pipeline.
+
+Signals (additive weighted scoring):
+
+| Signal Category | Example contributions |
+|-----------------|-----------------------|
+| HTTP method | DELETE +60, POST +35, GET +15 |
+| Sensitive path keywords | /admin +50, /transfer +60, /permission +45 |
+| Endpoint action verbs | grant +50, revoke +50, approve +40 |
+| Business keywords | refund +55, payroll +60, checkout +50 |
+| Path parameter types | UUID +15, sequential int +15 |
+| Authentication present | +15 |
+| Role visibility | seen by multiple roles +15 |
+| Response content-type | JSON +10, CSV/ZIP/PDF +30-40 |
+| Request body type | multipart +30, JSON +15, XML +20 |
+| Sensitive parameter names | secret +50, api_key +40, tenant_id +35 |
+| Low-priority signals | /static -70, /health -80, .css -80 |
+
+Score thresholds → priority level (per-project configurable in `policy_score.json`):
+
+```
+score >= 100  →  CRITICAL
+score >= 70   →  HIGH
+score >= 40   →  NORMAL
+score <  40   →  LOW
+```
+
+Every score is fully explainable — the contributors dict is stored in
+`endpoint_policy.auto_breakdown` and displayed by `talos endpoint show`.
+
+### Pattern Matching Rules
+
+`/prefix/*` — matches any path starting with `/prefix/`.
+`/exact`    — matches only `/exact` or paths directly under it.
+Comparison is case-insensitive.
+
+Most specific rule wins: exact endpoint > path rule > auto.
 
 ---
 
@@ -481,7 +591,9 @@ talos endpoint show   <endpoint_id>
 | `talos.projects.auth` | CRUD for per-project auth config (cookie/header names); additive set, clear | Enforcement, inference, credential storage |
 | `talos.projects.auth_cli` | Argument parsing + output for auth set/show/clear/test commands; `auth test` default path enqueues scheduler job; `--right-now` executes immediately | State management, HTTP I/O |
 | `talos.projects.annotations` | CRUD for endpoint safety tags (logout, dangerous); read-only guard consumed by replay engine and auth-strip | Enforcement, inference |
-| `talos.projects.endpoint_cli` | Argument parsing + output for endpoint mark/unmark/show commands | State management, replay execution |
+| `talos.projects.endpoint_cli` | Argument parsing + output for endpoint mark/unmark/show/priority/exclude/include/rules commands | State management, replay execution |
+| `talos.projects.policy_score` | Pure weighted scoring engine: compute_auto_priority() → (score, level, contributors); load per-project config from policy_score.json | DB access, I/O, side effects |
+| `talos.projects.policy` | Endpoint Policy engine: upsert_auto_priority(), set_manual_priority(), set_excluded(), path rule CRUD, get_effective_policy(), get_testable_endpoints() — single authority for priority/exclusion decisions | Scoring logic, proxy, replay |
 | `talos.replay.db` | Read flow/endpoint records for replay input; insert replayed flows, diff rows, and auth test results; calls `migrate_project_db` on every entry | Business logic, HTTP I/O |
 | `talos.replay.diff` | Pure diff computation between original and replay flow; produces DiffResult (verdict, status_diff, length_diff) | DB access, I/O |
 | `talos.replay.engine` | Async exact (Type 1) replay via httpx; reconstruct request from stored flow; capture response; compute + store diff; store result linked to original | Mutation, auth stripping |
@@ -615,6 +727,10 @@ FlowQueue → FlowWorker._run() (daemon thread)
                   upsert parameters per endpoint (type inference, dedup, 5-sample cap)
                   COMMIT parameters
                   on parameter failure → rollback param writes only; flow unaffected
+                  compute auto-priority score (policy_score heuristics)
+                    → upsert endpoint_policy (INSERT OR IGNORE + UPDATE auto fields)
+                  COMMIT auto-priority
+                  on score failure → rollback; log; flow unaffected
             → _persist_archive(flow)
                   file: <data_dir>/archive/flows-YYYY-MM-DD.jsonl
                   bytes → {"_b64": "..."}  (base64, lossless)
@@ -638,6 +754,8 @@ Shutdown:
       archive/
         flows-YYYY-MM-DD.jsonl  ← ground truth; one JSON line per flow
       headers_drop.txt   ← per-project header filter (copied from global template)
+      policy_score.json  ← per-project score thresholds (CRITICAL/HIGH/NORMAL cutoffs)
+                            edit to tune auto-priority sensitivity for this application
 ```
 
 ### DB vs Archive
@@ -752,6 +870,27 @@ endpoint_annotations  safety tags applied manually per endpoint
   created_at        TEXT — UTC ISO-8601
   PRIMARY KEY (endpoint_id, tag)
 
+endpoint_policy     per-endpoint Endpoint Policy record
+  endpoint_id       PK FK → endpoints.id
+  auto_priority     TEXT NOT NULL — CRITICAL|HIGH|NORMAL|LOW (from scoring engine)
+  auto_score        INTEGER NOT NULL — raw integer score from policy_score heuristics
+  auto_breakdown    TEXT NOT NULL — JSON dict {contributor_label: signed_delta}
+  manual_priority   TEXT — NULL | CRITICAL|HIGH|NORMAL|LOW (tester override)
+  excluded          INTEGER — 1 = skip in all attack modules regardless of priority
+  notes             TEXT — free-form tester notes
+  tags              TEXT — JSON array of arbitrary string labels
+  updated_at        TEXT — UTC ISO-8601
+
+policy_rules        project-scoped path-pattern policy rules
+  id                TEXT PK — UUID
+  project_id        TEXT NOT NULL
+  pattern           TEXT NOT NULL — path glob (e.g. /static/* or /api/admin/*)
+  priority          TEXT — NULL | CRITICAL|HIGH|NORMAL|LOW
+  excluded          INTEGER — 1 = all matching endpoints excluded from candidate gen
+  created_at        TEXT — UTC ISO-8601
+  UNIQUE (project_id, pattern)
+  Matching: /prefix/* = prefix match; exact string = exact or prefix-without-glob
+
 role_auth           per-role login and checkpoint flow assignments
   role_id           PK FK → roles.id
   login_flow_id     TEXT (nullable) — FK → flows.id; flow replayed to generate a token
@@ -820,6 +959,7 @@ in-place. Called automatically by `talos.replay.db` on every replay operation.
 | v16 → v17 | Add `attack_host_exclusions` table |
 | v17 → v18 | Rebuild `attack_host_exclusions` with `path` column; update PRIMARY KEY |
 | v21 → v22 | Add `matched_section`, `matched_group`, `matched_rules` columns to `bac_results` for rich decision evidence |
+| v22 → v23 | Add `endpoint_policy` and `policy_rules` tables for the Endpoint Policy system |
 
 ---
 

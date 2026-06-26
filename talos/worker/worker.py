@@ -64,6 +64,8 @@ from talos.projects.endpoints import NormalizedFlowURL, normalize_flow_url
 from talos.projects.model import Project
 from talos.projects.outscope import load_domain_set
 from talos.projects.parameters import extract_flow_params, upsert_endpoint_params
+from talos.projects.policy import upsert_auto_priority
+from talos.projects.policy_score import compute_auto_priority, load_score_config
 from talos.proxy.queue import FlowQueue
 from talos.proxy.scope import is_out_of_scope
 
@@ -441,13 +443,16 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
         - Opens a new connection, upserts endpoint state, inserts one flow row,
           upserts endpoint_roles (only when endpoint_id resolved), commits the
           primary record, then extracts and upserts parameters in a second
-          commit (also only when endpoint_id resolved), closes connection.
+          commit (also only when endpoint_id resolved), then updates endpoint
+          auto-priority score, closes connection.
         - On normalization failure: logs ERROR, sets endpoint_id to NULL,
           continues with flow insert — does not raise.
         - On endpoint upsert failure: rolls back the failed endpoint work, logs
           ERROR, inserts the flow with NULL endpoint_id — does not raise.
         - On parameter extraction failure: rolls back incomplete param writes,
           logs ERROR, flow and endpoint remain committed — does not raise.
+        - On policy score failure: logs ERROR, flow and endpoint remain
+          committed — does not raise.
     Raises:
         sqlite3.Error on DB-level failure outside the endpoint upsert scope
         (caller logs and handles via retry logic).
@@ -578,6 +583,7 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
 
         # Parameter extraction runs in a second commit so any failure only
         # rolls back the uncommitted param writes, not the flow record.
+        extracted_param_names: list[str] = []
         if endpoint_id is not None:
             try:
                 params = extract_flow_params(
@@ -588,12 +594,38 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
                 if params:
                     upsert_endpoint_params(conn, endpoint_id, params)
                     conn.commit()
+                    extracted_param_names = [p.name for p in params]
             except Exception:
                 conn.rollback()  # discard incomplete param writes only
                 logger.error(
                     "Parameter extraction failed — flow_id=%s endpoint_id=%s"
                     " — parameters skipped, flow unaffected",
                     flow.get("flow_id"),
+                    endpoint_id,
+                    exc_info=True,
+                )
+
+        # Auto-priority scoring: compute or re-compute the endpoint's priority
+        # score now that we have the latest observation data (auth, content-type,
+        # parameters).  Runs after parameters so the score includes param names.
+        # Failure here is non-fatal — flow and endpoint are already committed.
+        if endpoint_id is not None:
+            try:
+                _upsert_endpoint_auto_priority(
+                    conn=conn,
+                    endpoint_id=endpoint_id,
+                    flow=flow,
+                    normalized_path=normalized_url.normalized_path if normalized_url else "",
+                    response_content_type=response_content_type,
+                    auth_required=auth_required,
+                    parameter_names=extracted_param_names,
+                    db_path=db_path,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.error(
+                    "Auto-priority scoring failed — endpoint_id=%s — skipping",
                     endpoint_id,
                     exc_info=True,
                 )
@@ -825,3 +857,82 @@ def _upsert_endpoint_role(
         (endpoint_id, role_id, captured_at, captured_at),
     )
 
+
+def _upsert_endpoint_auto_priority(
+    conn: sqlite3.Connection,
+    endpoint_id: str,
+    flow: dict,
+    normalized_path: str,
+    response_content_type: str,
+    auth_required: bool,
+    parameter_names: list[str],
+    db_path: Path,
+) -> None:
+    """
+    Purpose:
+        Compute the automatic priority score for an endpoint and persist it
+        to endpoint_policy via upsert_auto_priority.
+        Called from _persist_db after each endpoint upsert so the score
+        reflects the latest observation data (parameters, auth, content-type).
+    Input:
+        conn                  — open SQLite connection (caller manages commit).
+        endpoint_id           — UUID of the endpoint.
+        flow                  — enriched flow dict (provides method, roles_seen).
+        normalized_path       — canonical path used for scoring signals.
+        response_content_type — response Content-Type header value.
+        auth_required         — True when the request carried auth material.
+        parameter_names       — observed query/body parameter names from this flow.
+        db_path               — Path to the project's talos.db.
+                                Used to load per-project scoring config.
+    Output: None.
+    Side effects:
+        Calls upsert_auto_priority() which INSERT OR IGNOREs + UPDATEs
+        endpoint_policy.  Caller must commit.
+    """
+    # Count distinct roles that have seen this endpoint.
+    roles_seen_row = conn.execute(
+        "SELECT roles_seen FROM endpoints WHERE id = ?",
+        (endpoint_id,),
+    ).fetchone()
+
+    roles_seen_count = 1
+    if roles_seen_row and roles_seen_row["roles_seen"]:
+        try:
+            roles_seen_list = json.loads(roles_seen_row["roles_seen"])
+            roles_seen_count = len(roles_seen_list) if isinstance(roles_seen_list, list) else 1
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    total_roles_row = conn.execute("SELECT COUNT(*) FROM roles").fetchone()
+    total_roles = total_roles_row[0] if total_roles_row else 1
+
+    # Load per-project score config — falls back to built-in defaults if absent.
+    score_config = load_score_config(db_path.parent)
+
+    # Request content-type is not stored on the endpoint row; extract from flow.
+    req_headers = flow.get("request_headers", {})
+    request_content_type = ""
+    for key, val in req_headers.items():
+        if str(key).lower() == "content-type":
+            request_content_type = str(val[0]) if isinstance(val, list) else str(val)
+            break
+
+    score, level, contributors = compute_auto_priority(
+        method=flow.get("method", ""),
+        normalized_path=normalized_path,
+        response_content_type=response_content_type,
+        auth_required=auth_required,
+        roles_seen_count=roles_seen_count,
+        total_roles=total_roles,
+        parameter_names=parameter_names,
+        request_content_type=request_content_type,
+        config=score_config,
+    )
+
+    upsert_auto_priority(
+        conn=conn,
+        endpoint_id=endpoint_id,
+        auto_priority=level,
+        auto_score=score,
+        auto_breakdown=contributors,
+    )
