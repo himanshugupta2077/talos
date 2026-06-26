@@ -13,6 +13,7 @@ Purpose:
         talos attack bac header-inject  [--role NAME] [--auto-generate]
         talos attack bac host-fuzz      [--role NAME] [--auto-generate]
         talos attack bac role-inject    [--role NAME] [--auto-generate]
+        talos attack bac filter         init | show | validate
 
     Each command:
         1. Scans the access matrix for BAC candidates.
@@ -25,6 +26,8 @@ Purpose:
     --auto-generate  — Auto-generate a session token for each attacker role that
                        lacks one (replays the login flow inline).
 
+    filter           — Manage BAC-decision-filter.yaml (init | show | validate).
+
     Auth prerequisites (checked per attacker role):
         - At least one auth flow with an extractor configured → ERROR + no jobs if missing.
         - auth_config non-empty      → ERROR + no jobs if missing.
@@ -33,7 +36,8 @@ Purpose:
 Dependencies: argparse, json, sys, uuid
               talos.projects.manager, talos.projects.access,
               talos.projects.bac.candidates, talos.projects.bac.auth_prereq,
-              talos.projects.bac.variants, talos.scheduler.db
+              talos.projects.bac.variants, talos.projects.bac.filter_cli,
+              talos.scheduler.db
 Data flow:
     attack_cli.run_attack_cli → run_bac_cli → bac.candidates → bac.auth_prereq
         → scheduler.db.enqueue_job
@@ -485,6 +489,10 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
     )
     _add_bac_shared_args(p)
 
+    # filter
+    from talos.projects.bac.filter_cli import build_filter_parser
+    build_filter_parser(bac_sub)
+
 
 # ------------------------------------------------------------------ #
 # Entry point called by attack_cli                                     #
@@ -509,6 +517,11 @@ def run_bac_cli(manager: ProjectManager, args: argparse.Namespace) -> None:
         "host-fuzz":     cmd_bac_host_fuzz,
         "role-inject":   cmd_bac_role_inject,
     }
+
+    if args.bac_cmd == "filter":
+        from talos.projects.bac.filter_cli import run_filter_cli
+        run_filter_cli(manager, args)
+        return
 
     handler = dispatch.get(args.bac_cmd)
     if handler is None:

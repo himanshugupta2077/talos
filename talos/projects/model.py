@@ -119,6 +119,16 @@ class Project:
         """
         return Path(self.data_dir) / "headers_drop.txt"
 
+    @property
+    def bac_decision_filter_path(self) -> Path:
+        """
+        Path to the per-project BAC decision filter configuration file.
+        When present, the BAC engine evaluates this file to determine whether
+        replayed responses represent POSSIBLE_BAC, SECURE, or UNKNOWN.
+        Created on demand via: talos attack bac filter init
+        """
+        return Path(self.data_dir) / "BAC-decision-filter.yaml"
+
     # ------------------------------------------------------------------ #
     # Serialization                                                        #
     # ------------------------------------------------------------------ #

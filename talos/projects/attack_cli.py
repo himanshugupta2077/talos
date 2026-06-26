@@ -41,7 +41,7 @@ from talos.projects.attack_config import (
     remove_unauth_exclusion,
     list_unauth_excluded_hosts,
 )
-from talos.projects.manager import ProjectManager, NoActiveProject
+from talos.projects.manager import ProjectManager
 from talos.scheduler import db as sched_db
 # ------------------------------------------------------------------ #
 # Internal helpers                                                     #
@@ -52,11 +52,11 @@ def _require_active(manager: ProjectManager):
     Purpose: Return the active project or exit with an error message.
     Side effects: May call sys.exit(1).
     """
-    try:
-        return manager.get_active()
-    except NoActiveProject:
+    project = manager.active()
+    if project is None:
         print("Error: no active project. Run 'talos project open <id>' first.", file=sys.stderr)
         sys.exit(1)
+    return project
 
 
 def _parse_target(raw: str) -> tuple[str, str]:

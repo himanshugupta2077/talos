@@ -706,11 +706,15 @@ async def _send_and_store(
         _log.error("Failed to store diff for BAC replay %s: %s", replayed_flow_id, exc)
 
     # Compute BAC verdict.
-    bac_verdict = _compute_bac_verdict(
-        original_status=original_flow.get("status_code"),
-        replay_status=replayed.get("status_code"),
-        replay_error=replayed.get("replay_error"),
-    )
+    # Network / protocol errors never reach the filter — no HTTP response to evaluate.
+    if replayed.get("replay_error"):
+        bac_verdict = "UNKNOWN"
+    else:
+        bac_verdict = _compute_bac_verdict_with_filter(
+            original_flow=original_flow,
+            replayed=replayed,
+            project_data_dir=db_path.parent,
+        )
 
     # Persist BAC result.
     try:
@@ -744,27 +748,67 @@ async def _send_and_store(
 # Verdict computation                                                  #
 # ------------------------------------------------------------------ #
 
-def _compute_bac_verdict(
-    original_status: Optional[int],
-    replay_status: Optional[int],
-    replay_error: Optional[str],
+def _compute_bac_verdict_with_filter(
+    original_flow: dict,
+    replayed: dict,
+    project_data_dir: Path,
 ) -> str:
     """
     Purpose:
-        Produce a BAC verdict from the attack replay results.
+        Compute the BAC verdict using the project's decision filter when available,
+        falling back to the built-in heuristic when no filter is configured.
+
+        This function is called only when no network/protocol error occurred
+        (replay_error is None), so the response is guaranteed to exist.
+
+    Input:
+        original_flow    — original flow dict (used for baseline status check in fallback).
+        replayed         — replayed flow dict with status_code, response_headers, response_body.
+        project_data_dir — directory containing BAC-decision-filter.yaml (db_path.parent).
+    Output:
+        'POSSIBLE_BAC' | 'SECURE' | 'UNKNOWN'
+    Side effects:
+        Reads BAC-decision-filter.yaml from disk on first call per engine run
+        (subsequent calls within the same scheduler cycle hit the same path).
+    """
+    from talos.projects.bac.decision_filter import (
+        load_filter,
+        build_response_data,
+        evaluate_response,
+    )
+
+    bac_filter = load_filter(project_data_dir)
+
+    if bac_filter is not None:
+        response_data = build_response_data(replayed)
+        return evaluate_response(bac_filter, response_data)
+
+    # No filter configured — use built-in heuristic.
+    return _compute_bac_verdict_heuristic(
+        original_status=original_flow.get("status_code"),
+        replay_status=replayed.get("status_code"),
+    )
+
+
+def _compute_bac_verdict_heuristic(
+    original_status: Optional[int],
+    replay_status: Optional[int],
+) -> str:
+    """
+    Purpose:
+        Built-in heuristic BAC verdict used when no BAC-decision-filter.yaml is
+        configured.  Applies status-code-only rules.
+
     Output:
         'POSSIBLE_BAC' | 'SECURE' | 'UNKNOWN'
 
     Rules (first match wins):
-        1. Network / protocol error → UNKNOWN.
-        2. Original was not 200 → UNKNOWN (baseline unreliable).
-        3. Replay status 401 or 403 → SECURE.
-        4. Replay status 3xx (redirect — assumed login redirect) → SECURE.
-        5. Replay status 200 → POSSIBLE_BAC.
-        6. All other cases → UNKNOWN.
+        1. Original was not 200 → UNKNOWN (baseline unreliable).
+        2. Replay status 401 or 403 → SECURE.
+        3. Replay status 3xx (redirect — assumed login redirect) → SECURE.
+        4. Replay status 200 → POSSIBLE_BAC.
+        5. All other cases → UNKNOWN.
     """
-    if replay_error:
-        return "UNKNOWN"
     if original_status != 200:
         return "UNKNOWN"
     if replay_status in (401, 403):
