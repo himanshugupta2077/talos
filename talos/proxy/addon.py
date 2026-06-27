@@ -188,9 +188,11 @@ class TalosAddon:
         host = flow.request.pretty_host
 
         # Scope gate — drop out-of-scope flows immediately.
-        if not in_scope(host, self._scope):
+        if not in_scope(flow.request.pretty_url, self._scope):
             logger.debug("SKIP %s %s", flow.request.method, flow.request.pretty_url)
             return
+
+        host = flow.request.pretty_host
 
         # Out-of-scope override — blocked domains are never captured even when
         # they match the scope allow-list.

@@ -2,108 +2,191 @@
 Module: talos.proxy.scope
 
 Purpose:
-    Domain-based scope filtering for traffic capture.
-    Determines whether a given hostname falls within a project's defined scope.
+    Domain and optional path-based scope filtering for traffic capture.
+    Determines whether a given request URL falls within a project's defined scope.
 
 Matching rules:
-    - Bare domain : "example.com"       → matches ONLY "example.com" exactly.
-    - Wildcard    : "*.api.example.com" → matches "sub.api.example.com"
-                    but NOT "api.example.com" (a leading subdomain label is required)
-    - Full URL    : "https://example.com/path" → hostname ("example.com") is extracted
-                    before matching, so URL-style scope entries work correctly.
-    - Out-of-scope hosts are silently dropped — no logging, no partial handling.
+    - Bare domain : "example.com"
+        → matches ONLY "example.com" exactly, for all paths.
+    - Wildcard    : "*.api.example.com"
+        → matches "sub.api.example.com"
+          but NOT "api.example.com".
+    - Full URL    : "https://example.com"
+        → matches every path on "example.com".
+    - URL + path  : "https://example.com/book/"
+        → matches ONLY requests whose path begins with "/book/".
+    - URL paths are treated as prefix matches.
+        Example:
+            Scope : https://example.com/book/
+            Match : /book/, /book/123, /book/search
+            Reject: /api/, /login
+    - Out-of-scope hosts are silently dropped.
     - Empty scope list means nothing is in scope (strict opt-in).
 
 Dependencies: None (stdlib only)
+
 Data flow:
-    proxy addon calls in_scope(host, project.scope) per flow before extraction.
-Side effects: None — pure filter logic.
+    proxy addon calls:
+        in_scope(flow.request.url, project.scope)
+
+Side effects:
+    None — pure filter logic.
 """
 
 from urllib.parse import urlsplit
 
 
-def _extract_host_from_pattern(pattern: str) -> str:
+def _parse_scope_pattern(pattern: str) -> tuple[str, str | None]:
     """
     Purpose:
-        Normalize a scope pattern to a bare hostname/wildcard string.
-        Handles three input forms:
-          - Full URL  : "https://example.com:8080/path" → "example.com"
-          - host:port : "example.com:8080"              → "example.com"
-          - bare host : "example.com" / "*.example.com" → unchanged
+        Normalize a scope pattern into a hostname pattern and an optional
+        path prefix.
+
+    Supported forms:
+        - Full URL
+            "https://example.com:8443/path"
+                -> ("example.com", "/path")
+
+        - Full URL without path
+            "https://example.com"
+                -> ("example.com", None)
+
+        - Host with port
+            "example.com:8080"
+                -> ("example.com", None)
+
+        - Bare host
+            "example.com"
+                -> ("example.com", None)
+
+        - Wildcard host
+            "*.example.com"
+                -> ("*.example.com", None)
+
     Input:
-        pattern — raw scope entry, already lowercased.
+        pattern
+            Raw scope entry.
+
     Output:
-        Hostname portion only (port stripped), ready for matches_domain().
+        Tuple:
+            (
+                host_pattern,
+                path_prefix_or_None,
+            )
+
+    Notes:
+        - Ports are always discarded.
+        - "/" is treated as no path restriction.
     """
-    if "://" in pattern:
-        parsed = urlsplit(pattern)
-        # urlsplit.hostname already strips the port.
-        return parsed.hostname or pattern
-    # Bare "host:port" — strip the port.  Wildcard patterns like "*.example.com"
-    # contain no ":" so this is a no-op for them.
-    return pattern.split(":")[0]
+    pattern = pattern.strip().lower()
+
+    if "://" not in pattern:
+        return pattern.split(":")[0], None
+
+    parsed = urlsplit(pattern)
+
+    host = parsed.hostname or ""
+
+    path = parsed.path or ""
+
+    if path == "/":
+        path = None
+
+    return host, path
 
 
 def matches_domain(pattern: str, host: str) -> bool:
     """
     Purpose:
-        Test whether a single host matches one scope pattern.
+        Test whether a hostname matches a scope host pattern.
+
     Input:
-        pattern — scope entry, already lowercased (e.g. "example.com",
-                  "*.api.example.com").
-        host    — lowercased hostname with port stripped
-                  (e.g. "sub.api.example.com").
+        pattern
+            Host portion of a scope entry.
+
+        host
+            Request hostname (already lowercased).
+
     Output:
-        True if host is covered by this pattern.
-    Assumptions:
-        - Both pattern and host are lowercased by the caller.
-        - No port numbers in either argument.
-    Edge cases:
-        - Bare domain "example.com" matches ONLY "example.com".
-          Use "*.example.com" to also match subdomains.
-        - Wildcard pattern base itself ("api.example.com" for "*.api.example.com")
-          is NOT a match — a subdomain label must be present.
-        - Pattern "*.example.com" does NOT match "sub.sub.example.com" variants;
-          fnmatch handles multi-label wildcards if needed in future.
+        True if the host matches.
+
+    Matching rules:
+        - example.com
+            matches ONLY example.com
+
+        - *.example.com
+            matches:
+                a.example.com
+                api.example.com
+                foo.bar.example.com
+
+            does NOT match:
+                example.com
     """
     if pattern.startswith("*."):
-        # Wildcard: host must end with ".<suffix>" — at least one extra label.
-        suffix = pattern[2:]  # strip leading "*."
+        suffix = pattern[2:]
+
         if host == suffix:
-            # Base domain itself is not covered by the wildcard.
             return False
+
         return host.endswith("." + suffix)
 
-    # Exact match only — use "*.example.com" to match subdomains.
     return host == pattern
 
 
-def in_scope(host: str, scope: list[str]) -> bool:
+def in_scope(url: str, scope: list[str]) -> bool:
     """
     Purpose:
-        Determine whether a host falls within any of the project's scope entries.
+        Determine whether a request URL falls within the configured project
+        scope.
 
     Input:
-        host  — raw hostname from the HTTP flow; may include a port suffix.
-        scope — list of scope pattern strings from the active project config.
+        url
+            Full request URL from the proxy.
+
+            Examples:
+                https://www.agoda.com/book/123
+                https://www.agoda.com/api/gw/pages/HotelsBookingForm
+
+        scope
+            List of project scope entries.
+
     Output:
-        True only if host matches at least one pattern in scope.
-    Side effects: None.
+        True if at least one scope rule matches.
+
+    Matching process:
+        1. Host must match.
+        2. If the rule has no path restriction,
+           the request is in scope.
+        3. If the rule contains a path,
+           request.path must begin with that path.
+
     Edge cases:
-        - Empty scope → False (no scope defined = nothing is in scope).
-        - Port in host is stripped before matching ("example.com:8080" → "example.com").
+        - Empty scope -> False.
+        - URL ports are ignored.
+        - Path comparison is prefix-based.
     """
     if not scope:
-        # Strict opt-in: no patterns configured means no traffic is in scope.
         return False
 
-    # Strip port if present.
-    host_clean = host.split(":")[0].lower()
+    parsed = urlsplit(url)
+
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or "/"
 
     for pattern in scope:
-        normalized = _extract_host_from_pattern(pattern.lower())
-        if matches_domain(normalized, host_clean):
+
+        rule_host, rule_path = _parse_scope_pattern(pattern)
+
+        if not matches_domain(rule_host, host):
+            continue
+
+        # Host matches and no path restriction exists.
+        if rule_path is None:
+            return True
+
+        # Host matches and request path falls under the configured prefix.
+        if path.startswith(rule_path):
             return True
 
     return False
@@ -112,23 +195,47 @@ def in_scope(host: str, scope: list[str]) -> bool:
 def is_out_of_scope(host: str, blocked: frozenset[str]) -> bool:
     """
     Purpose:
-        Determine whether a host is explicitly blocked by the out-of-scope
-        domain list.  Out-of-scope always overrides the scope allow-list.
+        Determine whether a host is explicitly blocked by the project's
+        out-of-scope domain list.
 
-    Matching semantics for each blocked domain D:
-        - host == D            (exact match)
-        - host.endswith('.'+D) (D and all its subdomains)
+    Out-of-scope always overrides the allow-list.
+
+    Matching semantics:
+
+        host == domain
+
+    OR
+
+        host.endswith("." + domain)
+
+    Therefore blocking:
+
+        example.com
+
+    also blocks:
+
+        api.example.com
+        cdn.example.com
+        foo.bar.example.com
 
     Input:
-        host    — raw hostname from the HTTP flow; may include a port suffix.
-        blocked — frozenset of lowercased domain strings from
-                  talos.projects.outscope.load_domain_set().
+        host
+            Raw hostname from the HTTP flow.
+            May include a port suffix.
+
+        blocked
+            Lowercased domain set loaded from the project's
+            out-of-scope configuration.
+
     Output:
-        True if the host matches any blocked domain entry.
-    Side effects: None.
+        True if the host is blocked.
+
+    Side effects:
+        None.
+
     Edge cases:
-        - Empty blocked set → False (nothing blocked).
-        - Port in host is stripped before matching.
+        - Empty blocked set -> False.
+        - Port suffix is ignored.
     """
     if not blocked:
         return False
