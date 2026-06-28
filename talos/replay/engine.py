@@ -218,6 +218,7 @@ async def _execute_replay(
     project_id: str,
     source: str,
     replay_reason: Optional[str],
+    flow_meta: Optional[dict] = None,
 ) -> ReplayOutcome:
     """
     Purpose:
@@ -227,8 +228,12 @@ async def _execute_replay(
         flow          — flow dict from replay_db with all request fields.
         db_path       — Path to the project's talos.db.
         project_id    — Project identifier for the new replay row.
-        source        — 'manual_replay' | 'auto_replay' — origin of this replay.
-        replay_reason — Optional reason label (e.g. 'testing', 'bac_test').
+        source        — 'manual_replay' | 'auto_replay' | 'iv_scan' — origin.
+        replay_reason — Optional reason label (e.g. 'testing', 'bac_test',
+                        'input_validation').
+        flow_meta     — Optional structured metadata dict stored as JSON on the
+                        replay flow.  Used by IV and future attack modules to
+                        make every replay flow self-describing.
     Output:
         ReplayOutcome.
     Side effects:
@@ -283,6 +288,7 @@ async def _execute_replay(
         "original_flow_id": original_flow_id,
         "replay_error": None,
         "replay_reason": replay_reason,
+        "flow_meta": flow_meta or {},
     }
 
     failure_reason: Optional[str] = None
@@ -363,4 +369,54 @@ async def _execute_replay(
         success=failure_reason is None,
         failure_reason=failure_reason,
         verdict=diff.verdict,
+    )
+
+
+# ------------------------------------------------------------------ #
+# Mutated replay (used by Input Validation and future attack modules)  #
+# ------------------------------------------------------------------ #
+
+async def replay_with_mutation(
+    original_flow: dict,
+    mutations: dict,
+    db_path: Path,
+    project_id: str,
+    source: str = "auto_replay",
+    replay_reason: Optional[str] = "input_validation",
+    flow_meta: Optional[dict] = None,
+) -> ReplayOutcome:
+    """
+    Purpose:
+        Apply field-level mutations to a base flow and replay the result.
+        Used by Input Validation to inject probe payloads before execution.
+        Every mutated request produces an independent replay flow in the DB.
+    Input:
+        original_flow — base flow dict (from replay_db.get_flow_for_replay).
+        mutations     — dict with any subset of {url, request_headers,
+                        request_body} containing the mutated values.
+        db_path       — Path to the project's talos.db.
+        project_id    — Project identifier.
+        source        — Flow source label ('iv_scan' for Input Validation).
+        replay_reason — Optional reason string stored on the replay flow.
+        flow_meta     — Structured metadata dict stored as JSON on the replay
+                        flow (generated_by, analysis, payload, param_uuid, etc.).
+    Output:
+        ReplayOutcome — same as _execute_replay.
+    Side effects:
+        Sends one outbound HTTP request; writes one flow row to the DB.
+    """
+    mutated = dict(original_flow)
+    # Apply only the keys provided in mutations dict.
+    for key in ("url", "request_headers", "request_body"):
+        if key in mutations:
+            mutated[key] = mutations[key]
+    # Rebuild host/path/query from the mutated URL so the stored row is correct.
+    if "url" in mutations:
+        from urllib.parse import urlparse as _up
+        parsed = _up(mutations["url"])
+        mutated["host"] = parsed.hostname or original_flow.get("host", "")
+        mutated["path"] = parsed.path or "/"
+        mutated["query"] = parsed.query or ""
+    return await _execute_replay(
+        mutated, db_path, project_id, source, replay_reason, flow_meta
     )

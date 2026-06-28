@@ -9,6 +9,7 @@ Purpose:
         talos endpoint mark   <endpoint_id> (--logout | --dangerous | --safe)
         talos endpoint unmark <endpoint_id> (--logout | --dangerous)
         talos endpoint show   <endpoint_id>
+        talos endpoint export <endpoint_id>  — full endpoint dossier (Markdown)
 
         talos endpoint priority set endpoint <endpoint_id> <level>
         talos endpoint priority set path     "<pattern>"   <level>
@@ -156,6 +157,13 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
         help="List all active path-based policy rules.",
     )
 
+    # talos endpoint export <id>
+    p_export = sub.add_parser(
+        "export",
+        help="Export the complete endpoint dossier as a Markdown file.",
+    )
+    p_export.add_argument("endpoint_id", help="UUID of the endpoint to export.")
+
     args = parser.parse_args(argv)
 
     project = manager.active()
@@ -181,6 +189,8 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
         cmd_include(project, args)
     elif cmd == "rules":
         cmd_rules_list(project, args)
+    elif cmd == "export":
+        cmd_endpoint_export(project, args)
 
 
 # ------------------------------------------------------------------ #
@@ -578,4 +588,202 @@ def cmd_rules_list(project: object, _args: argparse.Namespace) -> None:
             f"    Exclusion : {excl_str}\n"
             f"    Created   : {rule['created_at']}\n"
         )
+
+
+def cmd_endpoint_export(project: object, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Export the complete endpoint dossier as a Markdown file.
+        Contains: endpoint intelligence, parameters, captured flows summary,
+        Input Validation probe results and analysis summaries.
+        Written to <project_dir>/exports/endpoint_<id>.md.
+
+        This is the canonical endpoint export.  Future attack results (BAC,
+        SQLi, etc.) will be appended here as those modules mature.
+    Input:
+        project — active Project instance.
+        args    — parsed args: endpoint_id (str).
+    Side effects:
+        Reads endpoint, parameter, flow, IV data from DB.
+        Writes Markdown file to <project_dir>/exports/.
+        Prints output path to stdout.
+        Exits 1 if the endpoint does not exist.
+    """
+    import json
+    import sqlite3
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from talos.input_validation.db import make_param_uuid, get_probe_results_for_param, get_reflection_cache_entry
+
+    db_path = project.db_path    # type: ignore[attr-defined]
+    endpoint_id = args.endpoint_id.strip()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+
+        ep = conn.execute(
+            """
+            SELECT id, method, host, path, normalized_path, content_type,
+                   auth_required, roles_seen, first_seen, last_seen
+            FROM endpoints WHERE id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+        if ep is None:
+            print(f"Error: Endpoint '{endpoint_id}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+        # Parameters for this endpoint
+        params = conn.execute(
+            """
+            SELECT id, name, location, param_type, semantic_type,
+                   seen_count, is_reflected, reflection_count, example_values
+            FROM parameters WHERE endpoint_id = ?
+            ORDER BY location, name
+            """,
+            (endpoint_id,),
+        ).fetchall()
+
+        # Captured flows (proxy_capture source)
+        captured_flows = conn.execute(
+            """
+            SELECT id, method, url, status_code, captured_at, role_id
+            FROM flows
+            WHERE endpoint_id = ? AND source = 'proxy_capture'
+            ORDER BY captured_at DESC
+            LIMIT 20
+            """,
+            (endpoint_id,),
+        ).fetchall()
+
+        # All replay flows for this endpoint
+        replay_flows = conn.execute(
+            """
+            SELECT id, method, url, status_code, source, replay_reason,
+                   captured_at, COALESCE(flow_meta, '{}') AS flow_meta
+            FROM flows
+            WHERE endpoint_id = ? AND source != 'proxy_capture'
+            ORDER BY captured_at DESC
+            LIMIT 50
+            """,
+            (endpoint_id,),
+        ).fetchall()
+
+    # Policy / annotations
+    tags = annotations_mod.get_annotations(db_path, endpoint_id)
+
+    lines: list[str] = [
+        f"# Endpoint Dossier",
+        f"",
+        f"**Endpoint ID:** `{endpoint_id}`",
+        f"**Method:** `{ep['method']}`",
+        f"**Path:** `{ep['normalized_path']}`",
+        f"**Host:** `{ep['host']}`",
+        f"**Auth Required:** {'Yes' if ep['auth_required'] else 'Unknown'}",
+        f"**First Seen:** {ep['first_seen']}",
+        f"**Last Seen:** {ep['last_seen']}",
+    ]
+    if tags:
+        lines.append(f"**Annotations:** {', '.join(tags)}")
+    lines += [f"", f"---", f""]
+
+    # ── Parameters ──────────────────────────────────────────────────────
+    lines.append(f"## Parameters ({len(params)})")
+    lines.append(f"")
+    if params:
+        lines.append("| Name | Location | Type | Seen | Reflected |")
+        lines.append("|------|----------|------|------|-----------|")
+        for p in params:
+            lines.append(
+                f"| `{p['name']}` | {p['location']} | "
+                f"{p['param_type']}/{p['semantic_type']} | "
+                f"{p['seen_count']} | {'Yes' if p['is_reflected'] else 'No'} |"
+            )
+    else:
+        lines.append("*No parameters discovered yet.*")
+    lines.append("")
+
+    # ── Input Validation ────────────────────────────────────────────────
+    lines.append("## Input Validation")
+    lines.append("")
+    has_iv = False
+    for p in params:
+        p_uuid = make_param_uuid(ep["host"], p["location"], p["name"])
+        probes = get_probe_results_for_param(db_path, p_uuid)
+        refl = get_reflection_cache_entry(db_path, endpoint_id, p["name"], p["location"])
+        if not probes:
+            continue
+        has_iv = True
+        lines.append(f"### `{p['name']}` ({p['location']})")
+        lines.append("")
+        lines.append("| Analysis | Payload | HTTP Status | Flow ID | Status |")
+        lines.append("|----------|---------|-------------|---------|--------|")
+        for rec in probes:
+            payload = rec.get("payload")
+            payload_str = repr(payload) if payload is not None else "(baseline)"
+            sc = rec.get("status_code") or "—"
+            fid = (rec.get("flow_id") or "")[:8] or "—"
+            st = rec.get("status") or ""
+            lines.append(
+                f"| {rec.get('analysis','')} | `{payload_str}` | {sc} | `{fid}` | {st} |"
+            )
+        if refl and refl.get("status") == "completed":
+            try:
+                rr = json.loads(refl.get("result") or "{}")
+            except Exception:
+                rr = {}
+            reflected = rr.get("reflected", False)
+            enc = rr.get("encoding", "")
+            loc = rr.get("reflection_location", "")
+            lines.append("")
+            lines.append(
+                f"**Reflection:** {'Reflected' if reflected else 'Not reflected'}"
+                + (f"  encoding={enc}  location={loc}" if reflected else "")
+            )
+        lines.append("")
+    if not has_iv:
+        lines.append("*Input Validation has not run yet for this endpoint.*")
+        lines.append("")
+
+    # ── Captured Flows ───────────────────────────────────────────────────
+    lines.append("## Captured Flows")
+    lines.append("")
+    if captured_flows:
+        lines.append("| Flow ID | Status | Captured At | Role |")
+        lines.append("|---------|--------|-------------|------|")
+        for f in captured_flows:
+            lines.append(
+                f"| `{f['id'][:16]}…` | {f['status_code'] or '—'} | "
+                f"{f['captured_at'][:19]} | `{f['role_id'][:8]}…` |"
+            )
+    else:
+        lines.append("*No captured flows.*")
+    lines.append("")
+
+    # ── Replay Flows ─────────────────────────────────────────────────────
+    lines.append("## Replay Flows")
+    lines.append("")
+    if replay_flows:
+        lines.append("| Flow ID | Source | Reason | Status | Generated By |")
+        lines.append("|---------|--------|--------|--------|--------------|")
+        for f in replay_flows:
+            try:
+                fmeta = json.loads(f["flow_meta"] or "{}")
+            except Exception:
+                fmeta = {}
+            generated_by = fmeta.get("generated_by", "")
+            lines.append(
+                f"| `{f['id'][:16]}…` | {f['source']} | {f['replay_reason'] or '—'} | "
+                f"{f['status_code'] or '—'} | {generated_by or '—'} |"
+            )
+    else:
+        lines.append("*No replay flows.*")
+    lines.append("")
+
+    md_content = "\n".join(lines)
+    export_dir = Path(str(db_path).replace("talos.db", "")) / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    out_path = export_dir / f"endpoint_{endpoint_id[:16]}.md"
+    out_path.write_text(md_content, encoding="utf-8")
+    print(f"Exported to {out_path}")
 

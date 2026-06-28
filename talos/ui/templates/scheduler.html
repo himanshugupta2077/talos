@@ -151,19 +151,30 @@ function _renderStatDetail(jobs, bodyEl) {
   }
   let html = `<table><thead><tr>
     <th style="width:90px;">Job ID</th>
-    <th style="width:110px;">Type</th>
-    <th style="width:100px;">Target</th>
+    <th style="width:130px;">Type</th>
+    <th style="width:200px;">Target / Payload</th>
     <th style="width:80px;">Verdict</th>
     <th style="width:110px;">Flow</th>
     <th style="width:160px;">Finished</th>
     <th style="width:120px;">Reason</th>
   </tr></thead><tbody>`;
   jobs.forEach(j => {
-    const target = j.flow_id
-      ? j.flow_id.slice(0, 8)
-      : j.endpoint_id
-        ? j.endpoint_id.slice(0, 8)
-        : '—';
+    // Determine a descriptive target + payload label.
+    let target = '—';
+    let payloadBadge = '';
+    if (j.job_type && j.job_type.startsWith('iv_')) {
+      // IV jobs: show analysis + payload from meta.
+      const analysis = (j.meta_analysis || j.job_type.replace('iv_', ''));
+      const payload  = j.meta_payload;
+      target = `<span style="color:var(--blue);font-size:10px;">${_esc(analysis)}</span>`;
+      if (payload !== undefined && payload !== null) {
+        payloadBadge = ` <code style="font-size:10px;background:#111;padding:1px 4px;border-radius:2px;">${_esc(String(payload).slice(0,20))}</code>`;
+      }
+    } else if (j.flow_id) {
+      target = j.flow_id.slice(0, 8);
+    } else if (j.endpoint_id) {
+      target = j.endpoint_id.slice(0, 8);
+    }
     const type = j.job_type === 'replay_flow'
       ? 'flow'
       : j.job_type === 'replay_endpoint'
@@ -182,7 +193,7 @@ function _renderStatDetail(jobs, bodyEl) {
     html += `<tr>
       <td style="color:var(--muted);font-size:11px;">${_esc(j.job_id.slice(0, 8))}</td>
       <td style="font-size:11px;">${_esc(type)}</td>
-      <td style="color:var(--blue);font-size:11px;">${_esc(target)}</td>
+      <td style="color:var(--blue);font-size:11px;">${target}${payloadBadge}</td>
       <td style="font-size:11px;font-weight:700;color:${j.verdict === 'BYPASS' ? 'var(--red)' : j.verdict === 'SECURE' ? 'var(--green)' : 'var(--muted)'};">${j.verdict || '—'}</td>
       <td style="font-size:11px;">${flowCell}</td>
       <td style="color:var(--muted);font-size:11px;">${_esc(ts)}</td>

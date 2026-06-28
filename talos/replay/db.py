@@ -180,7 +180,7 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
         request_body_truncated, status_code, response_headers, response_body,
         response_body_truncated, content_type, session_id, endpoint_id,
         role_id, module_id, tags, source, original_flow_id, replay_error,
-        replay_reason
+        replay_reason, flow_meta
     """
     with _connect_rw(db_path) as conn:
         conn.execute(
@@ -194,7 +194,7 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
                 response_headers, response_body, response_body_truncated,
                 content_type, session_id, endpoint_id,
                 role_id, module_id, tags,
-                source, original_flow_id, replay_error, replay_reason
+                source, original_flow_id, replay_error, replay_reason, flow_meta
             ) VALUES (
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
@@ -204,7 +204,7 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
                 ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?,
-                ?, ?, ?, ?
+                ?, ?, ?, ?, ?
             )
             """,
             (
@@ -236,6 +236,7 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
                 flow["original_flow_id"],
                 flow.get("replay_error"),
                 flow.get("replay_reason"),
+                _to_json(flow.get("flow_meta") or {}),
             ),
         )
         conn.commit()
@@ -250,6 +251,34 @@ def _to_json(value: object) -> str:
     Output:  JSON string.
     Side effects: None.
     """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value)
+
+
+def get_flow_meta(db_path: Path, flow_id: str) -> dict:
+    """
+    Purpose:
+        Read the flow_meta JSON for a single flow.
+    Input:
+        db_path — Path to the project's talos.db.
+        flow_id — UUID of the target flow.
+    Output:
+        Parsed dict; empty dict when the flow has no meta or does not exist.
+    Side effects: Read-only.
+    """
+    if not db_path.exists():
+        return {}
+    with _connect_ro(db_path) as conn:
+        row = conn.execute(
+            "SELECT flow_meta FROM flows WHERE id = ?", (flow_id,)
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        return json.loads(row[0]) if row[0] else {}
+    except (ValueError, TypeError):
+        return {}
     if isinstance(value, str):
         return value
     return json.dumps(value)

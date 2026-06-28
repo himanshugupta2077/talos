@@ -63,7 +63,7 @@ from typing import IO, Optional
 from talos.projects.endpoints import NormalizedFlowURL, normalize_flow_url
 from talos.projects.model import Project
 from talos.projects.outscope import load_domain_set
-from talos.projects.parameters import extract_flow_params, upsert_endpoint_params
+from talos.projects.parameters import extract_flow_params, upsert_endpoint_params, detect_reflections
 from talos.projects.policy import upsert_auto_priority
 from talos.projects.policy_score import compute_auto_priority, load_score_config
 from talos.proxy.queue import FlowQueue
@@ -590,9 +590,30 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
                     query=cleaned_query,
                     request_body=flow.get("request_body"),
                     request_headers=flow.get("request_headers", {}),
+                    request_cookies=flow.get("request_cookies", {}),
+                    path=flow.get("path", ""),
+                    normalized_path=(
+                        normalized_url.normalized_path if normalized_url else ""
+                    ),
+                    role_id=flow.get("role_id", ""),
+                    module_id=flow.get("module_id", ""),
                 )
                 if params:
-                    upsert_endpoint_params(conn, endpoint_id, params)
+                    # Passive reflection detection: check if any param value
+                    # appears in the response body.  Non-fatal if it fails.
+                    reflections = []
+                    try:
+                        reflections = detect_reflections(
+                            params,
+                            flow.get("response_body"),
+                            flow.get("response_headers", {}),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Reflection detection failed — flow_id=%s — skipping",
+                            flow.get("flow_id"),
+                        )
+                    upsert_endpoint_params(conn, endpoint_id, params, reflections)
                     conn.commit()
                     extracted_param_names = [p.name for p in params]
             except Exception:

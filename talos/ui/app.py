@@ -84,10 +84,12 @@ def create_app(projects_root: Path) -> FastAPI:
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
     # Map raw DB source values to display labels used in the flows template.
+    # iv_scan kept for backward compatibility with older project databases.
     _SOURCE_LABELS: dict[str, str] = {
         "proxy_capture": "proxy",
         "manual_replay": "replay",
         "auto_replay": "auto replay",
+        "iv_scan": "iv scan (legacy)",
     }
     templates.env.filters["source_label"] = lambda s: _SOURCE_LABELS.get(s or "", s or "—")
 

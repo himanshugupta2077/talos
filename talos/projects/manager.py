@@ -250,6 +250,9 @@ class ProjectManager:
         self._save_registry(registry)
 
         project = Project.from_dict(registry[project_id])
+        # Ensure schema is current on open — init_project_db is idempotent
+        # and handles migrations for databases created at older schema versions.
+        init_project_db(project.db_path)
         logger.info("Opened project '%s'", project_id)
         return project
 

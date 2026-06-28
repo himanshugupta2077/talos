@@ -68,6 +68,7 @@ import random
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import talos.scheduler.db as sched_db
 import talos.replay.db as replay_db
@@ -84,6 +85,7 @@ from talos.scheduler.job import (
     BAC_SESSION_SWAP, BAC_METHOD_FUZZ, BAC_CONTENT_TYPE,
     BAC_URL_FUZZ, BAC_HEADER_INJECT, BAC_HOST_FUZZ, BAC_ROLE_INJECT,
     BAC_JOB_TYPES,
+    IV_JOB_TYPES,
     PRIORITY_AUTO,
     REPLAY_ENDPOINT,
     REPLAY_FLOW,
@@ -362,6 +364,9 @@ class ReplayScheduler:
             elif job.job_type in BAC_JOB_TYPES:
                 self._execute_bac_job(job)
 
+            elif job.job_type in IV_JOB_TYPES:
+                self._execute_iv_job(job)
+
             else:
                 _log.error(
                     "Unknown job_type '%s' for job %s — skipping.",
@@ -606,4 +611,323 @@ class ReplayScheduler:
             outcome.diff_verdict,
             outcome.variant,
         )
+
+    # ------------------------------------------------------------------ #
+    # Input Validation job execution                                       #
+    # ------------------------------------------------------------------ #
+
+    def _execute_iv_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute one Input Validation probe job.
+
+            Scan phases (baseline, identifier, characters, length, types,
+            validation): apply the probe mutation to the base flow, run
+            session health check for the role, send via replay_with_mutation,
+            and persist the result in iv_probe_results.
+
+            Analysis phases (transformations, reflection): consume existing
+            iv_probe_results rows for the parameter, run pure analysis, and
+            store aggregated conclusions in iv_param_cache / iv_reflection_cache.
+            Zero HTTP requests.
+
+        Input:
+            job — ReplayJob with an IV job type and meta JSON string.
+        Side effects:
+            - Scan phases: sends one HTTP request; writes one replay flow.
+            - Analysis phases: reads iv_probe_results; writes iv_param_cache
+              or iv_reflection_cache.
+            - Marks job done/failed/skipped.
+        """
+        import json as _json
+        from talos.projects.db import migrate_project_db
+        from talos.input_validation import db as iv_db
+        from talos.input_validation.phases import (
+            prepare_iv_probe,
+            find_best_flow_for_param,
+            find_best_flow_for_endpoint,
+            analyze_transformations,
+            analyze_reflection,
+        )
+        from talos.scheduler.job import IV_REFLECTION, IV_TRANSFORMATIONS
+        from talos.replay.engine import replay_with_mutation
+        from talos.projects.session_health import ensure_healthy
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        # Ensure schema is at v27 (flow_meta + iv_probe_results) before IV executes.
+        migrate_project_db(db_path)
+
+        # Parse job metadata.
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "iv_meta_parse_error")
+                _log.error("[iv] Failed to parse meta for job %s.", job.job_id[:8])
+                return
+
+        host: str = meta.get("host", "")
+        location: str = meta.get("location", "")
+        # Support both old (param_name) and new (parameter_name) meta keys.
+        parameter_name: str = meta.get("parameter_name") or meta.get("param_name", "")
+        parameter_uuid: str = meta.get("parameter_uuid") or meta.get("param_uuid", "")
+        endpoint_id: str = meta.get("endpoint_id", "") or job.endpoint_id or ""
+        analysis: str = meta.get("analysis", job.job_type.replace("iv_", ""))
+
+        if not parameter_name or not location:
+            sched_db.mark_skipped(db_path, job.job_id, "iv_missing_param_meta")
+            _log.warning(
+                "[iv] Job %s missing parameter_name or location — skipped.", job.job_id[:8]
+            )
+            return
+
+        # ── Analysis-only phases (0 HTTP requests) ───────────────────────────
+        if job.job_type == IV_REFLECTION:
+            self._execute_iv_reflection(
+                job, meta, db_path, host, location, parameter_name, parameter_uuid,
+                endpoint_id, analyze_reflection, iv_db
+            )
+            return
+
+        if job.job_type == IV_TRANSFORMATIONS:
+            self._execute_iv_transformations(
+                job, meta, db_path, host, location, parameter_name, parameter_uuid,
+                analyze_transformations, iv_db
+            )
+            return
+
+        # ── Scan phases — one HTTP request per job ────────────────────────────
+        payload: str | None = meta.get("payload")
+        # Support both old (payload_class) and new (payload_type) meta keys.
+        payload_type: str = meta.get("payload_type") or meta.get("payload_class", "unknown")
+        payload_index: int = meta.get("payload_index", 0)
+
+        # Find the best qualifying base flow.
+        flow: dict | None = find_best_flow_for_param(db_path, host, location, parameter_name)
+        if flow is None:
+            iv_db.upsert_probe_result(
+                db_path, parameter_uuid, endpoint_id or None, host, location,
+                parameter_name, analysis, payload, payload_type, payload_index,
+                None, iv_db.STATUS_SKIPPED,
+            )
+            sched_db.mark_skipped(db_path, job.job_id, "iv_no_qualifying_flow")
+            _log.info(
+                "[iv] No qualifying flow for %s %s %s — job %s skipped.",
+                host, location, parameter_name, job.job_id[:8],
+            )
+            return
+
+        # Session health check for the role that owns this flow.
+        role_id: str = flow.get("role_id", "")
+        if role_id:
+            try:
+                healthy = ensure_healthy(db_path, role_id, project_id)
+                if not healthy:
+                    iv_db.upsert_probe_result(
+                        db_path, parameter_uuid, endpoint_id or None, host, location,
+                        parameter_name, analysis, payload, payload_type, payload_index,
+                        None, iv_db.STATUS_SKIPPED,
+                    )
+                    sched_db.mark_failed(
+                        db_path, job.job_id, "session_health_refresh_failed"
+                    )
+                    _log.warning(
+                        "[iv] Session health refresh FAILED for role=%s — job skipped.",
+                        role_id[:8],
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("[iv] Session health check error (non-fatal): %s", exc)
+
+        # Prepare the probe mutation.
+        mutations = prepare_iv_probe(analysis, flow, parameter_name, location, payload)
+
+        # Build standardized universal flow metadata.
+        # source = auto_replay (mechanism); generated_by = input_validation (subsystem).
+        flow_meta = {
+            "generated_by": "input_validation",
+            "analysis": analysis,
+            "parameter_uuid": parameter_uuid,
+            "parameter_name": parameter_name,
+            "payload": payload,
+            "payload_type": payload_type,
+            "payload_index": payload_index,
+            "baseline_flow": flow["id"],
+            "mutation": {
+                "location": location,
+                "host": host,
+                "endpoint_id": endpoint_id,
+            },
+        }
+
+        # Execute via replay engine with source=auto_replay.
+        # generated_by in flow_meta distinguishes IV flows from other auto replays.
+        try:
+            outcome = asyncio.run(
+                replay_with_mutation(
+                    original_flow=flow,
+                    mutations=mutations,
+                    db_path=db_path,
+                    project_id=project_id,
+                    source="auto_replay",
+                    replay_reason="input_validation",
+                    flow_meta=flow_meta,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error("[iv] Replay error for job %s: %s", job.job_id[:8], exc)
+            iv_db.upsert_probe_result(
+                db_path, parameter_uuid, endpoint_id or None, host, location,
+                parameter_name, analysis, payload, payload_type, payload_index,
+                None, iv_db.STATUS_FAILED,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"replay_error: {exc}")
+            return
+
+        # Persist probe result — only identity fields; HTTP data lives in flows.
+        probe_status = iv_db.STATUS_COMPLETED if outcome.success else iv_db.STATUS_FAILED
+        iv_db.upsert_probe_result(
+            db_path,
+            parameter_uuid,
+            endpoint_id or None,
+            host,
+            location,
+            parameter_name,
+            analysis,
+            payload,
+            payload_type,
+            payload_index,
+            outcome.replayed_flow_id,
+            probe_status,
+        )
+
+        if outcome.success:
+            sched_db.mark_done(
+                db_path, job.job_id, outcome.replayed_flow_id, None
+            )
+            _log.info(
+                "[iv] DONE  job=%s  analysis=%s  payload=%r  status=%s  flow=%s",
+                job.job_id[:8], analysis,
+                payload if payload is not None else "(baseline)",
+                outcome.status_code,
+                (outcome.replayed_flow_id or "")[:8],
+            )
+        else:
+            sched_db.mark_failed(
+                db_path, job.job_id, outcome.failure_reason or "replay_failed"
+            )
+
+    def _execute_iv_transformations(
+        self,
+        job: ReplayJob,
+        meta: dict,
+        db_path: Path,
+        host: str,
+        location: str,
+        parameter_name: str,
+        parameter_uuid: str,
+        analyze_transformations,
+        iv_db,
+    ) -> None:
+        """
+        Purpose:
+            Execute a transformations analysis job by consuming existing
+            iv_probe_results rows.  Zero HTTP requests.
+        Side effects:
+            Reads iv_probe_results; writes iv_param_cache; marks job done/failed.
+        """
+        probe_records = iv_db.get_probe_results_for_param(db_path, parameter_uuid)
+        if not probe_records:
+            sched_db.mark_skipped(
+                db_path, job.job_id, "iv_no_probe_results_for_analysis"
+            )
+            _log.info(
+                "[iv] No probe results for transformations analysis %s — skipped.",
+                job.job_id[:8],
+            )
+            return
+
+        try:
+            result = analyze_transformations(probe_records)
+            iv_db.upsert_param_cache(
+                db_path, host, location, parameter_name,
+                "iv_transformations", iv_db.STATUS_COMPLETED, result,
+            )
+            sched_db.mark_done(db_path, job.job_id, None, None)
+            _log.info(
+                "[iv] DONE  transformations  param=%s/%s  host=%s  transforms=%s",
+                location, parameter_name, host,
+                result.get("transformations", []),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error("[iv] Transformations analysis failed for %s: %s", job.job_id[:8], exc)
+            iv_db.upsert_param_cache(
+                db_path, host, location, parameter_name,
+                "iv_transformations", iv_db.STATUS_FAILED, {"error": str(exc)},
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"analysis_error: {exc}")
+
+    def _execute_iv_reflection(
+        self,
+        job: ReplayJob,
+        meta: dict,
+        db_path: Path,
+        host: str,
+        location: str,
+        parameter_name: str,
+        parameter_uuid: str,
+        endpoint_id: str,
+        analyze_reflection,
+        iv_db,
+    ) -> None:
+        """
+        Purpose:
+            Execute a reflection analysis job by consuming existing
+            iv_probe_results rows for this endpoint+parameter.
+            Zero HTTP requests.
+        Side effects:
+            Reads iv_probe_results; writes iv_reflection_cache; marks job done/failed.
+        """
+        if not endpoint_id:
+            sched_db.mark_skipped(db_path, job.job_id, "iv_reflection_missing_endpoint")
+            return
+
+        probe_records = iv_db.get_probe_results_for_endpoint(
+            db_path, endpoint_id, parameter_name, location
+        )
+        if not probe_records:
+            # Fall back to all probes for the parameter_uuid.
+            probe_records = iv_db.get_probe_results_for_param(db_path, parameter_uuid)
+
+        if not probe_records:
+            sched_db.mark_skipped(
+                db_path, job.job_id, "iv_no_probe_results_for_analysis"
+            )
+            _log.info(
+                "[iv] No probe results for reflection analysis %s — skipped.",
+                job.job_id[:8],
+            )
+            return
+
+        try:
+            result = analyze_reflection(probe_records, parameter_name, endpoint_id)
+            iv_db.upsert_reflection_cache(
+                db_path, endpoint_id, parameter_name, location,
+                iv_db.STATUS_COMPLETED, result,
+            )
+            sched_db.mark_done(db_path, job.job_id, None, None)
+            _log.info(
+                "[iv] DONE  reflection  endpoint=%s  param=%s/%s  reflected=%s",
+                endpoint_id[:8], location, parameter_name, result.get("reflected"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error("[iv] Reflection analysis failed for %s: %s", job.job_id[:8], exc)
+            iv_db.upsert_reflection_cache(
+                db_path, endpoint_id, parameter_name, location,
+                iv_db.STATUS_FAILED, {"error": str(exc)},
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"analysis_error: {exc}")
 

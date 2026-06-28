@@ -80,8 +80,27 @@ CLI (talos.__main__)
     │       ├── INSERT into flows table with cleaned query + endpoint_id
     │       ├── Update endpoint_roles in the same transaction
     │       ├── COMMIT (flow + endpoint + endpoint_roles)
-    │       ├── Extract parameters (query params, JSON body, form body)
-    │       ├── Upsert parameters per endpoint (type convergence, dedup, 5-sample cap)
+    │       │
+    │       ├── Parameter Intelligence (Endpoint Intelligence layer)
+    │       │       Extracts every observable input surface from the flow:
+    │       │         - Path parameters  (dynamic segments from normalized_path)
+    │       │         - Query parameters
+    │       │         - Body parameters  (JSON nested, form, multipart, XML, GraphQL)
+    │       │         - Security-relevant headers (Authorization, X-Forwarded-For,
+    │       │                                      Origin, X-Tenant, X-CSRF-Token, etc.)
+    │       │         - Cookies
+    │       │       For each parameter infers:
+    │       │         - param_type:    int | float | bool | string | unknown
+    │       │         - semantic_type: uuid | jwt | email | objectid | url | ip |
+    │       │                         hash | timestamp | filename | boolean |
+    │       │                         integer | float | array | string
+    │       │       Passive reflection detection:
+    │       │         - Checks if parameter values appear in the response body
+    │       │         - Records: is_reflected, reflection_count, reflection_locations,
+    │       │                    reflection_encoding (raw / html_encoded / url_encoded)
+    │       │       Tracks: seen_count, appears_in_roles, appears_in_modules
+    │       │       Upserts parameters per endpoint (type upgrades, sample cap = 5)
+    │       │
     │       ├── COMMIT parameters (failure → rollback param writes only; flow unaffected)
     │       ├── Compute auto-priority score (policy_score heuristics)
     │       │       Signals: method, path keywords, path param types, auth, content-type,
@@ -178,40 +197,12 @@ CLI (talos.__main__)
     │                            → compute auth verdict (SECURE | BYPASS | UNKNOWN)
     │                            → store in auth_test_results
     │
-    │       ├── talos auth mark-login <role_id> <flow_id>
-    │       │       → validate role exists (exit 1 if not)
-    │       │       → validate flow exists (exit 1 if not)
-    │       │       → upsert role_auth.login_flow_id
-    │       │
-    │       ├── talos auth mark-checkpoint <role_id> <flow_id>
-    │       │       → validate role exists (exit 1 if not)
-    │       │       → validate flow exists (exit 1 if not)
-    │       │       → upsert role_auth.checkpoint_flow_id
-    │       │
-    │       ├── talos auth generate <role_id>
-    │       │       → exit 1 if no login_flow_id assigned to role
-    │       │       → replay login flow (source=manual_replay, replay_reason=session_generate)
-    │       │       → exit 1 if replay failed
-    │       │       → search response body for JWT regex (eyJ…)
-    │       │       → exit 1 if no JWT found
-    │       │       → store_session_token() → deactivate old tokens, insert new active token
-    │       │       → print token_id and masked token
-    │       │
-    │       ├── talos auth inject-session-token <role_id> <session_token_id>
-    │       │       → validate role exists (exit 1 if not)
-    │       │       → exit 1 if token not found for this role
-    │       │       → deactivate all other tokens for role → activate selected token
-    │       │
-    │       └── talos auth validate <role_id>
-    │               → exit 1 if role not found
-    │               → get_active_session_token()
-    │               if no token: → _auto_generate() (same path as 'generate')
-    │               if token exists:
-    │                   → exit 1 if no checkpoint_flow_id assigned
-    │                   → replay checkpoint flow (source=auto_replay, replay_reason=session_validate)
-    │                   → exit 1 if replay failed
-    │                   if status 200:   → print "Token valid"
-    │                   if status 401/403: → _auto_generate() → print new token details
+    │       ├── talos auth mark-login <role_id> <flow_id>   [REMOVED — use auth-config add-flow]
+    │       ├── talos auth mark-checkpoint <role_id> <flow_id>   [REMOVED — use auth-config add-control-flow]
+    │       └── talos auth generate <role_id>   [REMOVED — use auth-config refresh]
+    │               These commands were removed in v0.3. All session management
+    │               is now handled by auth-config with Python extractors and
+    │               the Session Health Engine.
     │
     ├── talos scheduler
     │       │
@@ -268,12 +259,14 @@ CLI (talos.__main__)
     │  (CLI control)
     ▼
 [CLI LAYER]
-    talos project / role / module / access / proxy / replay / auth / scheduler
+    talos project / role / module / access / proxy / replay / auth /
+    auth-config / scheduler / endpoint / mutation / attack / input-validation
     │
     ▼
 [PROJECT MANAGER]
     - active project enforcement
     - registry + per-project storage
+    - runs schema migration on project open (idempotent)
     │
     ▼
 [PROXY START]
@@ -308,8 +301,27 @@ CLI (talos.__main__)
     ├── normalize URL
     ├── upsert endpoint
     ├── store flow (DB)
-    ├── extract parameters
     ├── update endpoint_roles
+    │
+    ├── ENDPOINT INTELLIGENCE (passive — built from captured traffic only)
+    │   │
+    │   └── Parameter Intelligence
+    │           Extract all observable input surfaces:
+    │             path params  (dynamic segments from normalized path)
+    │             query params
+    │             body params  (JSON nested, form, multipart, XML, GraphQL variables)
+    │             security headers  (Authorization, X-Forwarded-For, Origin, X-Tenant,
+    │                                X-CSRF-Token, X-HTTP-Method-Override, etc.)
+    │             cookies
+    │           Infer semantic types: uuid | jwt | email | objectid | url | ip |
+    │                                 hash | timestamp | filename | boolean |
+    │                                 integer | float | array | string
+    │           Passive Reflection Intelligence:
+    │             detect if param values appear in response (raw / html_encoded / url_encoded)
+    │             record: is_reflected, reflection_count, reflection_locations, reflection_encoding
+    │           Track: seen_count, appears_in_roles, appears_in_modules
+    │
+    ├── compute auto-priority score
     └── write raw archive
     │
     ▼
@@ -317,16 +329,46 @@ CLI (talos.__main__)
     SQLite:
         - flows
         - endpoints
-        - parameters
+        - parameters  (v25: semantic_type, reflection intel, role/module tracking)
         - roles/modules
         - access_map
+        - endpoint_policy
+        - iv_param_cache      (Input Validation Engine cache)
+        - iv_reflection_cache (per-endpoint reflection cache)
+        - input_validation_config
     + JSONL archive (raw truth)
     │
     ▼
-[STATE LAYER]
-    - endpoint clustering (method + normalized_path)
-    - role ↔ endpoint mapping
-    - parameter intelligence
+[ENDPOINT INTELLIGENCE — consumed by:]
+    ├── Priority Engine      → auto-scoring based on parameters + auth + method
+    ├── BAC Candidate Generator → parameter-aware candidate selection
+    ├── Attack Engine        → parameter context for mutation generation
+    ├── Input Validation Engine → parameter inventory to drive active probing
+    ├── UI                   → endpoint + parameter display
+    └── Reports              → parameter intelligence in findings
+    │
+    ▼
+[INPUT VALIDATION ENGINE] (active — disabled by default; tester enables explicitly)
+    │
+    ├── Consumes Endpoint Intelligence (parameter inventory)
+    ├── Schedules jobs via Talos Scheduler (centralized concurrency)
+    ├── Does NOT send requests directly — jobs execute through scheduler daemon
+    │
+    ├── Phase 1: Baseline     — capture normal endpoint behaviour
+    ├── Phase 2: Identifier   — inject __TL_xxxxxx__ markers for reflection/transformation detection
+    ├── Phase 3: Characters   — test accepted character set
+    ├── Phase 4: Length       — test length limits and truncation
+    ├── Phase 5: Types        — verify semantic type hypothesis
+    ├── Phase 6: Transformations — detect trim/lowercase/normalization etc.
+    ├── Phase 7: Reflection   — endpoint-specific reflection analysis (not globally cached)
+    ├── Phase 8: Validation   — observe validation errors and error handling
+    │
+    ├── Cache strategy:
+    │     param-level analyses cached by (host, location, param_name) → shared across endpoints
+    │     reflection cached by (endpoint_id, param_name, location) → per-endpoint
+    │     resume: skip completed phases; --ignore-cache resets
+    │
+    └── Enriches Endpoint Intelligence after completion
     │
     ▼
 [ACCESS MODEL]

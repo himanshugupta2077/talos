@@ -67,7 +67,46 @@ BAC_JOB_TYPES: tuple[str, ...] = (
     BAC_ROLE_INJECT,
 )
 
-JOB_TYPES: tuple[str, ...] = (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST) + BAC_JOB_TYPES
+# ------------------------------------------------------------------ #
+# Input Validation job type constants                                  #
+# ------------------------------------------------------------------ #
+
+IV_BASELINE = "iv_baseline"
+"""Phase 1 — Capture baseline response before any mutation."""
+
+IV_IDENTIFIER = "iv_identifier"
+"""Phase 2 — Inject traceable identifier (__TL_xxxxxx__) to detect reflection."""
+
+IV_CHARACTERS = "iv_characters"
+"""Phase 3 — Character acceptance testing."""
+
+IV_LENGTH = "iv_length"
+"""Phase 4 — Length behaviour (truncation, min/max bounds)."""
+
+IV_TYPES = "iv_types"
+"""Phase 5 — Type characterization (verify semantic type hypothesis)."""
+
+IV_TRANSFORMATIONS = "iv_transformations"
+"""Phase 6 — Detect input transformations (trim, lowercase, normalization, etc.)."""
+
+IV_REFLECTION = "iv_reflection"
+"""Phase 7 — Endpoint-specific reflection analysis (per-endpoint, not cached globally)."""
+
+IV_VALIDATION = "iv_validation"
+"""Phase 8 — Validation behaviour and error handling analysis."""
+
+IV_JOB_TYPES: tuple[str, ...] = (
+    IV_BASELINE,
+    IV_IDENTIFIER,
+    IV_CHARACTERS,
+    IV_LENGTH,
+    IV_TYPES,
+    IV_TRANSFORMATIONS,
+    IV_REFLECTION,
+    IV_VALIDATION,
+)
+
+JOB_TYPES: tuple[str, ...] = (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST) + BAC_JOB_TYPES + IV_JOB_TYPES
 
 
 # ------------------------------------------------------------------ #

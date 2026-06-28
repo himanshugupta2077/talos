@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 28
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -58,10 +58,11 @@ CREATE TABLE IF NOT EXISTS flows (
     role_id                  TEXT    NOT NULL REFERENCES roles(id),   -- resolved at capture-time
     module_id                TEXT    NOT NULL REFERENCES modules(id), -- resolved at capture-time
     tags                     TEXT    NOT NULL DEFAULT '[]',   -- JSON array
-    source                   TEXT    NOT NULL DEFAULT 'proxy_capture', -- proxy_capture | manual_replay | auto_replay
+    source                   TEXT    NOT NULL DEFAULT 'proxy_capture', -- proxy_capture | manual_replay | auto_replay | iv_scan
     original_flow_id         TEXT,                                      -- FK to flows.id; NULL for proxy_capture flows
     replay_error             TEXT,                                      -- NULL on success; error label on network/HTTP failure
-    replay_reason            TEXT                                       -- NULL for proxy_capture; e.g. testing | bac_test | idor_test | validation
+    replay_reason            TEXT,                                      -- NULL for proxy_capture; e.g. testing | bac_test | input_validation
+    flow_meta                TEXT    NOT NULL DEFAULT '{}'               -- JSON: structured metadata describing why this flow was generated
 );
 
 -- ------------------------------------------------------------------ --
@@ -84,19 +85,133 @@ CREATE TABLE IF NOT EXISTS endpoints (
 
 -- ------------------------------------------------------------------ --
 -- parameters: per-endpoint parameter intelligence                     --
+-- Expanded in v25: semantic_type, seen_count, role/module tracking,   --
+-- and passive reflection intelligence (is_reflected, reflection_count, --
+-- reflection_locations, reflection_encoding).                          --
 -- ------------------------------------------------------------------ --
 CREATE TABLE IF NOT EXISTS parameters (
-    id              TEXT    PRIMARY KEY,     -- UUID
-    endpoint_id     TEXT    NOT NULL REFERENCES endpoints(id),
-    name            TEXT    NOT NULL,
-    location        TEXT    NOT NULL,        -- query | body | header | cookie | path
-    param_type      TEXT    NOT NULL DEFAULT 'unknown',  -- int|uuid|hash|enum|json|bool|string
-    source          TEXT    NOT NULL DEFAULT 'unknown',  -- user-controlled | server-generated
-    volatility      TEXT    NOT NULL DEFAULT 'unknown',  -- static | dynamic
-    sensitivity     TEXT    NOT NULL DEFAULT 'unknown',  -- identifier | control | data
-    example_values  TEXT    NOT NULL DEFAULT '[]',       -- JSON array (sampled)
+    id                   TEXT    PRIMARY KEY,     -- UUID
+    endpoint_id          TEXT    NOT NULL REFERENCES endpoints(id),
+    name                 TEXT    NOT NULL,
+    location             TEXT    NOT NULL,        -- path | query | body | header | cookie
+    param_type           TEXT    NOT NULL DEFAULT 'unknown',  -- int|float|bool|string|unknown
+    semantic_type        TEXT    NOT NULL DEFAULT 'unknown',  -- uuid|jwt|email|objectid|url|ip|hash|timestamp|filename|boolean|integer|float|array|string|unknown
+    source               TEXT    NOT NULL DEFAULT 'unknown',  -- user-controlled | server-generated
+    volatility           TEXT    NOT NULL DEFAULT 'unknown',  -- static | dynamic
+    sensitivity          TEXT    NOT NULL DEFAULT 'unknown',  -- identifier | control | data
+    example_values       TEXT    NOT NULL DEFAULT '[]',       -- JSON array (sampled)
+    seen_count           INTEGER NOT NULL DEFAULT 1,          -- number of flows where observed
+    appears_in_roles     TEXT    NOT NULL DEFAULT '[]',       -- JSON array of role UUIDs
+    appears_in_modules   TEXT    NOT NULL DEFAULT '[]',       -- JSON array of module UUIDs
+    is_reflected         INTEGER NOT NULL DEFAULT 0,          -- boolean: value seen in response
+    reflection_count     INTEGER NOT NULL DEFAULT 0,          -- how many times reflected
+    reflection_locations TEXT    NOT NULL DEFAULT '[]',       -- JSON array: html|json|xml|javascript|other
+    reflection_encoding  TEXT    NOT NULL DEFAULT '[]',       -- JSON array: raw|html_encoded|url_encoded|other
     UNIQUE (endpoint_id, name, location)
 );
+
+-- ------------------------------------------------------------------ --
+-- input_validation_config: per-project IV engine configuration        --
+-- enabled: 0=disabled (default), 1=enabled                           --
+-- workers: number of concurrent analysis workers                      --
+-- analyses_*: per-phase toggles (1=enabled, 0=disabled)              --
+-- excluded_hosts: JSON list of host strings                           --
+-- excluded_endpoints: JSON list of endpoint UUIDs                    --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS input_validation_config (
+    id                         TEXT    PRIMARY KEY DEFAULT 'default',
+    enabled                    INTEGER NOT NULL DEFAULT 0,
+    workers                    INTEGER NOT NULL DEFAULT 2,
+    analyses_baseline          INTEGER NOT NULL DEFAULT 1,
+    analyses_identifier        INTEGER NOT NULL DEFAULT 1,
+    analyses_characters        INTEGER NOT NULL DEFAULT 1,
+    analyses_length            INTEGER NOT NULL DEFAULT 1,
+    analyses_types             INTEGER NOT NULL DEFAULT 1,
+    analyses_transformations   INTEGER NOT NULL DEFAULT 1,
+    analyses_reflection        INTEGER NOT NULL DEFAULT 1,
+    analyses_validation        INTEGER NOT NULL DEFAULT 1,
+    excluded_hosts             TEXT    NOT NULL DEFAULT '[]',
+    excluded_endpoints         TEXT    NOT NULL DEFAULT '[]'
+);
+
+-- ------------------------------------------------------------------ --
+-- iv_param_cache: per-parameter analysis results                       --
+-- Cache key: host + location + param_name                             --
+-- Analysis phases are stored individually so partial runs are         --
+-- resumable without re-running completed phases.                       --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS iv_param_cache (
+    id                TEXT PRIMARY KEY,   -- UUID
+    host              TEXT NOT NULL,
+    location          TEXT NOT NULL,      -- path|query|body|header|cookie
+    param_name        TEXT NOT NULL,
+    phase             TEXT NOT NULL,      -- baseline|identifier|characters|length|types|transformations|validation
+    status            TEXT NOT NULL DEFAULT 'not_started',  -- not_started|running|completed|failed|skipped|partial
+    result            TEXT NOT NULL DEFAULT '{}',            -- JSON blob of phase findings
+    flow_id           TEXT,                                  -- UUID of the base flow used for this analysis
+    started_at        TEXT,
+    completed_at      TEXT,
+    UNIQUE (host, location, param_name, phase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_iv_param_cache_host
+    ON iv_param_cache (host);
+
+-- ------------------------------------------------------------------ --
+-- iv_reflection_cache: per-endpoint reflection results                 --
+-- Reflection cannot be shared across endpoints — must be per-endpoint. --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS iv_reflection_cache (
+    id           TEXT PRIMARY KEY,  -- UUID
+    endpoint_id  TEXT NOT NULL REFERENCES endpoints(id),
+    param_name   TEXT NOT NULL,
+    location     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'not_started',
+    result       TEXT NOT NULL DEFAULT '{}',
+    flow_id      TEXT,               -- UUID of the base flow used for this analysis
+    started_at   TEXT,
+    completed_at TEXT,
+    UNIQUE (endpoint_id, param_name, location)
+);
+
+CREATE INDEX IF NOT EXISTS idx_iv_reflection_endpoint
+    ON iv_reflection_cache (endpoint_id);
+
+-- ------------------------------------------------------------------ --
+-- iv_probe_results: per-HTTP-request IV evidence                       --
+-- Each probe sent during input validation produces one row here and   --
+-- one replay flow in the flows table.  HTTP response data (status,     --
+-- body, content-type) is stored only in the flows table; this table   --
+-- holds only the analysis-level identity fields.                       --
+-- param_uuid   : sha256(host|location|param_name)[:32] — shared key  --
+-- analysis     : baseline|identifier|characters|length|types|validation
+-- payload      : exact string value injected into the parameter.      --
+-- payload_type : baseline|identifier|character|length|type|validation --
+-- flow_id      : FK to flows.id — the replay flow created.           --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS iv_probe_results (
+    id           TEXT    PRIMARY KEY,    -- UUID
+    param_uuid   TEXT    NOT NULL,       -- sha256-derived UUID for the parameter
+    endpoint_id  TEXT,                   -- FK to endpoints.id (NULL for host-level)
+    host         TEXT    NOT NULL,
+    location     TEXT    NOT NULL,       -- path|query|body|header|cookie
+    param_name   TEXT    NOT NULL,
+    analysis     TEXT    NOT NULL,       -- baseline|identifier|characters|length|types|validation
+    payload      TEXT,                   -- exact payload string (NULL only for baseline)
+    payload_type TEXT    NOT NULL DEFAULT 'unknown',
+    payload_index INTEGER NOT NULL DEFAULT 0,
+    flow_id      TEXT,                   -- UUID of the replay flow generated
+    status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|completed|failed|skipped
+    created_at   TEXT    NOT NULL,
+    completed_at TEXT,
+    UNIQUE (param_uuid, analysis, payload_type, payload_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_iv_probe_results_param
+    ON iv_probe_results (param_uuid, analysis);
+
+CREATE INDEX IF NOT EXISTS idx_iv_probe_results_flow
+    ON iv_probe_results (flow_id);
 
 -- ------------------------------------------------------------------ --
 -- sessions: detected identities                                       --
@@ -521,6 +636,10 @@ def init_project_db(db_path: Path) -> None:
                 (SCHEMA_VERSION,),
             )
             conn.commit()
+        elif row[0] < SCHEMA_VERSION:
+            _migrate_schema(conn, row[0])
+            conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+            conn.commit()
 
     # Seed default context after schema is guaranteed current.
     # Uses INSERT OR IGNORE so repeated calls are safe.
@@ -540,6 +659,61 @@ def seed_default_context(db_path: Path) -> None:
         Same as _seed_default_context; delegates directly.
     """
     _seed_default_context(db_path)
+
+
+def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
+    """
+    Purpose:
+        Apply incremental schema migrations for databases created at an earlier
+        version.  Each migration block is guarded so it is safe to run on a DB
+        that already has the column/table (e.g. if migration was partially applied).
+    Input:
+        conn         — Open SQLite connection with an active transaction.
+        from_version — The version stored in schema_version before migration.
+    Side effects:
+        - Issues ALTER TABLE / CREATE TABLE statements.
+        - Does not COMMIT — caller commits after updating schema_version.
+    """
+    if from_version < 25:
+        # Add new columns to parameters table introduced in v25.
+        new_cols = [
+            ("semantic_type",        "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("seen_count",           "INTEGER NOT NULL DEFAULT 1"),
+            ("appears_in_roles",     "TEXT NOT NULL DEFAULT '[]'"),
+            ("appears_in_modules",   "TEXT NOT NULL DEFAULT '[]'"),
+            ("is_reflected",         "INTEGER NOT NULL DEFAULT 0"),
+            ("reflection_count",     "INTEGER NOT NULL DEFAULT 0"),
+            ("reflection_locations", "TEXT NOT NULL DEFAULT '[]'"),
+            ("reflection_encoding",  "TEXT NOT NULL DEFAULT '[]'"),
+        ]
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(parameters)").fetchall()
+        }
+        for col_name, col_def in new_cols:
+            if col_name not in existing:
+                conn.execute(
+                    f"ALTER TABLE parameters ADD COLUMN {col_name} {col_def}"
+                )
+
+    if from_version < 26:
+        # Add flow_id column to iv_param_cache and iv_reflection_cache so each
+        # IV analysis can be traced back to the base flow that was used.
+        existing_ipc = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(iv_param_cache)").fetchall()
+        }
+        if "flow_id" not in existing_ipc:
+            conn.execute("ALTER TABLE iv_param_cache ADD COLUMN flow_id TEXT")
+
+        existing_irc = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(iv_reflection_cache)"
+            ).fetchall()
+        }
+        if "flow_id" not in existing_irc:
+            conn.execute("ALTER TABLE iv_reflection_cache ADD COLUMN flow_id TEXT")
 
 
 def _seed_default_context(db_path: Path) -> None:
@@ -623,6 +797,13 @@ def migrate_project_db(db_path: Path) -> None:
                    exclusion, path-based rules).
         v23 → v24: Add dangerous and logout columns to endpoint_policy;
                    migrate data from endpoint_annotations.
+        v25 → v26: Add flow_id column to iv_param_cache and iv_reflection_cache
+                   so each IV analysis is traceable to the base flow used.
+        v26 → v27: Add flow_meta JSON column to flows for universal replay metadata.
+                   Add iv_probe_results table for per-HTTP-request IV evidence.
+        v27 → v28: Slim iv_probe_results — remove duplicated HTTP columns
+                   (status_code, content_type, body_length, error) which live in
+                   the flows table; rename payload_class → payload_type.
     """
     if not db_path.exists():
         return
@@ -1102,6 +1283,132 @@ def migrate_project_db(db_path: Path) -> None:
                 """
             )
             conn.execute("UPDATE schema_version SET version = 24")
+            conn.commit()
+
+        if current < 26:
+            # Add flow_id column to IV cache tables so each analysis can be
+            # traced back to the base flow that was replayed for it.
+            existing_ipc = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(iv_param_cache)"
+                ).fetchall()
+            }
+            if "flow_id" not in existing_ipc:
+                conn.execute(
+                    "ALTER TABLE iv_param_cache ADD COLUMN flow_id TEXT"
+                )
+            existing_irc = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(iv_reflection_cache)"
+                ).fetchall()
+            }
+            if "flow_id" not in existing_irc:
+                conn.execute(
+                    "ALTER TABLE iv_reflection_cache ADD COLUMN flow_id TEXT"
+                )
+            conn.execute("UPDATE schema_version SET version = 26")
+            conn.commit()
+
+        if current < 27:
+            # Add flow_meta JSON column to flows for universal replay metadata.
+            # Every replay flow (IV, BAC, future modules) stores structured
+            # metadata describing why it was generated and what was probed.
+            existing_flows = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(flows)").fetchall()
+            }
+            if "flow_meta" not in existing_flows:
+                conn.execute(
+                    "ALTER TABLE flows ADD COLUMN flow_meta TEXT NOT NULL DEFAULT '{}'"
+                )
+
+            # Add iv_probe_results table for per-HTTP-request IV evidence.
+            # Each probe sent during input validation gets one row here plus
+            # one replay flow in the flows table.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS iv_probe_results (
+                    id           TEXT    PRIMARY KEY,
+                    param_uuid   TEXT    NOT NULL,
+                    endpoint_id  TEXT,
+                    host         TEXT    NOT NULL,
+                    location     TEXT    NOT NULL,
+                    param_name   TEXT    NOT NULL,
+                    analysis     TEXT    NOT NULL,
+                    payload      TEXT,
+                    payload_class TEXT   NOT NULL DEFAULT 'unknown',
+                    payload_index INTEGER NOT NULL DEFAULT 0,
+                    flow_id      TEXT,
+                    status_code  INTEGER,
+                    content_type TEXT    NOT NULL DEFAULT '',
+                    body_length  INTEGER NOT NULL DEFAULT 0,
+                    error        TEXT,
+                    status       TEXT    NOT NULL DEFAULT 'pending',
+                    created_at   TEXT    NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE (param_uuid, analysis, payload_class, payload_index)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_iv_probe_results_param
+                    ON iv_probe_results (param_uuid, analysis)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_iv_probe_results_flow
+                    ON iv_probe_results (flow_id)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 27")
+            conn.commit()
+
+        if current < 28:
+            # Recreate iv_probe_results with slimmed schema:
+            #   - rename payload_class → payload_type
+            #   - remove status_code, content_type, body_length, error
+            #     (those are in the flows table and dereferenced via flow_id)
+            # Since iv_probe_results was new in v27 and may have no real data yet
+            # (it was brand new), we drop and recreate it.
+            conn.execute("DROP TABLE IF EXISTS iv_probe_results")
+            conn.execute(
+                """
+                CREATE TABLE iv_probe_results (
+                    id           TEXT    PRIMARY KEY,
+                    param_uuid   TEXT    NOT NULL,
+                    endpoint_id  TEXT,
+                    host         TEXT    NOT NULL,
+                    location     TEXT    NOT NULL,
+                    param_name   TEXT    NOT NULL,
+                    analysis     TEXT    NOT NULL,
+                    payload      TEXT,
+                    payload_type TEXT    NOT NULL DEFAULT 'unknown',
+                    payload_index INTEGER NOT NULL DEFAULT 0,
+                    flow_id      TEXT,
+                    status       TEXT    NOT NULL DEFAULT 'pending',
+                    created_at   TEXT    NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE (param_uuid, analysis, payload_type, payload_index)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_iv_probe_results_param
+                    ON iv_probe_results (param_uuid, analysis)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_iv_probe_results_flow
+                    ON iv_probe_results (flow_id)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 28")
             conn.commit()
 
 

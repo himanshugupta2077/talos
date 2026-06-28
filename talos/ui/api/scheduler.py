@@ -36,10 +36,12 @@ def _job_to_dict(job) -> dict:
     """
     Purpose:
         Convert a ReplayJob dataclass to a JSON-safe dict.
-        Excludes db_path (Path object, not serialisable).
+        For IV jobs, parses the meta JSON to extract analysis and payload fields
+        so the UI can display them without separate lookups.
     Side effects: None.
     """
-    return {
+    import json as _json
+    d = {
         "job_id": job.job_id,
         "endpoint_id": job.endpoint_id,
         "flow_id": job.flow_id,
@@ -54,6 +56,17 @@ def _job_to_dict(job) -> dict:
         "replayed_flow_id": job.replayed_flow_id,
         "verdict": job.verdict,
     }
+    # For IV jobs, surface analysis and payload from meta for the UI.
+    if job.job_type and job.job_type.startswith("iv_") and job.meta:
+        try:
+            meta = _json.loads(job.meta)
+            d["meta_analysis"] = meta.get("analysis", "")
+            d["meta_payload"] = meta.get("payload")
+            d["meta_param_name"] = meta.get("parameter_name") or meta.get("param_name", "")
+            d["meta_host"] = meta.get("host", "")
+        except (ValueError, TypeError):
+            pass
+    return d
 
 
 class _ConfigBody(BaseModel):

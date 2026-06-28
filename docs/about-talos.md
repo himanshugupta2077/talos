@@ -318,51 +318,147 @@ endpoint:
 
 ---
 
-# 12. Parameter Intelligence
+# 12. Endpoint Intelligence
 
-## For each parameter
+Endpoint Intelligence is the canonical knowledge base for each endpoint. It is
+built **passively** — only from captured traffic, never from probes.
 
-### Type
+```
+Captured Flow
+      │
+      ▼
+Endpoint Intelligence
+    ├── Endpoint Metadata      (method, host, path, auth_required, roles_seen)
+    ├── Parameter Intelligence (every observable input surface — see below)
+    ├── Authentication Intel   (auth artifacts, extractor results, session health)
+    ├── Role Intelligence      (which roles hit this endpoint, appears_in_roles per param)
+    ├── Response Intelligence  (status codes, content-types, length ranges)
+    └── Reflection Intelligence (passive: values seen in responses)
+```
 
-* int
-* uuid
-* hash
-* enum
-* json
-* bool
+This layer answers only: **"What have we observed?"**
+
+For active verification: use the Input Validation Engine.
+
+## Parameter Intelligence
+
+Talos extracts every observable input surface for each captured flow:
+
+| Location | What is extracted |
+|---|---|
+| `path` | Dynamic path segments resolved from normalized path pattern |
+| `query` | All query string parameters |
+| `body` | JSON (nested), URL-encoded form, multipart fields, XML leaf elements, GraphQL variables |
+| `header` | Security-relevant headers: Authorization, X-Forwarded-For, Origin, X-Tenant, X-CSRF-Token, X-HTTP-Method-Override, etc. |
+| `cookie` | All request cookies as individual parameters |
+
+Headers and cookies are full attack surface — for BAC especially, headers are
+often more important than query parameters.
+
+### Per parameter, Talos stores:
+
+```
+name
+location          (path | query | body | header | cookie)
+param_type        (int | float | bool | string | unknown)
+semantic_type     (uuid | jwt | email | objectid | url | ip | hash | timestamp |
+                   filename | boolean | integer | float | array | string)
+example_values    (up to 5 sampled values)
+seen_count        (number of flows where observed)
+appears_in_roles  (which roles triggered flows containing this parameter)
+appears_in_modules
+is_reflected      (boolean: value seen in response)
+reflection_count
+reflection_locations  (html | json | xml | javascript | other)
+reflection_encoding   (raw | html_encoded | url_encoded)
+```
+
+### Passive Reflection Intelligence
+
+When a parameter value appears in the response body, Talos records it
+automatically — no additional requests are sent. Raw values, HTML-encoded, and
+URL-encoded forms are all detected.
+
+## Who consumes Endpoint Intelligence?
+
+```
+Endpoint Intelligence
+        │
+        ├────────► Priority Engine      (auto-scoring)
+        ├────────► Candidate Generator  (BAC candidate selection)
+        ├────────► Attack Engine        (mutation context)
+        ├────────► Input Validation Engine (parameter inventory to probe)
+        ├────────► UI                   (endpoint + parameter display)
+        ├────────► Reports
+        └────────► Search
+```
 
 ---
 
-### Source
+# 13. Input Validation Engine
 
-* user-controlled
-* server-generated
+The Input Validation Engine is an **active** analysis engine. Unlike Endpoint
+Intelligence (passive), it sends controlled requests to understand how each
+input behaves.
+
+**Primary goal:** Learn how every input behaves once, store it, and let every
+future attack module reuse it without repeating the same characterization work.
+
+**Key design decisions:**
+- Disabled by default — tester must explicitly enable it
+- Never viewed as an attack engine — no exploit payloads
+- All execution goes through the Talos Scheduler (centralized concurrency)
+- Resumable — completed analyses are cached and skipped on re-run
+- Force-refresh available for when the application changes
+
+```
+Endpoint Intelligence (passive observations)
+      │
+      ▼
+Input Validation Engine (active verification)
+      │
+      ▼
+Endpoint Intelligence (enriched with active profile)
+      │
+      ▼
+Attack Engine (XSS, SQLi, SSRF, BAC, etc.)
+```
+
+## Analysis Phases
+
+| Phase | Purpose |
+|-------|---------|
+| 1: Baseline | Capture normal endpoint behaviour before any mutations |
+| 2: Identifier | Inject `__TL_xxxxxx__` markers — detect reflection and transformations |
+| 3: Characters | Test which characters are accepted |
+| 4: Length | Find length limits, truncation, and hard rejection behaviour |
+| 5: Types | Verify semantic type hypothesis (passive inference vs active verification) |
+| 6: Transformations | Detect trim, lowercase, normalization, escaping, encoding |
+| 7: Reflection | Endpoint-specific reflection analysis (not globally cached) |
+| 8: Validation | Observe how the application rejects invalid inputs |
+
+## Cache Strategy
+
+- **Param-level phases (1–6, 8):** Cached by `(host, location, param_name)` — shared
+  across all endpoints that contain the same parameter. One characterization serves all.
+- **Reflection (Phase 7):** Cached per `(endpoint_id, param_name, location)` — must be
+  tested independently for each endpoint.
+- **Resume:** On restart, completed phases are skipped. Use `--ignore-cache` to re-run.
+
+## Scope and Control
+
+```bash
+talos input-validation config --enable
+talos input-validation run
+talos input-validation run --host api.example.com
+talos input-validation run --endpoint <id>
+talos input-validation run --parameter username
+talos input-validation run --ignore-cache
+```
 
 ---
 
-### Volatility
-
-* static
-* dynamic
-
----
-
-### Sensitivity
-
-* identifier (user_id)
-* control flag (role, is_admin)
-* data field
-
----
-
-### Relationship Tracking
-
-* appears across endpoints?
-* reused in sequences?
-
----
-
-# 13. Replay Engine
+# 14. Replay Engine
 
 ## Requirements
 
@@ -423,7 +519,7 @@ System:
 
 ---
 
-# 14. Diff Engine
+# 15. Diff Engine
 
 ## Compare
 
@@ -444,7 +540,7 @@ System:
 
 ---
 
-# 15. Attack Modules
+# 16. Attack Modules
 
 ## 1. IDOR
 
@@ -493,7 +589,7 @@ System:
 
 ---
 
-# 16. Role-Based Attack Logic
+# 17. Role-Based Attack Logic
 
 For each endpoint:
 
@@ -512,7 +608,7 @@ Detect broken access control
 
 ---
 
-# 17. Module Strategy
+# 18. Module Strategy
 
 Modules are:
 
@@ -526,7 +622,7 @@ Engine must:
 
 ---
 
-# 18. Global vs Local Testcases
+# 19. Global vs Local Testcases
 
 ## Global
 
@@ -546,7 +642,7 @@ Engine must:
 
 ---
 
-# 19. State Graph (Critical)
+# 20. State Graph (Critical)
 
 ## Structure
 
@@ -572,7 +668,7 @@ edge = transition
 
 ---
 
-# 20. MPC (AI Layer)
+# 21. MPC (AI Layer)
 
 ## Tools
 
@@ -612,7 +708,7 @@ edge = transition
 
 ---
 
-# 21. Execution Phases
+# 22. Execution Phases
 
 ## Phase 1 — Capture
 
@@ -637,7 +733,7 @@ edge = transition
 
 ---
 
-# 22. CLI Interface (Primary)
+# 23. CLI Interface (Primary)
 
 Examples:
 
@@ -657,7 +753,7 @@ CLI = core interface
 
 ---
 
-# 23. UI (Later)
+# 24. UI (Later)
 
 * FastAPI backend
 * thin frontend
@@ -665,7 +761,7 @@ CLI = core interface
 
 ---
 
-# 24. Performance Constraints
+# 25. Performance Constraints
 
 * async replay
 * multiprocessing workers
@@ -675,7 +771,7 @@ CLI = core interface
 
 ---
 
-# 25. Critical Failure Modes
+# 26. Critical Failure Modes
 
 * processing inside proxy thread
 * mixing sessions
@@ -686,7 +782,7 @@ CLI = core interface
 
 ---
 
-# 26. Minimum Viable Talos
+# 27. Minimum Viable Talos
 
 System is valid when it can:
 
@@ -704,7 +800,7 @@ System is valid when it can:
 
 ---
 
-# 27. Long-Term Evolution
+# 28. Long-Term Evolution
 
 ## Phase 2
 
@@ -722,7 +818,7 @@ System is valid when it can:
 
 ---
 
-# 28. Core Principle (Final)
+# 29. Core Principle (Final)
 
 Deterministic system must work without AI.
 
