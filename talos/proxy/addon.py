@@ -160,6 +160,7 @@ class TalosAddon:
         self._scheduler.stop()
 
     def request(self, flow: http.HTTPFlow) -> None:
+
         """
         Purpose:
             Called by mitmproxy before the request is forwarded to the server.
@@ -170,6 +171,33 @@ class TalosAddon:
             - Mutates flow.request.headers for each enabled header mutation.
               Existing headers with the same name are overwritten.
         """
+
+        """
+        Purpose:
+            Called by mitmproxy before the request is forwarded to the server.
+
+            Applies all enabled request mutations and removes conditional cache
+            headers so every request reaches the origin server instead of being
+            answered with HTTP 304 Not Modified.
+
+        Side effects:
+            - Removes If-None-Match.
+            - Removes If-Modified-Since.
+            - Applies configured header mutations.
+        """
+
+        # ------------------------------------------------------------------
+        # Remove conditional cache validators.
+        #
+        # Browsers frequently send these headers which allow the server to
+        # respond with 304 Not Modified. Talos wants fresh responses for
+        # Endpoint Intelligence and Input Validation, so strip them before
+        # forwarding upstream.
+        # ------------------------------------------------------------------
+        flow.request.headers.pop("If-None-Match", None)
+        flow.request.headers.pop("If-Modified-Since", None)
+
+        # Apply configured request mutations.
         for m in self._mutations:
             if m["type"] == "header":
                 flow.request.headers[m["key"]] = m["value"]

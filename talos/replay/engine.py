@@ -245,6 +245,8 @@ async def _execute_replay(
     # Deserialise headers from JSON string (stored as TEXT in DB).
     # Cookies are already embedded in the Cookie request header, so we do
     # not separately handle request_cookies — they arrive with the headers.
+
+
     raw_headers: object = flow.get("request_headers", "{}")
     headers: dict = (
         json.loads(raw_headers)
@@ -252,7 +254,28 @@ async def _execute_replay(
         else dict(raw_headers)
     )
 
-    body: Optional[bytes] = flow.get("request_body")  # BLOB or None from DB
+    # ------------------------------------------------------------------
+    # Never forward a captured Content-Length.
+    #
+    # The request body may have been mutated (Input Validation, BAC,
+    # future attack modules, etc.). If the captured Content-Length no
+    # longer matches the body, httpx/httpcore will reject the request
+    # before it is sent with:
+    #
+    #   "Too much data for declared Content-Length"
+    #
+    # Removing the header lets httpx generate the correct value for the
+    # outgoing request automatically.
+    # ------------------------------------------------------------------
+    headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() != "content-length"
+    }
+
+    body: Optional[bytes] = flow.get("request_body")
+
+
 
     replayed_flow_id = str(uuid.uuid4())
     replay_time = datetime.now(timezone.utc).isoformat()
@@ -410,6 +433,7 @@ async def replay_with_mutation(
     for key in ("url", "request_headers", "request_body"):
         if key in mutations:
             mutated[key] = mutations[key]
+
     # Rebuild host/path/query from the mutated URL so the stored row is correct.
     if "url" in mutations:
         from urllib.parse import urlparse as _up

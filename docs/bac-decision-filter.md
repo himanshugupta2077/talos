@@ -1,5 +1,24 @@
 # BAC Decision Filter — Configuration Reference
 
+```
+Headers (simple string): (enforced message headers contain)
+Headers NOT (simple string): (enforced message headers NOT contain)
+Headers (regex): (enforced message headers contain)
+Headers NOT (regex): (enforced message headers NOT contain)
+Body (simple string): (enforced message body contains)
+Body NOT (simple string): (enforced message body NOT contains)
+Body (regex): (enforced message body contains)
+Body NOT (regex): (enforced message body NOT contains)
+Full response (simple string): (enforced message contains)
+Full response NOT (simple string): (enforced message NOT contains)
+Full response (regex): (enforced message contains)
+Full response NOT (regex): (enforced message NOT contains)
+Full response length: (of enforced response)
+Full response NOT length: (of enforced response)
+Status code edguals: (numbers only)
+Status code NOT eguals: (numbers only)
+```
+
 ## Overview
 
 `BAC-decision-filter.yaml` is a per-project configuration file that tells Talos how to classify each replayed HTTP response during a BAC (Broken Access Control) attack.
