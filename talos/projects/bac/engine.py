@@ -637,7 +637,7 @@ async def _send_and_store(
     failure_reason: Optional[str] = None
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx.AsyncClient(verify=False,
             follow_redirects=False,
             timeout=_REPLAY_TIMEOUT,
         ) as client:

@@ -229,7 +229,7 @@ async def _execute_stripped_replay(
     failure_reason: Optional[str] = None
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx.AsyncClient(verify=False,
             follow_redirects=False,
             timeout=_REPLAY_TIMEOUT,
         ) as client:
