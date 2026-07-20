@@ -1,0 +1,213 @@
+# BAC-decision-filter.yaml — Annotated Sample
+#
+# Copy this file to your project directory and edit it:
+#   talos attack bac filter init    ← writes this sample automatically
+#
+# Supported locations : status | header | body | response | response_length
+# Supported operators : equals | not_equals | contains | not_contains | regex | regex_not
+#                       exists | not_exists  (header only — no value required)
+#
+# group_operator : OR  — any group can match (default, recommended)
+#                  AND — all groups must match (rarely needed)
+# operator       : AND — all rules in the group must match (default)
+#                  OR  — any rule in the group must match
+#
+# Optional identifiers for explainability in results:
+#   groups: - id: redirect_to_login     ← appears in matched_group_id
+#   rules:  - id: status_is_302         ← appears in matched_rules output
+#
+# Evaluation order (first match wins):
+#   1. failed_detection  → POSSIBLE_BAC
+#   2. passed_detection  → SECURE
+#   3. neither           → UNKNOWN
+
+version: 1
+
+# -----------------------------------------------------------------------
+# PASSED DETECTION
+# Describe how this application signals that access was denied.
+# All patterns here produce verdict: SECURE
+# -----------------------------------------------------------------------
+passed_detection:
+
+  # OR means: any ONE group below is sufficient to classify as SECURE.
+  group_operator: OR
+
+  groups:
+
+    # ---- Pattern 1: Standard 401 Unauthorized ----------------------
+    - id: unauthorized_401
+      operator: AND        # both rules must match
+      rules:
+        - id: status_401
+          location: status
+          operator: equals
+          value: 401
+
+        - id: body_unauthorized
+          location: body
+          operator: contains
+          value: Unauthorized
+
+    # ---- Pattern 2: Standard 403 Forbidden -------------------------
+    - id: forbidden_403
+      operator: AND
+      rules:
+        - id: status_403
+          location: status
+          operator: equals
+          value: 403
+
+        - id: body_access_denied
+          location: body
+          operator: contains
+          value: Access Denied
+
+    # ---- Pattern 3: Redirect to login page -------------------------
+    - id: redirect_to_login
+      operator: AND
+      rules:
+        - id: status_302
+          location: status
+          operator: equals
+          value: 302
+
+        - id: location_contains_login
+          location: header
+          field: Location         # target the Location header specifically
+          operator: contains
+          value: /login
+
+    # ---- Pattern 4: HTTP Authentication Challenge (either scheme) --
+    - id: www_auth_challenge
+      operator: OR              # either Basic OR Bearer is sufficient
+      rules:
+        - id: www_auth_basic
+          location: header
+          field: WWW-Authenticate
+          operator: contains
+          value: Basic
+
+        - id: www_auth_bearer
+          location: header
+          field: WWW-Authenticate
+          operator: contains
+          value: Bearer
+
+    # ---- Pattern 5: WWW-Authenticate header present (any value) ----
+    # Use 'exists' when you only care that the header is present,
+    # regardless of its value. No 'value' field needed.
+    - id: www_auth_exists
+      operator: AND
+      rules:
+        - id: www_authenticate_present
+          location: header
+          field: WWW-Authenticate
+          operator: exists      # no 'value' required
+
+    # ---- Pattern 6: JSON error body --------------------------------
+    - id: json_error_response
+      operator: AND
+      rules:
+        - id: status_403_json
+          location: status
+          operator: equals
+          value: 403
+
+        - id: json_error_field
+          location: body
+          operator: regex
+          value: '"error"\s*:'
+
+    # ---- Pattern 7: Full response regex ----------------------------
+    # 'response' location searches headers + body combined.
+    - id: response_forbidden_text
+      operator: AND
+      rules:
+        - id: response_contains_forbidden
+          location: response
+          operator: regex
+          value: '(?i)forbidden|access.denied|not.authorized'
+
+# -----------------------------------------------------------------------
+# FAILED DETECTION
+# Describe what a successful access bypass looks like.
+# All patterns here produce verdict: POSSIBLE_BAC
+# -----------------------------------------------------------------------
+failed_detection:
+
+  group_operator: OR
+
+  groups:
+
+    # ---- Pattern 1: Dashboard page returned ------------------------
+    - id: dashboard_returned
+      operator: AND
+      rules:
+        - id: status_200_dashboard
+          location: status
+          operator: equals
+          value: 200
+
+        - id: body_contains_dashboard
+          location: body
+          operator: contains
+          value: Dashboard
+
+    # ---- Pattern 2: User profile JSON returned ---------------------
+    - id: profile_json_returned
+      operator: AND
+      rules:
+        - id: status_200_profile
+          location: status
+          operator: equals
+          value: 200
+
+        - id: username_json_field
+          location: body
+          operator: regex
+          value: '"username"\s*:'
+
+    # ---- Pattern 3: Admin page visible -----------------------------
+    - id: admin_page_visible
+      operator: AND
+      rules:
+        - id: admin_user_mgmt
+          location: body
+          operator: contains
+          value: User Management
+
+        - id: admin_create_user
+          location: body
+          operator: contains
+          value: Create User
+
+    # ---- Pattern 4: Authenticated JSON with id + email -------------
+    - id: authed_json_object
+      operator: AND
+      rules:
+        - id: json_id_field
+          location: response
+          operator: regex
+          value: '"id"\s*:\s*\d+'
+
+        - id: json_email_field
+          location: response
+          operator: regex
+          value: '"email"\s*:'
+
+    # ---- Pattern 5: Response body above expected length ------------
+    # Useful when the auth-denied response is always small (e.g. empty JSON {})
+    # and the authenticated response is larger.
+    # Adjust the value to match your application's typical rejection size.
+    # - id: body_too_large_for_rejection
+    #   operator: AND
+    #   rules:
+    #     - id: status_200_large
+    #       location: status
+    #       operator: equals
+    #       value: 200
+    #     - id: large_response_body
+    #       location: response_length
+    #       operator: not_equals
+    #       value: 2        # empty JSON "{}" is 2 bytes
