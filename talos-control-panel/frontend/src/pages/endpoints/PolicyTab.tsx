@@ -183,9 +183,11 @@ export default function PolicyTab({
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 88,
+      minWidth: 64,
       render: (r) => (
         <button
           className="btn btn-xs btn-ghost"

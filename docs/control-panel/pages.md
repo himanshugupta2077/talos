@@ -295,10 +295,10 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **Backend** | list + filters; optional `include=flags` (diff/bac/unauth/evidence/replay/truncation); roles list; replay/enqueue/export; auth-config attach login/control flows |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules names); LEFT JOINs to `replay_diffs`, `bac_results`, `unauth_results`, `finding_evidence` when flags requested |
-| **Components** | `DataTable`, `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
+| **Components** | `DataTable` (boxed cells, column resize + reorder + show/hide; Actions header visible), `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
 | **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ replay/enqueue/export/assign login/control/copy helpers |
 
-**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail sidebar.
+**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. Table: drag header edges to resize columns; Columns menu for show/hide; layout persisted under `storageKey=flows`.
 
 **Signals (only when Core has rows):** ↺ replay · Δ diff · A attack · F finding evidence · trunc body truncated.
 
@@ -314,16 +314,16 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **Backend** | `GET /api/flows/{id}` (flow + derived + results + endpoint_policy), `/related`, `/intelligence`, filter-aware `/adjacent`, replay, enqueue, export |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules), replay_diffs, bac/unauth/auth_test results, finding_evidence, scheduler_jobs, endpoint_policy, role_auth_* / session_health_* |
-| **Components** | `HttpInspector` (Raw/Inspector/Headers/Cookies/JWT/Params/Body — no cookie/JWT duplication), `FlowActions` sticky rail, health chips, summary + `flow_meta`, Replay/Timeline/Debug tabs, Session/Related panels, `ModuleHelp` |
-| **Workflow** | Header + health chips → left tabs (Overview / HTTP / Replay / Timeline / Debug) → sticky Actions / Session / Attack / Related; keyboard ←/→ adjacent, Esc → list |
+| **Components** | `HttpInspector` (Pretty default + Raw; request also Params / JWT), `HttpPrettyView`, `FlowActions` bottom panels, health chips, summary + `flow_meta`, Replay/Timeline/Debug tabs, Session/Related panels, `ModuleHelp` |
+| **Workflow** | Header + health chips → full-width tabs (Overview / HTTP / Replay / Timeline / Debug) → operator panels below (Actions / Session / Attack / Related); keyboard ←/→ adjacent, Esc → list |
 
-**Layout:** ~65% left scrollable content, ~35% sticky right rail on `lg+`; stacked on small screens. Footer prev/next.
+**Layout:** Full-width main workspace; Request | Response side-by-side under the HTTP tab; Actions / Session / Attack results / Related in a grid **below** the workspace (not a sticky right rail). Footer prev/next.
 
-**HTTP non-duplication:** Cookies live in the Cookies tab (prefer `request_cookies`); Headers show Cookie as an opaque row with count badge; JWT only in the JWT tab / Inspector summary. Raw reconstructs a Cookie line only when the header is missing.
+**HTTP views:** Both request and response default to **Pretty** (start-line + headers + pretty-printed body). **Raw** is the canonical dump (Cookie line synthesized only when the stored Cookie header is missing). Request also exposes Params and JWT; dedicated Inspector / Headers / Cookies / Body tabs were removed to avoid duplicate presentation.
 
 **Honesty:** “Replay modified / different role” is disabled until Core exposes it; deep-link to Attack for BAC/unauth. Diff chips are Core summary rows (status/length/verdict), not a UI reimplementation of the verdict engine.
 
-**Operator guidance:** `How Flow inspection works` covers tab semantics, replay behavior, and keyboard shortcuts.
+**Operator guidance:** `How Flow inspection works` covers Pretty/Raw, bottom panels, replay behavior, and keyboard shortcuts.
 
 ---
 

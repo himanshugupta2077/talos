@@ -1,8 +1,8 @@
 /**
  * Flow inspection workspace — primary UI for one HTTP transaction.
  *
- * Layout: header + health chips | left tabs (Overview/HTTP/Replay/Timeline/Debug)
- * | sticky right rail (Actions / Session / Attack / Related).
+ * Layout: header + health chips | tabs (Overview/HTTP/Replay/Timeline/Debug)
+ * | operator panels below (Actions / Session / Attack / Related).
  * Thin surface over Core data — no re-derived verdicts or session scores.
  */
 
@@ -269,14 +269,15 @@ export default function FlowDetail() {
           does not re-score BAC or session health.
         </p>
         <p>
-          <strong>HTTP tabs</strong> split Raw (canonical headers+body) from Inspector
-          views so cookies and JWTs are not shown twice. Prefer the Cookies / JWT tabs
-          for decoded views.
+          <strong>HTTP</strong> shows Request and Response side by side. Each side defaults
+          to <strong>Pretty</strong> (start-line, headers, pretty-printed body). Switch to
+          Raw for the canonical dump; request also has Params and JWT when useful.
         </p>
         <p>
           <strong>Replay now</strong> re-sends the stored request via Core; modified or
           different-role replay is not a first-class CLI action yet — use Attack for
-          BAC/unauth.
+          BAC/unauth. Operator panels (Actions, Session, Attack results, Related) sit below
+          the main workspace.
         </p>
         <p>
           Keyboard: <span className="mono">←</span> / <span className="mono">→</span>{" "}
@@ -332,148 +333,141 @@ export default function FlowDetail() {
         />
       </div>
 
-      {/* Split workspace */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-        {/* Left ~65% */}
-        <div className="lg:col-span-8 min-w-0">
-          <div className="tabs tabs-boxed tabs-sm mb-4 flex-wrap bg-base-200/50 p-1 w-fit max-w-full">
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={`tab ${tab === t.id ? "tab-active" : ""}`}
-                onClick={() => {
-                  setTab(t.id);
-                  window.location.hash = `section=${t.id}`;
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {tab === "overview" && (
-            <div className="space-y-4">
-              <FlowSummaryCard flow={flow} derived={derived} />
-              <FlowMetaCard flowMeta={flow.flow_meta} />
-            </div>
-          )}
-
-          {tab === "http" && (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              <div className="panel p-3">
-                <h3 className="font-semibold text-sm mb-2">Request</h3>
-                <p className="text-[11px] text-base-content/50 mb-2">
-                  Raw uses stored headers; Cookies / JWT tabs decode without duplicating
-                  under Headers.
-                </p>
-                <HttpInspector
-                  side="request"
-                  startLine={`${flow.method} ${flow.path}${flow.query ? `?${flow.query}` : ""} HTTP/1.1`}
-                  headers={flow.request_headers || {}}
-                  cookies={flow.request_cookies || {}}
-                  body={flow.request_body}
-                  bodyEncoding={flow.request_body_encoding}
-                  contentType={flow.content_type}
-                  query={flow.query}
-                />
-              </div>
-              <div className="panel p-3">
-                <h3 className="font-semibold text-sm mb-2">Response</h3>
-                <HttpInspector
-                  side="response"
-                  startLine={`HTTP/1.1 ${flow.status_code ?? ""}`}
-                  headers={flow.response_headers || {}}
-                  body={flow.response_body}
-                  bodyEncoding={flow.response_body_encoding}
-                  contentType={
-                    (flow.response_headers &&
-                      (flow.response_headers["Content-Type"] ||
-                        flow.response_headers["content-type"])) ||
-                    flow.content_type
-                  }
-                />
-              </div>
-            </div>
-          )}
-
-          {tab === "replay" && (
-            <FlowReplayPanel
-              originalFlowId={flow.original_flow_id}
-              original={related?.original}
-              children={related?.children || []}
-              diff={diff}
-            />
-          )}
-
-          {tab === "timeline" && <FlowTimeline events={timeline} />}
-
-          {tab === "debug" && <FlowDebugPanel flow={flow} derived={derived} />}
+      {/* Full-width workspace tabs */}
+      <div className="min-w-0">
+        <div className="tabs tabs-boxed tabs-sm mb-4 flex-wrap bg-base-200/50 p-1 w-fit max-w-full">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`tab ${tab === t.id ? "tab-active" : ""}`}
+              onClick={() => {
+                setTab(t.id);
+                window.location.hash = `section=${t.id}`;
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
-        {/* Right sticky ~35% */}
-        <aside className="lg:col-span-4 space-y-4 lg:sticky lg:top-4 lg:self-start">
-          <div className="panel p-3">
-            <h3 className="font-semibold text-sm mb-2">Actions</h3>
-            <FlowActions
-              variant="panel"
-              projectId={selected.id}
-              roles={roles}
-              flow={{
-                id: flow.id,
-                method: flow.method,
-                host: flow.host,
-                path: flow.path,
-                query: flow.query,
-                url: flow.url,
-                endpoint_id: flow.endpoint_id,
-                request_headers: flow.request_headers,
-                request_cookies: flow.request_cookies,
-                request_body: flow.request_body,
-                request_body_encoding: flow.request_body_encoding,
-              }}
-            />
+        {tab === "overview" && (
+          <div className="space-y-4">
+            <FlowSummaryCard flow={flow} derived={derived} />
+            <FlowMetaCard flowMeta={flow.flow_meta} />
           </div>
+        )}
 
-          <div className="panel p-3">
-            <h3 className="font-semibold text-sm mb-2">Session</h3>
-            <FlowSessionPanel session={intel?.session ?? null} />
-          </div>
-
-          <div className="panel p-3">
-            <h3 className="font-semibold text-sm mb-2">Attack results</h3>
-            <FlowAttackResults
-              results={{ diff, bac, unauth, auth_test: authTest }}
-            />
-          </div>
-
-          <div className="panel p-3">
-            <h3 className="font-semibold text-sm mb-2">Related</h3>
-            <FlowRelatedPanel
-              roleName={flow.role_name}
-              moduleName={flow.module_name}
-              endpointId={flow.endpoint_id}
-              originalFlowId={flow.original_flow_id}
-              childrenCount={related?.children?.length ?? 0}
-              findings={related?.findings || []}
-              jobs={related?.jobs || []}
-              paramCount={related?.param_count}
-            />
-          </div>
-
-          {flow.tags && flow.tags.length > 0 && (
-            <div className="panel p-3">
-              <h3 className="font-semibold text-sm mb-2">Tags</h3>
-              <div className="flex flex-wrap gap-1">
-                {flow.tags.map((t) => (
-                  <span key={t} className="badge badge-sm badge-warning">
-                    {t}
-                  </span>
-                ))}
-              </div>
+        {tab === "http" && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="panel p-3 min-w-0">
+              <h3 className="font-semibold text-sm mb-2">Request</h3>
+              <HttpInspector
+                side="request"
+                startLine={`${flow.method} ${flow.path}${flow.query ? `?${flow.query}` : ""} HTTP/1.1`}
+                headers={flow.request_headers || {}}
+                cookies={flow.request_cookies || {}}
+                body={flow.request_body}
+                bodyEncoding={flow.request_body_encoding}
+                contentType={flow.content_type}
+                query={flow.query}
+              />
             </div>
-          )}
-        </aside>
+            <div className="panel p-3 min-w-0">
+              <h3 className="font-semibold text-sm mb-2">Response</h3>
+              <HttpInspector
+                side="response"
+                startLine={`HTTP/1.1 ${flow.status_code ?? ""}`}
+                headers={flow.response_headers || {}}
+                body={flow.response_body}
+                bodyEncoding={flow.response_body_encoding}
+                contentType={
+                  (flow.response_headers &&
+                    (flow.response_headers["Content-Type"] ||
+                      flow.response_headers["content-type"])) ||
+                  flow.content_type
+                }
+              />
+            </div>
+          </div>
+        )}
+
+        {tab === "replay" && (
+          <FlowReplayPanel
+            originalFlowId={flow.original_flow_id}
+            original={related?.original}
+            children={related?.children || []}
+            diff={diff}
+          />
+        )}
+
+        {tab === "timeline" && <FlowTimeline events={timeline} />}
+
+        {tab === "debug" && <FlowDebugPanel flow={flow} derived={derived} />}
+      </div>
+
+      {/* Operator panels below request/response (and other tabs) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+        <div className="panel p-3">
+          <h3 className="font-semibold text-sm mb-2">Actions</h3>
+          <FlowActions
+            variant="panel"
+            projectId={selected.id}
+            roles={roles}
+            flow={{
+              id: flow.id,
+              method: flow.method,
+              host: flow.host,
+              path: flow.path,
+              query: flow.query,
+              url: flow.url,
+              endpoint_id: flow.endpoint_id,
+              request_headers: flow.request_headers,
+              request_cookies: flow.request_cookies,
+              request_body: flow.request_body,
+              request_body_encoding: flow.request_body_encoding,
+            }}
+          />
+        </div>
+
+        <div className="panel p-3">
+          <h3 className="font-semibold text-sm mb-2">Session</h3>
+          <FlowSessionPanel session={intel?.session ?? null} />
+        </div>
+
+        <div className="panel p-3">
+          <h3 className="font-semibold text-sm mb-2">Attack results</h3>
+          <FlowAttackResults
+            results={{ diff, bac, unauth, auth_test: authTest }}
+          />
+        </div>
+
+        <div className="panel p-3">
+          <h3 className="font-semibold text-sm mb-2">Related</h3>
+          <FlowRelatedPanel
+            roleName={flow.role_name}
+            moduleName={flow.module_name}
+            endpointId={flow.endpoint_id}
+            originalFlowId={flow.original_flow_id}
+            childrenCount={related?.children?.length ?? 0}
+            findings={related?.findings || []}
+            jobs={related?.jobs || []}
+            paramCount={related?.param_count}
+          />
+        </div>
+
+        {flow.tags && flow.tags.length > 0 && (
+          <div className="panel p-3 sm:col-span-2 xl:col-span-4">
+            <h3 className="font-semibold text-sm mb-2">Tags</h3>
+            <div className="flex flex-wrap gap-1">
+              {flow.tags.map((t) => (
+                <span key={t} className="badge badge-sm badge-warning">
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Footer nav */}

@@ -114,7 +114,7 @@ Hook: `useStatus()`.
 | Toasts | CommandLogContext | Memory + timeouts |
 | Proxy / scheduler / findings / role-module header | StatusContext | Memory; polled |
 | Theme | ThemeToggle (local) | Implementation-local (not centralized context) |
-| DataTable column prefs | DataTable `storageKey` | `localStorage` when key set |
+| DataTable column prefs (order, hidden, widths) | DataTable `storageKey` | `localStorage` key `talos-cp-table:<storageKey>` when set |
 
 ---
 

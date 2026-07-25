@@ -84,8 +84,8 @@ Empty `routers/__init__.py` is fine; imports are explicit in `main.py`.
 
 1. Place shared UI in `frontend/src/components/`
 2. Keep presentational when possible; data fetching stays in pages
-3. Reuse DaisyUI classes and existing utilities (`.panel`, `.mono`, `.table-tight`)
-4. For tables of rows with sorting/column prefs, extend `DataTable` rather than inventing a new table
+3. Reuse DaisyUI classes and existing utilities (`.panel`, `.mono`, `.table-tight`, `.table-boxed`)
+4. For tables of rows with sorting/column prefs/resize, extend `DataTable` rather than inventing a new table
 5. For resolved filesystem paths, reuse `PathField` (copy + open-directory pattern)
 
 ---

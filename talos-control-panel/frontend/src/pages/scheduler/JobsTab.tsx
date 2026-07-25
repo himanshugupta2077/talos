@@ -199,9 +199,11 @@ export default function JobsTab({
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 72,
+      minWidth: 56,
       render: (j) => (
         <div
           className="dropdown dropdown-end"

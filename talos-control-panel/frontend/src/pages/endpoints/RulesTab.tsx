@@ -210,9 +210,11 @@ export default function RulesTab({
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 88,
+      minWidth: 64,
       render: (r) => (
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <button className="btn btn-xs btn-ghost" onClick={() => openEdit(r)}>

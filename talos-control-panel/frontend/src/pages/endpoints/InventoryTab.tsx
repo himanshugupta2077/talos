@@ -173,9 +173,11 @@ export default function InventoryTab({
   const columns: Column<EndpointRow>[] = [
     {
       key: "select",
-      header: "",
+      header: "Select",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 56,
+      minWidth: 48,
       render: (r) => (
         <input
           type="checkbox"
@@ -237,9 +239,11 @@ export default function InventoryTab({
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 72,
+      minWidth: 56,
       render: (r) => (
         <div className="dropdown dropdown-end" onClick={(e) => e.stopPropagation()}>
           <button

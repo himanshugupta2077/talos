@@ -140,8 +140,9 @@ Page-level behavior: [pages.md](./pages.md).
 | `ThemeToggle` | `ThemeToggle.tsx` | DaisyUI light/dark toggle |
 | `CommandDrawer` | `CommandDrawer.tsx` | Bottom-docked command log (resize, copy, auto-hide) |
 | `ToastStack` | `ToastStack.tsx` | Renders toasts from command log context |
-| `DataTable` | `DataTable.tsx` | Sortable dense table with optional column visibility persistence |
-| `HttpInspector` | `components/http/HttpInspector.tsx` | Burp-style request/response inspector (Raw / Inspector / Headers / Cookies / JWT / Params / Body); strict non-duplication of cookies/JWT |
+| `DataTable` | `DataTable.tsx` | Dense boxed table: sort, column show/hide, drag-reorder, drag-edge resize; layout persisted when `storageKey` set |
+| `HttpInspector` | `components/http/HttpInspector.tsx` | Request/response viewer: Pretty (default) + Raw; request also Params / JWT |
+| `HttpPrettyView` | `components/http/HttpPrettyView.tsx` | Start-line + headers + pretty-printed body |
 | `HttpView` | `HttpView.tsx` | Re-exports `HttpInspector` for legacy import path |
 | `StatusBadge` | `StatusBadge.tsx` | Colored badge for status/verdict/priority values |
 | `ParameterPicker` | `ParameterPicker.tsx` | Searchable parameter UUID picker (uses `/api/endpoints/parameters/search`) |
@@ -162,9 +163,9 @@ Page-level behavior: [pages.md](./pages.md).
 | `pages/endpoints/shared.tsx` | Filters, badges, bulk result banner helpers |
 | `pages/EndpointDetail.tsx` | Inspector: Overview \| Policy \| Parameters \| Flows \| Activity |
 | `pages/Flows.tsx` | Flow table + filters + signal icons + shared `FlowActions` menu |
-| `pages/FlowDetail.tsx` | Flow inspection workspace shell (header, tabs, sticky rail) |
+| `pages/FlowDetail.tsx` | Flow inspection workspace shell (header, full-width tabs, bottom operator panels) |
 | `pages/flows/*` | FlowActions, health chips, summary/meta, replay/session/related/timeline/debug panels |
-| `components/http/*` | parseHttp (pure parsers + tests), buildCurl, HttpInspector family |
+| `components/http/*` | parseHttp (pure parsers + tests), buildCurl, HttpInspector / HttpPrettyView / HttpRawView family |
 
 ### `PathField` (project path actions)
 
@@ -183,12 +184,18 @@ Helper `openDirectoryBody(target)` builds `{ target: "data_dir" | "database_dir"
 
 ### `DataTable`
 
-Used heavily for list pages. Supports:
+Used heavily for list pages (Flows, Findings, Endpoints inventory/policy/rules, Scheduler jobs). Supports:
 
-- Column definitions with `render`, `sortValue`, `sortable`, `alwaysVisible`
+- Column definitions with `render`, `sortValue`, `sortable`, `alwaysVisible`, `defaultWidth`, `minWidth`
 - Client-side sorting
-- Optional `storageKey` for persisted column visibility
+- **Boxed cells** (`.table-boxed`) so column boundaries are visible
+- **Column resize** via drag handles on every header’s right edge
+- Drag header to reorder; Columns menu to show/hide
+- Optional `storageKey` persists order, hidden set, and widths in `localStorage` (`talos-cp-table:<key>`)
+- “Reset widths” restores default column widths
 - Row click handlers
+
+Ad-hoc tables elsewhere use the same denser `.table-tight` borders so lists read consistently even without resize controls.
 
 ### `ConfirmButton`
 

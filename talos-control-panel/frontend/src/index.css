@@ -31,6 +31,78 @@ body {
   padding-bottom: 0.4rem;
 }
 
+/*
+ * Boxed tables — visible cell borders so columns read as resizable boxes.
+ * Used by DataTable and available for ad-hoc tables across the control panel.
+ */
+.table-boxed {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.table-boxed :where(th, td) {
+  border-right: 1px solid color-mix(in oklch, currentColor 14%, transparent);
+  border-bottom: 1px solid color-mix(in oklch, currentColor 12%, transparent);
+  vertical-align: middle;
+}
+.table-boxed thead th {
+  border-bottom: 1px solid color-mix(in oklch, currentColor 22%, transparent);
+  background: color-mix(in oklch, var(--fallback-b2, oklch(var(--b2))) 80%, transparent);
+  font-weight: 600;
+}
+.table-boxed :where(th:last-child, td:last-child) {
+  border-right: none;
+}
+.table-boxed tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Column resize handle — always slightly visible; stronger on hover */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 2;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    transparent 40%,
+    color-mix(in oklch, currentColor 28%, transparent) 40%,
+    color-mix(in oklch, currentColor 28%, transparent) 60%,
+    transparent 60%
+  );
+}
+.col-resize-handle:hover,
+.col-resize-handle:active {
+  background: color-mix(in oklch, var(--fallback-p, oklch(var(--p))) 55%, transparent);
+}
+
+/* While dragging a column edge, avoid text selection / grab cursor fights */
+body.col-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.col-resizing * {
+  cursor: col-resize !important;
+}
+
+/* Default boxed look for common dense tables outside DataTable */
+.table.table-tight:not(.table-boxed) :where(th, td) {
+  border-right: 1px solid color-mix(in oklch, currentColor 10%, transparent);
+  border-bottom: 1px solid color-mix(in oklch, currentColor 8%, transparent);
+}
+.table.table-tight:not(.table-boxed) thead th {
+  border-bottom-color: color-mix(in oklch, currentColor 18%, transparent);
+  font-weight: 600;
+}
+.table.table-tight:not(.table-boxed) :where(th:last-child, td:last-child) {
+  border-right: none;
+}
+
 /* Small clickable UUID pill — click to copy full value. */
 .uuid-chip {
   @apply mono inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-base-200 border border-base-300;

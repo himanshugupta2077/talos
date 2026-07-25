@@ -41,7 +41,7 @@ export default function ProbeEvidenceTable({ probes }: { probes: any[] }) {
         </span>
       </div>
       <div className="overflow-x-auto panel">
-        <table className="table table-tight table-xs">
+        <table className="table table-tight table-xs table-boxed w-full">
           <thead>
             <tr>
               <th>Analysis</th>

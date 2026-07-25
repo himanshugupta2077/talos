@@ -2,6 +2,39 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel — Flow detail polish + boxed resizable tables
+
+### Problem
+
+Flow HTTP still exposed Inspector / Headers / Cookies / Body tabs operators did
+not need day-to-day; the sticky right rail stole horizontal space from request
+and response; list tables lacked visible column edges and resize controls; the
+Flows **Actions** column header was blank.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `HttpInspector` | Pretty (default) + Raw for request and response; request Params / JWT only |
+| `HttpPrettyView` | Start-line + headers + pretty-printed body |
+| `FlowDetail` layout | Full-width tabs; Actions / Session / Attack / Related **below** HTTP |
+| `DataTable` | Boxed cells, drag-edge column resize, persist widths with order/hidden |
+| Action headers | Visible “Actions” / “Select” labels on Flows, Endpoints, Scheduler |
+
+### Operator happy path
+
+1. Filter Flows → open a row (filters preserved for ←/→ navigation).
+2. HTTP tab: Pretty request | Pretty response side by side; Raw when needed.
+3. Scroll below for Actions (Replay now, Enqueue, Export, copy helpers), Session, Attack, Related.
+4. On list tables: drag column edges to resize; Columns menu; Reset widths.
+
+### Tests
+
+- Frontend: Vitest suite (parseHttp, flowFlags, PathField) + `tsc` / vite build
+- Backend: existing `test_flow_routes.py` unchanged (presentation-only UI)
+
+---
+
 ## Control Panel — Flow inspection workspace
 
 ### Problem
@@ -15,9 +48,9 @@ were under-used compared with `talos flow show` / related Core tables.
 
 | Piece | Role |
 |-------|------|
-| `HttpInspector` + `parseHttp` | Burp-style tabs with strict non-duplication (Raw vs Cookies/JWT) |
-| `FlowDetail` 65/35 workspace | Overview / HTTP / Replay / Timeline / Debug + sticky Actions rail |
-| Shared `FlowActions` | Same actions on list ⋮ and detail rail (replay, enqueue, export, login/control, copy raw/curl/UUID) |
+| `HttpInspector` + `parseHttp` | Request/response Pretty + Raw (later simplified; parsers remain) |
+| `FlowDetail` workspace | Overview / HTTP / Replay / Timeline / Debug + operator panels |
+| Shared `FlowActions` | Same actions on list ⋮ and detail (replay, enqueue, export, login/control, copy raw/curl/UUID) |
 | Backend enrichments | `derived` + `results`, `/related`, `/intelligence`, list `include=flags`, filter-aware adjacent |
 | Docs | pages / routing / frontend / backend / database CP docs |
 
@@ -27,8 +60,8 @@ Thin UI only: no re-derived BAC/unauth verdicts or browser session scores.
 ### Operator happy path
 
 1. Filter Flows → open a row (filters preserved for ←/→ navigation).
-2. HTTP tab: Inspector / Headers / Cookies / JWT / Body without duplicated cookies.
-3. Sticky Actions: Replay now, Enqueue, Export Markdown, copy curl.
+2. HTTP tab: Pretty / Raw request and response.
+3. Actions panel: Replay now, Enqueue, Export Markdown, copy curl.
 4. Overview shows `flow_meta` and truncation; Replay tab shows children + original.
 
 ### Tests

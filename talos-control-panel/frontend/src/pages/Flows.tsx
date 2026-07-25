@@ -113,25 +113,31 @@ export default function Flows() {
       key: "captured_at",
       header: "Time",
       className: "text-xs whitespace-nowrap",
+      defaultWidth: 140,
       sortValue: (r) => r.captured_at,
       render: (r) => formatIST(r.captured_at),
     },
     {
       key: "method",
       header: "Method",
+      defaultWidth: 80,
+      minWidth: 64,
       render: (r) => <span className="badge badge-outline badge-sm mono">{r.method}</span>,
     },
-    { key: "host", header: "Host", className: "mono text-xs" },
-    { key: "path", header: "Path", className: "mono text-xs" },
+    { key: "host", header: "Host", className: "mono text-xs", defaultWidth: 160 },
+    { key: "path", header: "Path", className: "mono text-xs", defaultWidth: 220 },
     {
       key: "status_code",
       header: "Status",
+      defaultWidth: 72,
+      minWidth: 56,
       render: (r) => <StatusBadge value={r.status_code} />,
     },
     {
       key: "signals",
       header: "Signals",
       sortable: false,
+      defaultWidth: 100,
       render: (r) => (
         <div className="flex flex-wrap gap-0.5" onClick={(e) => e.stopPropagation()}>
           {r.is_replay && (
@@ -182,14 +188,16 @@ export default function Flows() {
         </div>
       ),
     },
-    { key: "source", header: "Source" },
-    { key: "role_name", header: "Role" },
-    { key: "module_name", header: "Module" },
+    { key: "source", header: "Source", defaultWidth: 96 },
+    { key: "role_name", header: "Role", defaultWidth: 100 },
+    { key: "module_name", header: "Module", defaultWidth: 100 },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       sortable: false,
       alwaysVisible: true,
+      defaultWidth: 72,
+      minWidth: 56,
       render: (r) => (
         <div className="dropdown dropdown-end" onClick={(e) => e.stopPropagation()}>
           <button
@@ -239,9 +247,14 @@ export default function Flows() {
           (request/response, replay chain, attack results).
         </p>
         <p>
-          Row <strong>⋮</strong> actions match the detail sidebar: replay now,
-          enqueue, export Markdown, assign login/control flow, copy helpers.
-          Signal icons (↺ Δ A F) appear only when Core tables have related rows.
+          Row <strong>⋮</strong> under the Actions column matches the detail Actions
+          panel: replay now, enqueue, export Markdown, assign login/control flow,
+          copy helpers. Signal icons (↺ Δ A F) appear only when Core tables have
+          related rows.
+        </p>
+        <p>
+          Table: drag a column’s right edge to resize, drag a header to reorder,
+          use Columns to show/hide. Layout is saved for this browser.
         </p>
       </ModuleHelp>
 
