@@ -141,7 +141,8 @@ Page-level behavior: [pages.md](./pages.md).
 | `CommandDrawer` | `CommandDrawer.tsx` | Bottom-docked command log (resize, copy, auto-hide) |
 | `ToastStack` | `ToastStack.tsx` | Renders toasts from command log context |
 | `DataTable` | `DataTable.tsx` | Sortable dense table with optional column visibility persistence |
-| `HttpView` | `HttpView.tsx` | Request/response headers + body viewer |
+| `HttpInspector` | `components/http/HttpInspector.tsx` | Burp-style request/response inspector (Raw / Inspector / Headers / Cookies / JWT / Params / Body); strict non-duplication of cookies/JWT |
+| `HttpView` | `HttpView.tsx` | Re-exports `HttpInspector` for legacy import path |
 | `StatusBadge` | `StatusBadge.tsx` | Colored badge for status/verdict/priority values |
 | `ParameterPicker` | `ParameterPicker.tsx` | Searchable parameter UUID picker (uses `/api/endpoints/parameters/search`) |
 | `PathField` | `PathField.tsx` | Label + monospace path + Copy path / Open directory icon buttons |
@@ -160,6 +161,10 @@ Page-level behavior: [pages.md](./pages.md).
 | `pages/endpoints/CoverageTab.tsx` | Qualification / baseline / role / parameter coverage |
 | `pages/endpoints/shared.tsx` | Filters, badges, bulk result banner helpers |
 | `pages/EndpointDetail.tsx` | Inspector: Overview \| Policy \| Parameters \| Flows \| Activity |
+| `pages/Flows.tsx` | Flow table + filters + signal icons + shared `FlowActions` menu |
+| `pages/FlowDetail.tsx` | Flow inspection workspace shell (header, tabs, sticky rail) |
+| `pages/flows/*` | FlowActions, health chips, summary/meta, replay/session/related/timeline/debug panels |
+| `components/http/*` | parseHttp (pure parsers + tests), buildCurl, HttpInspector family |
 
 ### `PathField` (project path actions)
 
@@ -292,7 +297,7 @@ Pages use DaisyUI components: `btn`, `badge`, `select`, `input`, `modal`, `tabs`
 
 `src/types.ts` centralizes interfaces used across pages:
 
-- Domain: `Project`, `Role`, `Module`, `EndpointRow`, `Parameter`, `FlowRow`, `FlowDetail`, `Finding`, `FindingGroup`, `SchedulerJob`
+- Domain: `Project`, `Role`, `Module`, `EndpointRow`, `Parameter`, `FlowRow`, `FlowDetail`, `FlowDerived`, `FlowResults`, `FlowDetailBundle`, `Finding`, `FindingGroup`, `SchedulerJob`
 - CLI feedback: `CommandResult`, `StepsResponse`
 - Console: `CommandArgSpec`, `CommandSpec`, `CommandGroup`
 

@@ -237,12 +237,16 @@ Bulk mutation responses: `{ steps, bulk, ok }` where `bulk` is the CLI `--format
 
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
-| GET | `/api/flows` | List | filters source/method/host/status_code/role/module/search; offset/limit | `{ flows, total }` | — | `flows` + roles/modules |
+| GET | `/api/flows` | List | filters source/method/host/status_code/role/module/search/endpoint; offset/limit; optional `include=flags` | `{ flows, total }` (+ flag columns when requested) | — | `flows` + roles/modules; optional joins to diffs/bac/unauth/evidence |
 | GET | `/api/flows/filters` | Distinct filters | `project_id` | sources, methods, hosts, statuses, roles, modules | — | flows |
-| GET | `/api/flows/{flow_id}` | Detail + attack side data | `project_id` | flow (parsed JSON/bodies), diff, bac, unauth, auth_test | — | flows, replay_diffs, bac_results, unauth_results, auth_test_results |
-| GET | `/api/flows/{flow_id}/adjacent` | Newer/older by captured_at | `project_id` | prev/next | — | window functions on flows |
+| GET | `/api/flows/{flow_id}` | Detail + derived + attack side data | `project_id` | `flow`, `derived` (duration/sizes/auth/truncation), `results` {diff,bac,unauth,auth_test}, `endpoint_policy`; legacy aliases `diff`/`bac_result`/… kept | — | flows, replay_diffs, bac_results, unauth_results, auth_test_results, endpoint_policy |
+| GET | `/api/flows/{flow_id}/related` | Related objects | `project_id` | original, children (+diff summary), findings evidence, scheduler jobs, param_count | — | flows, replay_diffs, finding_evidence, findings, scheduler_jobs, parameters |
+| GET | `/api/flows/{flow_id}/intelligence` | Endpoint + session snapshot | `project_id` | endpoint policy snippet, session (provider/artifacts/TTL/suspicion) for flow’s role | — | endpoints, endpoint_policy, role_auth_*, session_health_*, session_suspicion_state |
+| GET | `/api/flows/{flow_id}/adjacent` | Newer/older by captured_at | `project_id` + same filters as list (optional) | prev/next | — | window functions on filtered flows |
 | POST | `/api/flows/{flow_id}/export` | Export one | `project_id` | steps | `flow export <id>` | — |
 | POST | `/api/flows/export` | Export by filter | body module/parameter/endpoint/flows | steps | `flow export` with flags | — |
+
+`derived` and list `flags` are presentation helpers only — they do not recompute Core verdicts or session health scores.
 
 ---
 

@@ -265,6 +265,33 @@ export interface FlowRow {
   replay_reason: string | null;
   role_name: string;
   module_name: string;
+  /** Present when list is called with include=flags */
+  is_replay?: boolean;
+  body_truncated?: boolean;
+  has_diff?: boolean;
+  has_bac?: boolean;
+  has_unauth?: boolean;
+  has_finding_evidence?: boolean;
+}
+
+/** Presentation helpers from GET /api/flows/{id} — not Core verdicts. */
+export interface FlowDerived {
+  duration_ms?: number | null;
+  request_body_size?: number;
+  response_body_size?: number;
+  has_auth_material?: boolean;
+  request_body_truncated?: boolean;
+  response_body_truncated?: boolean;
+  is_replay?: boolean;
+  has_request_body?: boolean;
+  has_response_body?: boolean;
+}
+
+export interface FlowResults {
+  diff?: Record<string, any> | null;
+  bac?: Record<string, any> | null;
+  unauth?: Record<string, any> | null;
+  auth_test?: Record<string, any> | null;
 }
 
 export interface FlowDetail {
@@ -281,13 +308,17 @@ export interface FlowDetail {
   request_cookies: Record<string, string>;
   request_body: string | null;
   request_body_encoding?: string;
+  request_body_truncated?: boolean;
   status_code: number | null;
   response_headers: Record<string, string>;
   response_body: string | null;
   response_body_encoding?: string;
+  response_body_truncated?: boolean;
   content_type: string;
   session_id: string | null;
   endpoint_id: string | null;
+  role_id?: string;
+  module_id?: string;
   role_name: string;
   module_name: string;
   tags: string[];
@@ -296,6 +327,22 @@ export interface FlowDetail {
   replay_error: string | null;
   replay_reason: string | null;
   flow_meta: Record<string, any>;
+}
+
+/** Full detail API envelope (preferred shape). */
+export interface FlowDetailBundle {
+  flow: FlowDetail;
+  derived?: FlowDerived;
+  results?: FlowResults;
+  endpoint_policy?: Record<string, any> | null;
+  /** @deprecated use results.diff */
+  diff?: Record<string, any> | null;
+  /** @deprecated use results.bac */
+  bac_result?: Record<string, any> | null;
+  /** @deprecated use results.unauth */
+  unauth_result?: Record<string, any> | null;
+  /** @deprecated use results.auth_test */
+  auth_test_result?: Record<string, any> | null;
 }
 
 export interface Finding {

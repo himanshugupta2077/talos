@@ -287,31 +287,43 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 
 ## Flows (`/flows`)
 
-**File:** `Flows.tsx`
+**File:** `Flows.tsx` (+ shared `pages/flows/FlowActions.tsx`)
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | Browse captured HTTP flows; quick actions |
-| **Backend** | list + filters; roles list; replay/enqueue/export; auth-config attach login/control flows |
+| **Purpose** | Browse captured HTTP flows; signal icons; quick actions matching detail rail |
+| **Backend** | list + filters; optional `include=flags` (diff/bac/unauth/evidence/replay/truncation); roles list; replay/enqueue/export; auth-config attach login/control flows |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
-| **DB** | flows (+ roles/modules names) |
-| **Components** | `DataTable`, dropdown menu, assign modal, `formatIST` |
-| **Workflow** | Filter → row open detail; or ⋮ replay/enqueue/export/assign as login or control flow |
+| **DB** | flows (+ roles/modules names); LEFT JOINs to `replay_diffs`, `bac_results`, `unauth_results`, `finding_evidence` when flags requested |
+| **Components** | `DataTable`, `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
+| **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ replay/enqueue/export/assign login/control/copy helpers |
+
+**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail sidebar.
+
+**Signals (only when Core has rows):** ↺ replay · Δ diff · A attack · F finding evidence · trunc body truncated.
 
 ---
 
 ## Flow detail (`/flows/:flowId`)
 
-**File:** `FlowDetail.tsx`
+**File:** `FlowDetail.tsx` + `pages/flows/*` + `components/http/*`
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | Full request/response; attack/replay result chips; actions |
-| **Backend** | `GET /api/flows/{id}`, adjacent, replay, enqueue, export |
-| **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export` |
-| **DB** | flow row + optional replay_diffs, bac_results, unauth_results, auth_test_results |
-| **Components** | `HttpView`, `StatusBadge`, `formatIST` |
-| **Workflow** | Inspect HTTP → optional attack result cards → replay/export |
+| **Purpose** | Primary inspection workspace for one HTTP transaction (not a raw DB dump) |
+| **Backend** | `GET /api/flows/{id}` (flow + derived + results + endpoint_policy), `/related`, `/intelligence`, filter-aware `/adjacent`, replay, enqueue, export |
+| **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
+| **DB** | flows (+ roles/modules), replay_diffs, bac/unauth/auth_test results, finding_evidence, scheduler_jobs, endpoint_policy, role_auth_* / session_health_* |
+| **Components** | `HttpInspector` (Raw/Inspector/Headers/Cookies/JWT/Params/Body — no cookie/JWT duplication), `FlowActions` sticky rail, health chips, summary + `flow_meta`, Replay/Timeline/Debug tabs, Session/Related panels, `ModuleHelp` |
+| **Workflow** | Header + health chips → left tabs (Overview / HTTP / Replay / Timeline / Debug) → sticky Actions / Session / Attack / Related; keyboard ←/→ adjacent, Esc → list |
+
+**Layout:** ~65% left scrollable content, ~35% sticky right rail on `lg+`; stacked on small screens. Footer prev/next.
+
+**HTTP non-duplication:** Cookies live in the Cookies tab (prefer `request_cookies`); Headers show Cookie as an opaque row with count badge; JWT only in the JWT tab / Inspector summary. Raw reconstructs a Cookie line only when the header is missing.
+
+**Honesty:** “Replay modified / different role” is disabled until Core exposes it; deep-link to Attack for BAC/unauth. Diff chips are Core summary rows (status/length/verdict), not a UI reimplementation of the verdict engine.
+
+**Operator guidance:** `How Flow inspection works` covers tab semantics, replay behavior, and keyboard shortcuts.
 
 ---
 

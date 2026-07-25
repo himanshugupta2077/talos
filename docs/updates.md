@@ -2,6 +2,42 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel — Flow inspection workspace
+
+### Problem
+
+Flow list/detail treated captures as dense table rows plus a Pretty/Raw HTTP
+dump. Cookies and JWTs were expanded under Headers and again in dedicated
+blocks; `flow_meta`, truncation, replay chains, evidence, and session context
+were under-used compared with `talos flow show` / related Core tables.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `HttpInspector` + `parseHttp` | Burp-style tabs with strict non-duplication (Raw vs Cookies/JWT) |
+| `FlowDetail` 65/35 workspace | Overview / HTTP / Replay / Timeline / Debug + sticky Actions rail |
+| Shared `FlowActions` | Same actions on list ⋮ and detail rail (replay, enqueue, export, login/control, copy raw/curl/UUID) |
+| Backend enrichments | `derived` + `results`, `/related`, `/intelligence`, list `include=flags`, filter-aware adjacent |
+| Docs | pages / routing / frontend / backend / database CP docs |
+
+Thin UI only: no re-derived BAC/unauth verdicts or browser session scores.
+“Replay modified / different role” remains disabled until Core CLI exists.
+
+### Operator happy path
+
+1. Filter Flows → open a row (filters preserved for ←/→ navigation).
+2. HTTP tab: Inspector / Headers / Cookies / JWT / Body without duplicated cookies.
+3. Sticky Actions: Replay now, Enqueue, Export Markdown, copy curl.
+4. Overview shows `flow_meta` and truncation; Replay tab shows children + original.
+
+### Tests
+
+- Frontend: `parseHttp.test.ts`, `flowFlags.test.ts` (Vitest)
+- Backend: `test_flow_routes.py` (detail, related, intelligence, flags, adjacent, export)
+
+---
+
 ## Input Validation — Operator Experience (Module 12) — Revamp complete
 
 ### Problem

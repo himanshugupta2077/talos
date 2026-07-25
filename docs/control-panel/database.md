@@ -119,10 +119,14 @@ The following tables appear in Control Panel SQL. Column usage is as needed by e
 | `endpoint_roles` | inventory roles column, coverage role observation, detail |
 | `parameters` | endpoint detail, parameter search, coverage parameter tables |
 | `policy_rules` | Rules tab + path exclusion/priority resolution |
-| `flows` | flows, endpoint recent flows, attack joins, auth results, summary, scheduler joins |
-| `replay_diffs` | flow detail |
-| `bac_results` | attack bac, flow detail |
-| `unauth_results` | attack unauth, flow detail |
+| `flows` | flows list/detail, endpoint recent flows, attack joins, auth results, summary, scheduler joins, related children/original |
+| `replay_diffs` | flow detail results + list flags + child replay panel |
+| `bac_results` | attack bac, flow detail results + list flags |
+| `unauth_results` | attack unauth, flow detail results + list flags |
+| `finding_evidence` | flow related panel + list has_finding_evidence flag |
+| `scheduler_jobs` | flow related (jobs referencing flow_id / replayed_flow_id) |
+| `endpoint_policy` | flow detail health chips / intelligence |
+| `role_auth_state` / `role_auth_provider` / `session_health_config` / `session_suspicion_state` | flow intelligence session panel |
 
 | `scheduler_jobs` | scheduler list/status, summary |
 | `scheduler_config` | scheduler status |

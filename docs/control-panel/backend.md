@@ -197,7 +197,7 @@ Each router is an `APIRouter` with a `/api/<domain>` prefix and FastAPI tags.
 | `auth_config.py` | `/api/auth-config` | Per-role provider, session file/apply/clear, login flows, extractors (get/set/remove), test (JSON full tokens), validate/refresh, TTL, expiry signals (incl. headers), control flows, reset-health; enriched state snapshot |
 | `endpoints.py` | `/api/endpoints` | Endpoint Workspace: resolved list/summary/coverage, bulk multi-ID mutations, rules CRUD+preview, detail+policy explain |
 | `endpoint_reads.py` | (helper) | Read-only resolved inventory via Talos `policy` resolver (not a mutation path) |
-| `flows.py` | `/api/flows` | List/detail/filters, export, body decoding |
+| `flows.py` | `/api/flows` | List/detail/filters (optional flags), derived fields, related + intelligence reads, filter-aware adjacent, export, body decoding |
 | `replay.py` | `/api/replay` | Flow/endpoint replay |
 | `scheduler.py` | `/api/scheduler` | Process start/stop + enriched status; jobs list/show; cancel/prune; enqueue; pause/resume/clear |
 | `mutations.py` | `/api/mutations` | HTTP Rules (Manipulation Engine): list/summary, engine toggle, create/update, enable/disable, import/export, reorder, duplicate |
