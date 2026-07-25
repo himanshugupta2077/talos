@@ -274,6 +274,38 @@ def canary_collides(canary: str, text: str) -> bool:
 # Payload builder
 # ---------------------------------------------------------------------------
 
+def class_samples_for_location(
+    location: str = "query",
+    samples: tuple[tuple[str, str], ...] | None = None,
+) -> list[tuple[str, str]]:
+    """
+    Purpose:
+        Location-aware multiprobe class samples.
+
+        Header/cookie inject goes through the HTTP client header stack, which
+        rejects NUL and other CTL octets.  Those classes are omitted so the
+        multiprobe still characterizes legal character classes without
+        ``Illegal header value`` transport failures.
+    Side effects: None.
+    """
+    from talos.input_validation.surface import (
+        COOKIE_UNSAFE_TAXONOMY_CLASSES,
+        HEADER_UNSAFE_TAXONOMY_CLASSES,
+        LOCATION_COOKIE,
+        LOCATION_HEADER,
+    )
+
+    base = _normalized_class_samples(samples)
+    loc = (location or "query").strip().lower()
+    if loc == LOCATION_HEADER:
+        ban = HEADER_UNSAFE_TAXONOMY_CLASSES
+    elif loc == LOCATION_COOKIE:
+        ban = COOKIE_UNSAFE_TAXONOMY_CLASSES
+    else:
+        return base
+    return [(cls, sample) for cls, sample in base if cls not in ban]
+
+
 def build_multiprobe_payload(
     *,
     prefix: str = DEFAULT_CANARY_PREFIX,
@@ -281,6 +313,7 @@ def build_multiprobe_payload(
     class_samples: tuple[tuple[str, str], ...] | None = None,
     canary: str | None = None,
     avoid_in: str | None = None,
+    location: str = "query",
 ) -> MultiprobePlan:
     """
     Purpose:
@@ -295,6 +328,7 @@ def build_multiprobe_payload(
         prefix / separator / class_samples — structure knobs.
         canary   — optional fixed canary (tests); else generated.
         avoid_in — optional body text to avoid canary collision with.
+        location — injection location; header/cookie drop null/control samples.
 
     Output:
         MultiprobePlan with ``payload`` ready for injection.
@@ -302,7 +336,9 @@ def build_multiprobe_payload(
     Side effects: May read OS entropy when generating a canary.
     """
     sep = separator or MULTIPROBE_SEPARATOR
-    resolved = _normalized_class_samples(class_samples)
+    # Location-aware: header/cookie omit null/control samples so the payload
+    # remains a legal HTTP header field-value for h11/httpx.
+    resolved = class_samples_for_location(location, class_samples)
     token = canary or generate_canary(prefix=prefix, avoid_in=avoid_in)
 
     fragments: list[MultiprobeFragment] = []

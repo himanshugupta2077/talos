@@ -20,6 +20,165 @@ body {
   font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
+/*
+ * Burp-style Pretty HTTP message editor
+ * (syntax colors inspired by Burp message editor syntax analysis)
+ */
+.http-pretty {
+  border-radius: 0.375rem;
+  border: 1px solid color-mix(in oklch, currentColor 14%, transparent);
+  background: color-mix(in oklch, var(--fallback-b2, oklch(var(--b2))) 55%, transparent);
+  overflow: hidden;
+}
+.http-pretty-editor {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  max-height: 32rem;
+  overflow: auto;
+  line-height: 1.35;
+}
+.http-pretty-gutter {
+  user-select: none;
+  text-align: right;
+  padding: 0.5rem 0.4rem 0.5rem 0.5rem;
+  border-right: 1px solid color-mix(in oklch, currentColor 12%, transparent);
+  color: color-mix(in oklch, currentColor 35%, transparent);
+  background: color-mix(in oklch, var(--fallback-b3, oklch(var(--b3))) 40%, transparent);
+  min-width: 2.25rem;
+}
+.http-pretty-ln {
+  min-height: 1.35em;
+}
+.http-pretty-code {
+  padding: 0.5rem 0.75rem;
+  min-width: 0;
+}
+.http-pretty-line {
+  min-height: 1.35em;
+}
+.http-pretty-wrap .http-pretty-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.http-pretty-nowrap .http-pretty-line {
+  white-space: pre;
+}
+.http-pretty-nowrap .http-pretty-code {
+  overflow-x: auto;
+}
+.http-pretty-blank {
+  min-height: 0.7em;
+}
+
+/* Token colors — work on light + dark DaisyUI themes */
+.hp-method {
+  color: oklch(0.65 0.18 250);
+  font-weight: 700;
+}
+.hp-path {
+  color: oklch(0.72 0.12 200);
+}
+.hp-query-name {
+  color: oklch(0.72 0.16 85);
+  font-weight: 600;
+}
+.hp-query-value {
+  color: oklch(0.7 0.14 145);
+}
+.hp-version {
+  color: color-mix(in oklch, currentColor 50%, transparent);
+}
+.hp-status {
+  color: oklch(0.7 0.17 145);
+  font-weight: 700;
+}
+.hp-reason {
+  color: color-mix(in oklch, currentColor 65%, transparent);
+}
+.hp-header-name {
+  color: oklch(0.68 0.14 300);
+  font-weight: 600;
+}
+.hp-header-value {
+  color: color-mix(in oklch, currentColor 88%, transparent);
+}
+.hp-cookie-name {
+  color: oklch(0.72 0.16 85);
+  font-weight: 600;
+}
+.hp-cookie-value {
+  color: oklch(0.7 0.12 200);
+}
+.hp-json-key {
+  color: oklch(0.7 0.14 250);
+  font-weight: 600;
+}
+.hp-json-string {
+  color: oklch(0.72 0.14 145);
+}
+.hp-json-number {
+  color: oklch(0.72 0.15 55);
+}
+.hp-json-literal {
+  color: oklch(0.68 0.16 320);
+  font-weight: 600;
+}
+.hp-markup-tag {
+  color: oklch(0.68 0.16 250);
+  font-weight: 600;
+}
+.hp-markup-attr {
+  color: oklch(0.72 0.14 85);
+}
+.hp-markup-value {
+  color: oklch(0.72 0.14 145);
+}
+.hp-punct {
+  color: color-mix(in oklch, currentColor 45%, transparent);
+}
+.hp-muted {
+  color: color-mix(in oklch, currentColor 45%, transparent);
+  font-style: italic;
+}
+
+/* Dark theme boosts — DaisyUI data-theme=dark */
+[data-theme="dark"] .hp-method {
+  color: oklch(0.78 0.14 230);
+}
+[data-theme="dark"] .hp-path {
+  color: oklch(0.82 0.1 190);
+}
+[data-theme="dark"] .hp-query-name,
+[data-theme="dark"] .hp-cookie-name,
+[data-theme="dark"] .hp-markup-attr {
+  color: oklch(0.86 0.12 95);
+}
+[data-theme="dark"] .hp-query-value,
+[data-theme="dark"] .hp-json-string,
+[data-theme="dark"] .hp-markup-value {
+  color: oklch(0.82 0.12 150);
+}
+[data-theme="dark"] .hp-status {
+  color: oklch(0.82 0.14 150);
+}
+[data-theme="dark"] .hp-header-name {
+  color: oklch(0.8 0.12 300);
+}
+[data-theme="dark"] .hp-json-key,
+[data-theme="dark"] .hp-markup-tag {
+  color: oklch(0.8 0.12 250);
+}
+[data-theme="dark"] .hp-json-number {
+  color: oklch(0.84 0.12 70);
+}
+[data-theme="dark"] .hp-json-literal {
+  color: oklch(0.8 0.12 320);
+}
+[data-theme="dark"] .hp-cookie-value {
+  color: oklch(0.8 0.1 200);
+}
+
 /* Standard card/container surface used for tables, log entries, grouped content. */
 .panel {
   @apply rounded-lg border border-base-300 bg-base-100;

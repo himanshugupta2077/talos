@@ -2,6 +2,68 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel — Flow HTTP / table polish + IV transport-safe headers
+
+### Problem
+
+1. Flow Pretty still showed a low-signal header eye toggle, a Wrap checkbox, and
+   a “Pretty · no body” status line that added noise without helping inspection.
+2. Flows list **Actions** ⋮ menu often failed to open (DaisyUI dropdown not marked
+   open; panel overflow clipped the menu).
+3. DataTable help text did not put “click to sort” in the visible toolbar line.
+4. IV header/cookie probes failed with `http_error: Illegal header value` when
+   multiprobe/null/norm:trim payloads hit h11/httpx client validation — never
+   reaching the application, yet counted as failed probes.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `HttpInspector` / `HttpPrettyView` / `HttpRawView` | Wrap always on; no Wrap control; all headers always shown; no Pretty status toolbar |
+| `DataTable` + `Flows` Actions | Help line includes sort; `dropdown-open` + overflow-visible for ⋮ menus |
+| `surface` transport gates | `is_http_header_value_legal`, `transport_skip_for_payload` / `_headers` |
+| Multiprobe / taxonomy / parser_intel / type_intel | Location-aware payloads (header/cookie omit null/CTL; header trim = internal pad) |
+| Scheduler IV job | Pre/post-inject skip with `transport_invalid_header` \| `transport_invalid_cookie`; Illegal header value → skipped not failed |
+
+### Operator happy path
+
+1. Flow HTTP: Pretty request | response with wrap; full headers; Raw still available.
+2. Flows list: click header to sort; ⋮ Actions menu opens and stays usable.
+3. IV on header/cookie params: transport-illegal probes are skipped cleanly instead of flooding failed jobs.
+
+### Tests
+
+- Frontend: Vitest (parseHttp, etc.) + `tsc` / vite build
+- Core: `test_iv_surface` transport suite, multiprobe location filters, parser norm header trim
+
+---
+
+## Control Panel — Burp-style HTTP Pretty
+
+### Problem
+
+Flow Pretty was a flat monochrome dump (start-line + headers + body) with only
+basic JSON indent — nothing like Burp’s message editor Pretty tab.
+
+### Decision
+
+Match [Burp Pretty](https://portswigger.net/burp/documentation/desktop/tools/message-editor):
+same message as Raw, plus standardized indentation (JSON / XML / HTML / CSS /
+JavaScript; form fields one-per-line), syntax colorization, line numbers, and
+wrap. (Low-signal hide toggle and Wrap checkbox were later removed — see above.)
+
+| Piece | Role |
+|-------|------|
+| `prettyBody` / `buildPrettyMessage` | Format detection + indent helpers |
+| `HttpPrettyView` | Gutter + tokenized rendering |
+| CSS `.http-pretty` / `.hp-*` | Light/dark token palette |
+
+### Tests
+
+`parseHttp.test.ts` — pretty JSON/HTML/XML/CSS/form + `buildPrettyMessage`
+
+---
+
 ## Control Panel — Flow detail polish + boxed resizable tables
 
 ### Problem
@@ -254,16 +316,23 @@ cookies / Authorization were probed the same as ordinary inputs.
 | `body` multipart | Field body **or** `filename=` when semantic_type=filename |
 | `body` GraphQL | `variables.*` / bare variable / operationName |
 | `body` XML | First leaf element with matching local tag |
-| `header` | Case-insensitive replace/add; hop-by-hop never mutated |
-| `cookie` | Multi-cookie Cookie header; append if missing |
+| `header` | Case-insensitive replace/add; hop-by-hop never mutated; header-safe payloads only |
+| `cookie` | Multi-cookie Cookie header; append if missing; cookie-safe payloads only |
 
 **Auth skip (default):** session-like cookies, Authorization / x-auth-token /
 configured `talos auth set` artifacts. Opt in with `--include-auth-artifacts`.
 
+**Transport skip (follow-up):** payloads illegal for h11/httpx
+(`Illegal header value` — NUL/CTL, leading/trailing SP on header values) are
+skipped with `transport_invalid_header` / `transport_invalid_cookie`, not
+counted as application failures. Multiprobe/char/validation/norm probes are
+location-aware for header/cookie.
+
 ### Tests
 
-`tests/test_iv_surface.py` — path rewrite, header/cookie, multipart/GraphQL/XML,
-auth skip, prepare_iv_probe, synthesis capabilities, engine skip cache.
+`tests/test_iv_surface.py` — path rewrite, header/cookie, transport legality,
+multipart/GraphQL/XML, auth skip, prepare_iv_probe, synthesis capabilities,
+engine skip cache.
 
 ### Handoff (Module 10) — done
 

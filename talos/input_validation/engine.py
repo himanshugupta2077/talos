@@ -1323,7 +1323,7 @@ def _enqueue_single_action(
         )
 
     if token == ACTION_MULTIPROBE:
-        plan = build_multiprobe_payload()
+        plan = build_multiprobe_payload(location=location)
         idx = int((action.meta or {}).get("multiprobe_index") or 0)
         return _insert_scan_probes(
             db_path, project_id, host, location, name, param_uuid,
@@ -1338,7 +1338,7 @@ def _enqueue_single_action(
     if token in (ACTION_CHARACTERS, ACTION_CHAR_DRILLDOWN):
         probes = _char_probes_for_action(
             db_path, param_uuid, config, action,
-            host=host, endpoint_id=endpoint_id,
+            host=host, endpoint_id=endpoint_id, location=location,
         )
     elif token in (ACTION_LENGTH, ACTION_LENGTH_BINARY):
         probes = _length_probes_for_action(db_path, param_uuid, config, action)
@@ -1488,17 +1488,20 @@ def _char_probes_for_action(
     *,
     host: str = "",
     endpoint_id: str = "",
+    location: str = "query",
 ) -> list[tuple[str, str | None]]:
     """
     Purpose:
         Module 6 executor: expand char_drilldown / characters into class probes.
         Module 10: skip classes rejected at endpoint/app level (standard).
+        Header/cookie: omit transport-illegal chars (NUL/CTL).
     Side effects: Read-only DB for known class outcomes.
     """
     strategy = (config.probe_strategy or "standard").lower()
     meta = action.meta or {}
     force_full = bool(meta.get("force_full")) or strategy == "exhaustive"
     reflection_state = str(meta.get("reflection_state") or "unknown")
+    loc = str(meta.get("location") or location or "query")
     known = _known_class_outcomes_from_profile(
         db_path,
         param_uuid,
@@ -1519,6 +1522,7 @@ def _char_probes_for_action(
         known_class_outcomes=known or None,
         force_full=force_full,
         max_chars=max_chars,
+        location=loc,
     )
     return [(ptype, payload) for ptype, payload in pairs]
 
@@ -1665,7 +1669,37 @@ def _type_or_semantic_probes_for_action(
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("[iv] inheritance probe filter failed: %s", exc)
+
+    # Header/cookie: drop payloads the HTTP client cannot send (NUL, CTL,
+    # leading/trailing SP-only values).  Application never sees them.
+    probes = _filter_probes_for_transport(location, probes)
     return probes
+
+
+def _filter_probes_for_transport(
+    location: str,
+    probes: list[tuple[str, str | None]],
+) -> list[tuple[str, str | None]]:
+    """
+    Purpose:
+        Drop scan probes whose payload is illegal for the injection location
+        under the standard HTTP client (h11/httpx header validation).
+    Side effects: None.
+    """
+    from talos.input_validation.surface import transport_skip_for_payload
+
+    loc = (location or "").strip().lower()
+    if loc not in ("header", "cookie"):
+        return probes
+    out: list[tuple[str, str | None]] = []
+    for ptype, payload in probes:
+        if payload is None:
+            out.append((ptype, payload))
+            continue
+        skip = transport_skip_for_payload(loc, payload)
+        if skip is None:
+            out.append((ptype, payload))
+    return out
 
 
 def _enqueue_parser_probes(

@@ -298,7 +298,7 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **Components** | `DataTable` (boxed cells, column resize + reorder + show/hide; Actions header visible), `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
 | **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ replay/enqueue/export/assign login/control/copy helpers |
 
-**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. Table: drag header edges to resize columns; Columns menu for show/hide; layout persisted under `storageKey=flows`.
+**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. Table: click a column header to sort; drag header edges to resize; Columns menu for show/hide; layout persisted under `storageKey=flows`. Actions ⋮ opens a dropdown (`dropdown-open` + overflow-visible) that is not clipped by the table panel.
 
 **Signals (only when Core has rows):** ↺ replay · Δ diff · A attack · F finding evidence · trunc body truncated.
 
@@ -319,7 +319,7 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 
 **Layout:** Full-width main workspace; Request | Response side-by-side under the HTTP tab; Actions / Session / Attack results / Related in a grid **below** the workspace (not a sticky right rail). Footer prev/next.
 
-**HTTP views:** Both request and response default to **Pretty** (start-line + headers + pretty-printed body). **Raw** is the canonical dump (Cookie line synthesized only when the stored Cookie header is missing). Request also exposes Params and JWT; dedicated Inspector / Headers / Cookies / Body tabs were removed to avoid duplicate presentation.
+**HTTP views:** Both request and response default to Burp-style **Pretty** — same structure as Raw (start-line, all headers, blank line, body) with: standardized indentation for JSON / XML / HTML / CSS / JavaScript (and form fields one-per-line), syntax colorization, line numbers, and wrap always on. No low-signal header hide toggle and no “Pretty · no body” status banner. **Raw** is the untransformed dump (Cookie line synthesized only when the stored Cookie header is missing; wrap always on). Request also exposes Params and JWT.
 
 **Honesty:** “Replay modified / different role” is disabled until Core exposes it; deep-link to Attack for BAC/unauth. Diff chips are Core summary rows (status/length/verdict), not a UI reimplementation of the verdict engine.
 

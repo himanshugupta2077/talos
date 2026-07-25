@@ -198,37 +198,48 @@ export default function Flows() {
       alwaysVisible: true,
       defaultWidth: 72,
       minWidth: 56,
-      render: (r) => (
-        <div className="dropdown dropdown-end" onClick={(e) => e.stopPropagation()}>
-          <button
-            tabIndex={0}
-            type="button"
-            className="btn btn-xs btn-ghost"
-            onClick={() => setMenuFlow(menuFlow?.id === r.id ? null : r)}
+render: (r) => {
+        const open = menuFlow?.id === r.id;
+        return (
+          <div
+            className={`dropdown dropdown-end ${open ? "dropdown-open" : ""}`}
+            onClick={(e) => e.stopPropagation()}
           >
-            ⋮
-          </button>
-          {menuFlow?.id === r.id && (
-            <div className="dropdown-content z-30 shadow bg-base-200 rounded-box w-56 border border-base-300 text-sm p-1">
-              <FlowActions
-                variant="menu"
-                projectId={selected.id}
-                roles={roles}
-                flow={{
-                  id: r.id,
-                  method: r.method,
-                  host: r.host,
-                  path: r.path,
-                  query: r.query,
-                  endpoint_id: r.endpoint_id,
-                }}
-                onDone={() => setMenuFlow(null)}
-                className="menu menu-sm p-0"
-              />
-            </div>
-          )}
-        </div>
-      ),
+            <button
+              tabIndex={0}
+              type="button"
+              className="btn btn-xs btn-ghost"
+              aria-label="Flow actions"
+              aria-expanded={open}
+              onClick={() => setMenuFlow(open ? null : r)}
+            >
+              ⋮
+            </button>
+            {open && (
+              <div
+                className="dropdown-content z-[60] shadow-lg bg-base-200 rounded-box w-56 border border-base-300 text-sm p-1"
+                style={{ position: "absolute", right: 0, top: "100%" }}
+              >
+                <FlowActions
+                  variant="menu"
+                  projectId={selected.id}
+                  roles={roles}
+                  flow={{
+                    id: r.id,
+                    method: r.method,
+                    host: r.host,
+                    path: r.path,
+                    query: r.query,
+                    endpoint_id: r.endpoint_id,
+                  }}
+                  onDone={() => setMenuFlow(null)}
+                  className="menu menu-sm p-0"
+                />
+              </div>
+            )}
+          </div>
+        );
+      },
     },
   ];
 

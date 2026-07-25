@@ -301,6 +301,7 @@ def select_normalization_probes(
     strategy: str = "standard",
     reflection_state: str = "unknown",
     max_probes: int | None = None,
+    location: str = "query",
 ) -> list[ParserProbeSpec]:
     """
     Purpose:
@@ -308,10 +309,15 @@ def select_normalization_probes(
         not_reflected, only a minimal trim probe is kept (stage detection
         needs reflection); deep still may attempt structural-only signals.
 
+        Header/cookie locations never emit leading/trailing-space trim
+        payloads (HTTP clients reject those field-values).  Instead they use
+        an internal double-space pad that stays transport-legal.
+
     Input:
         strategy         — quick|standard|deep|exhaustive.
         reflection_state — reflected|not_reflected|unknown|conflicting.
         max_probes       — optional hard cap.
+        location         — injection location (header/cookie adapt trim).
 
     Output:
         Ordered ParserProbeSpec list (family=norm).
@@ -338,13 +344,23 @@ def select_normalization_probes(
     canary = build_norm_canary()
     mixed = _mixed_case(canary)
     specs: list[ParserProbeSpec] = []
+    loc = (location or "query").strip().lower()
 
-    # trim: leading + trailing spaces around canary
+    # trim: leading + trailing spaces around canary — illegal as a header
+    # field-value.  For header/cookie use an internal pad so the payload
+    # remains transport-legal while still testing multi-space collapse.
+    if loc in ("header", "cookie"):
+        mid = len(canary) // 2 or 1
+        trim_payload = f"{canary[:mid]}  {canary[mid:]}"
+        trim_hypothesis = "norm.trim_internal_space"
+    else:
+        trim_payload = f"  {canary}  "
+        trim_hypothesis = "norm.trim_space"
     specs.append(ParserProbeSpec(
         payload_type="norm:trim",
-        payload=f"  {canary}  ",
+        payload=trim_payload,
         injection_mode=MODE_VALUE,
-        hypothesis="norm.trim_space",
+        hypothesis=trim_hypothesis,
         family="norm",
     ))
     # case: mixed-case body
@@ -641,6 +657,7 @@ def select_parser_probes(
             strategy=tier,
             reflection_state=reflection_state,
             max_probes=norm_budget,
+            location=location,
         ))
 
     # Hard cap final list (parser first for acceptance criteria priority).

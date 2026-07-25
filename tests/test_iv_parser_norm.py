@@ -203,6 +203,33 @@ class TestProbeSelection:
         assert "norm:unicode" not in types
         assert "norm:trim" in types
 
+    def test_header_norm_trim_is_transport_legal(self) -> None:
+        """Leading/trailing spaces are illegal as header field-values."""
+        from talos.input_validation.surface import is_http_header_value_legal
+
+        norms = select_normalization_probes(
+            strategy="standard",
+            reflection_state="reflected",
+            location="header",
+        )
+        trim = next(p for p in norms if p.payload_type == "norm:trim")
+        assert is_http_header_value_legal(trim.payload)
+        assert not trim.payload.startswith(" ")
+        assert not trim.payload.endswith(" ")
+        assert "  " in trim.payload  # internal pad still present
+        assert trim.hypothesis == "norm.trim_internal_space"
+
+        query_trim = next(
+            p
+            for p in select_normalization_probes(
+                strategy="standard",
+                reflection_state="reflected",
+                location="query",
+            )
+            if p.payload_type == "norm:trim"
+        )
+        assert query_trim.payload.startswith("  ")
+
     def test_injection_mode_map(self) -> None:
         assert injection_mode_for_payload_type("parser:dup_query") == MODE_DUP_QUERY
         assert injection_mode_for_payload_type("parser:json_null") == MODE_JSON_NULL

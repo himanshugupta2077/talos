@@ -303,6 +303,7 @@ def char_probes_for_strategy(
     known_class_outcomes: dict[str, str] | None = None,
     force_full: bool = False,
     max_chars: int | None = None,
+    location: str = "query",
 ) -> list[tuple[str, str]]:
     """
     Purpose:
@@ -312,9 +313,13 @@ def char_probes_for_strategy(
         list).  Deep: representatives + drill-down for injection classes.
         Exhaustive: extended character list (legacy matrix + structure).
 
+        Header/cookie locations drop null/control chars that the HTTP client
+        rejects before the request reaches the application.
+
     Input:
         strategy             — budget tier name.
         reflection_state     — planner reflection signal.
+        location             — injection location (header/cookie filter).
         known_class_outcomes — multiprobe-derived class → outcome (skip known).
         force_full           — True → exhaustive list regardless of strategy.
         max_chars            — hard cap on number of chars returned.
@@ -340,6 +345,13 @@ def char_probes_for_strategy(
                 if (v or "").lower() == OUTCOME_REJECTED
             }
         chars = chars_for_classes(classes, drilldown=drilldown, skip_known=skip)
+
+# Drop transport-illegal samples for header/cookie (NUL / CTL).
+    loc = (location or "query").strip().lower()
+    if loc in ("header", "cookie"):
+        from talos.input_validation.surface import is_cookie_payload_transport_safe
+
+        chars = [c for c in chars if is_cookie_payload_transport_safe(c)]
 
     if max_chars is not None and max_chars > 0:
         chars = chars[: int(max_chars)]

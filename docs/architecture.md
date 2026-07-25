@@ -296,10 +296,16 @@ talos
     │     tested.parser:duplicate etc. when rejects; capability duplicate_parameter
     │     Fingerprint only — no HPP exploit chains
     │
-    ├── Surface completeness (Module 9):
+├── Surface completeness (Module 9):
     │     talos.input_validation.surface — path segment rewrite ({name} from
     │       normalized_path); hardened header/cookie inject; multipart field +
     │       filename; GraphQL variables; XML leaf; auth-artifact + hop-by-hop skip
+    │     Transport-legal header/cookie gates (is_http_header_value_legal,
+    │       transport_skip_for_payload / transport_skip_for_headers) so probes
+    │       that h11/httpx would reject as Illegal header value are skipped
+    │       (transport_invalid_header|cookie) instead of failed
+    │     Location-aware multiprobe/char/norm/validation payloads (no NUL/CTL
+    │       in header/cookie; header norm:trim uses internal space pad)
     │     prepare_iv_probe uses surface.inject_value for all locations
     │     Default: skip session cookies / Authorization (include_auth_artifacts)
     │     Profiles: observed.surface {location, kind}; capabilities per surface
@@ -1696,7 +1702,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] IV Character Taxonomy & Length (Module 6) — class-tier charset probes (`taxonomy.py`); binary/log length search with truncation vs reject (`length_search.py`); planner `char_drilldown` / `length_binary` executors; standard representatives not full 30-char list; length seed under 10; exhaustive keeps extended matrix; tests in `tests/test_iv_taxonomy_length.py`
 - [x] IV Types, Semantic Validation & Negative Evidence (Module 7) — passive-first type pruning + semantic rules + core/edge validation (`type_intel.py`); planner `type_confirm` / `semantic_rules`; systematic `tested{}`; tests in `tests/test_iv_type_semantic.py`
 - [x] IV Normalization & Parser Fingerprinting (Module 8) — norm pipeline + parser fingerprint (`parser_intel.py`); `iv_parser` jobs; structural inject; tests in `tests/test_iv_parser_norm.py`
-- [x] IV Surface Completeness (Module 9) — path/header/cookie/multipart/GraphQL/XML first-class inject (`surface.py`); auth-artifact skip default; `include_auth_artifacts` config/CLI; schema v38; tests in `tests/test_iv_surface.py`
+- [x] IV Surface Completeness (Module 9) — path/header/cookie/multipart/GraphQL/XML first-class inject (`surface.py`); auth-artifact skip default; `include_auth_artifacts` config/CLI; transport-legal header/cookie gates + location-aware multiprobe/norm/validation; schema v38; tests in `tests/test_iv_surface.py`
 - [x] IV Multi-Level Learning (Module 10) — endpoint/app profile aggregation + inheritance priors (`learning.py`); confidence decay cap 75; local observed wins; standard skips control/parser when parent known; CLI `show --endpoint` / `show --host`; tests in `tests/test_iv_learning.py`
 - [x] IV Capabilities, Attack Candidates & Consumer API (Module 11) — centralized capability derivation (`capabilities.py`); attack candidate scores with reasons (`candidates.py`); `get_param_intelligence` / `list_candidates` stable API; synthesize + CLI show/export; prioritization only (not confirmed vulns); tests in `tests/test_iv_candidates.py`
 - [x] Findings subsystem — PRIMARY/LINKED clusters, groups, reports (`talos.findings`)

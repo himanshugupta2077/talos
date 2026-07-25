@@ -38,10 +38,12 @@ from talos.input_validation.multiprobe import (
     build_canary_identifier_probes,
     build_multiprobe_payload,
     canary_collides,
+    class_samples_for_location,
     generate_canary,
     identifier_probes_for_strategy,
     parse_multiprobe_payload,
 )
+from talos.input_validation.surface import is_http_header_value_legal
 from talos.input_validation.synthesize import synthesize_param_profile
 from talos.input_validation.db import upsert_probe_result
 from talos.projects.db import init_project_db
@@ -227,6 +229,35 @@ class TestMultiprobePayload:
         assert d["canary"] == "TLmeta000000000001"
         assert "fragments" in d
         assert "classes" in d
+
+    def test_header_location_omits_null_and_is_transport_legal(self) -> None:
+        plan = build_multiprobe_payload(
+            location="header", canary="TLhdr000000000001"
+        )
+        names = [f.class_name for f in plan.fragments]
+        assert "null" not in names
+        assert "control" not in names
+        assert "\x00" not in plan.payload
+        assert is_http_header_value_legal(plan.payload)
+
+    def test_cookie_location_omits_null(self) -> None:
+        plan = build_multiprobe_payload(
+            location="cookie", canary="TLck0000000000001"
+        )
+        assert not any(f.class_name == "null" for f in plan.fragments)
+        assert "\x00" not in plan.payload
+
+    def test_query_location_keeps_null(self) -> None:
+        plan = build_multiprobe_payload(
+            location="query", canary="TLq00000000000001"
+        )
+        assert any(f.class_name == "null" for f in plan.fragments)
+
+    def test_class_samples_for_location_filters(self) -> None:
+        hdr = class_samples_for_location("header")
+        assert all(cls != "null" for cls, _ in hdr)
+        q = class_samples_for_location("query")
+        assert any(cls == "null" for cls, _ in q)
 
 
 # ---------------------------------------------------------------------------

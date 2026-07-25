@@ -219,12 +219,13 @@ export default function DataTable<T>({
 
   const totalMinWidth = visibleColumns.reduce((sum, c) => sum + colWidth(c), 0);
 
-  return (
-    <div className="panel overflow-hidden">
+return (
+    <div className="panel">
       {storageKey && (
         <div className="flex justify-between items-center px-2 pt-2 gap-2 flex-wrap border-b border-base-300/60 pb-2">
           <p className="text-[10px] text-base-content/45 px-1">
-            Drag headers to reorder · drag column edges to resize · Columns menu to show/hide
+            Click a column header to sort · drag headers to reorder · drag column edges to
+            resize · Columns menu to show/hide
           </p>
           <div className="flex items-center gap-1">
             <button
@@ -235,7 +236,7 @@ export default function DataTable<T>({
             >
               Reset widths
             </button>
-            <div className="dropdown dropdown-end">
+            <div className={`dropdown dropdown-end ${pickerOpen ? "dropdown-open" : ""}`}>
               <button
                 tabIndex={0}
                 type="button"
@@ -274,7 +275,7 @@ export default function DataTable<T>({
           </div>
         </div>
       )}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overflow-y-visible">
         <table
           className="table table-tight table-zebra table-boxed w-full"
           style={{ tableLayout: "fixed", minWidth: totalMinWidth }}
@@ -299,9 +300,13 @@ export default function DataTable<T>({
                   onDrop={() => handleDrop(c.key)}
                   onClick={() => toggleSort(c)}
                   title={
-                    storageKey
-                      ? "Click to sort · drag header to reorder · drag right edge to resize"
-                      : undefined
+                    c.sortable === false
+                      ? storageKey
+                        ? "Drag header to reorder · drag right edge to resize"
+                        : undefined
+                      : storageKey
+                        ? "Click to sort · drag header to reorder · drag right edge to resize"
+                        : "Click to sort"
                   }
                 >
                   <span className="pr-2 inline-flex items-center gap-0.5 min-w-0">
@@ -356,7 +361,9 @@ export default function DataTable<T>({
                   {visibleColumns.map((c) => (
                     <td
                       key={c.key}
-                      className={`overflow-hidden ${c.className || ""}`}
+                      className={`${
+                        c.key === "actions" ? "overflow-visible" : "overflow-hidden"
+                      } ${c.className || ""}`}
                       style={{
                         width: colWidth(c),
                         minWidth: c.minWidth ?? DEFAULT_MIN_WIDTH,

@@ -12,6 +12,7 @@ Purpose:
 Scope (Module 9):
     - Path segment rewrite via normalized ``{name}`` placeholders
     - Hardened header/cookie injection (multi-cookie, case, hop-by-hop policy)
+    - Transport-legal header/cookie payload gates (skip Illegal header value)
     - Multipart field values and filenames
     - GraphQL variables (variables.* paths) and XML leaf text
     - Default skip list for dangerous auth artifacts
@@ -87,6 +88,10 @@ PHASE_SURFACE = "surface"
 SKIP_AUTH_ARTIFACT = "auth_artifact"
 SKIP_HOP_BY_HOP_HEADER = "hop_by_hop_header"
 SKIP_UNSUPPORTED_SURFACE = "unsupported_surface"
+# HTTP client / h11 rejects the value before the request reaches the server.
+# IV characterizes application handling — skip transport-illegal probes.
+SKIP_TRANSPORT_INVALID_HEADER = "transport_invalid_header"
+SKIP_TRANSPORT_INVALID_COOKIE = "transport_invalid_cookie"
 
 # Hop-by-hop headers that must not be mutated (RFC 7230).
 HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
@@ -495,6 +500,250 @@ def inject_path_param(
 
 
 # ---------------------------------------------------------------------------
+# Transport-safe header / cookie values (RFC 7230 / h11 / httpx)
+# ---------------------------------------------------------------------------
+#
+# Libraries such as h11 raise LocalProtocolError("Illegal header value …")
+# when a field-value contains CTL octets (except HTAB) or leading/trailing
+# SP/HTAB.  Those failures never reach the application, so IV must not treat
+# them as application rejections.
+#
+# Location-aware policy:
+#   query / body / path  — full payload (path percent-encodes separately)
+#   header value         — header-safe only; illegal → skip
+#   cookie value         — cookie-safe (subset of header rules on the value,
+#                          plus full Cookie header re-check after inject)
+# ---------------------------------------------------------------------------
+
+# CTL octets forbidden in header field-values (HTAB 0x09 is allowed mid-value).
+_HEADER_ILLEGAL_CTL = frozenset(chr(i) for i in range(0x20) if i != 0x09) | {"\x7f"}
+
+# Taxonomy / multiprobe classes that require illegal header octets as samples.
+HEADER_UNSAFE_TAXONOMY_CLASSES: frozenset[str] = frozenset({
+    "null",
+    "control",
+})
+
+# Cookie-unsafe taxonomy classes (same CTL issue once embedded in Cookie:).
+COOKIE_UNSAFE_TAXONOMY_CLASSES: frozenset[str] = frozenset({
+    "null",
+    "control",
+})
+
+
+def is_http_header_value_legal(value: str) -> bool:
+    """
+    Purpose:
+        True when ``value`` is legal as an HTTP header field-value for clients
+        such as h11/httpx (no leading/trailing SP/HTAB; no CTL except HTAB).
+    Side effects: None.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        value = str(value)
+    if not value:
+        return True
+    if value[0] in " \t" or value[-1] in " \t":
+        return False
+    for ch in value:
+        if ch in _HEADER_ILLEGAL_CTL:
+            return False
+    return True
+
+
+def is_header_payload_transport_safe(payload: str) -> bool:
+    """
+    Purpose:
+        True when a probe payload can be placed in a header value without
+        client validation failure.
+    Side effects: None.
+    """
+    return is_http_header_value_legal(payload if payload is not None else "")
+
+
+def is_cookie_payload_transport_safe(payload: str) -> bool:
+    """
+    Purpose:
+        True when a probe payload can be used as a single cookie value without
+        introducing illegal octets into the Cookie header field-value.
+
+        Leading/trailing spaces on the cookie value are stripped at inject time
+        for transport; CTL/NUL still make the Cookie header illegal.
+    Side effects: None.
+    """
+    if payload is None:
+        return True
+    if not isinstance(payload, str):
+        payload = str(payload)
+    for ch in payload:
+        if ch in _HEADER_ILLEGAL_CTL:
+            return False
+    return True
+
+
+def make_header_safe(payload: str) -> str | None:
+    """
+    Purpose:
+        Best-effort sanitize a payload for header inject by removing illegal
+        CTL octets and stripping leading/trailing whitespace.
+
+        Returns None when the result is empty and the original was non-empty
+        (probe intent was purely illegal octets / whitespace) — caller should
+        skip with ``transport_invalid_header`` instead of inventing a payload.
+    Side effects: None.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, str):
+        payload = str(payload)
+    cleaned = "".join(ch for ch in payload if ch not in _HEADER_ILLEGAL_CTL)
+    cleaned = cleaned.strip(" \t")
+    if not cleaned and payload:
+        return None
+    if not is_http_header_value_legal(cleaned):
+        return None
+    return cleaned
+
+
+def make_cookie_safe(payload: str) -> str | None:
+    """
+    Purpose:
+        Sanitize a cookie value for transport: drop CTL/NUL; strip outer SP/HTAB.
+        Returns None when nothing meaningful remains (skip the probe).
+    Side effects: None.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, str):
+        payload = str(payload)
+    cleaned = "".join(ch for ch in payload if ch not in _HEADER_ILLEGAL_CTL)
+    cleaned = cleaned.strip(" \t")
+    if not cleaned and payload:
+        return None
+    return cleaned
+
+
+def headers_are_transport_legal(headers: dict | None) -> bool:
+    """
+    Purpose:
+        True when every header field-value in ``headers`` is client-legal.
+    Side effects: None.
+    """
+    for _k, v in (headers or {}).items():
+        if isinstance(v, list):
+            for item in v:
+                if not is_http_header_value_legal(
+                    item if isinstance(item, str) else str(item or "")
+                ):
+                    return False
+        else:
+            if not is_http_header_value_legal(
+                v if isinstance(v, str) else str(v or "")
+            ):
+                return False
+    return True
+
+
+def transport_skip_for_payload(
+    location: str,
+    payload: str | None,
+) -> SkipDecision | None:
+    """
+    Purpose:
+        Pre-send gate: if the payload cannot be represented legally for the
+        injection location under the standard HTTP client stack, return a
+        SkipDecision so the job is marked skipped (not failed).
+
+        Query/body/path return None (full payload allowed; path encodes later).
+    Output:
+        SkipDecision when the probe must not be sent; else None.
+    Side effects: None.
+    """
+    if payload is None:
+        return None
+    loc = (location or "").strip().lower()
+    if loc == LOCATION_HEADER:
+        if not is_header_payload_transport_safe(payload):
+            return SkipDecision(
+                skip=True,
+                reason=SKIP_TRANSPORT_INVALID_HEADER,
+                detail=(
+                    "Probe payload is not a legal HTTP header field-value "
+                    "(leading/trailing whitespace or control/NUL octets). "
+                    "The HTTP client rejects it before the request reaches the "
+                    "application — skipped (not an application rejection)."
+                ),
+            )
+        return None
+    if loc == LOCATION_COOKIE:
+        if not is_cookie_payload_transport_safe(payload):
+            return SkipDecision(
+                skip=True,
+                reason=SKIP_TRANSPORT_INVALID_COOKIE,
+                detail=(
+                    "Probe payload contains octets illegal inside a Cookie "
+                    "header field-value (control/NUL). Skipped — transport "
+                    "cannot deliver this value to the application."
+                ),
+            )
+        return None
+    return None
+
+
+def transport_skip_for_headers(
+    location: str,
+    headers: dict | None,
+) -> SkipDecision | None:
+    """
+    Purpose:
+        Post-inject gate for header/cookie mutations: re-check the full header
+        map (Cookie header may become illegal even when the cookie value alone
+        looked borderline).
+    Side effects: None.
+    """
+    loc = (location or "").strip().lower()
+    if loc not in (LOCATION_HEADER, LOCATION_COOKIE):
+        return None
+    if headers_are_transport_legal(headers):
+        return None
+    reason = (
+        SKIP_TRANSPORT_INVALID_COOKIE
+        if loc == LOCATION_COOKIE
+        else SKIP_TRANSPORT_INVALID_HEADER
+    )
+    return SkipDecision(
+        skip=True,
+        reason=reason,
+        detail=(
+            "Injected request headers are not transport-legal for the HTTP "
+            "client (Illegal header value). Probe skipped."
+        ),
+    )
+
+
+def taxonomy_classes_for_location(
+    location: str,
+    class_names: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """
+    Purpose:
+        Filter taxonomy class labels that cannot be characterized via HTTP
+        client inject for this location (null/control in header/cookie).
+    Side effects: None.
+    """
+    loc = (location or "").strip().lower()
+    names = list(class_names or [])
+    if loc == LOCATION_HEADER:
+        ban = HEADER_UNSAFE_TAXONOMY_CLASSES
+    elif loc == LOCATION_COOKIE:
+        ban = COOKIE_UNSAFE_TAXONOMY_CLASSES
+    else:
+        return names
+    return [n for n in names if n not in ban]
+
+
+# ---------------------------------------------------------------------------
 # Header / cookie injection (hardened)
 # ---------------------------------------------------------------------------
 
@@ -504,6 +753,9 @@ def inject_header_param(headers: dict, name: str, value: str) -> dict:
         Replace or add a header value (case-insensitive key match).
         Preserves original key casing when replacing; adds ``name`` if absent.
         Hop-by-hop headers are left unchanged (policy).
+
+        Callers must pass transport-legal values (see ``transport_skip_for_payload``);
+        this function does not rewrite illegal payloads.
     Side effects: None.
     """
     if is_hop_by_hop_header(name):
@@ -530,6 +782,10 @@ def inject_cookie_param(headers: dict, name: str, value: str) -> dict:
         cookies and original Cookie header key casing.  If the named cookie is
         absent, appends it.  If no Cookie header exists, creates one.
         Cookie names are matched case-sensitively (RFC 6265).
+
+        Cookie values are stripped of outer SP/HTAB so the composed Cookie
+        header field-value stays transport-legal when possible.  CTL/NUL must
+        still be filtered by callers (``make_cookie_safe`` / transport skip).
     Side effects: None.
     """
     result = dict(headers or {})
@@ -545,6 +801,9 @@ def inject_cookie_param(headers: dict, name: str, value: str) -> dict:
                 raw_cookie = v if isinstance(v, str) else (str(v) if v else "")
             break
 
+    # Outer strip keeps the Cookie field-value free of leading/trailing SP.
+    safe_value = value.strip(" \t") if isinstance(value, str) else value
+
     parts: list[str] = []
     found = False
     if raw_cookie:
@@ -555,14 +814,14 @@ def inject_cookie_param(headers: dict, name: str, value: str) -> dict:
             if "=" in part:
                 k, _, _v = part.partition("=")
                 if k.strip() == name:
-                    parts.append(f"{k.strip()}={value}")
+                    parts.append(f"{k.strip()}={safe_value}")
                     found = True
                 else:
                     parts.append(part)
             else:
                 parts.append(part)
     if not found and name:
-        parts.append(f"{name}={value}")
+        parts.append(f"{name}={safe_value}")
 
     new_cookie = "; ".join(parts)
     if cookie_key is not None:

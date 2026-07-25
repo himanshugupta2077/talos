@@ -457,13 +457,18 @@ IV injects and profiles the same surfaces Endpoint Intelligence extracts:
 | `path` | Rewrites the segment mapped from `normalized_path` `{name}` |
 | `query` | Query string parameters |
 | `body` | JSON (dotted paths), form-urlencoded, multipart fields **and filenames**, XML leaves, GraphQL `variables.*` |
-| `header` | Security-relevant headers; hop-by-hop headers are never mutated |
-| `cookie` | Individual cookies in the Cookie header (multi-cookie safe) |
+| `header` | Security-relevant headers; hop-by-hop headers are never mutated; payloads are **header-safe** only (no leading/trailing SP, no NUL/CTL) |
+| `cookie` | Individual cookies in the Cookie header (multi-cookie safe); same transport rules as header field-values |
 
 **Auth artifacts** (session cookies, `Authorization`, tokens configured via
 `talos auth set`) are **skipped by default** with status reason `auth_artifact`.
 Opt in: `talos input-validation run --include-auth-artifacts` or
 `config --include-auth-artifacts`.
+
+**Transport-illegal payloads** (e.g. raw NUL in a header value, leading spaces
+from a trim probe) are **skipped** with `transport_invalid_header` /
+`transport_invalid_cookie` — they never reach the application under the
+standard HTTP client and must not be counted as application failures.
 
 **Limitations:** IV does not discover hidden parameters (param miner); does not
 perform HTTP request smuggling; GraphQL is JSON-shaped bodies (not pure query

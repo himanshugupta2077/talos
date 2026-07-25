@@ -1431,12 +1431,20 @@ talos input-validation reflection --endpoint <id> --ignore-cache
 | body multipart field / filename | Yes |
 | body GraphQL variables | Yes |
 | body XML leaf | Yes |
-| header | Yes (not hop-by-hop) |
-| cookie | Yes (multi-cookie) |
+| header | Yes (not hop-by-hop); header-safe payloads only |
+| cookie | Yes (multi-cookie); cookie-safe payloads only |
 
 Default **skip**: session-like cookies, `Authorization` / token headers, and
 names from `talos auth set`. Reason stored on cache phase `surface` and profile
-`skip_reason`. Limitations: no hidden-param discovery; no request smuggling.
+`skip_reason`.
+
+**Transport skip** (not application failure): payloads illegal for the HTTP
+client (NUL/CTL, leading/trailing SP on header values) → job/probe status
+`skipped` with `transport_invalid_header` or `transport_invalid_cookie`.
+Header/cookie multiprobe omits `null`/`control` classes; `norm:trim` uses an
+internal space pad instead of outer spaces.
+
+Limitations: no hidden-param discovery; no request smuggling.
 
 ### Multi-level learning (Module 10)
 

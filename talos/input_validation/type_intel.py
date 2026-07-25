@@ -544,7 +544,8 @@ def select_semantic_probes(
         _add("empty", "")
         _add("null_str", "null")
 
-    # ── Core validation (non-exploit) ─────────────────────────────────────
+# ── Core validation (non-exploit) ─────────────────────────────────────
+    loc = (location or "query").strip().lower()
     if include_core_validation:
         for label, value in validation_probes_for_strategy(tier):
             if label == "very_long" and max_accepted_length is not None:
@@ -553,11 +554,22 @@ def select_semantic_probes(
                 continue
             if label in seen:
                 continue
+            # Header/cookie: HTTP clients reject NUL/CTL and SP-only field values.
+            if loc in ("header", "cookie") and label in (
+                "null_byte", "whitespace", "crlf",
+            ):
+                skipped.append(label)
+                continue
             # Prefer not to re-add duplicates already selected as semantic.
             _add(label, value)
 
     # Deep+: optional CRLF characterization (not in legacy list by default).
-    if tier in ("deep", "exhaustive") and "crlf" not in seen:
+    # Not for header/cookie — CRLF is illegal in header field-values.
+    if (
+        tier in ("deep", "exhaustive")
+        and "crlf" not in seen
+        and loc not in ("header", "cookie")
+    ):
         _add("crlf", "\r\nX-Talos:1")
 
     if not selected:

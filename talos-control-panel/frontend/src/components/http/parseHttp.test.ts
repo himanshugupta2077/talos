@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildPrettyMessage,
   buildRawMessage,
   decodeJwt,
   findJwt,
@@ -8,6 +9,9 @@ import {
   parseBodyParams,
   parseCookieHeader,
   parseQueryParams,
+  prettyBody,
+  prettyPrintCss,
+  prettyPrintMarkup,
   resolveRequestCookies,
   resolveResponseCookies,
 } from "./parseHttp";
@@ -147,6 +151,102 @@ describe("resolveResponseCookies", () => {
     });
     expect(c[0].name).toBe("sid");
     expect(c[0].attributes?.httponly).toBe(true);
+  });
+});
+
+describe("prettyBody — Burp formats", () => {
+  it("pretty-prints JSON with 4-space indent", () => {
+    const r = prettyBody('{"a":1,"b":[true]}', "application/json");
+    expect(r.kind).toBe("json");
+    expect(r.prettified).toBe(true);
+    expect(r.text).toContain('\n    "a"');
+    expect(r.text).toContain("true");
+  });
+
+  it("pretty-prints HTML tags onto indented lines", () => {
+    const r = prettyBody("<div><span>x</span></div>", "text/html");
+    expect(r.kind).toBe("html");
+    expect(r.prettified).toBe(true);
+    expect(r.text.split("\n").length).toBeGreaterThan(1);
+    expect(r.text).toContain("<div>");
+    expect(r.text).toContain("</span>");
+  });
+
+  it("pretty-prints XML", () => {
+    const r = prettyBody("<root><item id=\"1\"/></root>", "application/xml");
+    expect(r.kind).toBe("xml");
+    expect(r.prettified).toBe(true);
+    expect(r.text).toContain("<root>");
+  });
+
+  it("splits form-urlencoded onto one field per line", () => {
+    const r = prettyBody("a=1&b=two", "application/x-www-form-urlencoded");
+    expect(r.kind).toBe("form");
+    expect(r.text).toBe("a=1\nb=two");
+  });
+
+  it("pretty-prints minified CSS", () => {
+    const r = prettyBody("body{color:red;margin:0}", "text/css");
+    expect(r.kind).toBe("css");
+    expect(r.prettified).toBe(true);
+    expect(r.text).toContain("{\n");
+    expect(r.text).toContain("color:red;");
+  });
+
+  it("returns empty for empty body", () => {
+    expect(prettyBody("", "application/json")).toMatchObject({
+      kind: "empty",
+      prettified: false,
+    });
+  });
+
+  it("marks base64 as binary", () => {
+    const r = prettyBody("AAAA", "application/octet-stream", "base64");
+    expect(r.kind).toBe("binary");
+  });
+});
+
+describe("prettyPrintMarkup / prettyPrintCss helpers", () => {
+  it("indents nested markup", () => {
+    const p = prettyPrintMarkup("<a><b/></a>", "xml");
+    expect(p).toContain("    <b");
+  });
+
+  it("breaks CSS rules", () => {
+    const p = prettyPrintCss(".x{a:1}");
+    expect(p).toMatch(/\.x\s*\{/);
+    expect(p).toContain("}");
+  });
+});
+
+describe("buildPrettyMessage", () => {
+  it("keeps start-line + headers + prettified body like Burp Pretty", () => {
+    const m = buildPrettyMessage({
+      startLine: "POST /api?x=1 HTTP/1.1",
+      headers: {
+        Host: "ex.com",
+        "Content-Type": "application/json",
+        "Accept-Encoding": "gzip",
+      },
+      body: '{"ok":true}',
+      side: "request",
+    });
+    expect(m.startLine).toContain("POST");
+    expect(m.body.kind).toBe("json");
+    expect(m.body.prettified).toBe(true);
+    const ae = m.headers.find((h) => h.name === "Accept-Encoding");
+    expect(ae?.hiddenByDefault).toBe(true);
+    expect(m.headers.find((h) => h.name === "Host")?.hiddenByDefault).toBe(false);
+  });
+
+  it("synthesizes Cookie once when map only", () => {
+    const m = buildPrettyMessage({
+      startLine: "GET / HTTP/1.1",
+      headers: { Host: "x" },
+      cookies: { s: "1" },
+      side: "request",
+    });
+    expect(m.headers.filter((h) => h.name.toLowerCase() === "cookie")).toHaveLength(1);
   });
 });
 

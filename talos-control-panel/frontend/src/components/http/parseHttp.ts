@@ -317,27 +317,446 @@ export function buildRawMessage(opts: {
   return lines.join("\n");
 }
 
+/**
+ * Body format kinds Burp Pretty supports (plus form for operator readability).
+ * @see https://portswigger.net/burp/documentation/desktop/tools/message-editor/text-editor#pretty-printing
+ */
+export type PrettyBodyKind =
+  | "json"
+  | "xml"
+  | "html"
+  | "css"
+  | "javascript"
+  | "form"
+  | "text"
+  | "binary"
+  | "empty";
+
+export interface PrettyBodyResult {
+  text: string;
+  kind: PrettyBodyKind;
+  /** True when indentation/line-breaks were applied (Burp Pretty would show this tab). */
+  prettified: boolean;
+}
+
+/**
+ * Burp-style pretty-print of an HTTP body.
+ * Supported: JSON, XML, HTML, CSS, JavaScript; also form-urlencoded (one field per line).
+ */
 export function prettyBody(
   body: string | null | undefined,
   contentType: string | null | undefined,
   bodyEncoding?: string
-): { text: string; kind: "json" | "text" | "binary" | "empty" } {
+): PrettyBodyResult {
   if (bodyEncoding === "base64") {
     return {
       text: `[binary body — base64, ${body?.length || 0} chars]`,
       kind: "binary",
+      prettified: false,
     };
   }
-  if (body == null || body === "") return { text: "—", kind: "empty" };
+  if (body == null || body === "") {
+    return { text: "", kind: "empty", prettified: false };
+  }
+
   const ct = (contentType || "").toLowerCase();
-  if (ct.includes("json") || body.trimStart().startsWith("{") || body.trimStart().startsWith("[")) {
+  const trimmed = body.trimStart();
+
+  // JSON (Content-Type or heuristic)
+  if (
+    ct.includes("json") ||
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[")
+  ) {
     try {
-      return { text: JSON.stringify(JSON.parse(body), null, 2), kind: "json" };
+      return {
+        text: JSON.stringify(JSON.parse(body), null, 4),
+        kind: "json",
+        prettified: true,
+      };
     } catch {
-      return { text: body, kind: "text" };
+      /* fall through */
     }
   }
-  return { text: body, kind: "text" };
+
+  // Form urlencoded — one param per line (highly readable; not in Burp's format list)
+  if (ct.includes("application/x-www-form-urlencoded") || looksUrlEncoded(body, ct)) {
+    const lines = body.split("&").filter(Boolean);
+    if (lines.length > 1 || (lines.length === 1 && lines[0].includes("="))) {
+      return {
+        text: lines.join("\n"),
+        kind: "form",
+        prettified: lines.length > 1,
+      };
+    }
+  }
+
+  // HTML
+  if (
+    ct.includes("text/html") ||
+    ct.includes("application/xhtml") ||
+    /^\s*<(!doctype\s+html|html[\s>])/i.test(body)
+  ) {
+    const pretty = prettyPrintMarkup(body, "html");
+    return { text: pretty, kind: "html", prettified: pretty !== body };
+  }
+
+  // XML / SVG
+  if (
+    ct.includes("xml") ||
+    ct.includes("svg") ||
+    /^\s*<\?xml/i.test(body) ||
+    /^\s*<[a-zA-Z][\w:.-]*[\s/>]/.test(body)
+  ) {
+    // Prefer HTML path only when clearly HTML; otherwise XML
+    if (!/^\s*<(!doctype\s+html|html[\s>])/i.test(body)) {
+      const pretty = prettyPrintMarkup(body, "xml");
+      return { text: pretty, kind: "xml", prettified: pretty !== body };
+    }
+  }
+
+  // CSS
+  if (ct.includes("text/css") || looksLikeCss(body, ct)) {
+    const pretty = prettyPrintCss(body);
+    return { text: pretty, kind: "css", prettified: pretty !== body };
+  }
+
+  // JavaScript
+  if (
+    ct.includes("javascript") ||
+    ct.includes("ecmascript") ||
+    ct.includes("application/js")
+  ) {
+    const pretty = prettyPrintJs(body);
+    return { text: pretty, kind: "javascript", prettified: pretty !== body };
+  }
+
+  return { text: body, kind: "text", prettified: false };
+}
+
+function looksLikeCss(body: string, ct: string): boolean {
+  if (ct.includes("json") || ct.includes("html") || ct.includes("xml")) return false;
+  // Minified CSS heuristic: many `{` `}` and `;` with few newlines
+  const braces = (body.match(/[{}]/g) || []).length;
+  const semis = (body.match(/;/g) || []).length;
+  return braces >= 2 && semis >= 1 && body.includes("{") && body.includes("}");
+}
+
+/** Indent HTML/XML with 4 spaces (Burp-style standardized indentation). */
+export function prettyPrintMarkup(input: string, _mode: "html" | "xml" = "html"): string {
+  // Normalize newlines; keep text content roughly intact
+  let s = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!s) return s;
+
+  // Insert breaks between tags
+  s = s
+    .replace(/>\s*</g, ">\n<")
+    .replace(/(<(?:script|style|pre)[^>]*>)\n?/gi, "$1\n")
+    .replace(/\n?(<\/(?:script|style|pre)>)/gi, "\n$1");
+
+  const lines = s.split("\n");
+  const out: string[] = [];
+  let depth = 0;
+  const voidish =
+    /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      out.push("");
+      continue;
+    }
+
+    const isClosing = /^<\//.test(line);
+    const isComment = /^<!--/.test(line) || /^<!\[/.test(line);
+    const isDoctype = /^<!doctype/i.test(line) || /^<\?xml/i.test(line);
+    const isSelfClosing = /\/>$/.test(line) || isComment || isDoctype;
+    const openTag = line.match(/^<([a-zA-Z][\w:.-]*)/);
+    const tagName = openTag?.[1] || "";
+    const isVoid = voidish.test(tagName);
+
+    if (isClosing) depth = Math.max(0, depth - 1);
+    out.push("    ".repeat(depth) + line);
+    if (!isClosing && !isSelfClosing && !isVoid && /^</.test(line) && !/^<\//.test(line)) {
+      // Opening tag (not self-closing)
+      if (!/\/>$/.test(line) && !isComment && !isDoctype) {
+        depth += 1;
+      }
+    }
+  }
+  return out.join("\n");
+}
+
+/** Light CSS formatter: break after { } ; */
+export function prettyPrintCss(input: string): string {
+  const s = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!s || s.includes("\n") && s.split("\n").length > 3) {
+    // Already multi-line enough — still normalize braces lightly
+    if (s.includes("\n")) return s;
+  }
+  let out = "";
+  let depth = 0;
+  let i = 0;
+  let inStr: string | null = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (inStr) {
+      out += ch;
+      if (ch === "\\" && i + 1 < s.length) {
+        out += s[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      out += " {\n";
+      depth++;
+      out += "    ".repeat(depth);
+      i++;
+      // skip following space
+      while (s[i] === " ") i++;
+      continue;
+    }
+    if (ch === "}") {
+      depth = Math.max(0, depth - 1);
+      out = out.replace(/[ \t]+$/, "");
+      if (!out.endsWith("\n")) out += "\n";
+      out += "    ".repeat(depth) + "}";
+      i++;
+      if (s[i] && s[i] !== "\n") out += "\n" + "    ".repeat(depth);
+      continue;
+    }
+    if (ch === ";") {
+      out += ";\n" + "    ".repeat(depth);
+      i++;
+      while (s[i] === " ") i++;
+      continue;
+    }
+    if (ch === "\n") {
+      out += "\n" + "    ".repeat(depth);
+      i++;
+      while (s[i] === " ") i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** Light JS brace indent (best-effort for minified one-liners). */
+export function prettyPrintJs(input: string): string {
+  const s = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!s) return s;
+  // Already reasonably multi-line
+  if (s.split("\n").length > 5) return s;
+
+  let out = "";
+  let depth = 0;
+  let i = 0;
+  let inStr: string | null = null;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  while (i < s.length) {
+    const ch = s[i];
+    const next = s[i + 1];
+
+    if (inLineComment) {
+      out += ch;
+      if (ch === "\n") inLineComment = false;
+      i++;
+      continue;
+    }
+    if (inBlockComment) {
+      out += ch;
+      if (ch === "*" && next === "/") {
+        out += "/";
+        i += 2;
+        inBlockComment = false;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (inStr) {
+      out += ch;
+      if (ch === "\\" && i + 1 < s.length) {
+        out += s[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      i++;
+      continue;
+    }
+
+    if (ch === "/" && next === "/") {
+      inLineComment = true;
+      out += "//";
+      i += 2;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      out += "/*";
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inStr = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "{" || ch === "[") {
+      out += ch + "\n";
+      depth++;
+      out += "    ".repeat(depth);
+      i++;
+      while (s[i] === " ") i++;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      out = out.replace(/[ \t]+$/, "");
+      if (!out.endsWith("\n")) out += "\n";
+      out += "    ".repeat(depth) + ch;
+      i++;
+      if (s[i] === "," || s[i] === ";") {
+        out += s[i];
+        i++;
+      }
+      if (s[i] && s[i] !== "\n" && s[i] !== "}" && s[i] !== "]") {
+        out += "\n" + "    ".repeat(depth);
+      }
+      continue;
+    }
+    if (ch === ";") {
+      out += ";\n" + "    ".repeat(depth);
+      i++;
+      while (s[i] === " ") i++;
+      continue;
+    }
+    if (ch === "," && depth > 0) {
+      out += ",\n" + "    ".repeat(depth);
+      i++;
+      while (s[i] === " ") i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** Headers Burp often hides by default in Pretty (noise for app behavior). */
+export const DEFAULT_HIDDEN_REQUEST_HEADERS = [
+  "accept-encoding",
+  "accept-language",
+  "connection",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-fetch-dest",
+  "sec-fetch-mode",
+  "sec-fetch-site",
+  "sec-fetch-user",
+  "upgrade-insecure-requests",
+  "priority",
+  "dnt",
+];
+
+export const DEFAULT_HIDDEN_RESPONSE_HEADERS = [
+  "date",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "content-encoding",
+  "vary",
+  "x-content-type-options",
+  "x-frame-options",
+  "x-xss-protection",
+  "strict-transport-security",
+  "referrer-policy",
+  "permissions-policy",
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "report-to",
+  "nel",
+  "alt-svc",
+  "cf-ray",
+  "cf-cache-status",
+  "server-timing",
+];
+
+export interface PrettyHeaderLine {
+  name: string;
+  value: string;
+  hiddenByDefault: boolean;
+}
+
+/**
+ * Build the Pretty-tab message model (same structure as Raw, body prettified).
+ * Cookie: use header if present; else synthesize once from cookies map.
+ */
+export function buildPrettyMessage(opts: {
+  startLine: string;
+  headers: Record<string, string> | null | undefined;
+  cookies?: Record<string, string> | null;
+  body?: string | null;
+  bodyEncoding?: string;
+  contentType?: string;
+  side?: "request" | "response";
+}): {
+  startLine: string;
+  headers: PrettyHeaderLine[];
+  body: PrettyBodyResult;
+  side: "request" | "response";
+} {
+  const side = opts.side || "request";
+  const hideList =
+    side === "request" ? DEFAULT_HIDDEN_REQUEST_HEADERS : DEFAULT_HIDDEN_RESPONSE_HEADERS;
+  const hideSet = new Set(hideList);
+
+  const entries = Object.entries(opts.headers || {});
+  const hasCookie = entries.some(([k]) => k.toLowerCase() === "cookie");
+  const headers: PrettyHeaderLine[] = entries.map(([name, value]) => ({
+    name,
+    value: value ?? "",
+    hiddenByDefault: hideSet.has(name.toLowerCase()),
+  }));
+  if (!hasCookie && opts.cookies && Object.keys(opts.cookies).length > 0) {
+    headers.push({
+      name: "Cookie",
+      value: Object.entries(opts.cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; "),
+      hiddenByDefault: false,
+    });
+  }
+
+  const ct =
+    opts.contentType ||
+    getHeader(opts.headers, "Content-Type") ||
+    getHeader(opts.headers, "content-type");
+
+  return {
+    startLine: opts.startLine,
+    headers,
+    body: prettyBody(opts.body, ct, opts.bodyEncoding),
+    side,
+  };
 }
 
 /** Headers for Inspector summary: names + Cookie(N) badge, no values expanded. */

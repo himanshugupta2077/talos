@@ -270,8 +270,10 @@ export default function FlowDetail() {
         </p>
         <p>
           <strong>HTTP</strong> shows Request and Response side by side. Each side defaults
-          to <strong>Pretty</strong> (start-line, headers, pretty-printed body). Switch to
-          Raw for the canonical dump; request also has Params and JWT when useful.
+          to Burp-style <strong>Pretty</strong>: full message (start-line, all headers, body)
+          with syntax colors, line numbers, wrap always on, and indented
+          JSON/XML/HTML/CSS/JS. Switch to Raw for the untransformed dump; request also has
+          Params and JWT.
         </p>
         <p>
           <strong>Replay now</strong> re-sends the stored request via Core; modified or

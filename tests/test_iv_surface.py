@@ -33,11 +33,14 @@ from talos.input_validation.synthesize import _fill_capabilities, _fill_surface
 from talos.input_validation.surface import (
     SKIP_AUTH_ARTIFACT,
     SKIP_HOP_BY_HOP_HEADER,
+    SKIP_TRANSPORT_INVALID_COOKIE,
+    SKIP_TRANSPORT_INVALID_HEADER,
     SURFACE_GRAPHQL_VARIABLE,
     SURFACE_MULTIPART_FILENAME,
     SURFACE_PATH,
     SURFACE_XML_LEAF,
     detect_surface_kind,
+    headers_are_transport_legal,
     inject_cookie_param,
     inject_graphql_param,
     inject_header_param,
@@ -48,7 +51,12 @@ from talos.input_validation.surface import (
     inject_xml_param,
     is_auth_artifact,
     is_hop_by_hop_header,
+    is_http_header_value_legal,
+    make_cookie_safe,
+    make_header_safe,
     should_skip_param,
+    transport_skip_for_headers,
+    transport_skip_for_payload,
 )
 
 
@@ -165,6 +173,68 @@ class TestHeaderCookie:
         assert "request_headers" in mut
         hdrs = mut["request_headers"]
         assert hdrs["X-Tenant"] == "CANARY"
+
+    def test_cookie_strips_outer_whitespace(self) -> None:
+        out = inject_cookie_param({"Cookie": "a=1"}, "b", "  val  ")
+        assert "b=val" in out["Cookie"]
+        assert headers_are_transport_legal(out)
+
+
+# ---------------------------------------------------------------------------
+# Transport-legal header / cookie payloads
+# ---------------------------------------------------------------------------
+
+
+class TestTransportSafety:
+    def test_illegal_leading_trailing_spaces(self) -> None:
+        assert not is_http_header_value_legal("  TlNormabc  ")
+        skip = transport_skip_for_payload("header", "  TlNormabc  ")
+        assert skip is not None
+        assert skip.reason == SKIP_TRANSPORT_INVALID_HEADER
+        # Query still allows spaces (application characterization).
+        assert transport_skip_for_payload("query", "  TlNormabc  ") is None
+
+    def test_illegal_null_byte_header_and_cookie(self) -> None:
+        assert not is_http_header_value_legal("a\x00b")
+        h = transport_skip_for_payload("header", "a\x00b")
+        c = transport_skip_for_payload("cookie", "a\x00b")
+        assert h is not None and h.reason == SKIP_TRANSPORT_INVALID_HEADER
+        assert c is not None and c.reason == SKIP_TRANSPORT_INVALID_COOKIE
+
+    def test_legal_printable_header(self) -> None:
+        assert is_http_header_value_legal("TL~^~alpha=a~^~digit=7")
+        assert transport_skip_for_payload("header", "TL~^~alpha=a") is None
+
+    def test_make_header_safe_strips_and_drops_ctl(self) -> None:
+        assert make_header_safe("  abc  ") == "abc"
+        assert make_header_safe("a\x00b") == "ab"
+        assert make_header_safe("\x00") is None
+        assert make_header_safe("   ") is None
+
+    def test_make_cookie_safe(self) -> None:
+        assert make_cookie_safe("  x  ") == "x"
+        assert make_cookie_safe("a\x00b") == "ab"
+        assert make_cookie_safe("\x00") is None
+
+    def test_post_inject_cookie_with_null_illegal(self) -> None:
+        headers = inject_cookie_param(
+            {"Cookie": "lang=en; token=abc"},
+            "show_tool_calls",
+            "TL1~^~null=\x00~^~TL1",
+        )
+        assert not headers_are_transport_legal(headers)
+        skip = transport_skip_for_headers("cookie", headers)
+        assert skip is not None
+        assert skip.reason == SKIP_TRANSPORT_INVALID_COOKIE
+
+    def test_post_inject_legal_cookie_multiprobe_without_null(self) -> None:
+        headers = inject_cookie_param(
+            {"Cookie": "lang=en"},
+            "show_tool_calls",
+            "TL1~^~alpha=a~^~digit=7~^~TL1",
+        )
+        assert headers_are_transport_legal(headers)
+        assert transport_skip_for_headers("cookie", headers) is None
 
 
 # ---------------------------------------------------------------------------

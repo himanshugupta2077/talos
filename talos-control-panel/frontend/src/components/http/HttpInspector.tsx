@@ -2,8 +2,7 @@
  * HTTP request/response viewer for Flow detail.
  *
  * Tabs (both sides): Pretty (default) · Raw · Params (request) · JWT (request).
- * Inspector / Headers / Cookies / Body tabs removed — Pretty shows start-line,
- * headers, and pretty-printed body without duplicated cookie/JWT panels.
+ * Pretty shows start-line, all headers, and pretty-printed body. Wrap is always on.
  */
 
 import { useMemo, useState } from "react";
@@ -48,7 +47,6 @@ export default function HttpInspector(props: SideProps) {
   const isReq = props.side === "request";
   const [reqTab, setReqTab] = useState<RequestTab>("pretty");
   const [respTab, setRespTab] = useState<ResponseTab>("pretty");
-  const [wrap, setWrap] = useState(true);
 
   const jwt = useMemo(
     () => (isReq ? findJwt(props.headers) : null),
@@ -73,7 +71,7 @@ export default function HttpInspector(props: SideProps) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+      <div className="flex items-center mb-2 gap-2 flex-wrap">
         <div className="join flex-wrap">
           {tabs.map((t) => (
             <button
@@ -88,15 +86,6 @@ export default function HttpInspector(props: SideProps) {
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-1 text-xs cursor-pointer shrink-0">
-          <input
-            type="checkbox"
-            className="checkbox checkbox-xs"
-            checked={wrap}
-            onChange={(e) => setWrap(e.target.checked)}
-          />
-          Wrap
-        </label>
       </div>
 
       {tab === "pretty" && (
@@ -107,7 +96,7 @@ export default function HttpInspector(props: SideProps) {
           body={props.body}
           bodyEncoding={props.bodyEncoding}
           contentType={props.contentType}
-          wrap={wrap}
+          side={props.side}
         />
       )}
 
@@ -117,7 +106,6 @@ export default function HttpInspector(props: SideProps) {
           headers={props.headers}
           cookies={isReq ? props.cookies : undefined}
           body={props.body}
-          wrap={wrap}
         />
       )}
 

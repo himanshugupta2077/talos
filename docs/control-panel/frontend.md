@@ -140,9 +140,9 @@ Page-level behavior: [pages.md](./pages.md).
 | `ThemeToggle` | `ThemeToggle.tsx` | DaisyUI light/dark toggle |
 | `CommandDrawer` | `CommandDrawer.tsx` | Bottom-docked command log (resize, copy, auto-hide) |
 | `ToastStack` | `ToastStack.tsx` | Renders toasts from command log context |
-| `DataTable` | `DataTable.tsx` | Dense boxed table: sort, column show/hide, drag-reorder, drag-edge resize; layout persisted when `storageKey` set |
-| `HttpInspector` | `components/http/HttpInspector.tsx` | Request/response viewer: Pretty (default) + Raw; request also Params / JWT |
-| `HttpPrettyView` | `components/http/HttpPrettyView.tsx` | Start-line + headers + pretty-printed body |
+| `DataTable` | `DataTable.tsx` | Dense boxed table: click header to sort, column show/hide, drag-reorder, drag-edge resize; layout persisted when `storageKey` set; Actions cells allow overflow for row menus |
+| `HttpInspector` | `components/http/HttpInspector.tsx` | Request/response viewer: Pretty (default) + Raw; request also Params / JWT; wrap always on |
+| `HttpPrettyView` | `components/http/HttpPrettyView.tsx` | Burp-style Pretty: full message, multi-format indent, syntax colors, line numbers, wrap always on; all headers shown |
 | `HttpView` | `HttpView.tsx` | Re-exports `HttpInspector` for legacy import path |
 | `StatusBadge` | `StatusBadge.tsx` | Colored badge for status/verdict/priority values |
 | `ParameterPicker` | `ParameterPicker.tsx` | Searchable parameter UUID picker (uses `/api/endpoints/parameters/search`) |
@@ -187,13 +187,14 @@ Helper `openDirectoryBody(target)` builds `{ target: "data_dir" | "database_dir"
 Used heavily for list pages (Flows, Findings, Endpoints inventory/policy/rules, Scheduler jobs). Supports:
 
 - Column definitions with `render`, `sortValue`, `sortable`, `alwaysVisible`, `defaultWidth`, `minWidth`
-- Client-side sorting
+- Client-side sorting (toolbar help: “Click a column header to sort …”; per-header tooltip matches)
 - **Boxed cells** (`.table-boxed`) so column boundaries are visible
 - **Column resize** via drag handles on every header’s right edge
 - Drag header to reorder; Columns menu to show/hide
 - Optional `storageKey` persists order, hidden set, and widths in `localStorage` (`talos-cp-table:<key>`)
 - “Reset widths” restores default column widths
 - Row click handlers
+- `actions` column cells use `overflow-visible` so ⋮ dropdown menus are not clipped
 
 Ad-hoc tables elsewhere use the same denser `.table-tight` borders so lists read consistently even without resize controls.
 

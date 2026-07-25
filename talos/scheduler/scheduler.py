@@ -1132,6 +1132,27 @@ class ReplayScheduler:
                     return
                 flow = _apply_auth_to_iv_flow(flow, _auth_cfg, _state_info["state"])
 
+# Transport gate: do not send payloads the HTTP client rejects before
+        # the request reaches the application (Illegal header value).
+        from talos.input_validation.surface import (
+            transport_skip_for_headers,
+            transport_skip_for_payload,
+        )
+        pre_skip = transport_skip_for_payload(location, payload)
+        if pre_skip is not None:
+            iv_db.upsert_probe_result(
+                db_path, parameter_uuid, endpoint_id or None, host, location,
+                parameter_name, analysis, payload, payload_type, payload_index,
+                None, iv_db.STATUS_SKIPPED,
+            )
+            sched_db.mark_skipped(db_path, job.job_id, pre_skip.reason)
+            _log.info(
+                "[iv] SKIP transport %s for %s %s/%s job=%s",
+                pre_skip.reason, host, location, parameter_name, job.job_id[:8],
+            )
+            self._continue_iv_plan_after_job(job, meta, db_path, project_id)
+            return
+
         # Prepare the probe mutation (Module 8: pass payload_type / injection_mode).
         injection_mode = meta.get("injection_mode")
         mutations = prepare_iv_probe(
@@ -1143,6 +1164,34 @@ class ReplayScheduler:
             payload_type=payload_type,
             injection_mode=injection_mode if isinstance(injection_mode, str) else None,
         )
+
+        # Post-inject: composed Cookie/header map may still be illegal.
+        if location in ("header", "cookie"):
+            import json as _json_hdr
+            base_headers = flow.get("request_headers") or {}
+            if isinstance(base_headers, str):
+                try:
+                    base_headers = _json_hdr.loads(base_headers)
+                except (ValueError, TypeError):
+                    base_headers = {}
+            effective_headers = dict(base_headers)
+            mut_headers = mutations.get("request_headers")
+            if isinstance(mut_headers, dict):
+                effective_headers = mut_headers
+            post_skip = transport_skip_for_headers(location, effective_headers)
+            if post_skip is not None:
+                iv_db.upsert_probe_result(
+                    db_path, parameter_uuid, endpoint_id or None, host, location,
+                    parameter_name, analysis, payload, payload_type, payload_index,
+                    None, iv_db.STATUS_SKIPPED,
+                )
+                sched_db.mark_skipped(db_path, job.job_id, post_skip.reason)
+                _log.info(
+                    "[iv] SKIP transport %s after inject for %s %s/%s job=%s",
+                    post_skip.reason, host, location, parameter_name, job.job_id[:8],
+                )
+                self._continue_iv_plan_after_job(job, meta, db_path, project_id)
+                return
 
         # Build standardized universal flow metadata.
         # source = auto_replay (mechanism); generated_by = input_validation (subsystem).
@@ -1198,8 +1247,20 @@ class ReplayScheduler:
             sched_db.mark_failed(db_path, job.job_id, f"replay_error: {exc}")
             return
 
-        # Persist probe result — only identity fields; HTTP data lives in flows.
-        probe_status = iv_db.STATUS_COMPLETED if outcome.success else iv_db.STATUS_FAILED
+# Persist probe result — only identity fields; HTTP data lives in flows.
+        # Client-side "Illegal header value" is not an application rejection:
+        # mark skipped with a stable transport reason (defense in depth).
+        failure = outcome.failure_reason or ""
+        transport_illegal = (
+            not outcome.success
+            and "Illegal header value" in failure
+        )
+        if outcome.success:
+            probe_status = iv_db.STATUS_COMPLETED
+        elif transport_illegal:
+            probe_status = iv_db.STATUS_SKIPPED
+        else:
+            probe_status = iv_db.STATUS_FAILED
         iv_db.upsert_probe_result(
             db_path,
             parameter_uuid,
@@ -1225,6 +1286,17 @@ class ReplayScheduler:
                 payload if payload is not None else "(baseline)",
                 outcome.status_code,
                 (outcome.replayed_flow_id or "")[:8],
+            )
+        elif transport_illegal:
+            skip_reason = (
+                "transport_invalid_cookie"
+                if location == "cookie"
+                else "transport_invalid_header"
+            )
+            sched_db.mark_skipped(db_path, job.job_id, skip_reason)
+            _log.info(
+                "[iv] SKIP transport illegal header value job=%s location=%s",
+                job.job_id[:8], location,
             )
         else:
             sched_db.mark_failed(
