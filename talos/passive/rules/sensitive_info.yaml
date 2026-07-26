@@ -1,0 +1,14 @@
+# Family D — low-signal sensitive info (observation). Code detectors own matching.
+rules:
+  - id: email_address
+    name: Email Address
+    family: infra
+    category: sensitive_info
+    secret_type: email
+    confidence_score: 30
+    confidence_level: OBSERVATION_ONLY
+    enabled: false
+    keywords:
+      - "@"
+    patterns: []
+    description: "Handled by detectors/infrastructure.py — observation only"

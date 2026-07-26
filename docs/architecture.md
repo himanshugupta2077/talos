@@ -63,8 +63,11 @@ CLI (talos.__main__)
     ├── talos input-validation
     │       active parameter characterization (disabled by default)
     │
-    └── talos finding
-            triage, groups, Markdown reports
+    ├── talos finding
+    │       triage, groups, Markdown reports
+    │
+    └── talos passive
+            status/config/rules/documents/detections/rescan
 ```
 
 ### Current CLI command tree
@@ -98,6 +101,9 @@ talos
 │            prune / clear / pause / resume
 ├─ mutation  add / list / edit / enable / disable / delete
 ├─ attack    unauth (run, config, filter) / bac (8 modules + filter)
+├─ passive   status / config show|set / rules list /
+│            documents list|show / detections list|show /
+│            rescan --all|--document|--flow
 │              (BAC --role / --module accept name or UUID)
 ├─ input-validation  run / config / status / resume / synthesize /
 │                      candidates / show / export / clear-cache /
@@ -702,6 +708,217 @@ Partial unique index: `idx_findings_primary_cluster` on `cluster_key` where
 
 ---
 
+## Passive Source Intelligence / Secret Exposure Engine
+
+Passive, zero-HTTP subsystem that scans captured client-delivered response
+bodies (HTML/JS/JSON/XML/text/CSS/source maps) for secrets and sensitive
+exposure, then creates high-confidence Findings without drowning the UI in
+noise. Package: `talos.passive` (Phases 0–12 + 14–16 landed in core CLI:
+types/config/redaction + schema v39/v40 CRUD + candidate/classify/normalize +
+queue/worker + detector pipeline + findings bridge + CLI + source-map + HTML
+extractors + infrastructure disclosures + soft scan budget + docs). Control
+Panel UX is Phase 13 (separate).
+
+### Decision log (Phase 0 — design freeze)
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Scan placement | Separate `PassiveScanQueue` + `SourceScanWorker` daemon | Proxy and FlowWorker stay capture-only; no heavy scan on response path or in `_persist_db` |
+| Job execution | Own worker thread — **not** `ReplayScheduler` | Scheduler semantics = HTTP job execution; passive is pure local analysis |
+| Source of truth | `flows.response_body` (BLOB) after commit | Job carries `flow_id`; worker reloads body from DB (no multi-MB bodies in two queues) |
+| Archive | Never scan archive JSONL | Archive uses `_b64` serialization → false positives + recursive noise |
+| Active validation | None in v1 | No outbound provider checks; engine remains passive |
+| Intelligence vs findings | Observation → detection → finding | Passive tables store intelligence only; Findings subsystem owns lifecycle |
+| Clustering | `PASSIVE_SECRET:<value_fingerprint>` | Fingerprint = `SHA256(detector_family + "\0" + canonical_secret)`; PRIMARY/LINKED by secret, not file |
+| Source grouping | UI/query only (`logical_source_name`, URL) | Does **not** change PRIMARY/LINKED or manual `finding_groups` |
+| Base64 / encodings | Decoder Pipeline only; not findings | Pure encoded blobs create no findings; decoded text is rescanned |
+| Determinism | Rule + score + suppress first | No AI in v1 |
+| Content scope | Source-like content, not JS-only | HTML, JS, JSON, XML, text, CSS, source maps; wasm skipped by default |
+| Auto findings | CONFIRMED_PATTERN + HIGH only | MEDIUM / OBSERVATION_ONLY stay intelligence-only |
+| Infrastructure | Observation-first | No auto-findings for private IPs/routes in v1 (config exceptions later) |
+| Raw secret in evidence | Allowed on local workstation | Always redact in list UIs/CLI normal output |
+| Enabled defaults | Scan from Phase 4; auto-findings from Phase 8 | Avoid findings spam before scoring/suppression/bridge are green |
+| Body storage | Hashes + metadata in `source_documents`; bodies stay on `flows` | Dedup by `body_hash`; no second body copy |
+
+### Locked invariants
+
+1. Separate passive queue/worker (never block capture).
+2. Observation → detection → finding (findings only when eligible).
+3. Cluster by secret fingerprint (PRIMARY/LINKED), not by source file.
+4. Base64 alone ≠ finding.
+5. No archive JSONL scan.
+6. No active (outbound) secret validation in v1.
+7. Source-like content broadly; not JS-only.
+8. Manual `finding_groups` unchanged.
+9. No heavy work in `TalosAddon.response()` or expensive scan inside `FlowWorker._persist_db()`.
+10. Never claim decryption — engine name is **Decoder Pipeline**.
+
+### Target pipeline (not fully wired until later phases)
+
+```
+TalosAddon.response()
+    → FlowQueue → FlowWorker
+         → persist flow + endpoint
+         → Parameter / Reflection Intelligence
+         → is_source_candidate()?   # cheap gate only
+              YES → PassiveScanQueue.enqueue(PassiveScanJob)
+         → priority / qualification / archive (unchanged)
+
+SourceScanWorker
+    → classify → normalize → document registry (body_hash dedup)
+    → extractors → detector pipeline → score + suppress
+    → store passive_detections
+    → create findings when eligible (Phase 8+)
+```
+
+### Phase status
+
+| Phase | Scope | Status |
+|-------|--------|--------|
+| 0 | Design freeze + this decision log | **Done** |
+| 1 | Package skeleton: constants, models, config defaults, redaction | **Done** |
+| 2 | Schema v39 + passive DB CRUD (`talos.passive.db`) | **Done** |
+| 3 | Candidate gate + classifier + normalizer | **Done** |
+| 4 | Queue + worker skeleton + FlowWorker enqueue | **Done** |
+| 5 | Detector framework + YAML rules + Stage 1 specific | **Done** |
+| 6 | Contextual generic + suppress + scoring | **Done** |
+| 7 | Decoder pipeline + entropy + rescan | **Done** |
+| 8 | Finding bridge + PRIMARY/LINKED | **Done** |
+| 9 | CLI (`talos passive …`) | **Done** |
+| 10 | Source map `sourcesContent` extractor | **Done** |
+| 11 | HTML inline `<script>` + bootstrap JSON extractors | **Done** |
+| 12 | Infrastructure / disclosure detectors (observation-first) | **Done** |
+| 13 | Control Panel detections API + Findings UX grouping | Pending (UI) |
+| 14 | Soft scan budget + performance hardening | **Done** (core) |
+| 15 | Rescan productization + scanner versioning | **Done** |
+| 16 | Documentation + Talos Helper sync | **Done** |
+
+### Schema (v39 + v40)
+
+| Table | Role |
+|-------|------|
+| `source_documents` | Unique body identity: `UNIQUE(project_id, body_hash)`; scan lifecycle; v40 adds `parent_document_id` + `logical_source_name` for virtual docs |
+| `source_occurrences` | Each flow/URL sighting of a document |
+| `passive_detections` | Scored observations; optional unique on `(document_id, detector_id, value_fingerprint, match_start)`; `finding_id` link |
+| `passive_scan_config` | Single-row defaults (`id='default'`); seeded on init/migrate |
+
+Bodies remain on `flows.response_body`. Findings lifecycle lives in `findings`; `passive_detections.finding_id` links after Phase 8.
+
+### Phase 3 — Candidate / classify / normalize
+
+| Module | Role |
+|--------|------|
+| `talos.passive.candidate` | `is_source_candidate(content_type, path, …)` — cheap CT/path gate (+ optional empty/magic body checks). Used by FlowWorker after commit. |
+| `talos.passive.classifier` | `classify_source(…) → SourceKind` — CT, extension/hints, then short magic/text sniff. |
+| `talos.passive.normalize` | `normalize_body(bytes) → NormalizeResult` — charset → utf-8 → latin-1; records truncation. |
+
+**Reject at gate:** empty body; `image/*` / media / PDF / WASM; path `.png`/`.jpg`/`.pdf`/…; magic PNG/JPEG/GIF/PDF/ZIP/WASM even if CT lies.  
+**Allow:** HTML/JS/JSON/XML/text/CSS/source maps; `text/plain` + `application/octet-stream` when path or sniff says source-like.
+
+### Phase 4 — Queue + worker + FlowWorker enqueue
+
+| Module | Role |
+|--------|------|
+| `talos.passive.queue` | `PassiveScanQueue` — bounded, drop-on-full + WARNING + `dropped_job_count` (mirrors `FlowQueue`). |
+| `talos.passive.worker` | `SourceScanWorker` — load body by `flow_id`, candidate → classify → normalize → upsert document + occurrence; skip re-scan when `scanner_version == SCANNER_VERSION`; `maybe_enqueue_passive_scan()` for FlowWorker. |
+| `talos.proxy.addon` | Starts `SourceScanWorker` after `FlowWorker`; stops passive worker after FlowWorker on `done()`. |
+| `talos.worker.FlowWorker` | After successful DB commit: if config `enabled` + `is_source_candidate(…)`, enqueue `PassiveScanJob` (never raises; never blocks capture). |
+
+**Phase 4 behaviour:** document registry + occurrence only; documents marked `scan_status=scanned`. Same `body_hash` twice → second occurrence only.
+
+### Phases 5–7 — Detector pipeline
+
+| Module | Role |
+|--------|------|
+| `talos.passive.rules_loader` | Load `rules/*.yaml`, compile regex once, keyword index; fail closed on bad packs |
+| `talos.passive.rules/` | Packs: cloud, source_control, payment, auth, crypto (PEM doc), generic keys |
+| `talos.passive.detectors.specific` | Stage 1: keyword prefilter → provider regex |
+| `talos.passive.detectors.pem` | Stage 1: multi-line PEM / OpenSSH private key blocks |
+| `talos.passive.detectors.contextual` | Stage 2: sensitive-key assignment (`password=`, `apiKey:`, …) |
+| `talos.passive.detectors.entropy` | Stage 3: high-entropy candidates gated by keyword/assignment |
+| `talos.passive.decoder.pipeline` | Stages 4–5: base64/url/hex/html/unicode decode → rescan 1–2 only |
+| `talos.passive.scoring` | Additive score → CONFIRMED/HIGH/MEDIUM/OBSERVATION |
+| `talos.passive.suppress` | Placeholders, env refs, public test tokens, low-entropy generics |
+| `talos.passive.detectors.orchestrator` | Full stage pipeline → `list[Detection]` |
+| `SourceScanWorker` | Runs orchestrator before `mark_document_scanned`; persists detections |
+
+**Phases 5–7 behaviour:** detections stored in `passive_detections` (suppressed omitted unless `store_suppressed_detections`). Encodings alone never create detections.
+
+### Phase 8 — Finding bridge
+
+| Module | Role |
+|--------|------|
+| `talos.findings.model` | `EVIDENCE_TYPE_SOURCE_*` / `PASSIVE_DETECTION`; `ATTACK_DISPLAY["passive_secret"]` |
+| `talos.passive.finding_bridge` | `create_passive_secret_finding()` — cluster `PASSIVE_SECRET:<fp>`; PRIMARY/LINKED by secret |
+| `SourceScanWorker` | After persist detections → auto-create findings when confidence ≥ threshold |
+
+**Clustering:** same secret fingerprint across files → first PRIMARY, later LINKED. Different secrets in one file → two PRIMARYs. Threshold default HIGH (CONFIRMED_PATTERN + HIGH). `auto_finding_threshold=OFF` disables.
+
+### Phase 9 — CLI
+
+```text
+talos passive status | config show|set | rules list
+talos passive documents list|show | detections list|show
+talos passive rescan --all | --document ID | --flow ID
+```
+
+Secrets redacted in list/show. Rescan reloads body from occurrence `flow_id`.
+
+### Phase 10 — Source map extractor
+
+| Module | Role |
+|--------|------|
+| `talos.passive.extractors.sourcemap` | Parse JSON; emit virtual docs from `sourcesContent` |
+| Schema v40 | `source_documents.parent_document_id` + `logical_source_name` |
+| Worker | After parent scan, extract + scan virtual JS; findings titled “… in Source Map” when applicable |
+
+Map without `sourcesContent` → parent occurrence/scan only, no crash. Caps: max 50 sources, size limits.
+
+### Phase 11 — HTML inline extractors
+
+| Module | Role |
+|--------|------|
+| `talos.passive.extractors.html` | Inline `<script>` **without** `src` → virtual JS docs; JSON script types + `__NEXT_DATA__` / bootstrap ids → virtual JSON; optional `window.__CONFIG__` islands |
+| Worker / CLI rescan | After parent HTML scan (or rescan), register children under `parent_document_id` and run detectors |
+
+Never fetches external scripts. Caps: max 40 scripts, 20 bootstrap islands, size totals. Findings from children may be titled “… (Inline HTML)”.
+
+### Phase 12 — Infrastructure / disclosure detectors
+
+| Module | Role |
+|--------|------|
+| `talos.passive.detectors.infrastructure` | INTERNAL_IP, INTERNAL_HOSTNAME, SENSITIVE_ROUTE (aggregated), DEBUG_PATH, EMAIL |
+| Category | `infrastructure_disclosure` / `sensitive_info` — **never** auto-finding (bridge requires `category=secret`) |
+| Aggregation | Up to 40 unique routes → **one** detection row with `routes[]` metadata (not 500 findings) |
+| CLI | `talos passive detections list --category infrastructure_disclosure` |
+
+Future hook: `endpoint_extraction_candidate` metadata on route aggregates for JS endpoint extraction (not implemented).
+
+### Phases 14–15 — Performance + rescan
+
+| Concern | Behaviour |
+|---------|-----------|
+| Size cap | `max_document_size` (default 2 MiB) → `too_large` status, no detectors |
+| Soft time budget | `PassiveScanConfig.max_scan_time_ms` (default 0 = off); partial stage results kept |
+| Keyword prefilter | YAML rules still keyword-gated before regex |
+| Rescan | `talos passive rescan --all` targets `scanner_version != SCANNER_VERSION` (or `--force`); reloads body by occurrence `flow_id`; re-runs HTML/source-map extractors |
+| Identity | `SCANNER_VERSION = 1.3.0` |
+
+### Detector catalogue (v1 core)
+
+| Family | Implementation |
+|--------|----------------|
+| Provider / structured | YAML packs: cloud, source_control, payment, auth, communication, database + `specific.py` |
+| PEM / OpenSSH | `detectors/pem.py` |
+| JWT compact | `detectors/jwt.py` |
+| Connection strings | `detectors/connection_string.py` + database.yaml |
+| Contextual generic | `detectors/contextual.py` + generic.yaml keys |
+| Entropy | `detectors/entropy.py` (assignment/keyword gated) |
+| Decoder | `decoder/pipeline.py` (not findings) |
+| Infrastructure | `detectors/infrastructure.py` (observation-first) |
+
+---
+
 ## Access Model (Two-Layer)
 
 Talos separates **observed client behaviour** from **intended server enforcement**.
@@ -1140,11 +1357,13 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.projects.mutation_cli` | Argument parsing + output for `mutation add/list/delete/enable/disable/edit` commands | State management |
 | `talos.proxy.scope` | Basic Scope URL-prefix matching; shared `evaluate_scope` / `is_url_in_scope` (out-of-scope overrides in-scope) | Configuration, logging |
 | `talos.proxy.queue.FlowQueue` | Bounded thread-safe queue; drop-on-full | Processing, persistence |
-| `talos.proxy.addon.TalosAddon` | mitmproxy hook; **request hook** applies mutations; **shared Basic Scope evaluator** on full request URL → extract (canonical origin on `host`) → stamp role/module → enqueue; starts/stops worker | DB writes, normalization, session detection |
+| `talos.passive.queue.PassiveScanQueue` | Bounded queue for `PassiveScanJob`; drop-on-full + WARNING | Detectors, findings, capture path |
+| `talos.passive.worker.SourceScanWorker` | Drain passive queue; load body by flow_id; classify/normalize; upsert document + occurrence; extract source maps + HTML inline scripts; run detector orchestrator (incl. JWT/conn/infra); persist detections; auto-create secret findings; skip rescan at `SCANNER_VERSION` | Outbound HTTP |
+| `talos.proxy.addon.TalosAddon` | mitmproxy hook; **request hook** applies mutations; **shared Basic Scope evaluator** on full request URL → extract (canonical origin on `host`) → stamp role/module → enqueue; starts/stops FlowWorker + SourceScanWorker | DB writes, normalization, session detection |
 | `talos.proxy.launcher.build_mitmdump_command` | Single shared function building the mitmdump argv; adds `--mode upstream:<url>` only when a resolved URL is supplied — never hardcodes host/port | Process spawning, DB access |
 | `talos.projects.proxy_config` | Upstream URL helpers: validate, get/set/clear, and `resolve_upstream_url` (CLI override → layered config → Direct). Dual-writes project.yaml; get uses ConfigurationManager. Consumed by proxy CLI/launcher and by replay/BAC/unauth httpx clients | Process spawning |
 | `talos.proxy.cli` | Argument parsing; active-project gate; `start` calls `resolve_upstream_url` (optional `--upstream` / `--no-upstream` one-shot) then the shared launcher; `config` persists mode | Proxy logic |
-| `talos.worker.FlowWorker` | Drain queue; validate; out-of-scope backstop drop; attach project_id; normalize flows into stable endpoints; persist to DB + archive; update endpoint_roles and parameter inventory transactionally; update endpoint qualification and baseline_flow_id cache | Proxy logic, access inference |
+| `talos.worker.FlowWorker` | Drain queue; validate; out-of-scope backstop drop; attach project_id; normalize flows into stable endpoints; persist to DB + archive; update endpoint_roles and parameter inventory transactionally; update endpoint qualification and baseline_flow_id cache; after commit, cheap `is_source_candidate` + enqueue `PassiveScanJob` when passive enabled | Proxy logic, access inference, heavy passive scan |
 | `talos.projects.auth` | CRUD for per-project auth config (cookie/header names); additive set, clear | Enforcement, inference, credential storage |
 | `talos.projects.auth_cli` | Argument parsing + output for auth set/show/clear/test commands; `auth test` default path enqueues scheduler job; `--right-now` executes immediately | State management, HTTP I/O |
 | `talos.projects.annotations` | CRUD for endpoint safety tags (logout, dangerous); read-only guard consumed by replay engine and auth-strip | Enforcement, inference |
@@ -1391,7 +1610,7 @@ Shutdown:
   registry.json                   index of all projects + active state + constraints
   projects/
     <id>/
-      talos.db                    structured data (SCHEMA_VERSION 38)
+      talos.db                    structured data (SCHEMA_VERSION 40)
       archive/
         flows-YYYY-MM-DD.jsonl    raw capture archive
       headers_drop.txt            capture header filter template copy
@@ -1470,13 +1689,15 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 38` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 40` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
+parent/logical columns for source maps and HTML extractors.
 
 ### Tables (current)
 
 | Table | Purpose |
 |-------|---------|
-| `schema_version` | Single version integer (38) |
+| `schema_version` | Single version integer (40) |
 | `flows` | Captured and replayed HTTP exchanges |
 | `endpoints` | Deduplicated method + **canonical origin** (`host` column) + normalized_path |
 | `parameters` | Endpoint Intelligence parameter inventory |
@@ -1706,6 +1927,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] IV Multi-Level Learning (Module 10) — endpoint/app profile aggregation + inheritance priors (`learning.py`); confidence decay cap 75; local observed wins; standard skips control/parser when parent known; CLI `show --endpoint` / `show --host`; tests in `tests/test_iv_learning.py`
 - [x] IV Capabilities, Attack Candidates & Consumer API (Module 11) — centralized capability derivation (`capabilities.py`); attack candidate scores with reasons (`candidates.py`); `get_param_intelligence` / `list_candidates` stable API; synthesize + CLI show/export; prioritization only (not confirmed vulns); tests in `tests/test_iv_candidates.py`
 - [x] Findings subsystem — PRIMARY/LINKED clusters, groups, reports (`talos.findings`)
+- [x] Passive Source Intelligence (Phases 0–12, 14–16 core CLI) — design freeze + package skeleton + schema v39/v40 CRUD + candidate/classify/normalize + queue/worker + detector pipeline (provider/YAML, PEM, JWT, connection strings, contextual, entropy, decoder, infrastructure) + findings bridge (`PASSIVE_SECRET:<fp>` PRIMARY/LINKED) + CLI (`talos passive …`) + source-map + HTML inline extractors + rescan + docs/Helper; `SCANNER_VERSION=1.3.0`; tests in `tests/test_passive_*.py`. Phase 13 Control Panel UI deferred.
 - [x] Flow inspector — `talos flow list|show|export` (`talos.projects.flow_cli`)
 - [x] Flow inventory (CLI-003) — `talos flow list` prints UUID, endpoint (`host`+`path`), method, status, role, source, created; filters `--endpoint`, `--status-code`, `--role` (name or UUID), `--source`, `--limit`; primary discovery path for flow UUIDs used by show/export/replay/auth-config (`talos.projects.flow_cli`)
 

@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 40
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -869,7 +869,230 @@ CREATE TABLE IF NOT EXISTS finding_group_members (
 );
 
 CREATE INDEX IF NOT EXISTS idx_finding_group_members_finding
-    ON finding_group_members (finding_id);"""
+    ON finding_group_members (finding_id);
+
+-- ------------------------------------------------------------------ --
+-- Passive Source Intelligence (schema v39)                            --
+-- source_documents: unique body identity (project_id + body_hash)     --
+-- source_occurrences: each flow/URL sighting of a document            --
+-- passive_detections: scored observations (not findings lifecycle)    --
+-- passive_scan_config: single-row defaults (id='default')             --
+-- Bodies stay on flows; these tables hold hashes + intelligence only. --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS source_documents (
+    id                   TEXT    PRIMARY KEY,   -- UUID
+    project_id           TEXT    NOT NULL,
+    body_hash            TEXT    NOT NULL,     -- SHA-256 hex of raw body bytes
+    source_kind          TEXT    NOT NULL,     -- html|javascript|json|…
+    body_size            INTEGER NOT NULL,     -- raw byte length
+    truncated            INTEGER NOT NULL DEFAULT 0,
+    scanner_version      TEXT,                  -- last successful SCANNER_VERSION
+    scan_status          TEXT    NOT NULL DEFAULT 'pending',
+    first_flow_id        TEXT,
+    first_seen           TEXT,                  -- UTC ISO-8601
+    last_seen            TEXT,
+    last_scanned_at      TEXT,
+    error_message        TEXT,
+    parent_document_id   TEXT,                  -- virtual docs (e.g. sourcesContent)
+    logical_source_name  TEXT,                  -- build-hash normalized path (UI)
+    UNIQUE (project_id, body_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_documents_project
+    ON source_documents (project_id, last_seen DESC);
+
+CREATE INDEX IF NOT EXISTS idx_source_documents_status
+    ON source_documents (project_id, scan_status);
+
+CREATE INDEX IF NOT EXISTS idx_source_documents_parent
+    ON source_documents (parent_document_id);
+
+CREATE TABLE IF NOT EXISTS source_occurrences (
+    id                   TEXT    PRIMARY KEY,   -- UUID
+    document_id          TEXT    NOT NULL REFERENCES source_documents(id),
+    flow_id              TEXT,
+    endpoint_id          TEXT,
+    url                  TEXT    NOT NULL DEFAULT '',
+    host                 TEXT    NOT NULL DEFAULT '',
+    path                 TEXT    NOT NULL DEFAULT '',
+    logical_source_name  TEXT,
+    content_type         TEXT    NOT NULL DEFAULT '',
+    observed_at          TEXT    NOT NULL,
+    role_id              TEXT    NOT NULL DEFAULT '',
+    module_id            TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_document
+    ON source_occurrences (document_id, observed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_flow
+    ON source_occurrences (flow_id);
+
+CREATE TABLE IF NOT EXISTS passive_detections (
+    id                   TEXT    PRIMARY KEY,   -- UUID
+    document_id          TEXT    NOT NULL REFERENCES source_documents(id),
+    occurrence_id        TEXT,
+    detector_id          TEXT    NOT NULL,
+    detector_family      TEXT    NOT NULL,
+    category             TEXT    NOT NULL,
+    secret_type          TEXT    NOT NULL DEFAULT '',
+    matched_key          TEXT,
+    redacted_value       TEXT    NOT NULL DEFAULT '',
+    value_fingerprint    TEXT    NOT NULL,     -- SHA-256(family + NUL + canonical)
+    confidence_score     INTEGER NOT NULL DEFAULT 0,
+    confidence_level     TEXT    NOT NULL,
+    entropy              REAL,
+    encoding_chain       TEXT    NOT NULL DEFAULT '[]',  -- JSON array
+    decode_depth         INTEGER NOT NULL DEFAULT 0,
+    match_start          INTEGER NOT NULL DEFAULT 0,
+    match_end            INTEGER NOT NULL DEFAULT 0,
+    context_before       TEXT    NOT NULL DEFAULT '',
+    context_after        TEXT    NOT NULL DEFAULT '',
+    suppressed           INTEGER NOT NULL DEFAULT 0,
+    suppression_reason   TEXT,
+    finding_id           TEXT,                  -- set by finding bridge (Phase 8)
+    raw_value_stored     INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT    NOT NULL
+);
+
+-- Avoid re-insert of the same match on rescan
+CREATE UNIQUE INDEX IF NOT EXISTS idx_passive_detections_dedup
+    ON passive_detections (document_id, detector_id, value_fingerprint, match_start);
+
+CREATE INDEX IF NOT EXISTS idx_passive_detections_document
+    ON passive_detections (document_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_passive_detections_fingerprint
+    ON passive_detections (value_fingerprint);
+
+CREATE INDEX IF NOT EXISTS idx_passive_detections_finding
+    ON passive_detections (finding_id);
+
+CREATE TABLE IF NOT EXISTS passive_scan_config (
+    id                           TEXT    PRIMARY KEY DEFAULT 'default',
+    enabled                      INTEGER NOT NULL DEFAULT 1,
+    auto_finding_threshold       TEXT    NOT NULL DEFAULT 'HIGH',
+    max_document_size            INTEGER NOT NULL DEFAULT 2000000,
+    max_decode_depth             INTEGER NOT NULL DEFAULT 3,
+    max_decode_bytes             INTEGER NOT NULL DEFAULT 256000,
+    max_candidates_per_document  INTEGER NOT NULL DEFAULT 500,
+    scan_html                    INTEGER NOT NULL DEFAULT 1,
+    scan_javascript              INTEGER NOT NULL DEFAULT 1,
+    scan_json                    INTEGER NOT NULL DEFAULT 1,
+    scan_xml                     INTEGER NOT NULL DEFAULT 1,
+    scan_text                    INTEGER NOT NULL DEFAULT 1,
+    scan_css                     INTEGER NOT NULL DEFAULT 1,
+    scan_sourcemaps              INTEGER NOT NULL DEFAULT 1,
+    scan_wasm                    INTEGER NOT NULL DEFAULT 0,
+    store_raw_secret_in_evidence INTEGER NOT NULL DEFAULT 1,
+    store_suppressed_detections  INTEGER NOT NULL DEFAULT 0,
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500
+);"""
+
+# Shared CREATE statements for Passive Source Intelligence (schema v39).
+# Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync
+# with the CREATE TABLE blocks embedded in _DDL above.
+_PASSIVE_SCHEMA_V39_DDL = """
+CREATE TABLE IF NOT EXISTS source_documents (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    body_hash            TEXT    NOT NULL,
+    source_kind          TEXT    NOT NULL,
+    body_size            INTEGER NOT NULL,
+    truncated            INTEGER NOT NULL DEFAULT 0,
+    scanner_version      TEXT,
+    scan_status          TEXT    NOT NULL DEFAULT 'pending',
+    first_flow_id        TEXT,
+    first_seen           TEXT,
+    last_seen            TEXT,
+    last_scanned_at      TEXT,
+    error_message        TEXT,
+    parent_document_id   TEXT,
+    logical_source_name  TEXT,
+    UNIQUE (project_id, body_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_source_documents_project
+    ON source_documents (project_id, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_source_documents_status
+    ON source_documents (project_id, scan_status);
+CREATE INDEX IF NOT EXISTS idx_source_documents_parent
+    ON source_documents (parent_document_id);
+
+CREATE TABLE IF NOT EXISTS source_occurrences (
+    id                   TEXT    PRIMARY KEY,
+    document_id          TEXT    NOT NULL REFERENCES source_documents(id),
+    flow_id              TEXT,
+    endpoint_id          TEXT,
+    url                  TEXT    NOT NULL DEFAULT '',
+    host                 TEXT    NOT NULL DEFAULT '',
+    path                 TEXT    NOT NULL DEFAULT '',
+    logical_source_name  TEXT,
+    content_type         TEXT    NOT NULL DEFAULT '',
+    observed_at          TEXT    NOT NULL,
+    role_id              TEXT    NOT NULL DEFAULT '',
+    module_id            TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_document
+    ON source_occurrences (document_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_flow
+    ON source_occurrences (flow_id);
+
+CREATE TABLE IF NOT EXISTS passive_detections (
+    id                   TEXT    PRIMARY KEY,
+    document_id          TEXT    NOT NULL REFERENCES source_documents(id),
+    occurrence_id        TEXT,
+    detector_id          TEXT    NOT NULL,
+    detector_family      TEXT    NOT NULL,
+    category             TEXT    NOT NULL,
+    secret_type          TEXT    NOT NULL DEFAULT '',
+    matched_key          TEXT,
+    redacted_value       TEXT    NOT NULL DEFAULT '',
+    value_fingerprint    TEXT    NOT NULL,
+    confidence_score     INTEGER NOT NULL DEFAULT 0,
+    confidence_level     TEXT    NOT NULL,
+    entropy              REAL,
+    encoding_chain       TEXT    NOT NULL DEFAULT '[]',
+    decode_depth         INTEGER NOT NULL DEFAULT 0,
+    match_start          INTEGER NOT NULL DEFAULT 0,
+    match_end            INTEGER NOT NULL DEFAULT 0,
+    context_before       TEXT    NOT NULL DEFAULT '',
+    context_after        TEXT    NOT NULL DEFAULT '',
+    suppressed           INTEGER NOT NULL DEFAULT 0,
+    suppression_reason   TEXT,
+    finding_id           TEXT,
+    raw_value_stored     INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_passive_detections_dedup
+    ON passive_detections (document_id, detector_id, value_fingerprint, match_start);
+CREATE INDEX IF NOT EXISTS idx_passive_detections_document
+    ON passive_detections (document_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_passive_detections_fingerprint
+    ON passive_detections (value_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_passive_detections_finding
+    ON passive_detections (finding_id);
+
+CREATE TABLE IF NOT EXISTS passive_scan_config (
+    id                           TEXT    PRIMARY KEY DEFAULT 'default',
+    enabled                      INTEGER NOT NULL DEFAULT 1,
+    auto_finding_threshold       TEXT    NOT NULL DEFAULT 'HIGH',
+    max_document_size            INTEGER NOT NULL DEFAULT 2000000,
+    max_decode_depth             INTEGER NOT NULL DEFAULT 3,
+    max_decode_bytes             INTEGER NOT NULL DEFAULT 256000,
+    max_candidates_per_document  INTEGER NOT NULL DEFAULT 500,
+    scan_html                    INTEGER NOT NULL DEFAULT 1,
+    scan_javascript              INTEGER NOT NULL DEFAULT 1,
+    scan_json                    INTEGER NOT NULL DEFAULT 1,
+    scan_xml                     INTEGER NOT NULL DEFAULT 1,
+    scan_text                    INTEGER NOT NULL DEFAULT 1,
+    scan_css                     INTEGER NOT NULL DEFAULT 1,
+    scan_sourcemaps              INTEGER NOT NULL DEFAULT 1,
+    scan_wasm                    INTEGER NOT NULL DEFAULT 0,
+    store_raw_secret_in_evidence INTEGER NOT NULL DEFAULT 1,
+    store_suppressed_detections  INTEGER NOT NULL DEFAULT 0,
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500
+);
+"""
 
 
 def init_project_db(db_path: Path) -> None:
@@ -903,6 +1126,12 @@ def init_project_db(db_path: Path) -> None:
             _migrate_schema(conn, row[0])
             conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
             conn.commit()
+
+        # Seed passive scan defaults (single-row config). Safe on every init.
+        conn.execute(
+            "INSERT OR IGNORE INTO passive_scan_config (id) VALUES ('default')"
+        )
+        conn.commit()
 
     # Seed default context after schema is guaranteed current.
     # Uses INSERT OR IGNORE so repeated calls are safe.
@@ -1169,6 +1398,36 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
             );
         """)
 
+    if from_version < 39:
+        # Passive Source Intelligence tables + default config row.
+        conn.executescript(_PASSIVE_SCHEMA_V39_DDL)
+        conn.execute(
+            "INSERT OR IGNORE INTO passive_scan_config (id) VALUES ('default')"
+        )
+
+    if from_version < 40:
+        # Phase 10: virtual document parent linkage + logical name on documents.
+        existing_sd = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(source_documents)"
+            ).fetchall()
+        }
+        if existing_sd and "parent_document_id" not in existing_sd:
+            conn.execute(
+                "ALTER TABLE source_documents "
+                "ADD COLUMN parent_document_id TEXT"
+            )
+        if existing_sd and "logical_source_name" not in existing_sd:
+            conn.execute(
+                "ALTER TABLE source_documents "
+                "ADD COLUMN logical_source_name TEXT"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_documents_parent "
+            "ON source_documents (parent_document_id)"
+        )
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -1281,6 +1540,11 @@ def migrate_project_db(db_path: Path) -> None:
                    on input_validation_config.
         v37 → v38: IV surface completeness (Module 9): include_auth_artifacts
                    on input_validation_config (default 0 = skip session/auth).
+        v38 → v39: Passive Source Intelligence tables: source_documents,
+                   source_occurrences, passive_detections, passive_scan_config
+                   (seeded with design-contract defaults).
+        v39 → v40: source_documents.parent_document_id + logical_source_name
+                   for source-map virtual documents (Phase 10).
     """
     if not db_path.exists():
         return
@@ -2333,6 +2597,40 @@ def migrate_project_db(db_path: Path) -> None:
                     "ADD COLUMN include_auth_artifacts INTEGER NOT NULL DEFAULT 0"
                 )
             conn.execute("UPDATE schema_version SET version = 38")
+            conn.commit()
+
+        if current < 39:
+            # Passive Source Intelligence (Secret Exposure Engine).
+            conn.executescript(_PASSIVE_SCHEMA_V39_DDL)
+            conn.execute(
+                "INSERT OR IGNORE INTO passive_scan_config (id) VALUES ('default')"
+            )
+            conn.execute("UPDATE schema_version SET version = 39")
+            conn.commit()
+
+        if current < 40:
+            # Phase 10: parent_document_id for source-map virtual docs.
+            existing_sd = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(source_documents)"
+                ).fetchall()
+            }
+            if existing_sd and "parent_document_id" not in existing_sd:
+                conn.execute(
+                    "ALTER TABLE source_documents "
+                    "ADD COLUMN parent_document_id TEXT"
+                )
+            if existing_sd and "logical_source_name" not in existing_sd:
+                conn.execute(
+                    "ALTER TABLE source_documents "
+                    "ADD COLUMN logical_source_name TEXT"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_documents_parent "
+                "ON source_documents (parent_document_id)"
+            )
+            conn.execute("UPDATE schema_version SET version = 40")
             conn.commit()
 
 

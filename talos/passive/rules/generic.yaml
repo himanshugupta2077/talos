@@ -1,0 +1,39 @@
+# Family B — contextual generic secrets (Phase 6)
+# Sensitive assignment keys; values scored + suppressed separately.
+sensitive_keys:
+  - password
+  - passwd
+  - secret
+  - client_secret
+  - clientSecret
+  - api_key
+  - apiKey
+  - api_secret
+  - apiSecret
+  - access_token
+  - accessToken
+  - auth_token
+  - authToken
+  - private_key
+  - privateKey
+  - app_secret
+  - appSecret
+  - app_key
+  - appKey
+  - token
+  - auth
+  - credentials
+  - credential
+
+# Keywords that boost nearby entropy candidates (Stage 3)
+entropy_boost_keywords:
+  - password
+  - secret
+  - token
+  - apikey
+  - api_key
+  - access_token
+  - client_secret
+  - private_key
+  - authorization
+  - bearer

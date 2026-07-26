@@ -1,0 +1,32 @@
+# Family A — database credential markers (URI matching is primarily in
+# detectors/connection_string.py; these rules catch common assignment forms).
+rules:
+  - id: mongodb_uri_keyword
+    name: MongoDB URI with credentials
+    family: connection_string
+    category: secret
+    secret_type: connection_string
+    confidence_score: 88
+    confidence_level: HIGH
+    case_sensitive: false
+    finding_title: "Exposed Database Connection String"
+    keywords:
+      - "mongodb://"
+      - "mongodb+srv://"
+    patterns:
+      - '(mongodb(?:\+srv)?://[^\s"''<>@:/]+:[^\s"''<>@]+@[^\s"''<>]+)'
+
+  - id: postgres_uri_keyword
+    name: PostgreSQL URI with credentials
+    family: connection_string
+    category: secret
+    secret_type: connection_string
+    confidence_score: 88
+    confidence_level: HIGH
+    case_sensitive: false
+    finding_title: "Exposed Database Connection String"
+    keywords:
+      - "postgres://"
+      - "postgresql://"
+    patterns:
+      - '((?:postgres|postgresql)://[^\s"''<>@:/]+:[^\s"''<>@]+@[^\s"''<>]+)'

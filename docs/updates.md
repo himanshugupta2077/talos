@@ -2,6 +2,262 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Passive Source Intelligence — Phases 11–12 + 14–16 (HTML, infra, polish)
+
+### Problem
+
+Secrets embedded only in HTML inline scripts / SPA bootstrap JSON were
+invisible to the scanner. Infrastructure leakage (internal IPs, route tables)
+had no observation path. Operator docs and Talos Helper still described
+Phases 0–10 only.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `extractors/html.py` | Inline `<script>` without `src`; JSON/`__NEXT_DATA__` bootstrap islands; caps |
+| Worker + CLI rescan | Virtual child docs under `parent_document_id`; never fetch external scripts |
+| `detectors/jwt.py` / `connection_string.py` | Compact JWT + credential-bearing DB URIs |
+| `detectors/infrastructure.py` | Observation-first IPs/hosts/routes/emails; routes aggregated (max 40) |
+| Rules | `communication.yaml`, `database.yaml`, `infrastructure.yaml`, `sensitive_info.yaml` |
+| Bridge | Still secrets-only; infra never auto-findings even if mis-scored |
+| CLI | `detections list --category …` |
+| Perf | Soft `max_scan_time_ms` budget (default off); large-body smoke test |
+| Identity | `SCANNER_VERSION` → `1.3.0` |
+
+**Not in this release:** Control Panel Source Intelligence UI (Phase 13).
+
+### Operator happy path
+
+Browse an HTML shell with an inline AWS key → PRIMARY `passive_secret`
+finding (title may include “Inline HTML”). List disclosures with
+`talos passive detections list --category infrastructure_disclosure`.
+After rule upgrades: `talos passive rescan --all`.
+
+### Tests
+
+- `tests/test_passive_html_extract.py`
+- `tests/test_passive_detectors_infra.py`
+- `tests/test_passive_detectors_jwt_conn.py`
+- `tests/test_passive_perf_rescan.py`
+
+---
+
+## Passive Source Intelligence — Phases 8–10 (findings + CLI + source maps)
+
+### Problem
+
+High-confidence detections stayed in `passive_detections` only. Operators
+could not triage secrets as Findings, control the scanner from the CLI, or
+see secrets embedded in source-map `sourcesContent`.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `talos.findings.model` | Evidence types `source_document` / `source_occurrence` / `passive_detection`; `ATTACK_DISPLAY["passive_secret"]` |
+| `talos.passive.finding_bridge` | `create_passive_secret_finding()` — cluster `PASSIVE_SECRET:<value_fingerprint>`; PRIMARY then LINKED |
+| `SourceScanWorker` | After detection persist → auto-findings when confidence ≥ `auto_finding_threshold` |
+| `talos.passive.cli` | `status`, `config`, `rules`, `documents`, `detections`, `rescan` |
+| Schema v40 | `source_documents.parent_document_id` + `logical_source_name` |
+| `extractors/sourcemap` | Virtual JS docs from `sourcesContent`; caps on count/size |
+
+**Superseded for extractors/disclosures:** Phases 11–12 landed later (see above).
+Control Panel UI remains Phase 13. Historical note: this release set
+`SCANNER_VERSION` to `1.2.0` (now `1.3.0`).
+
+### Operator happy path
+
+Browsing an app that ships a hardcoded AWS key in JS creates a PRIMARY finding
+(`attack_type=passive_secret`, verdict `EXPOSED`). The same key in a second
+bundle creates LINKED. Source maps with `sourcesContent` are scanned as child
+documents. Use `talos passive detections list` / `talos finding list` and
+`talos passive rescan --all` after rule upgrades.
+
+### Tests
+
+- `tests/test_passive_finding_bridge.py` — PRIMARY/LINKED, threshold, worker e2e
+- `tests/test_passive_cli.py` — status/config/rules/list (redacted)
+- `tests/test_passive_sourcemap.py` — extract + worker map fixture
+
+---
+
+## Passive Source Intelligence — Phases 5–7 (detectors + suppress + decoder)
+
+### Problem
+
+Phase 4 registered source documents but never ran detectors. There was no
+provider rule pack, generic assignment detection, suppression, scoring, or
+decode/rescan path — so secrets in JS/JSON never became `passive_detections`.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `rules_loader` + `rules/*.yaml` | Provider patterns (AWS, GitHub, Stripe, Google, Bearer); generic key lists |
+| `detectors/specific` + `pem` | Stage 1 structured secrets |
+| `detectors/contextual` | Stage 2 assignment-context generics |
+| `detectors/entropy` | Stage 3 high-entropy with keyword/assignment gate |
+| `decoder/pipeline` | Stages 4–5 depth-limited decode → rescan 1–2 only |
+| `scoring` + `suppress` | Deterministic confidence; drop placeholders / public test tokens |
+| `detectors/orchestrator` | Wire stages; produce `Detection` rows |
+| `SourceScanWorker` | Run orchestrator before `mark_document_scanned`; `insert_detection` |
+
+**Still no auto-findings** (Phase 8). Encodings alone never create detections.
+`SCANNER_VERSION` bumped to `1.1.0`. Synthetic fixtures only under
+`tests/fixtures/passive/`.
+
+### Operator happy path
+
+Browsing an app that ships a hardcoded AWS/GitHub/Stripe key in a captured JS
+body creates a `passive_detections` row (redacted value + fingerprint). No
+Findings UI entry until Phase 8.
+
+### Tests
+
+- `tests/test_passive_detectors_specific.py` — rules + AWS/GitHub/Stripe/PEM
+- `tests/test_passive_detectors_contextual.py` — assignment true/false positives
+- `tests/test_passive_suppress.py` / `test_passive_scoring.py`
+- `tests/test_passive_decoder.py` — base64 secret rescan, depth/size limits
+- `tests/test_passive_worker.py` — worker persists AWS detection
+
+---
+
+## Passive Source Intelligence — Phase 4 (queue + worker + FlowWorker enqueue)
+
+### Problem
+
+Phase 3 could decide *what* is source-like and how to normalize it, but nothing
+ran asynchronously after capture. There was no bounded queue, no scan daemon,
+and FlowWorker never enqueued work.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `talos.passive.queue` | `PassiveScanQueue` — bounded, drop-on-full + WARNING + counter (mirrors `FlowQueue`) |
+| `talos.passive.worker` | `SourceScanWorker` — load body by `flow_id` → candidate → classify → normalize → upsert document + occurrence; skip if already scanned at `SCANNER_VERSION` |
+| `maybe_enqueue_passive_scan` | Safe post-commit hook used by FlowWorker (never raises / never blocks) |
+| `TalosAddon` | Starts/stops `SourceScanWorker` next to `FlowWorker` |
+| `FlowWorker` | After DB commit: if config enabled + `is_source_candidate(…)`, enqueue job |
+
+**Phase 4 stores registry only:** documents marked `scanned` with empty
+detections (placeholder until Phase 5). Same body hash → occurrence only, no
+second scan. Capture continues if passive worker fails.
+
+**Not in this release:** detectors, findings bridge, CLI, UI (Phases 5–16).
+Fingerprint formula unchanged.
+
+### Operator happy path
+
+Proxy start now runs FlowWorker + SourceScanWorker. Browsing source-like
+responses (JS/HTML/JSON/…) registers `source_documents` / `source_occurrences`
+when `passive_scan_config.enabled` is true (default). No findings yet.
+
+### Tests
+
+- `tests/test_passive_worker.py` — queue drop-on-full; fake flow → document +
+  occurrence; same body twice → no second scan; FlowWorker end-to-end enqueue
+
+---
+
+## Passive Source Intelligence — Phase 3 (candidate + classifier + normalizer)
+
+### Problem
+
+Phase 2 persisted documents/detections but had no pure logic to decide which
+responses are source-like, what `SourceKind` they are, or how to turn body
+bytes into scan text.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `talos.passive.candidate` | `is_source_candidate()` — cheap Content-Type/path gate (optional empty body + magic sniff) |
+| `talos.passive.classifier` | `classify_source() → SourceKind` (CT → extension/hints → sniff) |
+| `talos.passive.normalize` | `normalize_body()` — charset / utf-8 / latin-1 → `NormalizeResult` |
+
+**Reject:** PNG/JPEG/GIF/PDF/ZIP/WASM (CT, extension, or magic); empty bodies;
+media/font CTs. **Allow:** HTML/JS/JSON/XML/text/CSS/maps; mislabeled
+`octet-stream` when path/sniff says JS/JSON.
+
+**Not in this release:** FlowWorker enqueue, queue/worker, detectors, findings
+(Phases 4–8). Fingerprint formula unchanged.
+
+### Operator happy path
+
+None user-facing yet — pure library used by Phase 4 worker.
+
+### Tests
+
+- `tests/test_passive_candidate.py` — CT/path matrix + magic rejects
+- `tests/test_passive_classifier.py` — SourceKind golden cases
+- `tests/test_passive_normalize.py` — charset / fallback / truncation
+
+---
+
+## Passive Source Intelligence — Phase 2 (schema v39 + DB CRUD)
+
+### Problem
+
+Phase 1 delivered pure types and redaction, but there was no project-DB
+persistence for source documents, occurrences, detections, or scan config.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `SCHEMA_VERSION` **39** | `source_documents`, `source_occurrences`, `passive_detections`, `passive_scan_config` |
+| `talos.passive.db` | CRUD: ensure/get/update config; upsert document; insert occurrence/detection; mark scanned/error; list + link finding |
+| Fingerprint / cluster | Unchanged: `SHA256(family + "\\0" + canonical)` → later `PASSIVE_SECRET:<fp>` |
+
+**Not in this release:** detectors, FlowWorker enqueue, findings bridge, CLI,
+or UI (Phases 3–16). Capture path untouched.
+
+### Operator happy path
+
+None user-facing yet. New projects get the tables on `init_project_db`;
+existing DBs upgrade via `migrate_project_db` (38 → 39) with a seeded
+`passive_scan_config` default row.
+
+### Tests
+
+- `tests/test_passive_db.py` — schema migrate, config, document/occurrence/detection CRUD + dedup
+- Existing: `tests/test_passive_redaction.py`, `tests/test_passive_models.py`
+
+---
+
+## Passive Source Intelligence — Phase 0–1 (package skeleton)
+
+### Problem
+
+Talos captures response bodies but has no passive, zero-HTTP path to surface
+hardcoded secrets and sensitive exposure from client-delivered sources
+(HTML/JS/JSON/…) without blocking the proxy capture path or flooding findings.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `docs/architecture.md` | Phase 0 design freeze: decision log + locked invariants |
+| `talos.passive` | Package skeleton (Phase 1): constants, models, config defaults, redaction |
+| `fingerprint_secret` / `redact_secret` | Stable cluster fingerprint + UI-safe display |
+
+**Not in this release:** schema tables, FlowWorker enqueue, detectors, findings
+bridge, CLI, or Control Panel UI (Phases 2–16).
+
+### Operator happy path
+
+None yet — library-only. `import talos.passive` exposes types and helpers for
+upcoming phases.
+
+### Tests
+
+- `tests/test_passive_redaction.py` — fingerprint contract + redaction
+- `tests/test_passive_models.py` — models, config merge, finding eligibility
+
+---
+
 ## Control Panel — Flow HTTP / table polish + IV transport-safe headers
 
 ### Problem

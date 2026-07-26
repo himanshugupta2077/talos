@@ -38,15 +38,19 @@ Design decisions:
 Dependencies:
     sqlite3, json, base64, threading, time, logging, pathlib, datetime
         talos.projects.endpoints, talos.projects.model, talos.proxy.queue,
-        talos.projects.outscope, talos.proxy.scope
+        talos.projects.outscope, talos.proxy.scope,
+        talos.passive.queue / worker (optional passive enqueue after commit)
 Data flow:
     FlowQueue.get() → flow dict → attach project_id → validate
                                      → out-of-scope safety check
                                      → normalize path/query → upsert endpoint + endpoint_roles
-                                     → INSERT INTO flows (db) → append to flows-YYYY-MM-DD.jsonl (archive)
+                                     → INSERT INTO flows (db)
+                                     → maybe enqueue PassiveScanJob (cheap gate only)
+                                     → append to flows-YYYY-MM-DD.jsonl (archive)
 Side effects:
     - Writes to project SQLite database.
     - Creates/appends to JSONL archive files under <data_dir>/archive/.
+    - Optionally enqueues passive scan jobs (never blocks; never raises).
     - Logs dropped (invalid) flows at WARNING level.
 """
 
@@ -61,6 +65,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Optional
 
+from talos.passive.queue import PassiveScanQueue
+from talos.passive.worker import maybe_enqueue_passive_scan
 from talos.projects.endpoints import NormalizedFlowURL, normalize_flow_url
 from talos.projects.model import Project
 from talos.projects.outscope import load_prefix_set
@@ -92,6 +98,7 @@ class FlowWorker:
     Fields:
         _project        — Active project supplying db_path and archive_dir.
         _queue          — Shared FlowQueue drained by this worker.
+        _passive_queue  — Optional PassiveScanQueue for source intelligence enqueue.
         _out_of_scope   — Frozenset of out-of-scope Basic Scope prefixes; loaded once
                             at init as a safety backstop — the proxy addon is primary.
         _stop_event     — Set to signal the run loop to exit cleanly.
@@ -108,11 +115,19 @@ class FlowWorker:
         start() must be called before any flows are enqueued to avoid drops.
     """
 
-    def __init__(self, project: Project, queue: FlowQueue) -> None:
+    def __init__(
+        self,
+        project: Project,
+        queue: FlowQueue,
+        passive_queue: Optional[PassiveScanQueue] = None,
+    ) -> None:
         # Why store project, not just paths: may need project metadata later
         # without reloading from registry.
         self._project = project
         self._queue = queue
+        # Optional: when set, post-commit source-candidate flows enqueue a
+        # PassiveScanJob. Capture path never blocks on this queue.
+        self._passive_queue: Optional[PassiveScanQueue] = passive_queue
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -275,9 +290,10 @@ class FlowWorker:
         # DB write with retry — handles transient lock contention under WAL.
         # Does not retry sqlite3.IntegrityError (duplicate key) — those are bugs.
         persisted = False
+        endpoint_id: Optional[str] = None
         for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
             try:
-                _persist_db(enriched, self._project.db_path)
+                endpoint_id = _persist_db(enriched, self._project.db_path)
                 persisted = True
                 break
             except sqlite3.IntegrityError:
@@ -311,6 +327,26 @@ class FlowWorker:
             # Do not write archive for a flow with no DB record; stores must stay
             # consistent (archive is ground truth, not a retry queue).
             return
+
+        # Passive Source Intelligence: cheap gate + enqueue only (never blocks /
+        # never raises into capture). Body is reloaded by SourceScanWorker.
+        try:
+            content_type = _extract_response_content_type(
+                enriched.get("response_headers", {})
+            )
+            maybe_enqueue_passive_scan(
+                passive_queue=self._passive_queue,
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                flow=enriched,
+                endpoint_id=endpoint_id,
+                content_type=content_type,
+            )
+        except Exception:
+            logger.exception(
+                "Passive enqueue wrapper failed — flow_id=%s — capture unaffected",
+                enriched.get("flow_id"),
+            )
 
         # Archive failure is non-fatal: DB is the authoritative store.
         try:

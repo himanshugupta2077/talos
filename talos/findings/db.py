@@ -100,6 +100,11 @@ def build_cluster_key(
         bac        → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
         other      → <MODULE>:<endpoint_id>
 
+    Passive secret findings do **not** use this helper.  They supply their
+    own cluster_key ``PASSIVE_SECRET:<value_fingerprint>`` via
+    ``talos.passive.finding_bridge.create_passive_secret_finding`` so that
+    clustering is by secret fingerprint, not endpoint.
+
     Input:
         attack_module    — 'bac' | 'auth_test' | 'unauth' | …
         endpoint_id      — target endpoint UUID; if missing, returns None

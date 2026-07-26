@@ -1,0 +1,5 @@
+// Synthetic truncated PEM shape for detector tests (not a real key)
+const KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKB
+wIiH0j8lXEXAMPLEONLYNOREALKEYMATERIALHERE0000000000000000000000
+-----END PRIVATE KEY-----`;

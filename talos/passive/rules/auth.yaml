@@ -1,0 +1,17 @@
+# Family A — auth hardcodes (conservative; noise-sensitive)
+rules:
+  - id: bearer_token_literal
+    name: Hardcoded Bearer Token
+    family: provider
+    category: secret
+    secret_type: bearer_token
+    confidence_score: 75
+    confidence_level: HIGH
+    case_sensitive: true
+    finding_title: "Exposed Bearer Token"
+    keywords:
+      - "Bearer "
+      - "bearer "
+    patterns:
+      # Quoted or assignment-ish "Bearer <long token>" — min 32 to cut noise
+      - '(?:["'']|Authorization\s*[:=]\s*["'']?)Bearer\s+([A-Za-z0-9_\-.=+/]{32,})["'']?'

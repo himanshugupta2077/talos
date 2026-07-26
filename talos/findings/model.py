@@ -110,6 +110,15 @@ EVIDENCE_TYPE_MODULE                  = "module"
 EVIDENCE_TYPE_ROLE                    = "role"
 """The role that captured/owns the flow under test."""
 
+EVIDENCE_TYPE_SOURCE_DOCUMENT         = "source_document"
+"""Passive scan: source_documents row (body_hash identity)."""
+
+EVIDENCE_TYPE_SOURCE_OCCURRENCE       = "source_occurrence"
+"""Passive scan: source_occurrences row (URL/flow sighting)."""
+
+EVIDENCE_TYPE_PASSIVE_DETECTION       = "passive_detection"
+"""Passive scan: passive_detections row (scored secret observation)."""
+
 # ------------------------------------------------------------------ #
 # Timeline actor constants                                             #
 # ------------------------------------------------------------------ #
@@ -137,7 +146,8 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
 # ------------------------------------------------------------------ #
 
 ATTACK_DISPLAY: dict[str, str] = {
-    "bac":       "Broken Access Control",
-    "auth_test": "Authentication Bypass",
-    "unauth":    "Unauthenticated Execution",
+    "bac":            "Broken Access Control",
+    "auth_test":      "Authentication Bypass",
+    "unauth":         "Unauthenticated Execution",
+    "passive_secret": "Client-Side Secret Exposure",
 }

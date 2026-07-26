@@ -1,0 +1,37 @@
+# Family D — infrastructure / disclosure (observation-first).
+# Matching is implemented in detectors/infrastructure.py (aggregation + caps).
+# This pack documents detector ids for CLI `rules list` and future config.
+rules:
+  - id: internal_ip
+    name: Internal / RFC1918 IP Address
+    family: infra
+    category: infrastructure_disclosure
+    secret_type: internal_ip
+    confidence_score: 45
+    confidence_level: OBSERVATION_ONLY
+    enabled: false
+    finding_title: ""
+    keywords:
+      - "10."
+      - "192.168."
+      - "172.16."
+    patterns: []
+    description: "Handled by detectors/infrastructure.py — observation only"
+
+  - id: sensitive_routes_aggregate
+    name: Sensitive / API Routes (Aggregated)
+    family: infra
+    category: infrastructure_disclosure
+    secret_type: sensitive_route
+    confidence_score: 40
+    confidence_level: OBSERVATION_ONLY
+    enabled: false
+    finding_title: ""
+    keywords:
+      - "/api/"
+      - "/admin/"
+      - "/internal/"
+    patterns: []
+    description: >
+      Handled by detectors/infrastructure.py with per-document route cap.
+      Future: JS Endpoint Extraction can consume routes metadata.

@@ -334,12 +334,26 @@ Endpoint Intelligence
     ├── Authentication Intel   (auth artifacts, extractor results, session health)
     ├── Role Intelligence      (which roles hit this endpoint, appears_in_roles per param)
     ├── Response Intelligence  (status codes, content-types, length ranges)
-    └── Reflection Intelligence (passive: values seen in responses)
+    ├── Reflection Intelligence (passive: values seen in responses)
+    └── Source Intelligence    (passive: secrets / disclosures in response bodies)
 ```
 
 This layer answers only: **"What have we observed?"**
 
-For active verification: use the Input Validation Engine.
+### Source Intelligence (client-side secrets)
+
+Talos scans captured **client-delivered** response bodies (HTML, JS, JSON, CSS,
+source maps) on a separate `SourceScanWorker` thread — never on the proxy
+capture path, never via outbound “is this key valid?” checks.
+
+- High-confidence secrets become Findings (`attack_type=passive_secret`,
+  verdict `EXPOSED`), clustered by secret fingerprint (`PRIMARY` / `LINKED`).
+- Infrastructure disclosures (internal IPs, route tables, …) stay as
+  detections for review; they do not auto-create findings by default.
+- CLI: `talos passive status|config|rules|documents|detections|rescan`.
+
+For active verification: use the Input Validation Engine (HTTP probes), not
+the passive engine.
 
 ## Parameter Intelligence
 

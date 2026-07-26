@@ -1,0 +1,7 @@
+{
+  "payment": {
+    "provider": "stripe",
+    "note": "Key assembled in tests — see tests/test_passive_detectors_specific.py (_stripe_fixture_body). Avoids GitHub push-protection false positives on synthetic sk_* shapes.",
+    "secretKey": "SEE_TEST_HELPER"
+  }
+}

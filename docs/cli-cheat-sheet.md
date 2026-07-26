@@ -434,6 +434,31 @@ talos finding group create "Client Report"
 talos finding group add "Client Report" <finding_uuid>
 talos finding report --group "Client Report" > client-report.md
 
+# 8b. Passive source intelligence (client-side secrets + disclosures)
+# Zero-HTTP scan of captured HTML/JS/JSON/CSS/maps after FlowWorker commit.
+# HIGH/CONFIRMED secrets → findings (cluster PASSIVE_SECRET:<fingerprint>).
+# Infrastructure disclosures stay in passive_detections only (no auto-finding).
+talos passive status
+talos passive config show
+talos passive config set enabled true
+talos passive config set auto_finding_threshold HIGH
+talos passive config set max_document_size 2000000
+talos passive rules list
+talos passive documents list
+talos passive documents list --kind javascript
+talos passive documents show <document_id>
+talos passive detections list
+talos passive detections list --confidence HIGH
+talos passive detections list --category secret
+talos passive detections list --category infrastructure_disclosure
+talos passive detections list --type aws_access_key
+talos passive detections show <detection_id>
+talos passive rescan --all
+talos passive rescan --all --force
+talos passive rescan --document <document_id>
+talos passive rescan --flow <flow_id>
+# After SCANNER_VERSION bumps, rescan --all re-runs detectors on old documents.
+
 # 9. Unauthenticated Execution
 talos attack unauth run
 talos attack unauth run --technique baseline

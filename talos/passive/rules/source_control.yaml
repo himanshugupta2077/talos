@@ -1,0 +1,34 @@
+# Family A — source control tokens
+rules:
+  - id: github_pat
+    name: GitHub Personal Access Token
+    family: provider
+    category: secret
+    secret_type: github_pat
+    confidence_score: 95
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed GitHub Personal Access Token"
+    keywords:
+      - "ghp_"
+      - "gho_"
+      - "ghu_"
+      - "ghs_"
+      - "ghr_"
+    patterns:
+      # Classic PAT prefixes + 36 alnum (GitHub documented shape)
+      - '(?<![A-Za-z0-9_])((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})(?![A-Za-z0-9])'
+
+  - id: gitlab_pat
+    name: GitLab Personal Access Token
+    family: provider
+    category: secret
+    secret_type: gitlab_pat
+    confidence_score: 90
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed GitLab Personal Access Token"
+    keywords:
+      - "glpat-"
+    patterns:
+      - '(?<![A-Za-z0-9_-])(glpat-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])'

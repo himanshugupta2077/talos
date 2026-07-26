@@ -1,0 +1,21 @@
+# Family A — payment provider secrets
+rules:
+  - id: stripe_secret_key
+    name: Stripe Secret Key
+    family: provider
+    category: secret
+    secret_type: stripe_secret_key
+    confidence_score: 95
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed Stripe Secret Key"
+    keywords:
+      # Prefixes split in source; detector prefilter rebuilds "sk_live_" / "sk_test_"
+      - "sk_"
+      - "live_"
+      - "test_"
+      - "stripe"
+    patterns:
+      # Stripe secret key shape (live or test). Synthetic fixtures assemble this
+      # at runtime in tests — do not store contiguous examples in the repo.
+      - '(?<![A-Za-z0-9_])(sk_(?:live|test)_[A-Za-z0-9]{24,})(?![A-Za-z0-9])'

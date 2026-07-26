@@ -1,0 +1,10 @@
+{
+  "version": 3,
+  "file": "bundle.js",
+  "sources": ["webpack://app/src/config.js", "webpack://app/src/empty.js"],
+  "sourcesContent": [
+    "// Synthetic fixture — NOT a live credential\nexport const accessKeyId = \"AKIAJFAKESECRET00001\";\nexport const region = \"us-east-1\";\n",
+    "export const noop = () => {};\n"
+  ],
+  "mappings": "AAAA"
+}

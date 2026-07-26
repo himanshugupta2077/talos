@@ -48,6 +48,7 @@ from talos.projects.flow_cli import run_flow_cli
 from talos.scheduler.cli import run_scheduler_cli
 from talos.input_validation.cli import run_input_validation_cli
 from talos.findings.cli import run_finding_cli
+from talos.passive.cli import run_passive_cli
 from talos.configuration.cli import run_config_cli
 
 # Structured logging to stderr; keeps stdout clean for parseable output.
@@ -180,6 +181,8 @@ def main(argv: list[str] | None = None) -> None:
         run_flow_cli(manager, rest)
     elif subcommand == "finding":
         run_finding_cli(manager, rest)
+    elif subcommand == "passive":
+        run_passive_cli(manager, rest)
     else:
         cli_error(f"Unknown command: '{subcommand}'.", exit_code=None)
         _print_usage()
@@ -418,7 +421,17 @@ def _print_usage() -> None:
         "    duplicate <uuid> --of <uuid>\n"
         "    note set|clear <uuid>      Free-form analyst notes (set via stdin)\n"
         "    group create|add|remove|list\n"
-        "    report <uuid> | report --group <group>\n"
+        "    report <uuid> | report --group <group>\n\n"
+        "  passive\n"
+        "    status                     Document/detection/finding counts\n"
+        "    config show|set            Passive scan settings\n"
+        "    rules                      List loaded detector YAML packs\n"
+        "    documents list|show        Source document inventory\n"
+        "    detections list|show       Scored detections (redacted)\n"
+        "    detections list --category secret|infrastructure_disclosure\n"
+        "    rescan --all|--document|--flow [--force]\n"
+        "                               Re-run detectors after rule upgrades\n"
+        "                               (HTML inline + source maps included)\n"
     )
 
 

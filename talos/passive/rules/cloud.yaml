@@ -1,0 +1,32 @@
+# Family A — cloud provider structured secrets (HIGH / CONFIRMED by default)
+# Synthetic fixtures only in tests — never real live credentials.
+rules:
+  - id: aws_access_key_id
+    name: AWS Access Key ID
+    family: provider
+    category: secret
+    secret_type: aws_access_key
+    confidence_score: 95
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed AWS Access Key ID"
+    keywords:
+      - "AKIA"
+      - "ASIA"
+    patterns:
+      # AKIA/ASIA + 16 uppercase alnum (AWS published format)
+      - '(?<![A-Z0-9])((?:AKIA|ASIA)[0-9A-Z]{16})(?![A-Z0-9])'
+
+  - id: google_api_key
+    name: Google API Key
+    family: provider
+    category: secret
+    secret_type: google_api_key
+    confidence_score: 85
+    confidence_level: HIGH
+    case_sensitive: true
+    finding_title: "Exposed Google API Key (Unverified)"
+    keywords:
+      - "AIza"
+    patterns:
+      - '(?<![A-Za-z0-9_-])(AIza[0-9A-Za-z_-]{35})(?![A-Za-z0-9_-])'

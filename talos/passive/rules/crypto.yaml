@@ -1,0 +1,21 @@
+# Family A — crypto material markers (multi-line handled in pem.py;
+# single-line PEM begin markers still useful as keyword prefilter).
+rules:
+  - id: private_key_pem_marker
+    name: PEM Private Key Block
+    family: pem
+    category: secret
+    secret_type: private_key_pem
+    confidence_score: 95
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    enabled: false
+    # Multi-line PEM is handled by detectors/pem.py (this rule is documentation /
+    # keyword index only; enabled=false so specific.py does not double-match).
+    finding_title: "Exposed Private Key (PEM)"
+    keywords:
+      - "BEGIN PRIVATE KEY"
+      - "BEGIN RSA PRIVATE KEY"
+      - "BEGIN OPENSSH PRIVATE KEY"
+      - "BEGIN EC PRIVATE KEY"
+    patterns: []

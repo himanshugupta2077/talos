@@ -62,6 +62,9 @@ from talos.projects.db import seed_default_context
 from talos.projects.manager import ProjectManager, NoActiveProject, ProjectNotFound
 from talos.projects.model import Project, ScopeConstraints
 from talos.projects.outscope import load_prefix_set
+from talos.passive.db import get_config as get_passive_config
+from talos.passive.queue import PassiveScanQueue
+from talos.passive.worker import SourceScanWorker
 from talos.proxy.scope import is_url_in_scope
 from talos.proxy.queue import flow_queue
 from talos.url_identity import UrlIdentityError, parse_request_url
@@ -89,6 +92,8 @@ class TalosAddon:
         _role_id        — UUID of the active role at proxy start; stamped on every flow.
         _module_id      — UUID of the active module at proxy start; stamped on every flow.
         _worker         — FlowWorker thread started at addon init; stopped in done().
+        _passive_queue  — Bounded PassiveScanQueue for SourceScanWorker.
+        _passive_worker — SourceScanWorker daemon; started after FlowWorker.
 
     Note:
         ReplayScheduler no longer runs inside the proxy process. Start it with
@@ -154,15 +159,45 @@ class TalosAddon:
         self._role_id: str = get_active_role_id(project.db_path)
         self._module_id: str = get_active_module_id(project.db_path)
 
+        # Passive scan queue + worker: offloads source registration after FlowWorker
+        # commits a flow. Capture path only does a cheap candidate gate + put.
+        try:
+            passive_cfg = get_passive_config(project.db_path)
+            queue_max = int(passive_cfg.queue_maxsize)
+        except Exception:
+            logger.exception(
+                "Failed to load passive_scan_config — using default queue size"
+            )
+            queue_max = 500
+        self._passive_queue = PassiveScanQueue(maxsize=queue_max)
+
         # Start the worker thread. Must happen after the queue is ready so no
         # flows are enqueued before the worker is consuming.
-        self._worker = FlowWorker(project=project, queue=flow_queue)
+        self._worker = FlowWorker(
+            project=project,
+            queue=flow_queue,
+            passive_queue=self._passive_queue,
+        )
         self._worker.start()
+
+        # Passive Source Intelligence worker — after FlowWorker so jobs land
+        # against committed flows. Failures here must not block capture.
+        self._passive_worker = SourceScanWorker(
+            project=project,
+            queue=self._passive_queue,
+        )
+        try:
+            self._passive_worker.start()
+        except Exception:
+            logger.exception(
+                "SourceScanWorker failed to start — capture continues without "
+                "passive scan"
+            )
 
         logger.info(
             "Proxy addon loaded. project=%s scope_entries=%d "
             "out_of_scope_prefixes=%d store_bodies=%s max_body=%d drop_headers=%d "
-            "http_engine=%s http_rules=%d",
+            "http_engine=%s http_rules=%d passive_queue_max=%d",
             project.id,
             len(self._scope),
             len(self._out_of_scope),
@@ -171,17 +206,23 @@ class TalosAddon:
             len(self._drop_headers),
             "on" if self._http_engine.enabled else "off",
             len(self._http_engine.rules),
+            queue_max,
         )
 
     def done(self) -> None:
         """
         Purpose:
             Called by mitmproxy when the addon session ends (proxy shutting down).
-            Signals the worker to stop and waits for it to drain the queue.
+            Signals workers to stop and waits for them to drain their queues.
         Side effects:
-            - Stops the worker thread; flushes remaining flows to DB + archive.
+            - Stops FlowWorker (DB + archive drain).
+            - Stops SourceScanWorker (passive queue drain).
         """
         self._worker.stop()
+        try:
+            self._passive_worker.stop()
+        except Exception:
+            logger.exception("SourceScanWorker stop failed")
 
     def request(self, flow: http.HTTPFlow) -> None:
         """

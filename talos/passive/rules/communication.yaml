@@ -1,0 +1,63 @@
+# Family A — communication / messaging provider tokens
+# Synthetic fixtures only — never real live credentials.
+rules:
+  - id: slack_token
+    name: Slack API Token
+    family: provider
+    category: secret
+    secret_type: slack_token
+    confidence_score: 92
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed Slack Token"
+    keywords:
+      - "xoxb-"
+      - "xoxp-"
+      - "xoxa-"
+      - "xoxr-"
+      - "xapp-"
+    patterns:
+      - '(?<![A-Za-z0-9_-])((?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,})(?![A-Za-z0-9_-])'
+
+  - id: slack_webhook
+    name: Slack Incoming Webhook URL
+    family: provider
+    category: secret
+    secret_type: slack_webhook
+    confidence_score: 90
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed Slack Webhook URL"
+    keywords:
+      - "hooks.slack.com"
+    patterns:
+      - '(https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+)'
+
+  - id: twilio_api_key
+    name: Twilio API Key SID
+    family: provider
+    category: secret
+    secret_type: twilio_api_key
+    confidence_score: 85
+    confidence_level: HIGH
+    case_sensitive: true
+    finding_title: "Exposed Twilio API Key"
+    keywords:
+      - "SK"
+    patterns:
+      # Twilio API Key SIDs: SK + 32 hex
+      - '(?<![A-Za-z0-9])(SK[0-9a-fA-F]{32})(?![A-Za-z0-9])'
+
+  - id: sendgrid_api_key
+    name: SendGrid API Key
+    family: provider
+    category: secret
+    secret_type: sendgrid_api_key
+    confidence_score: 95
+    confidence_level: CONFIRMED_PATTERN
+    case_sensitive: true
+    finding_title: "Exposed SendGrid API Key"
+    keywords:
+      - "SG."
+    patterns:
+      - '(?<![A-Za-z0-9_-])(SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})(?![A-Za-z0-9_-])'
