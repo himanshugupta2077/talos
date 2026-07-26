@@ -80,3 +80,33 @@ def test_good_secret_not_suppressed():
         matched_key="password",
     )
     assert not suppressed
+
+
+def test_url_and_hostpath_suppressed():
+    for v in (
+        "https://api.github.com/user",
+        "//api.github.com/user",
+        "api.github.com/user",
+        "https://example.com/v1/keys",
+    ):
+        suppressed, reason = should_suppress(v, detector_family="entropy")
+        assert suppressed, v
+        assert reason == "url_or_hostpath"
+
+
+def test_connection_string_uris_not_suppressed_as_urls():
+    """DB URIs and HTTP userinfo URLs are secrets, not URL noise."""
+    for v in (
+        "postgres://user:s3cret@db.internal:5432/app",
+        "mysql://root:pass@localhost:3306/db",
+        "https://user:pass@example.com/path",
+    ):
+        suppressed, reason = should_suppress(v, detector_family="entropy")
+        assert not suppressed, (v, reason)
+
+
+def test_angle_placeholder_suppressed():
+    for v in ("<secret>", "<YOUR_API_KEY>", "<token>"):
+        suppressed, reason = should_suppress(v, detector_family="contextual")
+        assert suppressed, v
+        assert reason == "angle_placeholder"

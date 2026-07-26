@@ -2,6 +2,36 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Secret Detection Control Panel (Phase 13)
+
+### Problem
+
+Operators could only drive passive secret detection from the CLI. There was no
+Control Panel surface for status, detections, documents, rules, config, or rescan.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `GET/POST /api/passive/*` | Read via `talos.passive.db`; writes via `talos passive …` CLI |
+| Secret Detection page | Tabs: Overview, Detections, Documents, Rules, Settings |
+| Detail routes | Detection + document dossiers with flow/finding deep links |
+| Console command tree | Full `passive` group for fallback |
+| Dashboard / Flow / Findings | Compact card, flow “Source scan” panel, evidence deep links |
+
+**Parity:** every `talos passive` subcommand is reachable from the UI or Console.
+
+### Operator happy path
+
+Capture with proxy → open **Secret Detection** → triage redacted detections →
+open finding for HIGH secrets → rescan after rule upgrades.
+
+### Tests
+
+- `talos-control-panel/backend/tests/test_passive_routes.py`
+
+---
+
 ## Passive Source Intelligence — Phases 11–12 + 14–16 (HTML, infra, polish)
 
 ### Problem
@@ -25,7 +55,7 @@ Phases 0–10 only.
 | Perf | Soft `max_scan_time_ms` budget (default off); large-body smoke test |
 | Identity | `SCANNER_VERSION` → `1.3.0` |
 
-**Not in this release:** Control Panel Source Intelligence UI (Phase 13).
+**Not in this release:** Control Panel Secret Detection UI (Phase 13) — now shipped.
 
 ### Operator happy path
 

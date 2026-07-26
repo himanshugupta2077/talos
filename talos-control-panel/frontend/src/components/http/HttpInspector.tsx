@@ -1,23 +1,24 @@
 /**
  * HTTP request/response viewer for Flow detail.
  *
- * Tabs (both sides): Pretty (default) · Raw · Params (request) · JWT (request).
+ * Tabs (both sides): Pretty (default) · Raw · Params (request) · Encoded.
  * Pretty shows start-line, all headers, and pretty-printed body. Wrap is always on.
+ * Encoded folds every JWT / JWE / Basic auth / base64 blob found in the message.
  */
 
 import { useMemo, useState } from "react";
 import HttpRawView from "./HttpRawView";
 import HttpPrettyView from "./HttpPrettyView";
-import HttpJwtView from "./HttpJwtView";
+import HttpEncodedView from "./HttpEncodedView";
 import HttpParamsView from "./HttpParamsView";
 import {
-  findJwt,
+  findEncodedArtifacts,
   parseBodyParams,
   parseQueryParams,
 } from "./parseHttp";
 
-export type RequestTab = "pretty" | "raw" | "params" | "jwt";
-export type ResponseTab = "pretty" | "raw";
+export type RequestTab = "pretty" | "raw" | "params" | "encoded";
+export type ResponseTab = "pretty" | "raw" | "encoded";
 
 interface SideProps {
   startLine: string;
@@ -35,12 +36,13 @@ const REQ_TABS: { id: RequestTab; label: string }[] = [
   { id: "pretty", label: "Pretty" },
   { id: "raw", label: "Raw" },
   { id: "params", label: "Params" },
-  { id: "jwt", label: "JWT" },
+  { id: "encoded", label: "Encoded" },
 ];
 
 const RESP_TABS: { id: ResponseTab; label: string }[] = [
   { id: "pretty", label: "Pretty" },
   { id: "raw", label: "Raw" },
+  { id: "encoded", label: "Encoded" },
 ];
 
 export default function HttpInspector(props: SideProps) {
@@ -48,9 +50,27 @@ export default function HttpInspector(props: SideProps) {
   const [reqTab, setReqTab] = useState<RequestTab>("pretty");
   const [respTab, setRespTab] = useState<ResponseTab>("pretty");
 
-  const jwt = useMemo(
-    () => (isReq ? findJwt(props.headers) : null),
-    [isReq, props.headers]
+  const encoded = useMemo(
+    () =>
+      findEncodedArtifacts({
+        headers: props.headers,
+        cookies: props.cookies,
+        query: isReq ? props.query : undefined,
+        body: props.body,
+        bodyEncoding: props.bodyEncoding,
+        contentType: props.contentType,
+        side: props.side,
+      }),
+    [
+      isReq,
+      props.headers,
+      props.cookies,
+      props.query,
+      props.body,
+      props.bodyEncoding,
+      props.contentType,
+      props.side,
+    ]
   );
 
   const queryParams = useMemo(
@@ -79,10 +99,15 @@ export default function HttpInspector(props: SideProps) {
               type="button"
               className={`btn btn-xs join-item ${tab === t.id ? "btn-active" : ""}`}
               onClick={() =>
-                isReq ? setReqTab(t.id as RequestTab) : setRespTab(t.id as ResponseTab)
+                isReq
+                  ? setReqTab(t.id as RequestTab)
+                  : setRespTab(t.id as ResponseTab)
               }
             >
               {t.label}
+              {t.id === "encoded" && encoded.length > 0 && (
+                <span className="badge badge-ghost badge-xs ml-1">{encoded.length}</span>
+              )}
             </button>
           ))}
         </div>
@@ -113,7 +138,7 @@ export default function HttpInspector(props: SideProps) {
         <HttpParamsView query={queryParams} bodyParams={bodyParams} />
       )}
 
-      {isReq && tab === "jwt" && <HttpJwtView jwt={jwt} />}
+      {tab === "encoded" && <HttpEncodedView artifacts={encoded} />}
     </div>
   );
 }

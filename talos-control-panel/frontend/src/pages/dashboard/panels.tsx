@@ -628,6 +628,63 @@ export function HttpRulesPanel({ data }: { data: ProjectDashboard }) {
   );
 }
 
+export function PassivePanel({ data }: { data: ProjectDashboard }) {
+  const p = data.passive || {
+    enabled: false,
+    scanner_version: null,
+    documents: 0,
+    documents_pending: 0,
+    detections: 0,
+    detections_with_finding: 0,
+    stale_documents: 0,
+  };
+  return (
+    <PanelShell
+      title="Secret Detection"
+      to="/secret-detection"
+      badge={
+        <StatusDot
+          tone={
+            !p.enabled
+              ? "idle"
+              : p.stale_documents > 0
+                ? "warn"
+                : p.detections_with_finding > 0
+                  ? "ok"
+                  : "ok"
+          }
+          label={p.enabled ? "scan on" : "scan off"}
+        />
+      }
+    >
+      <div className="grid grid-cols-4 gap-2">
+        <Stat value={p.documents} label="Docs" size="sm" />
+        <Stat value={p.detections} label="Detections" size="sm" />
+        <Stat
+          value={p.detections_with_finding}
+          label="Findings"
+          size="sm"
+          accent={p.detections_with_finding > 0 ? "success" : undefined}
+        />
+        <Stat
+          value={p.stale_documents}
+          label="Stale"
+          size="sm"
+          accent={p.stale_documents > 0 ? "warning" : undefined}
+        />
+      </div>
+      <div className="text-xs text-base-content/60">
+        {p.documents_pending > 0 && (
+          <span className="mr-2">{p.documents_pending} pending</span>
+        )}
+        <span className="mono text-[11px]">
+          scanner {p.scanner_version || "—"}
+        </span>
+      </div>
+    </PanelShell>
+  );
+}
+
 export function TalosConfigPanel({ data }: { data: ProjectDashboard }) {
   const c = data.talos_config;
   const flags = c.key_flags || {};

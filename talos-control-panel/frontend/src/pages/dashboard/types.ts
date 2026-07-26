@@ -138,6 +138,16 @@ export interface DashboardTalosConfig {
   key_flags: Record<string, unknown>;
 }
 
+export interface DashboardPassive {
+  enabled: boolean;
+  scanner_version: string | null;
+  documents: number;
+  documents_pending: number;
+  detections: number;
+  detections_with_finding: number;
+  stale_documents: number;
+}
+
 export interface ProjectDashboard {
   project: DashboardProject;
   readiness: DashboardReadiness;
@@ -149,4 +159,5 @@ export interface ProjectDashboard {
   session_health: DashboardSessionRole[];
   http_rules: DashboardHttpRules;
   talos_config: DashboardTalosConfig;
+  passive?: DashboardPassive;
 }

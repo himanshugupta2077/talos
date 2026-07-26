@@ -73,6 +73,16 @@ _EMPTY_ENDPOINTS = {
     },
 }
 
+_EMPTY_PASSIVE = {
+    "enabled": False,
+    "scanner_version": None,
+    "documents": 0,
+    "documents_pending": 0,
+    "detections": 0,
+    "detections_with_finding": 0,
+    "stale_documents": 0,
+}
+
 _EMPTY_HTTP = {
     "enabled": True,
     "summary": {
@@ -627,6 +637,25 @@ def _talos_config_block(project_id: str) -> dict[str, Any]:
         return {"source_counts": {}, "sections": [], "key_flags": {}}
 
 
+def _passive_block(project_id: str, db_path: Path) -> dict[str, Any]:
+    """Secret Detection summary for the mission dashboard."""
+    try:
+        from .routers.passive import build_status
+
+        status = build_status(project_id)
+        return {
+            "enabled": bool(status.get("enabled")),
+            "scanner_version": status.get("scanner_version"),
+            "documents": int(status.get("documents") or 0),
+            "documents_pending": int(status.get("documents_pending") or 0),
+            "detections": int(status.get("detections") or 0),
+            "detections_with_finding": int(status.get("detections_with_finding") or 0),
+            "stale_documents": int(status.get("stale_documents") or 0),
+        }
+    except Exception:
+        return dict(_EMPTY_PASSIVE)
+
+
 def _proxy_block() -> dict[str, Any]:
     stopped = {
         "state": "stopped",
@@ -728,6 +757,7 @@ def project_dashboard(project_id: str) -> dict[str, Any] | None:
     proxy = _proxy_block()
     http_rules = _http_rules_block(project_id) if exists else dict(_EMPTY_HTTP)
     talos_config = _talos_config_block(project_id)
+    passive = _passive_block(project_id, db_path) if exists else dict(_EMPTY_PASSIVE)
 
     proxy_running = bool(proxy.get("running"))
     any_session_degraded = any(r.get("health_degraded") for r in session_health)
@@ -782,4 +812,5 @@ def project_dashboard(project_id: str) -> dict[str, Any] | None:
         "session_health": session_health,
         "http_rules": http_rules,
         "talos_config": talos_config,
+        "passive": passive,
     }

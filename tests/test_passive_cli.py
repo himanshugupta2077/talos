@@ -38,7 +38,8 @@ class _FakeManager:
     def __init__(self, project: Project) -> None:
         self._project = project
 
-    def get_active_project(self) -> Project:
+    def active(self) -> Project:
+        """Match ProjectManager.active() resolution surface."""
         return self._project
 
 
@@ -85,6 +86,9 @@ def test_config_show_and_set(project: Project):
     _run(mgr, "config", "set", "auto_finding_threshold", "OFF")
     cfg = get_config(project.db_path)
     assert cfg.auto_finding_threshold == "OFF"
+    _run(mgr, "config", "set", "max_scan_time_ms", "2500")
+    cfg = get_config(project.db_path)
+    assert cfg.max_scan_time_ms == 2500
 
 
 def test_rules_list(project: Project):

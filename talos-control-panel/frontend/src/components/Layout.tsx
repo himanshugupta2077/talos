@@ -25,6 +25,7 @@ type IconName =
   | "scheduler"
   | "attack"
   | "input"
+  | "source"
   | "findings"
   | "console"
   | "config"
@@ -65,6 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/scheduler", label: "Scheduler", icon: "scheduler" },
       { to: "/attack", label: "Attack", icon: "attack" },
       { to: "/input-validation", label: "Input Validation", icon: "input" },
+      { to: "/secret-detection", label: "Secret Detection", icon: "source" },
     ],
   },
   {
@@ -163,6 +165,13 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M9 12 11 14l4-4" />
       <path d="M12 3 4 7v5c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V7l-8-4z" />
+    </>
+  ),
+  source: (
+    <>
+      <circle cx="11" cy="11" r="6" />
+      <path d="M16 16l4 4" />
+      <path d="M9 11h4M11 9v4" />
     </>
   ),
   findings: (

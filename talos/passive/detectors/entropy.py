@@ -26,8 +26,11 @@ from talos.passive.detectors.base import build_raw_match, shannon_entropy
 from talos.passive.models import RawMatch, SourceDocument
 from talos.passive.rules_loader import RuleIndex, get_rule_index
 from talos.passive.scoring import is_high_entropy
+from talos.passive.suppress import looks_like_url_or_hostpath
 
-# Quoted or bare high-entropy-looking tokens
+# Quoted or bare high-entropy-looking tokens.
+# Note: charset includes / and . for base64/url-safe alphabets; URL-shaped
+# matches are rejected after extract via looks_like_url_or_hostpath.
 _CANDIDATE = re.compile(
     r"(?:"
     r"\"([A-Za-z0-9+/=_\-.]{16,128})\""
@@ -116,6 +119,10 @@ class EntropyDetector:
                     v_start, v_end = m.start(i), m.end(i)
                     break
             if not value or len(value) < self._min_length:
+                continue
+            # URLs / host-paths are never secret material for this stage
+            # (e.g. //api.github.com/user next to Authorization: token).
+            if looks_like_url_or_hostpath(value):
                 continue
             if not is_high_entropy(
                 value,

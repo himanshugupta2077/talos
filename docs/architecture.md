@@ -717,7 +717,7 @@ noise. Package: `talos.passive` (Phases 0–12 + 14–16 landed in core CLI:
 types/config/redaction + schema v39/v40 CRUD + candidate/classify/normalize +
 queue/worker + detector pipeline + findings bridge + CLI + source-map + HTML
 extractors + infrastructure disclosures + soft scan budget + docs). Control
-Panel UX is Phase 13 (separate).
+Panel UX is Phase 13 (**Done** — Secret Detection workspace).
 
 ### Decision log (Phase 0 — design freeze)
 
@@ -788,7 +788,7 @@ SourceScanWorker
 | 10 | Source map `sourcesContent` extractor | **Done** |
 | 11 | HTML inline `<script>` + bootstrap JSON extractors | **Done** |
 | 12 | Infrastructure / disclosure detectors (observation-first) | **Done** |
-| 13 | Control Panel detections API + Findings UX grouping | Pending (UI) |
+| 13 | Control Panel detections API + Findings UX grouping | **Done** (Secret Detection workspace) |
 | 14 | Soft scan budget + performance hardening | **Done** (core) |
 | 15 | Rescan productization + scanner versioning | **Done** |
 | 16 | Documentation + Talos Helper sync | **Done** |
@@ -1927,7 +1927,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] IV Multi-Level Learning (Module 10) — endpoint/app profile aggregation + inheritance priors (`learning.py`); confidence decay cap 75; local observed wins; standard skips control/parser when parent known; CLI `show --endpoint` / `show --host`; tests in `tests/test_iv_learning.py`
 - [x] IV Capabilities, Attack Candidates & Consumer API (Module 11) — centralized capability derivation (`capabilities.py`); attack candidate scores with reasons (`candidates.py`); `get_param_intelligence` / `list_candidates` stable API; synthesize + CLI show/export; prioritization only (not confirmed vulns); tests in `tests/test_iv_candidates.py`
 - [x] Findings subsystem — PRIMARY/LINKED clusters, groups, reports (`talos.findings`)
-- [x] Passive Source Intelligence (Phases 0–12, 14–16 core CLI) — design freeze + package skeleton + schema v39/v40 CRUD + candidate/classify/normalize + queue/worker + detector pipeline (provider/YAML, PEM, JWT, connection strings, contextual, entropy, decoder, infrastructure) + findings bridge (`PASSIVE_SECRET:<fp>` PRIMARY/LINKED) + CLI (`talos passive …`) + source-map + HTML inline extractors + rescan + docs/Helper; `SCANNER_VERSION=1.3.0`; tests in `tests/test_passive_*.py`. Phase 13 Control Panel UI deferred.
+- [x] Passive Source Intelligence (Phases 0–12, 14–16 core CLI + Phase 13 Control Panel) — design freeze + package skeleton + schema v39/v40 CRUD + candidate/classify/normalize + queue/worker + detector pipeline (provider/YAML, PEM, JWT, connection strings, contextual, entropy, decoder, infrastructure) + findings bridge (`PASSIVE_SECRET:<fp>` PRIMARY/LINKED) + CLI (`talos passive …`) + source-map + HTML inline extractors + rescan + docs/Helper; Control Panel Secret Detection workspace (`/secret-detection`, `/api/passive/*`, Console tree, dashboard/flow/finding deep links); `SCANNER_VERSION=1.3.0`; tests in `tests/test_passive_*.py` + `talos-control-panel/backend/tests/test_passive_routes.py`.
 - [x] Flow inspector — `talos flow list|show|export` (`talos.projects.flow_cli`)
 - [x] Flow inventory (CLI-003) — `talos flow list` prints UUID, endpoint (`host`+`path`), method, status, role, source, created; filters `--endpoint`, `--status-code`, `--role` (name or UUID), `--source`, `--limit`; primary discovery path for flow UUIDs used by show/export/replay/auth-config (`talos.projects.flow_cli`)
 

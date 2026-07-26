@@ -196,6 +196,10 @@ def _config_from_row(row: sqlite3.Row) -> PassiveScanConfig:
         "store_raw_secret_in_evidence": bool(row["store_raw_secret_in_evidence"]),
         "store_suppressed_detections": bool(row["store_suppressed_detections"]),
         "queue_maxsize": int(row["queue_maxsize"]),
+        # max_scan_time_ms added in schema v41; tolerate older rows mid-upgrade.
+        "max_scan_time_ms": int(row["max_scan_time_ms"])
+        if "max_scan_time_ms" in row.keys()
+        else 0,
     }
     return config_from_dict(data)
 
@@ -265,7 +269,7 @@ def update_config(db_path: Path, config: PassiveScanConfig) -> PassiveScanConfig
                 scan_html, scan_javascript, scan_json, scan_xml,
                 scan_text, scan_css, scan_sourcemaps, scan_wasm,
                 store_raw_secret_in_evidence, store_suppressed_detections,
-                queue_maxsize
+                queue_maxsize, max_scan_time_ms
             ) VALUES (
                 'default', ?, ?,
                 ?, ?, ?,
@@ -273,7 +277,7 @@ def update_config(db_path: Path, config: PassiveScanConfig) -> PassiveScanConfig
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?,
-                ?
+                ?, ?
             )
             """,
             (
@@ -294,6 +298,7 @@ def update_config(db_path: Path, config: PassiveScanConfig) -> PassiveScanConfig
                 1 if config.store_raw_secret_in_evidence else 0,
                 1 if config.store_suppressed_detections else 0,
                 int(config.queue_maxsize),
+                int(getattr(config, "max_scan_time_ms", 0) or 0),
             ),
         )
         conn.commit()

@@ -7,7 +7,7 @@ interface Props {
   body: string | null;
 }
 
-/** Canonical raw HTTP — no cookie expand, no JWT decode. Wrap always on. */
+/** Canonical raw HTTP — no cookie expand, no encoded decode. Wrap always on. */
 export default function HttpRawView({ startLine, headers, cookies, body }: Props) {
   const raw = buildRawMessage({ startLine, headers, cookies, body });
   return (

@@ -100,6 +100,22 @@ export default function FindingDetail() {
         <div className="space-y-2">
           {evidence.map((e) => {
             const isFlowRef = ["original_flow", "replay_flow", "diff"].includes(e.evidence_type);
+            const passiveLink =
+              e.evidence_type === "source_document" && e.reference_id
+                ? `/secret-detection/documents/${e.reference_id}`
+                : e.evidence_type === "passive_detection" && e.reference_id
+                  ? `/secret-detection/detections/${e.reference_id}`
+                  : e.evidence_type === "source_occurrence" && e.reference_id
+                    ? // occurrence is not a top-level route; open document from data if present
+                      e.data?.document_id
+                        ? `/secret-detection/documents/${e.data.document_id}`
+                        : null
+                    : null;
+            const hasRawSecret =
+              e.evidence_type === "passive_detection" &&
+              e.data &&
+              typeof e.data.raw_value === "string" &&
+              e.data.raw_value.length > 0;
             return (
               <div key={e.id} className="panel p-3">
                 <div className="flex items-center gap-2 text-xs mb-1">
@@ -110,14 +126,36 @@ export default function FindingDetail() {
                       <Link to={`/flows/${e.reference_id}`} className="link">
                         <UuidChip value={e.reference_id} />
                       </Link>
+                    ) : passiveLink ? (
+                      <Link to={passiveLink} className="link">
+                        <UuidChip value={e.reference_id} />
+                      </Link>
                     ) : (
                       <UuidChip value={e.reference_id} />
                     )
                   )}
+                  {passiveLink && (
+                    <Link to={passiveLink} className="link text-xs">
+                      open in Secret Detection
+                    </Link>
+                  )}
                 </div>
                 <div className="text-sm">{e.label}</div>
-                {Object.keys(e.data || {}).length > 0 && (
-                  <pre className="mono text-xs mt-1 text-base-content/60">{JSON.stringify(e.data, null, 2)}</pre>
+                {hasRawSecret ? (
+                  <details className="mt-1">
+                    <summary className="text-xs text-warning cursor-pointer">
+                      Reveal secret in evidence (local only)
+                    </summary>
+                    <pre className="mono text-xs mt-1 text-base-content/60 whitespace-pre-wrap break-all">
+                      {JSON.stringify(e.data, null, 2)}
+                    </pre>
+                  </details>
+                ) : (
+                  Object.keys(e.data || {}).length > 0 && (
+                    <pre className="mono text-xs mt-1 text-base-content/60">
+                      {JSON.stringify(e.data, null, 2)}
+                    </pre>
+                  )
                 )}
               </div>
             );

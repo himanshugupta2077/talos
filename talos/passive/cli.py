@@ -109,7 +109,9 @@ def _print_usage() -> None:
 
 def _require_project(manager: ProjectManager):
     """Resolve active project or exit with precondition error."""
-    project = manager.get_active_project()
+    # ProjectManager binds via active() (registry ACTIVE, --project, or TALOS_PROJECT).
+    # Do not call get_active_project — that method does not exist on ProjectManager.
+    project = manager.active()
     if project is None:
         cli_precondition_error(
             "No active project. Use: talos project open <id> "
@@ -188,6 +190,7 @@ _CONFIG_KEYS = frozenset({
     "store_raw_secret_in_evidence",
     "store_suppressed_detections",
     "queue_maxsize",
+    "max_scan_time_ms",
 })
 
 
@@ -266,6 +269,7 @@ def _parse_config_value(key: str, value: str) -> Any:
         "max_decode_bytes",
         "max_candidates_per_document",
         "queue_maxsize",
+        "max_scan_time_ms",
     }:
         try:
             return int(value)

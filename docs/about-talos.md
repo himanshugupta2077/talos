@@ -335,12 +335,12 @@ Endpoint Intelligence
     ├── Role Intelligence      (which roles hit this endpoint, appears_in_roles per param)
     ├── Response Intelligence  (status codes, content-types, length ranges)
     ├── Reflection Intelligence (passive: values seen in responses)
-    └── Source Intelligence    (passive: secrets / disclosures in response bodies)
+    └── Secret Detection    (passive: secrets / disclosures in response bodies)
 ```
 
 This layer answers only: **"What have we observed?"**
 
-### Source Intelligence (client-side secrets)
+### Secret Detection / Source Intelligence (client-side secrets)
 
 Talos scans captured **client-delivered** response bodies (HTML, JS, JSON, CSS,
 source maps) on a separate `SourceScanWorker` thread — never on the proxy

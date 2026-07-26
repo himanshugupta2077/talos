@@ -81,7 +81,7 @@ Navigation groups (from `NAV_GROUPS`):
 | Overview | `/`, `/projects`, `/proxy` |
 | Model | `/roles-modules`, `/access`, `/auth` |
 | Capture | `/endpoints`, `/flows`, `/mutations` (HTTP Rules) |
-| Testing | `/scheduler`, `/attack`, `/input-validation` |
+| Testing | `/scheduler`, `/attack`, `/input-validation`, `/secret-detection` |
 | Configuration | `/talos-config` |
 | Results | `/findings`, `/console` |
 
@@ -112,6 +112,9 @@ Defined in `App.tsx` with React Router v6 nested routes under `Layout`.
 | `/input-validation/params/:paramUuid` | `ParameterDetail` (IV dossier) |
 | `/input-validation/endpoints/:endpointId` | `IvEndpointIntel` |
 | `/input-validation/hosts/:host` | `IvHostIntel` |
+| `/secret-detection` | `SecretDetection` (tabs: overview/detections/documents/rules/settings) |
+| `/secret-detection/detections/:detectionId` | `DetectionDetail` |
+| `/secret-detection/documents/:documentId` | `DocumentDetail` |
 | `/findings` | `Findings` |
 | `/findings/:findingId` | `FindingDetail` |
 | `/console` | `Console` |

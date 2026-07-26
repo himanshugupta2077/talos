@@ -10,7 +10,7 @@ interface Props {
 
 /**
  * Headers tab: opaque rows. Cookie/Authorization are single lines (count/JWT badge).
- * Expanded cookies and JWT live in their own tabs — never here.
+ * Expanded cookies and decoded JWT/base64 live in their own tabs — never here.
  */
 export default function HttpHeadersView({ headers, cookiePairs, wrap = true }: Props) {
   const rows = normalizeHeaders(headers, cookiePairs);

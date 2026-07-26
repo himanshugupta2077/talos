@@ -84,6 +84,14 @@ export default function FlowDetail() {
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [related, setRelated] = useState<Related | null>(null);
   const [intel, setIntel] = useState<Intelligence | null>(null);
+  const [passive, setPassive] = useState<{
+    document_id: string | null;
+    scan_status: string | null;
+    source_kind: string | null;
+    detection_count: number;
+    has_finding: boolean;
+    scanner_version: string | null;
+  } | null>(null);
   const [adjacent, setAdjacent] = useState<{ prev_id: string | null; next_id: string | null }>({
     prev_id: null,
     next_id: null,
@@ -126,6 +134,10 @@ export default function FlowDetail() {
       .get<Intelligence>(`/api/flows/${flowId}/intelligence`, { project_id: selected.id })
       .then(setIntel)
       .catch(() => setIntel(null));
+    api
+      .get(`/api/passive/by-flow/${flowId}`, { project_id: selected.id })
+      .then(setPassive)
+      .catch(() => setPassive(null));
   };
 
   useEffect(load, [selected, flowId, filterQs]);
@@ -273,7 +285,7 @@ export default function FlowDetail() {
           to Burp-style <strong>Pretty</strong>: full message (start-line, all headers, body)
           with syntax colors, line numbers, wrap always on, and indented
           JSON/XML/HTML/CSS/JS. Switch to Raw for the untransformed dump; request also has
-          Params and JWT.
+          Params. Both sides have Encoded for JWT / JWE / Basic auth / base64 (foldable).
         </p>
         <p>
           <strong>Replay now</strong> re-sends the stored request via Core; modified or
@@ -409,7 +421,7 @@ export default function FlowDetail() {
       </div>
 
       {/* Operator panels below request/response (and other tabs) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5 gap-4 mt-6">
         <div className="panel p-3">
           <h3 className="font-semibold text-sm mb-2">Actions</h3>
           <FlowActions
@@ -456,6 +468,81 @@ export default function FlowDetail() {
             jobs={related?.jobs || []}
             paramCount={related?.param_count}
           />
+        </div>
+
+        <div className="panel p-3">
+          <h3 className="font-semibold text-sm mb-2">Source scan</h3>
+          {passive?.document_id ? (
+            <div className="space-y-1 text-xs">
+              <div>
+                <span className="text-base-content/50">Document </span>
+                <Link
+                  to={`/secret-detection/documents/${passive.document_id}`}
+                  className="link mono"
+                >
+                  {passive.document_id.slice(0, 8)}
+                </Link>
+              </div>
+              <div>
+                <span className="text-base-content/50">Status </span>
+                {passive.scan_status || "—"}
+                {passive.source_kind ? ` · ${passive.source_kind}` : ""}
+              </div>
+              <div>
+                <span className="text-base-content/50">Detections </span>
+                {passive.detection_count}
+                {passive.has_finding && (
+                  <span className="badge badge-success badge-xs ml-1">finding</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1 pt-1">
+                <Link
+                  to={`/secret-detection/documents/${passive.document_id}`}
+                  className="btn btn-xs"
+                >
+                  Open document
+                </Link>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-outline"
+                  onClick={() => {
+                    if (!selected || !flowId) return;
+                    api
+                      .post(
+                        "/api/passive/rescan",
+                        { mode: "flow", id: flowId, force: true },
+                        { project_id: selected.id },
+                      )
+                      .then(load)
+                      .catch(() => {});
+                  }}
+                >
+                  Rescan flow
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2 text-xs text-base-content/50">
+              <p>No source document linked to this flow yet.</p>
+              <button
+                type="button"
+                className="btn btn-xs"
+                onClick={() => {
+                  if (!selected || !flowId) return;
+                  api
+                    .post(
+                      "/api/passive/rescan",
+                      { mode: "flow", id: flowId, force: true },
+                      { project_id: selected.id },
+                    )
+                    .then(load)
+                    .catch(() => {});
+                }}
+              >
+                Scan this flow
+              </button>
+            </div>
+          )}
         </div>
 
         {flow.tags && flow.tags.length > 0 && (

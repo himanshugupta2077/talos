@@ -3,7 +3,10 @@ import {
   buildPrettyMessage,
   buildRawMessage,
   decodeJwt,
+  findEncodedArtifacts,
   findJwt,
+  looksLikeBase64,
+  looksLikeJwe,
   looksLikeJwt,
   normalizeHeaders,
   parseBodyParams,
@@ -114,6 +117,101 @@ describe("findJwt", () => {
       "X-Other": "nope",
     });
     expect(j?.payload?.sub).toBe("1234567890");
+  });
+});
+
+const SAMPLE_JWT_2 =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  "eyJzdWIiOiJvdGhlciIsImV4cCI6MTgwMDAwMDAwMH0." +
+  "sig2";
+
+describe("findEncodedArtifacts", () => {
+  it("returns separate foldable entries for two JWTs", () => {
+    const arts = findEncodedArtifacts({
+      side: "request",
+      headers: {
+        Authorization: `Bearer ${SAMPLE_JWT}`,
+        "X-Id-Token": SAMPLE_JWT_2,
+      },
+    });
+    const jwts = arts.filter((a) => a.kind === "jwt");
+    expect(jwts).toHaveLength(2);
+    expect(jwts.map((a) => a.location).sort()).toEqual([
+      "header:Authorization",
+      "header:X-Id-Token",
+    ]);
+    expect(jwts.find((a) => a.location === "header:Authorization")?.jwt?.payload?.sub).toBe(
+      "1234567890"
+    );
+    expect(jwts.find((a) => a.location === "header:X-Id-Token")?.jwt?.payload?.sub).toBe(
+      "other"
+    );
+  });
+
+  it("finds JWT in cookie and Basic auth in header", () => {
+    const arts = findEncodedArtifacts({
+      side: "request",
+      headers: {
+        Authorization: "Basic dXNlcjpwYXNz",
+      },
+      cookies: { session: SAMPLE_JWT },
+    });
+    expect(arts.some((a) => a.kind === "basic_auth" && a.basicAuth?.username === "user")).toBe(
+      true
+    );
+    expect(arts.some((a) => a.kind === "jwt" && a.location === "cookie:session")).toBe(true);
+  });
+
+  it("finds JWT in response Set-Cookie and body JSON", () => {
+    const arts = findEncodedArtifacts({
+      side: "response",
+      headers: {
+        "Set-Cookie": `access=${SAMPLE_JWT}; Path=/; HttpOnly`,
+      },
+      body: JSON.stringify({ refresh: SAMPLE_JWT_2 }),
+      contentType: "application/json",
+    });
+    expect(arts.filter((a) => a.kind === "jwt")).toHaveLength(2);
+    expect(arts.some((a) => a.location === "set-cookie:access")).toBe(true);
+    expect(arts.some((a) => a.location === "body.refresh")).toBe(true);
+  });
+
+  it("decodes standalone base64", () => {
+    // "hello world!!" base64
+    const b64 = btoa("hello world!!");
+    const arts = findEncodedArtifacts({
+      side: "request",
+      headers: { "X-Payload": b64 },
+    });
+    const a = arts.find((x) => x.kind === "base64");
+    expect(a?.base64?.decoded).toContain("hello world");
+  });
+
+  it("detects JWE compact form", () => {
+    // Fake JWE: header with enc + 4 more segments
+    const hdr = btoa(JSON.stringify({ alg: "dir", enc: "A256GCM" }))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    const jwe = `${hdr}.ek.iv.ct.tag`;
+    expect(looksLikeJwe(jwe)).toBe(true);
+    const arts = findEncodedArtifacts({
+      side: "request",
+      headers: { Authorization: `Bearer ${jwe}` },
+    });
+    expect(arts.some((a) => a.kind === "jwe")).toBe(true);
+  });
+
+  it("looksLikeBase64 rejects short junk and opaque tokens", () => {
+    expect(looksLikeBase64("abcd")).toBe(false);
+    expect(looksLikeBase64(SAMPLE_JWT)).toBe(false);
+    // Random base64-alphabet token that does not decode to readable text
+    expect(
+      looksLikeBase64("2PaW3mD5oBa7Mp6PLlyrQKw2zd52S77hJeGORx1Nkeb49VvJZq8gjnEXYZr3")
+    ).toBe(false);
+    // Real readable payload still accepted
+    expect(looksLikeBase64(btoa("hello world!!"))).toBe(true);
+    expect(looksLikeBase64(btoa('{"role":"admin"}'))).toBe(true);
   });
 });
 

@@ -672,6 +672,55 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "passive",
+        "label": "Secret Detection (Passive)",
+        "commands": [
+            cmd("passive.status", ["passive", "status"], "Document / detection / finding counts"),
+            cmd("passive.config.show", ["passive", "config", "show"], "Show passive_scan_config"),
+            cmd("passive.config.set", ["passive", "config", "set"], "Update one config field", [
+                arg("key", required=True, help="e.g. enabled, auto_finding_threshold, scan_javascript"),
+                arg("value", required=True, help="true/false, int, or threshold name"),
+            ]),
+            cmd("passive.rules.list", ["passive", "rules", "list"], "List loaded detector rules"),
+            cmd("passive.documents.list", ["passive", "documents", "list"], "Source documents inventory", [
+                arg("status", flag="--status", help="pending|scanned|error|too_large|skipped"),
+                arg("kind", flag="--kind", help="html|javascript|json|xml|text|css|sourcemap"),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+            cmd("passive.documents.show", ["passive", "documents", "show"], "Show one source document", [
+                arg("document_id", required=True),
+            ]),
+            cmd("passive.detections.list", ["passive", "detections", "list"], "List passive detections (redacted)", [
+                arg("type", flag="--type", help="secret_type or detector_id"),
+                arg("confidence", flag="--confidence", kind="select", options=[
+                    "CONFIRMED_PATTERN", "HIGH", "MEDIUM", "OBSERVATION_ONLY",
+                ]),
+                arg("category", flag="--category", kind="select", options=[
+                    "secret", "infrastructure_disclosure", "sensitive_info",
+                ]),
+                arg("document", flag="--document", help="Filter by document id"),
+                arg("suppressed", flag="--suppressed", kind="boolean", help="Only suppressed"),
+                arg("has_finding", flag="--has-finding", kind="boolean", help="Only with finding link"),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+            cmd("passive.detections.show", ["passive", "detections", "show"], "Show one detection (redacted)", [
+                arg("detection_id", required=True),
+            ]),
+            cmd("passive.rescan.all", ["passive", "rescan"], "Rescan outdated documents", [
+                arg("all", flag="--all", kind="boolean", required=True, default=True),
+                arg("force", flag="--force", kind="boolean", help="Even if already at SCANNER_VERSION"),
+            ]),
+            cmd("passive.rescan.document", ["passive", "rescan"], "Rescan one document", [
+                arg("document", flag="--document", required=True),
+                arg("force", flag="--force", kind="boolean"),
+            ]),
+            cmd("passive.rescan.flow", ["passive", "rescan"], "Rescan body from a flow", [
+                arg("flow", flag="--flow", required=True),
+                arg("force", flag="--force", kind="boolean"),
+            ]),
+        ],
+    },
+    {
         "group": "finding",
         "label": "Findings",
         "commands": [

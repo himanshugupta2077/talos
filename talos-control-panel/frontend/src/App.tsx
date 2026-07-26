@@ -21,6 +21,9 @@ import InputValidation from "./pages/InputValidation";
 import ParameterDetail from "./pages/input-validation/ParameterDetail";
 import IvEndpointIntel from "./pages/input-validation/IvEndpointIntel";
 import IvHostIntel from "./pages/input-validation/IvHostIntel";
+import SecretDetection from "./pages/SecretDetection";
+import DetectionDetail from "./pages/secret-detection/DetectionDetail";
+import DocumentDetail from "./pages/secret-detection/DocumentDetail";
 import Findings from "./pages/Findings";
 import FindingDetail from "./pages/FindingDetail";
 import Console from "./pages/Console";
@@ -51,6 +54,9 @@ export default function App() {
               <Route path="/input-validation/params/:paramUuid" element={<ParameterDetail />} />
               <Route path="/input-validation/endpoints/:endpointId" element={<IvEndpointIntel />} />
               <Route path="/input-validation/hosts/:host" element={<IvHostIntel />} />
+              <Route path="/secret-detection" element={<SecretDetection />} />
+              <Route path="/secret-detection/detections/:detectionId" element={<DetectionDetail />} />
+              <Route path="/secret-detection/documents/:documentId" element={<DocumentDetail />} />
               <Route path="/findings" element={<Findings />} />
               <Route path="/findings/:findingId" element={<FindingDetail />} />
               <Route path="/console" element={<Console />} />

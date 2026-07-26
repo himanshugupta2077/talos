@@ -8,6 +8,8 @@ Purpose:
         - empty / null / undefined
         - placeholder vocabulary
         - template syntax (${…}, {{…}})
+        - angle-bracket placeholders (<secret>, <YOUR_API_KEY>)
+        - plain URL / host-path strings (not credential-bearing URIs)
         - env var references (process.env.*, import.meta.env.*)
         - low-entropy trivial values
         - known public / documentation example tokens
@@ -84,6 +86,25 @@ _ENV_REF = re.compile(
 # Template / interpolation
 _TEMPLATE = re.compile(r"(\$\{[^}]+\}|\{\{[^}]+\}\}|<%[=]?.+?%>)")
 
+# Angle-bracket placeholders: <secret>, <YOUR_API_KEY>, <token>
+_ANGLE_PLACEHOLDER = re.compile(r"^<[^<>]{1,80}>$")
+
+# Credential-bearing DB/service URI schemes — secrets, never URL-noise.
+_CREDENTIAL_URI_SCHEME = re.compile(
+    r"^(?:"
+    r"postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|"
+    r"amqp|amqps|kafka|mssql|sqlserver|jdbc|cockroachdb|"
+    r"cassandra|neo4j|bolt|elasticsearch"
+    r")://",
+    re.IGNORECASE,
+)
+
+# http(s) with embedded userinfo (https://user:pass@host) — keep as secret.
+_HTTP_USERINFO = re.compile(
+    r"^https?://[^/\s:@]+:[^/\s@]+@",
+    re.IGNORECASE,
+)
+
 # Low-entropy thresholds for generic/contextual values
 _MIN_GENERIC_LENGTH = 6
 _MIN_GENERIC_ENTROPY = 2.5
@@ -145,6 +166,12 @@ def should_suppress(
     if _TEMPLATE.search(text):
         return True, "template_syntax"
 
+    if _ANGLE_PLACEHOLDER.match(text):
+        return True, "angle_placeholder"
+
+    if looks_like_url_or_hostpath(text):
+        return True, "url_or_hostpath"
+
     # Context-side env refs: value is just an identifier from env
     if raw_match is not None:
         ctx = f"{raw_match.context_before}{raw_match.raw_value}{raw_match.context_after}"
@@ -174,6 +201,50 @@ def should_suppress(
             return True, "key_echo_value"
 
     return False, None
+
+
+def looks_like_url_or_hostpath(value: str) -> bool:
+    """
+    Purpose:
+        True when value is a non-secret URL / host-path that entropy or
+        contextual stages may mis-pick (e.g. //api.github.com/user).
+
+        Connection-string URIs (postgres://…) and http(s) URLs with
+        userinfo are **not** treated as noise — those can be secrets.
+    Side effects: None.
+    """
+    text = (value or "").strip()
+    if not text:
+        return False
+
+    # DB/service URIs and HTTP basic-auth URLs are secrets.
+    if _CREDENTIAL_URI_SCHEME.match(text):
+        return False
+    if _HTTP_USERINFO.match(text):
+        return False
+
+    # Plain http(s) without credentials.
+    if re.match(r"^https?://", text, re.IGNORECASE):
+        return True
+
+    # Protocol-relative URL: //host[/path]
+    if text.startswith("//") and "." in text and " " not in text:
+        return True
+
+    # Bare host.tld[/path] without credentials (api.github.com/user).
+    if re.search(
+        r"(?i)^[A-Za-z0-9][A-Za-z0-9._-]*\."
+        r"(?:com|org|net|io|dev|app|co|local|internal|gov|edu|info|biz)"
+        r"(?:[:/]|$)",
+        text,
+    ):
+        return True
+
+    # Multi-segment path with a dotted host label.
+    if text.count("/") >= 2 and "." in text and " " not in text and "://" not in text:
+        return True
+
+    return False
 
 
 def is_public_test_token(value: str) -> bool:

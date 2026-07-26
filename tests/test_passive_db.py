@@ -65,9 +65,9 @@ def db_path(tmp_path: Path) -> Path:
 # Schema                                                               #
 # ------------------------------------------------------------------ #
 
-def test_schema_version_is_40():
-    """Schema v39 = passive tables; v40 = parent_document_id for virtual docs."""
-    assert SCHEMA_VERSION == 40
+def test_schema_version_is_41():
+    """Schema v39 = passive tables; v40 = parent_document_id; v41 = max_scan_time_ms."""
+    assert SCHEMA_VERSION == 41
 
 
 def test_fresh_db_has_passive_tables(db_path: Path):
@@ -166,6 +166,7 @@ def test_update_config_round_trip(db_path: Path):
     cfg.auto_finding_threshold = "OFF"
     cfg.queue_maxsize = 42
     cfg.scan_javascript = False
+    cfg.max_scan_time_ms = 5000
     update_config(db_path, cfg)
 
     loaded = get_config(db_path)
@@ -173,6 +174,7 @@ def test_update_config_round_trip(db_path: Path):
     assert loaded.auto_finding_threshold == "OFF"
     assert loaded.queue_maxsize == 42
     assert loaded.scan_javascript is False
+    assert loaded.max_scan_time_ms == 5000
     # Unchanged fields keep defaults
     assert loaded.scan_html is True
     assert loaded.scan_wasm is False

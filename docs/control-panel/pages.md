@@ -28,6 +28,9 @@ flowchart TD
     IVP[IvParamDetail]
     IVE[IvEndpointIntel]
     IVH[IvHostIntel]
+    SI[SecretDetection]
+    SID[DetectionDetail]
+    SIDO[DocumentDetail]
   end
   subgraph configuration [Configuration]
     TC[TalosConfig /talos-config]
@@ -43,6 +46,11 @@ flowchart TD
   IV --> IVP
   IV --> IVE
   IV --> IVH
+  SI --> SID
+  SI --> SIDO
+  SID -.-> FI
+  SID -.-> F
+  SIDO -.-> F
   TC -.-> X
   TC -.-> S
   TC -.-> M
@@ -422,6 +430,36 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 Candidate scores are always labeled **prioritization only**, not confirmed vulnerabilities.
 
 ---
+
+## Secret Detection (`/secret-detection`)
+
+**Files:** `SecretDetection.tsx` + `pages/secret-detection/*`
+
+Secret Detection workspace (Passive Source Intelligence engine) — full parity with
+`talos passive …` (Phase 13).
+
+| Route | Purpose |
+|-------|---------|
+| `/secret-detection?tab=overview` | Status KPIs, enable/disable, rescan, recent detections |
+| `?tab=detections` | Redacted detection inventory + filters |
+| `?tab=documents` | Source document inventory (body identity + scan status) |
+| `?tab=rules` | Loaded YAML detector packs (read-only) |
+| `?tab=settings` | Full `passive_scan_config` via CLI set |
+| `/secret-detection/detections/:id` | Detection dossier (context, siblings, flow/finding links) |
+| `/secret-detection/documents/:id` | Document dossier (occurrences, children, detections, rescan) |
+
+| Aspect | Detail |
+|--------|--------|
+| **Purpose** | Operator UX for client-side secret/disclosure intelligence — not active validation |
+| **Backend** | `/api/passive/*` status, overview, config, rules, documents, detections, rescan, by-flow |
+| **CLI** | Full `talos passive status\|config\|rules\|documents\|detections\|rescan` parity; Console tree group `passive` |
+| **DB** | `source_documents`, `source_occurrences`, `passive_detections`, `passive_scan_config` (reads); writes via CLI only |
+| **Integrations** | Dashboard card; Flow detail “Source scan” panel; Finding evidence deep links for `source_document` / `passive_detection` |
+| **Workflow** | Proxy capture → Overview → Detections triage → open finding for HIGH secrets → rescan after rule upgrades |
+| **Safety** | Detection payloads never include `raw_value`; list UIs show `redacted_value` only |
+
+---
+
 
 ## Findings (`/findings`)
 

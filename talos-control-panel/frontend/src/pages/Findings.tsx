@@ -57,7 +57,16 @@ export default function Findings() {
 
   const columns: Column<Finding>[] = [
     { key: "title", header: "Title", render: (f) => <span className="font-medium">{f.title || "(untitled)"}</span> },
-    { key: "attack_type", header: "Type" },
+    {
+      key: "attack_type",
+      header: "Type",
+      render: (f) =>
+        f.attack_type === "passive_secret" ? (
+          <span title="passive_secret">Client-Side Secret</span>
+        ) : (
+          f.attack_type
+        ),
+    },
     { key: "verdict", header: "Verdict", render: (f) => <StatusBadge value={f.verdict} /> },
     { key: "status", header: "Status", render: (f) => <StatusBadge value={f.status} /> },
     { key: "role_name", header: "Role", render: (f) => f.role_name || <span className="text-base-content/30">—</span> },
@@ -80,8 +89,21 @@ export default function Findings() {
         </select>
         <select className={selectClass} value={attackType} onChange={(e) => setAttackType(e.target.value)}>
           <option value="">type: any</option>
-          {attackTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+          {attackTypes.map((t) => (
+            <option key={t} value={t}>
+              {t === "passive_secret" ? "Client-Side Secret Exposure" : t}
+            </option>
+          ))}
         </select>
+        <button
+          type="button"
+          className={`btn btn-xs ${attackType === "passive_secret" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() =>
+            setAttackType(attackType === "passive_secret" ? "" : "passive_secret")
+          }
+        >
+          Secrets only
+        </button>
         <select className={selectClass} value={verdict} onChange={(e) => setVerdict(e.target.value)}>
           <option value="">verdict: any</option>
           {verdicts.map((v) => <option key={v} value={v}>{v}</option>)}

@@ -434,7 +434,7 @@ talos finding group create "Client Report"
 talos finding group add "Client Report" <finding_uuid>
 talos finding report --group "Client Report" > client-report.md
 
-# 8b. Passive source intelligence (client-side secrets + disclosures)
+# 8b. Passive secret detection (client-side secrets + disclosures)
 # Zero-HTTP scan of captured HTML/JS/JSON/CSS/maps after FlowWorker commit.
 # HIGH/CONFIRMED secrets → findings (cluster PASSIVE_SECRET:<fingerprint>).
 # Infrastructure disclosures stay in passive_detections only (no auto-finding).

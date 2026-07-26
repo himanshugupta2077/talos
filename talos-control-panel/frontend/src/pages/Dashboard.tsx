@@ -7,6 +7,7 @@ import {
   FlowsPanel,
   HeroStrip,
   HttpRulesPanel,
+  PassivePanel,
   ProxyPanel,
   SchedulerPanel,
   SessionHealthPanel,
@@ -72,8 +73,9 @@ export default function Dashboard() {
         <FlowsPanel data={data} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <HttpRulesPanel data={data} />
+        <PassivePanel data={data} />
         <TalosConfigPanel data={data} />
       </div>
 

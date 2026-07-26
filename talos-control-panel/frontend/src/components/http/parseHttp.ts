@@ -1,9 +1,10 @@
 /**
  * Pure HTTP presentation parsers for the Flow inspection workspace.
  *
- * One source of truth per view mode — cookies/JWT/params must not be expanded
- * under Headers when a dedicated tab exists. Dual cookie storage (Cookie header
- * + request_cookies map) is a capture design; this module canonicalizes for UI.
+ * One source of truth per view mode — cookies / encoded values / params must not
+ * be expanded under Headers when a dedicated tab exists. Dual cookie storage
+ * (Cookie header + request_cookies map) is a capture design; this module
+ * canonicalizes for UI.
  */
 
 export interface NormalizedHeader {
@@ -37,6 +38,33 @@ export interface JwtDecodeResult {
   claimsSummary?: { exp?: number; sub?: string; iat?: number; iss?: string };
 }
 
+/** Encoded/encrypted value kinds shown in the Encoded tab. */
+export type EncodedKind = "jwt" | "jwe" | "basic_auth" | "base64";
+
+export interface EncodedArtifact {
+  /** Stable-ish key for React lists. */
+  id: string;
+  kind: EncodedKind;
+  /** Where it was found, e.g. `header:Authorization`, `cookie:sid`, `query:token`, `body.access_token`. */
+  location: string;
+  /** Short title for the fold row. */
+  label: string;
+  /** Original string (may be truncated for huge bodies). */
+  raw: string;
+  jwt?: JwtDecodeResult;
+  jwe?: {
+    token: string;
+    header: Record<string, unknown> | null;
+    error?: string;
+  };
+  basicAuth?: { username: string; password: string };
+  base64?: {
+    decoded: string;
+    isJson: boolean;
+    error?: string;
+  };
+}
+
 export interface BodyParam {
   name: string;
   value: string;
@@ -52,10 +80,15 @@ function b64urlDecode(s: string): string {
   );
 }
 
+/** Strip optional Bearer prefix. */
+function stripBearer(value: string): string {
+  return value.replace(/^Bearer\s+/i, "").trim();
+}
+
 /** True if value is a JWT or `Bearer <jwt>`. */
 export function looksLikeJwt(value: string): boolean {
   if (!value || typeof value !== "string") return false;
-  const token = value.replace(/^Bearer\s+/i, "").trim();
+  const token = stripBearer(value);
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   // Header segment must be valid base64url JSON-ish
@@ -67,10 +100,24 @@ export function looksLikeJwt(value: string): boolean {
   }
 }
 
+/** True if value looks like a JWE (5 compact segments, encrypted JWT). */
+export function looksLikeJwe(value: string): boolean {
+  if (!value || typeof value !== "string") return false;
+  const token = stripBearer(value);
+  const parts = token.split(".");
+  if (parts.length !== 5) return false;
+  try {
+    const h = b64urlDecode(parts[0]);
+    return h.includes("{") && (h.includes("enc") || h.includes("alg"));
+  } catch {
+    return false;
+  }
+}
+
 export function decodeJwt(value: string): JwtDecodeResult | null {
   if (!value) return null;
   const raw = value;
-  const token = value.replace(/^Bearer\s+/i, "").trim();
+  const token = stripBearer(value);
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
@@ -91,6 +138,144 @@ export function decodeJwt(value: string): JwtDecodeResult | null {
       error: e instanceof Error ? e.message : "decode failed",
     };
   }
+}
+
+export function decodeJweHeader(value: string): EncodedArtifact["jwe"] | null {
+  if (!value) return null;
+  const token = stripBearer(value);
+  const parts = token.split(".");
+  if (parts.length !== 5) return null;
+  try {
+    const header = JSON.parse(b64urlDecode(parts[0])) as Record<string, unknown>;
+    return { token, header };
+  } catch (e) {
+    return {
+      token,
+      header: null,
+      error: e instanceof Error ? e.message : "decode failed",
+    };
+  }
+}
+
+/**
+ * True only when value is base64 *and* decodes to readable text/JSON.
+ * Opaque tokens (session IDs, nanoids, random key material) share the
+ * base64 alphabet but decode to binary noise — those must not surface here.
+ */
+export function looksLikeBase64(value: string): boolean {
+  if (!value || typeof value !== "string") return false;
+  const s = value.trim();
+  // Long enough to be interesting; not a JWT/JWE (dots) or multi-line
+  if (s.length < 16 || s.includes(".") || s.includes(" ") || s.includes("\n")) return false;
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(s)) return false;
+  // Standard base64 length: remainder 1 is never valid
+  if (s.replace(/=+$/, "").length % 4 === 1) return false;
+  // Pure hex short hashes / UUID-ish without padding are not base64 payloads
+  if (!/[+/=]/.test(s) && /^[0-9a-fA-F]+$/.test(s)) return false;
+  try {
+    const decoded = decodeBase64Flexible(s);
+    if (decoded == null || decoded.length < 4) return false;
+    // Require readable text — binary garbage is not useful in Encoded tab
+    if (!isMostlyPrintable(decoded)) return false;
+    // Avoid single high-entropy control-ish blobs that are "printable" but nonsense:
+    // need at least one letter or common structure char in the decode
+    if (!/[A-Za-z{["'0-9]/.test(decoded)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function decodeBase64Flexible(s: string): string | null {
+  try {
+    const stripped = s.replace(/=+$/, "");
+    // Invalid length for base64 (cannot pad to multiple of 4)
+    if (stripped.length % 4 === 1) return null;
+    const normalized = stripped.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = (4 - (normalized.length % 4)) % 4;
+    return atob(normalized + "=".repeat(pad));
+  } catch {
+    return null;
+  }
+}
+
+function isMostlyPrintable(s: string): boolean {
+  if (!s) return false;
+  let ok = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13 || (c >= 32 && c < 127)) ok++;
+  }
+  return ok / s.length >= 0.9;
+}
+
+/** Text form of an artifact for the "copy decoded" action. */
+export function encodedArtifactDecodedText(a: EncodedArtifact): string | null {
+  switch (a.kind) {
+    case "jwt":
+      if (!a.jwt || a.jwt.error) return null;
+      return JSON.stringify(
+        { header: a.jwt.header, payload: a.jwt.payload },
+        null,
+        2
+      );
+    case "jwe":
+      if (!a.jwe || a.jwe.error || !a.jwe.header) return null;
+      return JSON.stringify(a.jwe.header, null, 2);
+    case "basic_auth":
+      if (!a.basicAuth) return null;
+      return `${a.basicAuth.username}:${a.basicAuth.password}`;
+    case "base64":
+      if (!a.base64 || a.base64.error) return null;
+      return a.base64.decoded;
+    default:
+      return null;
+  }
+}
+
+export function decodeBasicAuth(value: string): { username: string; password: string } | null {
+  if (!value) return null;
+  const m = value.match(/^Basic\s+([A-Za-z0-9+/_=]+)\s*$/i);
+  if (!m) return null;
+  const decoded = decodeBase64Flexible(m[1]);
+  if (decoded == null || !decoded.includes(":")) return null;
+  const colon = decoded.indexOf(":");
+  return {
+    username: decoded.slice(0, colon),
+    password: decoded.slice(colon + 1),
+  };
+}
+
+export function tryDecodeBase64(value: string): EncodedArtifact["base64"] | null {
+  const decoded = decodeBase64Flexible(value.trim());
+  if (decoded == null) return { decoded: "", isJson: false, error: "invalid base64" };
+  let isJson = false;
+  let text = decoded;
+  // Prefer UTF-8-ish presentation; atob already gives binary string
+  try {
+    const asUtf8 = decodeURIComponent(
+      decoded
+        .split("")
+        .map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("")
+    );
+    text = asUtf8;
+  } catch {
+    // keep latin1-ish decoded
+  }
+  const trimmed = text.trim();
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      text = JSON.stringify(JSON.parse(trimmed), null, 2);
+      isJson = true;
+    } catch {
+      /* keep raw */
+    }
+  }
+  return { decoded: text, isJson };
 }
 
 /** Case-insensitive header lookup. */
@@ -228,6 +413,251 @@ export function findJwt(
     if (looksLikeJwt(v)) return decodeJwt(v);
   }
   return null;
+}
+
+/**
+ * Collect every encoded/encrypted-looking value in a request or response.
+ * Multiple JWTs (or other kinds) become separate foldable entries.
+ */
+export function findEncodedArtifacts(opts: {
+  headers?: Record<string, string> | null;
+  cookies?: Record<string, string> | null;
+  query?: string | null;
+  body?: string | null;
+  bodyEncoding?: string;
+  contentType?: string | null;
+  side: "request" | "response";
+}): EncodedArtifact[] {
+  const out: EncodedArtifact[] = [];
+  const seen = new Set<string>();
+
+  const push = (a: EncodedArtifact) => {
+    // Dedupe same kind+location+token (not cross-location — two places stay two rows)
+    const key = `${a.kind}|${a.location}|${a.raw.slice(0, 200)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(a);
+  };
+
+  let seq = 0;
+  const nextId = (kind: EncodedKind, location: string) =>
+    `${kind}:${location}:${seq++}`;
+
+  const considerValue = (location: string, value: string) => {
+    if (!value || typeof value !== "string") return;
+    const v = value.trim();
+    if (!v) return;
+
+    // Basic auth (before JWT — Authorization can be either)
+    if (/^Basic\s+/i.test(v)) {
+      const basic = decodeBasicAuth(v);
+      if (basic) {
+        push({
+          id: nextId("basic_auth", location),
+          kind: "basic_auth",
+          location,
+          label: "Basic Auth",
+          raw: v,
+          basicAuth: basic,
+        });
+        return;
+      }
+    }
+
+    if (looksLikeJwe(v)) {
+      const jwe = decodeJweHeader(v);
+      push({
+        id: nextId("jwe", location),
+        kind: "jwe",
+        location,
+        label: "JWE (encrypted)",
+        raw: stripBearer(v),
+        jwe: jwe || undefined,
+      });
+      return;
+    }
+
+    if (looksLikeJwt(v)) {
+      const jwt = decodeJwt(v);
+      push({
+        id: nextId("jwt", location),
+        kind: "jwt",
+        location,
+        label: "JWT",
+        raw: jwt?.token || stripBearer(v),
+        jwt: jwt || undefined,
+      });
+      return;
+    }
+
+    // Embedded JWT inside a larger string (e.g. "token=eyJ…")
+    const embedded = extractEmbeddedJwts(v);
+    if (embedded.length > 0) {
+      for (const token of embedded) {
+        const jwt = decodeJwt(token);
+        push({
+          id: nextId("jwt", location),
+          kind: "jwt",
+          location,
+          label: "JWT",
+          raw: token,
+          jwt: jwt || undefined,
+        });
+      }
+      return;
+    }
+
+    if (looksLikeBase64(v)) {
+      push({
+        id: nextId("base64", location),
+        kind: "base64",
+        location,
+        label: "Base64",
+        raw: v,
+        base64: tryDecodeBase64(v) || undefined,
+      });
+    }
+  };
+
+  // Headers
+  for (const [name, value] of Object.entries(opts.headers || {})) {
+    const key = name.toLowerCase();
+    // Cookie / Set-Cookie handled via cookie pairs to get per-name locations
+    if (key === "cookie" || key === "set-cookie") continue;
+    considerValue(`header:${name}`, value ?? "");
+  }
+
+  // Cookies
+  if (opts.side === "request") {
+    const pairs = resolveRequestCookies(opts.cookies, opts.headers);
+    for (const c of pairs) {
+      considerValue(`cookie:${c.name}`, c.value);
+    }
+  } else {
+    const pairs = resolveResponseCookies(opts.headers);
+    for (const c of pairs) {
+      considerValue(`set-cookie:${c.name}`, c.value);
+    }
+  }
+
+  // Query (request)
+  if (opts.side === "request" && opts.query) {
+    for (const p of parseQueryParams(opts.query)) {
+      considerValue(`query:${p.name}`, p.value);
+    }
+  }
+
+  // Body
+  if (opts.body && opts.bodyEncoding !== "base64") {
+    const body = opts.body;
+    const ct = (opts.contentType || "").toLowerCase();
+
+    // Structured form fields
+    const formParams = parseBodyParams(body, opts.contentType, opts.bodyEncoding);
+    if (formParams.length > 0) {
+      for (const p of formParams) {
+        if (p.value && p.value !== "(multipart part)") {
+          considerValue(`body:${p.name}`, p.value);
+        }
+      }
+    }
+
+    // JSON leaf strings
+    if (ct.includes("json") || looksLikeJson(body)) {
+      walkJsonStrings(body, (path, str) => {
+        considerValue(path ? `body.${path}` : "body", str);
+      });
+    } else if (formParams.length === 0) {
+      // Raw body: scan for embedded JWTs; whole-body base64
+      const jwts = extractEmbeddedJwts(body);
+      for (const token of jwts) {
+        const jwt = decodeJwt(token);
+        push({
+          id: nextId("jwt", "body"),
+          kind: "jwt",
+          location: "body",
+          label: "JWT",
+          raw: token,
+          jwt: jwt || undefined,
+        });
+      }
+      if (jwts.length === 0 && looksLikeBase64(body.trim())) {
+        considerValue("body", body.trim());
+      }
+    }
+  } else if (opts.body && opts.bodyEncoding === "base64") {
+    // Stored binary — surface as opaque base64 blob (no full dump of huge payloads)
+    const raw = opts.body.length > 4000 ? opts.body.slice(0, 4000) + "…" : opts.body;
+    push({
+      id: nextId("base64", "body"),
+      kind: "base64",
+      location: "body",
+      label: "Binary body (base64)",
+      raw,
+      base64: {
+        decoded: `[binary body — ${opts.body.length} base64 chars stored]`,
+        isJson: false,
+      },
+    });
+  }
+
+  // Prefer JWT/JWE/Basic before base64 for stable reading; keep discovery order within kind
+  const rank: Record<EncodedKind, number> = {
+    jwt: 0,
+    jwe: 1,
+    basic_auth: 2,
+    base64: 3,
+  };
+  out.sort((a, b) => rank[a.kind] - rank[b.kind] || a.location.localeCompare(b.location));
+  return out;
+}
+
+/** Compact JWT tokens embedded in a larger string. */
+function extractEmbeddedJwts(text: string): string[] {
+  if (!text || text.length < 20) return [];
+  const re =
+    /\b(?:Bearer\s+)?(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*)/g;
+  const found: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const token = m[1];
+    if (looksLikeJwt(token) && !found.includes(token)) found.push(token);
+  }
+  return found;
+}
+
+function looksLikeJson(body: string): boolean {
+  const t = body.trim();
+  return (
+    (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))
+  );
+}
+
+function walkJsonStrings(
+  body: string,
+  visit: (path: string, value: string) => void
+): void {
+  try {
+    const data = JSON.parse(body) as unknown;
+    const walk = (node: unknown, path: string) => {
+      if (typeof node === "string") {
+        visit(path, node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((v, i) => walk(v, path ? `${path}[${i}]` : `[${i}]`));
+        return;
+      }
+      if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+          walk(v, path ? `${path}.${k}` : k);
+        }
+      }
+    };
+    walk(data, "");
+  } catch {
+    // not JSON
+  }
 }
 
 /** Parse query string into name/value pairs (no leading ?). */

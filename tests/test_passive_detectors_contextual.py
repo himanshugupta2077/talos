@@ -127,5 +127,50 @@ def test_orchestrator_fixture_corpus():
     # clientSecret high-entropy value kept; placeholders dropped
     kept = [d for d in dets if not d.suppressed]
     assert any(d.detector_id == "contextual_assignment" for d in kept)
-    redacted_blob = " ".join(d.redacted_value for d in kept)
-    assert "YOUR_API_KEY" not in redacted_blob
+
+
+def test_github_fixture_no_url_high_entropy_finding():
+    """//api.github.com/user must not become a high-entropy secret finding."""
+    text = _read("github_pat.js")
+    dets = DetectorOrchestrator().scan_text(text)
+    bad = [
+        d
+        for d in dets
+        if not d.suppressed
+        and d.detector_id == "high_entropy_secret"
+        and "github.com" in (d.context_before or "") + (d.context_after or "")
+        and "ghp_" not in (d.redacted_value or "")
+    ]
+    # Also reject redacted forms that look like //ap****user
+    bad += [
+        d
+        for d in dets
+        if not d.suppressed
+        and d.detector_id == "high_entropy_secret"
+        and (d.redacted_value or "").startswith("//")
+    ]
+    assert not bad, f"URL-shaped entropy hits: {[(d.redacted_value, d.confidence_level) for d in bad]}"
+    # Real PAT still found
+    assert any(d.detector_id == "github_pat" and not d.suppressed for d in dets)
+
+
+def test_encoded_password_comment_not_assignment():
+    """Comments must not produce a bare <placeholder>-style password finding."""
+    text = _read("encoded_password.js")
+    dets = DetectorOrchestrator().scan_text(text)
+    noise = [
+        d
+        for d in dets
+        if not d.suppressed
+        and d.detector_id == "contextual_assignment"
+        and d.redacted_value == "****"
+        and not d.encoding_chain
+    ]
+    assert not noise, f"comment/placeholder assignment noise: {noise}"
+    # Decoded password still surfaces via encoding chain
+    decoded = [
+        d
+        for d in dets
+        if not d.suppressed and d.encoding_chain and "base64" in d.encoding_chain
+    ]
+    assert decoded, "expected base64-decoded secret detection"

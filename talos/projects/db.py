@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -986,7 +986,8 @@ CREATE TABLE IF NOT EXISTS passive_scan_config (
     scan_wasm                    INTEGER NOT NULL DEFAULT 0,
     store_raw_secret_in_evidence INTEGER NOT NULL DEFAULT 1,
     store_suppressed_detections  INTEGER NOT NULL DEFAULT 0,
-    queue_maxsize                INTEGER NOT NULL DEFAULT 500
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500,
+    max_scan_time_ms             INTEGER NOT NULL DEFAULT 0
 );"""
 
 # Shared CREATE statements for Passive Source Intelligence (schema v39).
@@ -1090,7 +1091,8 @@ CREATE TABLE IF NOT EXISTS passive_scan_config (
     scan_wasm                    INTEGER NOT NULL DEFAULT 0,
     store_raw_secret_in_evidence INTEGER NOT NULL DEFAULT 1,
     store_suppressed_detections  INTEGER NOT NULL DEFAULT 0,
-    queue_maxsize                INTEGER NOT NULL DEFAULT 500
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500,
+    max_scan_time_ms             INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -1428,6 +1430,20 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
             "ON source_documents (parent_document_id)"
         )
 
+    if from_version < 41:
+        # Soft per-document scan budget (Phase 14 config field).
+        existing_cfg = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(passive_scan_config)"
+            ).fetchall()
+        }
+        if existing_cfg and "max_scan_time_ms" not in existing_cfg:
+            conn.execute(
+                "ALTER TABLE passive_scan_config "
+                "ADD COLUMN max_scan_time_ms INTEGER NOT NULL DEFAULT 0"
+            )
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -1545,6 +1561,7 @@ def migrate_project_db(db_path: Path) -> None:
                    (seeded with design-contract defaults).
         v39 → v40: source_documents.parent_document_id + logical_source_name
                    for source-map virtual documents (Phase 10).
+        v40 → v41: passive_scan_config.max_scan_time_ms (soft scan budget).
     """
     if not db_path.exists():
         return
@@ -2631,6 +2648,22 @@ def migrate_project_db(db_path: Path) -> None:
                 "ON source_documents (parent_document_id)"
             )
             conn.execute("UPDATE schema_version SET version = 40")
+            conn.commit()
+
+        if current < 41:
+            # Soft per-document scan budget for Passive Source Intelligence.
+            existing_cfg = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(passive_scan_config)"
+                ).fetchall()
+            }
+            if existing_cfg and "max_scan_time_ms" not in existing_cfg:
+                conn.execute(
+                    "ALTER TABLE passive_scan_config "
+                    "ADD COLUMN max_scan_time_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute("UPDATE schema_version SET version = 41")
             conn.commit()
 
 
