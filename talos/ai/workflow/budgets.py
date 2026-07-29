@@ -64,6 +64,8 @@ def first_exceeded(
     if started_at_iso:
         refresh_wall_clock(usage, started_at_iso)
 
+    # Use >= so a counter that has already hit its cap blocks further work.
+    # Wall clock compares whole seconds (floor) against the limit.
     checks = [
         ("max_steps", usage.steps, limits.max_steps),
         ("max_tool_calls", usage.tool_calls, limits.max_tool_calls),
@@ -74,6 +76,9 @@ def first_exceeded(
         ("max_wall_clock_s", int(usage.wall_clock_s), limits.max_wall_clock_s),
     ]
     for name, current, limit in checks:
+        if limit <= 0:
+            # Non-positive limits are treated as immediately exhausted (fail-closed).
+            return name
         if current >= limit:
             return name
     return None

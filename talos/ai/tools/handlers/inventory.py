@@ -257,20 +257,19 @@ def handle_finding_show(
 ) -> HandlerResult:
     finding_id = str(args["finding_id"]).strip()
     row = findings_db.get_finding(ctx.db_path, finding_id)
-    if row is None or row.get("project_id") not in (None, ctx.project_id):
-        # Reject cross-project if project_id is set and differs.
-        if row is not None and row.get("project_id") and row["project_id"] != ctx.project_id:
-            return HandlerResult(
-                success=False,
-                summary="finding not in pinned project",
-                error="Finding does not belong to the pinned project.",
-            )
-        if row is None:
-            return HandlerResult(
-                success=False,
-                summary="finding not found",
-                error=f"Finding not found: {finding_id}",
-            )
+    if row is None:
+        return HandlerResult(
+            success=False,
+            summary="finding not found",
+            error=f"Finding not found: {finding_id}",
+        )
+    row_project = row.get("project_id")
+    if row_project and row_project != ctx.project_id:
+        return HandlerResult(
+            success=False,
+            summary="finding not in pinned project",
+            error="Finding does not belong to the pinned project.",
+        )
     evidence = findings_db.list_evidence(ctx.db_path, finding_id)
     return HandlerResult(
         success=True,

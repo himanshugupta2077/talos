@@ -25,13 +25,14 @@ from talos.ai.executor import Executor, ExecutorError
 from talos.ai.models import (
     ActionSuggestion,
     AutonomyMode,
+    BudgetLimits,
     Capability,
     ExecutionPlan,
     PolicyReject,
     SessionStatus,
     grants_for_mode,
 )
-from talos.ai.policy import PolicyValidator, reset_token_store_for_tests
+from talos.ai.policy import reset_token_store_for_tests
 from talos.ai.tools.registry import (
     ToolRegistry,
     default_registry,
@@ -39,8 +40,8 @@ from talos.ai.tools.registry import (
 )
 from talos.ai.workflow.engine import WorkflowEngine, WorkflowEngineError
 from talos.ai.workflow import session as session_store
-from talos.projects.access import create_role, get_active_role, list_roles
-from talos.projects.db import SCHEMA_VERSION, get_schema_version, init_project_db
+from talos.projects.access import create_role, get_active_role
+from talos.projects.db import SCHEMA_VERSION, get_schema_version
 from talos.projects.manager import ProjectManager, TALOS_PROJECT_ENV
 
 
@@ -384,3 +385,127 @@ class TestModeAndPrefs:
         engine.clear_aggressive_ack()
         prefs2 = session_store.get_project_prefs(project.db_path, project.id)
         assert prefs2["auto_aggressive_ack_at"] is None
+
+
+# ================================================================== #
+# Approval gate + budgets + CLI safety                                 #
+# ================================================================== #
+
+
+class TestApprovalGate:
+    def test_execute_plan_blocks_pending_approval(
+        self, engine: WorkflowEngine
+    ) -> None:
+        """MODIFY_CONTEXT plans require approval; execute_plan without force fails."""
+        session = engine.start("recon", mode=AutonomyMode.STEP)
+        suggestion = ActionSuggestion(
+            suggestion_id=str(uuid.uuid4()),
+            session_id=session.session_id,
+            tool_name="role.set_active",
+            arguments={"name": "global"},
+            created_at=session.created_at,
+        )
+        plan = engine.validate_suggestion(suggestion, auto_reads=False)
+        assert isinstance(plan, ExecutionPlan)
+        assert plan.requires_approval is True
+        with pytest.raises(WorkflowEngineError) as exc:
+            engine.execute_plan(plan, force=False)
+        assert exc.value.exit_code == 3
+        assert "requires approval" in str(exc.value).lower()
+
+    def test_auto_reads_read_tool_no_approval_needed(
+        self, engine: WorkflowEngine
+    ) -> None:
+        """READ tools with auto_reads skip the approval flag."""
+        session = engine.start("recon", mode=AutonomyMode.STEP)
+        suggestion = ActionSuggestion(
+            suggestion_id=str(uuid.uuid4()),
+            session_id=session.session_id,
+            tool_name="role.list",
+            arguments={},
+            created_at=session.created_at,
+        )
+        plan = engine.validate_suggestion(suggestion, auto_reads=True)
+        assert isinstance(plan, ExecutionPlan)
+        assert plan.requires_approval is False
+        obs = engine.execute_plan(plan, force=False)
+        assert obs.success is True
+
+
+class TestBudgetHalt:
+    def test_tool_call_budget_halts_session(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("recon", mode=AutonomyMode.STEP)
+        tight = BudgetLimits(max_tool_calls=1)
+        with sqlite3.connect(str(project.db_path)) as conn:
+            conn.execute(
+                "UPDATE ai_sessions SET budgets_json = ? WHERE id = ?",
+                (json.dumps(tight.to_dict()), session.session_id),
+            )
+            conn.commit()
+
+        reloaded = session_store.get_session(
+            project.db_path, project.id, session.session_id
+        )
+        assert reloaded.budgets.max_tool_calls == 1
+
+        engine.validate_and_execute(
+            "role.list", {}, session_id=session.session_id, force=True
+        )
+        after = session_store.get_session(
+            project.db_path, project.id, session.session_id
+        )
+        assert after.usage.tool_calls == 1
+        assert after.status == SessionStatus.HALTED_BUDGET
+
+        with pytest.raises(WorkflowEngineError):
+            engine.validate_and_execute(
+                "role.list", {}, session_id=session.session_id, force=True
+            )
+
+
+class TestCliSafety:
+    def test_experimental_start_requires_force_noninteractive(
+        self, manager: ProjectManager, project, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """auto-* on start must not succeed silently without --force in non-TTY."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from talos.ai.cli import run_ai_cli
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        out, err = io.StringIO(), io.StringIO()
+        with pytest.raises(SystemExit) as exc:
+            with redirect_stdout(out), redirect_stderr(err):
+                run_ai_cli(manager, ["start", "--mode", "auto-low", "--goal", "x"])
+        assert exc.value.code == 2
+        combined = (err.getvalue() + out.getvalue()).lower()
+        assert "force" in combined
+
+    def test_force_stop_existing_no_prompt_when_none(
+        self, manager: ProjectManager, project, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--force-stop-existing with no active session should not require --force."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from talos.ai.cli import run_ai_cli
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            run_ai_cli(
+                manager,
+                [
+                    "start",
+                    "--goal",
+                    "only",
+                    "--force-stop-existing",
+                    "--format",
+                    "json",
+                ],
+            )
+        assert '"session_id"' in out.getvalue()
+        assert "Error" not in err.getvalue()

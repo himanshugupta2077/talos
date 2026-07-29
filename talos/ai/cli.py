@@ -18,15 +18,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Optional
 
 from talos.ai.models import (
     DEFAULT_AUTONOMY_MODE,
     EXPERIMENTAL_MODES,
-    AutonomyMode,
     parse_mode,
 )
 from talos.ai.workflow.engine import WorkflowEngine, WorkflowEngineError
+from talos.ai.workflow import session as session_store
 from talos.cli_output import (
     add_force_argument,
     add_format_argument,
@@ -166,6 +165,8 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
     except WorkflowEngineError as exc:
         if exc.exit_code == 3:
             cli_precondition_error(str(exc))
+        if exc.exit_code == 2:
+            cli_usage_error(str(exc))
         cli_error(str(exc), exit_code=exc.exit_code)
 
 
@@ -190,15 +191,25 @@ def _cmd_start(engine: WorkflowEngine, args: argparse.Namespace) -> None:
     except ValueError as exc:
         cli_usage_error(str(exc))
 
-    if mode in EXPERIMENTAL_MODES and not getattr(args, "force", False):
-        # start --mode auto-* still allowed but warn; mode set is the gated path.
-        pass
+    force = bool(getattr(args, "force", False))
 
-    if args.force_stop_existing:
+    # Design: enabling any auto-* requires interactive confirm / --force.
+    if mode in EXPERIMENTAL_MODES:
         confirm_or_exit(
-            "Stop the existing active AI session for this project?",
-            force=bool(getattr(args, "force", False)),
+            f"Start AI session in experimental mode '{mode.value}'?",
+            force=force,
         )
+
+    # Only prompt to stop an existing session when one is actually active.
+    if args.force_stop_existing:
+        project = engine.manager.active()
+        if project is not None:
+            existing = session_store.get_active_session(project.db_path, project.id)
+            if existing is not None:
+                confirm_or_exit(
+                    "Stop the existing active AI session for this project?",
+                    force=force,
+                )
 
     session = engine.start(
         args.goal or "",
@@ -215,7 +226,12 @@ def _cmd_start(engine: WorkflowEngine, args: argparse.Namespace) -> None:
     print(f"Status:   {session.status.value}")
     if session.goal:
         print(f"Goal:     {session.goal}")
-    cli_info("Execute is off in suggest-only; use 'talos ai mode set step' to enable.")
+    if session.mode.value == "suggest-only":
+        cli_info(
+            "Execute is off in suggest-only; use 'talos ai mode set step' to enable."
+        )
+    elif mode in EXPERIMENTAL_MODES:
+        cli_info(f"Mode '{session.mode.value}' is experimental.")
 
 
 def _cmd_stop(engine: WorkflowEngine, args: argparse.Namespace) -> None:
@@ -262,13 +278,12 @@ def _cmd_status(engine: WorkflowEngine, args: argparse.Namespace) -> None:
     print(f"Updated:     {payload['updated_at']}")
     print()
     print("Budgets:")
-    for key, val in payload["budgets"].items():
-        usage_key = key.replace("max_", "")
-        used = payload["usage"].get(usage_key, payload["usage"].get(key, 0))
-        # Map max_wall_clock_s → wall_clock_s etc.
-        if usage_key.startswith("max_"):
-            usage_key = usage_key[4:]
-        used = payload["usage"].get(usage_key, 0)
+    # budgets_json keys are max_*; usage_json keys drop the max_ prefix
+    # (e.g. max_tool_calls → tool_calls, max_wall_clock_s → wall_clock_s).
+    usage = payload.get("usage") or {}
+    for key, val in (payload.get("budgets") or {}).items():
+        usage_key = key[4:] if key.startswith("max_") else key
+        used = usage.get(usage_key, 0)
         print(f"  {key}: {used} / {val}")
     caps = payload.get("granted_capabilities") or []
     print()

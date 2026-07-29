@@ -377,11 +377,13 @@ class WorkflowEngine:
         plan: ExecutionPlan,
         *,
         session_id: Optional[str] = None,
+        force: bool = False,
     ) -> Observation:
         """
         Purpose:
-            Execute a sealed plan. Phase A entry for tests; Phase B wires
-            this behind approve after human gate.
+            Execute a sealed plan. Plans with requires_approval=True are
+            refused unless force=True (Phase B: human approve sets force
+            after re-validation). Phase A tests use validate_and_execute.
         """
         project = self._require_project()
         try:
@@ -397,6 +399,13 @@ class WorkflowEngine:
             raise WorkflowEngineError(
                 "Mode is suggest-only: execution is disabled. "
                 "Run 'talos ai mode set step'.",
+                exit_code=3,
+            )
+
+        if plan.requires_approval and not force:
+            raise WorkflowEngineError(
+                f"Plan {plan.plan_id} requires approval before execute "
+                f"(tool={plan.tool_name}). Phase B: talos ai approve <plan_id>.",
                 exit_code=3,
             )
 
@@ -439,13 +448,15 @@ class WorkflowEngine:
         session_id: Optional[str] = None,
         reason: Optional[str] = None,
         auto_reads: bool = True,
+        force: bool = True,
     ) -> tuple[ExecutionPlan, Observation]:
         """
         Purpose:
-            Convenience for tests and internal Phase A paths: mint an
-            in-memory suggestion, validate, execute (skipping human approve
-            when plan.requires_approval is False, else still executes for
-            test helper — callers must check requires_approval if needed).
+            Test/internal helper: mint an in-memory suggestion, validate,
+            and execute. Default force=True bypasses the approval gate so
+            Phase A unit tests can exercise handlers; production paths
+            must use validate → approve → execute_plan(force=True) only
+            after an operator decision (Phase B).
         """
         project = self._require_project()
         try:
@@ -474,7 +485,9 @@ class WorkflowEngine:
                 exit_code=3,
             )
         observation = self.execute_plan(
-            plan_or_reject, session_id=session.session_id
+            plan_or_reject,
+            session_id=session.session_id,
+            force=force,
         )
         return plan_or_reject, observation
 
