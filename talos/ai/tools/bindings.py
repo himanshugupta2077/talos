@@ -16,8 +16,10 @@ from __future__ import annotations
 from talos.ai.models import BudgetClass, Capability
 from talos.ai.tools.handler import CallableHandler
 from talos.ai.tools.handlers import context as context_handlers
+from talos.ai.tools.handlers import engines as engine_handlers
 from talos.ai.tools.handlers import inventory as inventory_handlers
 from talos.ai.tools.handlers import notes_kb as notes_kb_handlers
+from talos.ai.tools.handlers import replay_send as replay_send_handlers
 from talos.ai.tools.policy_def import ToolPolicy
 from talos.ai.tools.registry import ToolRegistry
 from talos.ai.tools import schemas as S
@@ -51,11 +53,38 @@ def _write_policy(*caps: Capability) -> ToolPolicy:
     )
 
 
+def _http_policy(*caps: Capability, idempotent: bool = False) -> ToolPolicy:
+    return ToolPolicy(
+        capabilities=frozenset(caps),
+        requires_approval=True,
+        idempotent=idempotent,
+        budget_class=BudgetClass.HTTP_EXECUTED,
+    )
+
+
+def _enqueue_policy(*caps: Capability) -> ToolPolicy:
+    return ToolPolicy(
+        capabilities=frozenset(caps),
+        requires_approval=True,
+        idempotent=True,
+        budget_class=BudgetClass.JOB_ENQUEUED,
+    )
+
+
+def _intruder_policy() -> ToolPolicy:
+    return ToolPolicy(
+        capabilities=frozenset({Capability.ENQUEUE_INTRUDER}),
+        requires_approval=True,
+        idempotent=False,
+        budget_class=BudgetClass.INTRUDER_PAYLOAD,
+    )
+
+
 def register_all_tools(registry: ToolRegistry) -> None:
     """
     Purpose:
-        Register Phase A+B tools (READ inventory/intel/context + set-active
-        + notes + PTT).
+        Register Phase A–D tools (READ + notes/PTT + HTTP send/replay +
+        engine enqueue).
     Input:
         registry — empty or partially filled ToolRegistry.
     Side effects:
@@ -343,4 +372,120 @@ def register_all_tools(registry: ToolRegistry) -> None:
         ),
         _write_policy(Capability.MODIFY_TASK_TREE),
         CallableHandler(notes_kb_handlers.handle_task_tree_upsert),
+    )
+
+    # ---- Phase D: send / replay ----
+    registry.register(
+        ToolSpec(
+            name="send.once",
+            version=1,
+            description=(
+                "Send a forked request once from a parent flow (source=ai_send). "
+                "Max 20 edits; live scope + annotation matrix enforced."
+            ),
+            input_schema=S.SCHEMA_SEND_ONCE,
+            tags=("http", "send"),
+        ),
+        _http_policy(Capability.SEND_REQUEST, idempotent=False),
+        CallableHandler(replay_send_handlers.handle_send_once),
+    )
+    registry.register(
+        ToolSpec(
+            name="replay.flow",
+            version=1,
+            description=(
+                "Enqueue a replay_flow scheduler job for an existing flow "
+                "(enqueue only; poll via scheduler.jobs.*)."
+            ),
+            input_schema=S.SCHEMA_REPLAY_FLOW,
+            tags=("http", "replay", "enqueue"),
+        ),
+        _enqueue_policy(Capability.REPLAY_FLOW),
+        CallableHandler(replay_send_handlers.handle_replay_flow),
+    )
+
+    # ---- Phase D: engines ----
+    registry.register(
+        ToolSpec(
+            name="iv.run",
+            version=1,
+            description=(
+                "Enqueue Input Validation jobs (project/host/endpoint/parameter). "
+                "Enqueue only — poll scheduler.jobs.*"
+            ),
+            input_schema=S.SCHEMA_IV_RUN,
+            tags=("engine", "iv", "enqueue"),
+        ),
+        _enqueue_policy(Capability.ENQUEUE_IV),
+        CallableHandler(engine_handlers.handle_iv_run),
+    )
+    registry.register(
+        ToolSpec(
+            name="iv.synthesize",
+            version=1,
+            description=(
+                "Synthesize parameter intelligence from existing IV probes "
+                "(local DB only; no HTTP)."
+            ),
+            input_schema=S.SCHEMA_IV_SYNTHESIZE,
+            tags=("intel", "iv", "read"),
+        ),
+        _read_policy(Capability.READ_INTEL),
+        CallableHandler(engine_handlers.handle_iv_synthesize),
+    )
+    registry.register(
+        ToolSpec(
+            name="passive.rescan",
+            version=1,
+            description=(
+                "Re-run passive detectors on stored response bodies "
+                "(flow_id | document_id | all)."
+            ),
+            input_schema=S.SCHEMA_PASSIVE_RESCAN,
+            tags=("engine", "passive", "enqueue"),
+        ),
+        _enqueue_policy(Capability.ENQUEUE_PASSIVE),
+        CallableHandler(engine_handlers.handle_passive_rescan),
+    )
+    registry.register(
+        ToolSpec(
+            name="attack.unauth.run",
+            version=1,
+            description=(
+                "Enqueue unauth_attack jobs for a flow/endpoint (or limited scan). "
+                "Enqueue only."
+            ),
+            input_schema=S.SCHEMA_ATTACK_UNAUTH_RUN,
+            tags=("engine", "unauth", "enqueue"),
+        ),
+        _enqueue_policy(Capability.ENQUEUE_ATTACK),
+        CallableHandler(engine_handlers.handle_attack_unauth_run),
+    )
+    registry.register(
+        ToolSpec(
+            name="attack.bac.run",
+            version=1,
+            description=(
+                "Enqueue BAC jobs for a bac_module (session_swap, method_fuzz, …). "
+                "Enqueue only; requires attacker role."
+            ),
+            input_schema=S.SCHEMA_ATTACK_BAC_RUN,
+            tags=("engine", "bac", "enqueue"),
+        ),
+        _enqueue_policy(Capability.ENQUEUE_ATTACK),
+        CallableHandler(engine_handlers.handle_attack_bac_run),
+    )
+    registry.register(
+        ToolSpec(
+            name="intruder.session.run",
+            version=1,
+            description=(
+                "Enqueue one segment for a pre-created Intruder session "
+                "(session_id required; no session create)."
+            ),
+            input_schema=S.SCHEMA_INTRUDER_SESSION_RUN,
+            tags=("engine", "intruder", "enqueue"),
+        ),
+        _intruder_policy(),
+        CallableHandler(engine_handlers.handle_intruder_session_run),
     )

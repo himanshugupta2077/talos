@@ -206,8 +206,8 @@ class TestToolRegistry:
         assert "module.set_active" in names
         assert "role.list" in names
         assert "iv.candidates" in names
-        # HTTP tools not yet registered in Phase A.
-        assert "send.once" not in names
+        # Phase D registers HTTP tools (still present alongside Phase A READ tools).
+        assert "send.once" in names
 
     def test_unknown_tool_get_spec_raises(self) -> None:
         reg = default_registry()

@@ -3,7 +3,7 @@ Module: talos.ai.cli
 
 Purpose:
     Thin CLI for the AI layer. All orchestration goes through WorkflowEngine.
-    Phase A–C: sessions, tools, audit, suggest/approve/deny/pending/plans,
+    Phase A–D: sessions, tools, audit, suggest/approve/deny/pending/plans,
     notes, mcp serve (stdio), config show|set|unset|edit.
 
 Dependencies: argparse, talos.cli_output, talos.ai.workflow.engine

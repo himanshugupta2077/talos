@@ -3,9 +3,10 @@ Module: talos.ai.workflow.engine
 
 Purpose:
     WorkflowEngine façade — the only surface CLI / MCP / CP should call for
-    AI session orchestration. Phase A–C: sessions, tools, notes, suggest →
+    AI session orchestration. Phase A–D: sessions, tools, notes, suggest →
     immutable suggestions → ExecutionPlan approve/deny, PTT, observations,
-    external MCP tool path, LLM or heuristic planner.
+    external MCP tool path, LLM or heuristic planner, HTTP send/replay +
+    engine enqueue with live scope and annotation matrix.
 
 Dependencies: talos.ai.* , talos.projects.manager
 Data flow:
@@ -97,7 +98,7 @@ class WorkflowEngine:
     @property
     def validator(self) -> PolicyValidator:
         if self._validator is None:
-            self._validator = PolicyValidator(self.registry)
+            self._validator = PolicyValidator(self.registry, manager=self.manager)
         return self._validator
 
     @property
@@ -164,8 +165,11 @@ class WorkflowEngine:
         if isinstance(mode, str):
             mode = parse_mode(mode)
 
+        from talos.projects.outscope import load_prefix_set
+
         scope_snapshot = {
             "scope": list(project.scope or []),
+            "outscope": list(load_prefix_set(project.db_path)),
             "captured_at": datetime.now(timezone.utc)
             .replace(microsecond=0)
             .isoformat(),
@@ -1331,8 +1335,13 @@ class WorkflowEngine:
             )
 
         # Re-validate always (live policy) — mints a new sealed plan + token.
+        # human_approved=True: allows dangerous targets with ai_force_dangerous.
         result = self.validator.validate(
-            suggestion, session, live=True, auto_reads=False
+            suggestion,
+            session,
+            live=True,
+            auto_reads=False,
+            human_approved=True,
         )
         if isinstance(result, PolicyReject):
             if plan_row is not None and plan_row.get("status") == (

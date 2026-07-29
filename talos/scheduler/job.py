@@ -184,6 +184,16 @@ PRIORITY_MANUAL = 100
 PRIORITY_AUTO = 10
 """Automatically enqueued jobs from future attack modules. Lower precedence."""
 
+# AI-layer enqueue priorities (talos.ai Phase D).
+# PRIORITY_AI_AUTO < PRIORITY_MANUAL so the scheduler skips dangerous endpoints
+# the same way it skips other auto jobs. Human-approved dangerous AI work uses
+# PRIORITY_AI_MANUAL (= PRIORITY_MANUAL) + job meta ai_force_dangerous=true.
+PRIORITY_AI_AUTO = 15
+"""AI-enqueued jobs without human force-dangerous approval."""
+
+PRIORITY_AI_MANUAL = 100
+"""Human-approved AI jobs (including force-dangerous). Same rank as PRIORITY_MANUAL."""
+
 
 # ------------------------------------------------------------------ #
 # Data type                                                            #

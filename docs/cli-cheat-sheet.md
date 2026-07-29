@@ -355,7 +355,7 @@ talos [--project ID] [-h|--help]
 │  ├─ group create|add|remove|list
 │  └─ report <uuid> | --group <group>
 │
-└─ ai                        # policy-gated agent (Phase A–C)
+└─ ai                        # policy-gated agent (Phase A–D)
    ├─ start [--goal TEXT] [--mode MODE] [--force-stop-existing] [--force]
    ├─ stop [SESSION]
    ├─ resume SESSION
@@ -1906,7 +1906,7 @@ talos finding report --group "Critical Findings"
 
 ---
 
-## AI (policy-gated agent — Phase A–C)
+## AI (policy-gated agent — Phase A–D)
 
 Suggest-first control model for **authorized bug bounty / client pentest**.
 Sessions pin to the effective project. Default mode is `suggest-only`
@@ -1915,6 +1915,12 @@ Sessions pin to the effective project. Default mode is `suggest-only`
 offline heuristic (`provider=none`); configure an LLM via `talos ai config`.
 Registry has no public `call()` — execute only via sealed `ExecutionPlan`
 after validate/approve (CLI or MCP). **No AI client-data redaction module.**
+
+**Phase D gates:** every HTTP tool re-checks live Basic Scope + outscope
+(empty in-scope = deny-all; mid-session shrink fails closed). `logout`
+annotations always reject; `dangerous` never silent auto — operator must
+`approve` (then jobs use `PRIORITY_AI_MANUAL` + `ai_force_dangerous`).
+Engines are **enqueue-only** — poll with `scheduler.jobs.*` (or CLI).
 
 ```bash
 # Start (one active session per project)
@@ -1942,7 +1948,7 @@ talos ai notes show
 talos ai notes export
 talos ai notes edit --force
 
-# Allowlisted tools (ToolSpec descriptors)
+# Allowlisted tools (ToolSpec descriptors) — includes Phase D HTTP/engines
 talos ai tools list
 talos ai tools list --format json
 
@@ -1973,11 +1979,18 @@ talos ai audit list
 talos ai audit list --session <session_id> --format json
 ```
 
-**Tools (selected):** `endpoint.list|show`, `flow.show|diff`,
-`param.intelligence`, `iv.candidates`, `finding.list|show`,
-`passive.detections.list`, `error_intel.list`, `access.coverage`,
-`scheduler.jobs.list|show`, `intruder.suggest`, `role.*`, `module.*`,
-`notes.app.get|patch`, `task_tree.list|upsert`
-(set-active requires existing name — never creates).
+**Tools (selected):**
+- **READ:** `endpoint.list|show`, `flow.show|diff`, `param.intelligence`,
+  `iv.candidates`, `finding.list|show`, `passive.detections.list`,
+  `error_intel.list`, `access.coverage`, `scheduler.jobs.list|show`,
+  `intruder.suggest`, `role.*`, `module.*`, `notes.app.get`, `task_tree.list`,
+  `iv.synthesize`
+- **WRITE / context:** `notes.app.patch`, `task_tree.upsert`,
+  `role.set_active`, `module.set_active` (exists-only — never creates)
+- **HTTP (Phase D):** `send.once`, `replay.flow` (enqueue)
+- **Engines (Phase D, enqueue-only):** `iv.run`, `passive.rescan`,
+  `attack.unauth.run`, `attack.bac.run`, `intruder.session.run`
+  (pre-created intruder `session_id` required)
 
-**Later phases:** KB / draft findings / `send.once` / engine enqueue / Control Panel AI.
+**Later phases (E):** project/global KB, draft findings + promote,
+Control Panel AI page, eval harness.

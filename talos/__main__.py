@@ -515,7 +515,7 @@ def _print_usage() -> None:
         "    rescan --all|--flow [--force]\n"
         "                               Re-run pipeline on stored bodies\n"
         "    rollup parameter|endpoint  Parameter / endpoint error rollups\n\n"
-        "  ai   (policy-gated agent — Phase A–C)\n"
+        "  ai   (policy-gated agent — Phase A–D)\n"
         "    start           Start AI session pinned to project\n"
         "                    [--goal TEXT] [--mode suggest-only|step|…]\n"
         "                    [--force-stop-existing]\n"

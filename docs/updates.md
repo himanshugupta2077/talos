@@ -2,6 +2,44 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## AI Layer Phase D — send/replay + engine orchestration
+
+**Shipped:** 2026-07-29 (no schema bump; reuses v51 tables).
+
+Active pentest surface for the policy-gated agent (`docs/design-talos-ai-layer.md`
+Phase D / PR7 + PR8a + PR8b).
+
+| Surface | Detail |
+|---------|--------|
+| HTTP tools | `send.once` (source=`ai_send`, ≤20 edits) + `replay.flow` (**enqueue only**) |
+| Live scope | Every HTTP tool re-checks Basic Scope + outscope; empty in-scope = deny-all; mid-session shrink fails closed (live ∩ snapshot) |
+| Annotations | `logout` always reject; `dangerous` never silent auto — needs human `approve` → `ai_force_dangerous` + `PRIORITY_AI_MANUAL` |
+| Priorities | `PRIORITY_AI_AUTO=15`, `PRIORITY_AI_MANUAL=100` on scheduler jobs; meta `source=ai` |
+| Engines | `iv.run` / `iv.synthesize` / `passive.rescan` / `attack.unauth.run` / `attack.bac.run` / `intruder.session.run` (pre-created session only) |
+| Budgets | `http_executed` (send), `jobs_enqueued` (replay/IV/attacks/passive), `intruder_payload` (intruder) |
+
+```bash
+talos project open my-app
+talos ai start --goal "Probe IDOR" --mode step --force
+talos ai tools list   # includes send.once, replay.flow, iv.run, attack.*
+# Planner or operator proposes send.once / replay.flow → approve
+talos ai suggest
+talos ai pending
+talos ai approve <plan_id>
+# Poll engines (never block approve on completion)
+# (via tools or CLI) scheduler.jobs.list / scheduler.jobs.show
+talos ai stop
+```
+
+**Not in Phase D:** KB / draft findings, Control Panel AI page, network MCP,
+finding.confirm, role/module create, intruder session create.
+
+**Files:** `talos/ai/tools/handlers/{replay_send,engines}.py`,
+`talos/ai/tools/scope_policy.py`, `talos/ai/policy.py` (live scope + annotations),
+`talos/scheduler/job.py` (`PRIORITY_AI_*`), `tests/test_ai_phase_d.py`, docs.
+
+---
+
 ## AI Layer Phase C — stdio MCP + LLM providers (no redaction)
 
 **Shipped:** 2026-07-29 (no schema bump; reuses v51 tables).

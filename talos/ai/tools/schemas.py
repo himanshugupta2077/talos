@@ -2,7 +2,7 @@
 Module: talos.ai.tools.schemas
 
 Purpose:
-    JSON Schema bodies for Phase A tools + TOOL_PROTOCOL_VERSION.
+    JSON Schema bodies for Phase A–D tools + TOOL_PROTOCOL_VERSION.
     Lightweight validator for the schema subset used by TTP (no jsonschema dep).
 
 Dependencies: copy, typing
@@ -286,6 +286,145 @@ SCHEMA_TASK_TREE_UPSERT: dict[str, Any] = {
             "items": {"type": "string", "maxLength": 128},
         },
         "evidence_refs": {"type": "object"},
+    },
+}
+
+# ------------------------------------------------------------------ #
+# Phase D: send / replay / engines                                     #
+# ------------------------------------------------------------------ #
+
+SCHEMA_SEND_ONCE: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["parent_flow_id"],
+    "properties": {
+        "parent_flow_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "edits": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["op", "target"],
+                "properties": {
+                    "op": {"type": "string", "enum": ["set", "remove"]},
+                    "target": {
+                        "type": "string",
+                        "enum": [
+                            "query",
+                            "header",
+                            "cookie",
+                            "body_json_path",
+                            "path",
+                            "host",
+                            "url",
+                        ],
+                    },
+                    "key": {"type": "string", "maxLength": 256},
+                    "value": {"type": "string", "maxLength": 8192},
+                },
+            },
+        },
+        "reason": {"type": "string", "maxLength": 512},
+    },
+}
+
+SCHEMA_REPLAY_FLOW: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["flow_id"],
+    "properties": {
+        "flow_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "reason": {"type": "string", "maxLength": 512},
+    },
+}
+
+SCHEMA_IV_RUN: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "scope": {
+            "type": "string",
+            "enum": ["project", "host", "endpoint", "parameter"],
+            "default": "endpoint",
+        },
+        "host": {"type": "string", "maxLength": 256},
+        "endpoint_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "param_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "phase_filter": {"type": "string", "maxLength": 64},
+        "ignore_cache": {"type": "boolean", "default": False},
+    },
+}
+
+SCHEMA_IV_SYNTHESIZE: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["param_uuid"],
+    "properties": {
+        "param_uuid": {"type": "string", "minLength": 4, "maxLength": 128},
+        "persist": {"type": "boolean", "default": True},
+    },
+}
+
+SCHEMA_PASSIVE_RESCAN: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "flow_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "document_id": {"type": "string", "minLength": 4, "maxLength": 64},
+        "all": {"type": "boolean", "default": False},
+        "force": {"type": "boolean", "default": False},
+    },
+}
+
+SCHEMA_ATTACK_UNAUTH_RUN: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "endpoint_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "flow_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "technique": {"type": "string", "maxLength": 64},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+    },
+}
+
+_BAC_MODULES = [
+    "bac_session_swap",
+    "bac_method_fuzz",
+    "bac_content_type",
+    "bac_url_fuzz",
+    "bac_header_inject",
+    "bac_host_fuzz",
+    "bac_role_inject",
+    "bac_parser_confuse",
+]
+
+SCHEMA_ATTACK_BAC_RUN: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["bac_module"],
+    "properties": {
+        "bac_module": {"type": "string", "enum": list(_BAC_MODULES)},
+        "endpoint_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "flow_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "attacker_role": {"type": "string", "minLength": 1, "maxLength": 128},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+    },
+}
+
+SCHEMA_INTRUDER_SESSION_RUN: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["session_id"],
+    "properties": {
+        "session_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "segment": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 0},
+        "max_payloads": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 200,
+        },
     },
 }
 
