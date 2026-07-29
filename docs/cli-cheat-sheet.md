@@ -1131,7 +1131,7 @@ Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** 
 
 ---
 
-## Intruder (Phase 1–3)
+## Intruder (Phase 1–4)
 
 High-volume mutation attack engine. **Not** Send multi-send and **not** IV.
 Scheduler-backed time-sliced jobs (`intruder_session`); micro RPS inside a
@@ -1159,6 +1159,11 @@ talos intruder payload set <sid> --var id --generator csv --file ./ids.csv --col
 talos intruder payload set <sid> --var id --generator json --file ./ids.json --json-path users[].id
 talos intruder payload set <sid> --var id --generator example_values --param-id <param_uuid>
 talos intruder payload set <sid> --var tok --generator pool --pool tokens
+# Phase 4 generators:
+talos intruder payload set <sid> --var d --generator dates --start-date 2020-01-01 --end-date 2020-01-31
+talos intruder payload set <sid> --var pin --generator bruteforce --charset 0123456789 --min-len 4 --max-len 4
+talos intruder payload set <sid> --var tok --generator random --count 50 --length 16 --seed 1
+talos intruder payload set <sid> --var u --generator pattern --pattern 'user{n:03d}' --start 1 --end 50
 # Phase 2 processors: url_decode, base64_decode, to_lower/upper, html_encode/decode,
 # md5/sha1/sha256, strip, prefix:<text>, suffix:<text>
 talos intruder payload set <sid> --var q --generator static --value Ab --processor strip --processor to_lower --processor 'prefix:p:'
@@ -1172,6 +1177,9 @@ talos intruder strategy set <sid> --type zip --set user_id --set role       # lo
 talos intruder strategy set <sid> --type cluster_bomb --set user_id --set role  # cartesian
 talos intruder timing set <sid> --mode fixed --rps 2 --concurrency 1
 talos intruder timing set <sid> --concurrency 4 --concurrency-per-host 2   # Phase 2 host cap
+# Phase 4 timing:
+talos intruder timing set <sid> --mode adaptive --rps 2 --min-rps 0.5 --max-rps 8 --slow-ms 2000
+talos intruder timing set <sid> --mode token_bucket --rps 5 --burst-size 10
 talos intruder match add <sid> --status 200 --length-delta-gt 50 --tag big
 
 # Phase 3 grep extract → grepped_json + optional project pools
@@ -1180,6 +1188,10 @@ talos intruder grep list <sid> --format json
 talos intruder pool list --format json
 talos intruder pool show token --format json
 talos intruder pool export token --out ./tokens.txt
+
+# Phase 4 AI/operator suggest (offline heuristics; optional --apply)
+talos intruder suggest <sid> --format json
+talos intruder suggest <sid> --apply --replace-payloads --format json
 
 # Storage (Phase 2): metrics_only (default) | sample_flows | all_flows
 talos intruder storage set <sid> --mode metrics_only
@@ -1191,7 +1203,7 @@ talos intruder storage show <sid> --format json
 talos intruder session validate <sid> --format json
 talos intruder session run <sid> --format json           # enqueue first segment (prio 100)
 talos intruder session run <sid> --right-now --force     # foreground (no job)
-talos intruder session status <sid> --format json        # poll every ~2s
+talos intruder session status <sid> --format json        # poll every ~2s (includes effective_rps)
 talos intruder session pause <sid>
 talos intruder session resume <sid>                      # new job prio 100
 talos intruder session stop <sid>
@@ -1207,9 +1219,9 @@ talos intruder status <sid> --format json
 
 **Caps (defaults):** max_attempts 10k, max_duration_s 3600 **active** time,
 slice 100 attempts / 60s, confirm estimate >1000 (or `--force`) — including
-cartesian products, wordlist 1e6 lines / 64 MiB, `all_flows` confirm.
-Path inject needs `normalized_path` with `{name}` braces or fails
-`path_inject_unavailable`.
+cartesian products and large bruteforce, wordlist 1e6 lines / 64 MiB,
+`all_flows` confirm. Path inject needs `normalized_path` with `{name}` braces
+or fails `path_inject_unavailable`.
 
 **Scheduler note:** continuation segments use priority **10** so auto BAC/IV
 can run between slices. Global `scheduler resume` does **not** resume Intruder —

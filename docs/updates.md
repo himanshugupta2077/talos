@@ -2,6 +2,52 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Intruder Phase 4 — adaptive timing, advanced generators, AI suggest
+
+**Shipped:** 2026-07-29 (config schema still **1**; project schema remains **47**).
+
+Phase 4 of `docs/design-intruder-cli.md` (PR-13) on top of Phase 1–3.
+
+### Timing
+
+| Mode | Behavior |
+|------|----------|
+| `fixed` | Constant target RPS (Phase 1 default) |
+| `unlimited` | No rate sleep; concurrency still applies |
+| `token_bucket` | Burst up to `burst_size`, refill at target RPS |
+| `adaptive` | Raise/lower effective RPS from response health (slow_ms, 429/5xx, errors); floor `min_rps`, ceiling `max_rps` |
+
+CLI: `talos intruder timing set --mode adaptive|token_bucket --min-rps --max-rps --slow-ms --burst-size`.
+Progress exposes `effective_rps` and a timing snapshot.
+
+### Advanced generators
+
+| Generator | Options | Notes |
+|-----------|---------|-------|
+| `dates` | `--start-date`, `--end-date`, `--step-days`, `--date-format` | Inclusive calendar steps |
+| `bruteforce` | `--charset`, `--min-len`, `--max-len` | Charset product; >100k needs `--force` at validate/run |
+| `random` | `--count`, `--length` / min-max, `--charset`, `--seed` | Seeded for crash-safe resume |
+| `pattern` | `--pattern`, `--start`, `--end`, `--step`, `--seed` | `{n}`, `{n:04d}`, `{hex}`, `{a}`, `{rand:N}` |
+
+### AI suggest (offline)
+
+```bash
+talos intruder suggest $SID --format json
+talos intruder suggest $SID --apply --replace-payloads --format json
+```
+
+Schema `intruder_suggest/v1`: strategy, timing, per-var payloads (from semantic
+type / name / pools / param intel), match + grep sketches, copy-paste commands.
+No external LLM — deterministic heuristics for operators and agents.
+
+**Still out of scope (Phase 5):** findings auto-promote, multi-request
+state_machine sequences, Control Panel UI.
+
+**Files:** `timing.py`, `suggest.py`, `generators/{dates,bruteforce,random_gen,pattern}.py`,
+`cli.py`, docs, `tests/test_intruder_phase4.py`.
+
+---
+
 ## Intruder Phase 3 — grep pools, param-intel, file generators
 
 **Shipped:** 2026-07-29 (schema **47**).
@@ -65,8 +111,8 @@ Cartesian / large estimates still use the Phase 1 confirm threshold (>1000).
 Interesting/sample/all flow inserts remain `source=intruder` with no
 error_intel/passive hooks.
 
-**Still out of scope (later):** grep pools, param-intel template assist,
-adaptive timing, findings auto-promote, Control Panel UI.
+**Still out of scope (later):** findings auto-promote, Control Panel UI.
+(Phase 3–4 shipped grep/pools/param-intel and adaptive timing.)
 
 ### Operator surface
 
@@ -119,9 +165,9 @@ single + sniper; fixed RPS (default 2), concurrency default 1; match rules;
 pause/resume/cancel; crash-safe checkpoint; `--right-now`; export JSONL/CSV;
 AI JSON status poll contract.
 
-**Phase 2 shipped separately** (pitchfork/cluster_bomb/zip, storage modes,
-processors, clone, host caps). Later: grep pools, adaptive timing, findings
-auto-promote, Control Panel UI, auth refresh mid-run.
+**Phase 2–4 shipped separately** (multi-set strategies, storage, grep/pools,
+adaptive timing, advanced generators, suggest). Later: findings auto-promote,
+Control Panel UI, auth refresh mid-run.
 
 ### Operator surface
 

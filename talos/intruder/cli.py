@@ -2,7 +2,7 @@
 Module: talos.intruder.cli
 
 Purpose:
-    CLI for Talos Intruder (Phase 1–3):
+    CLI for Talos Intruder (Phase 1–4):
 
         talos intruder session create|list|show|configure|validate|run|
                                pause|resume|stop|status|delete|clone
@@ -16,6 +16,7 @@ Purpose:
         talos intruder pool list|show|export|clear|delete
         talos intruder results list|show|export
         talos intruder generators list
+        talos intruder suggest <session_id> [--apply]   # Phase 4
 
     Aliases: talos intruder run|status → session run|status
 
@@ -24,7 +25,7 @@ Data flow:
     argv → project gate → handlers → session/engine/db → stdout
 Side effects:
     Session CRUD, scheduler enqueue, HTTP on --right-now / engine path,
-    pool writes from grep extract.
+    pool writes from grep extract; suggest --apply mutates config.
 """
 
 from __future__ import annotations
@@ -70,6 +71,8 @@ from talos.intruder.models import (
     KNOWN_PROCESSORS,
     KNOWN_STORAGE_MODES,
     KNOWN_STRATEGIES,
+    KNOWN_TIMING_MODES,
+    PHASE4_GENERATORS,
     STATUS_DRAFT,
 )
 from talos.intruder.processors import is_known_processor
@@ -82,6 +85,7 @@ from talos.intruder.session import (
     run_session,
     stop_session,
 )
+from talos.intruder.suggest import apply_suggestions, build_suggestions
 from talos.projects.manager import ProjectManager
 
 
@@ -102,9 +106,10 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="talos intruder",
         description=(
-            "Intruder: high-volume mutation attack engine (Phase 1–3). "
+            "Intruder: high-volume mutation attack engine (Phase 1–4). "
             "Template + payload sets + single/sniper/pitchfork/zip/cluster_bomb; "
-            "grep extract pools; csv/json/uuid/example_values generators; "
+            "grep extract pools; csv/json/uuid/example_values + dates/bruteforce/"
+            "random/pattern generators; adaptive/token_bucket timing; AI suggest; "
             "param-intel template assist; storage modes; scheduler time-slices. "
             "Distinct from 'talos send' (Repeater) and 'talos input-validation'."
         ),
@@ -258,7 +263,11 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         dest="values",
         help="Static value (repeatable).",
     )
-    p_pset.add_argument("--count", type=int, help="UUID count (uuid generator).")
+    p_pset.add_argument(
+        "--count",
+        type=int,
+        help="Count for uuid / random generators.",
+    )
     p_pset.add_argument(
         "--column",
         help="CSV column name or 0-based index (csv generator).",
@@ -278,6 +287,57 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         "--pool",
         dest="pool_name",
         help="Pool name (pool generator).",
+    )
+    # Phase 4 advanced generators
+    p_pset.add_argument(
+        "--start-date",
+        dest="start_date",
+        help="Dates generator start (ISO YYYY-MM-DD).",
+    )
+    p_pset.add_argument(
+        "--end-date",
+        dest="end_date",
+        help="Dates generator end (ISO YYYY-MM-DD).",
+    )
+    p_pset.add_argument(
+        "--step-days",
+        type=int,
+        dest="step_days",
+        help="Dates generator step in days (default 1).",
+    )
+    p_pset.add_argument(
+        "--date-format",
+        dest="date_format",
+        help="Dates generator strftime format (default %%Y-%%m-%%d).",
+    )
+    p_pset.add_argument(
+        "--charset",
+        help="Charset for bruteforce / random generators.",
+    )
+    p_pset.add_argument(
+        "--min-len",
+        type=int,
+        dest="min_len",
+        help="Min length (bruteforce / random).",
+    )
+    p_pset.add_argument(
+        "--max-len",
+        type=int,
+        dest="max_len",
+        help="Max length (bruteforce / random).",
+    )
+    p_pset.add_argument(
+        "--length",
+        type=int,
+        help="Fixed length for random generator.",
+    )
+    p_pset.add_argument(
+        "--pattern",
+        help="Pattern template (pattern generator), e.g. user{n} or admin{n:04d}.",
+    )
+    p_pset.add_argument(
+        "--seed",
+        help="Seed for random / pattern {rand:N} (deterministic resume).",
     )
     p_pset.add_argument(
         "--processor",
@@ -328,8 +388,13 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     tm_sub.required = True
     p_tmset = tm_sub.add_parser("set", help="Set timing parameters.")
     p_tmset.add_argument("session_id")
-    p_tmset.add_argument("--mode", default="fixed", choices=["fixed", "unlimited"])
-    p_tmset.add_argument("--rps", type=float)
+    p_tmset.add_argument(
+        "--mode",
+        default="fixed",
+        choices=sorted(KNOWN_TIMING_MODES),
+        help="fixed | unlimited | token_bucket | adaptive (Phase 4).",
+    )
+    p_tmset.add_argument("--rps", type=float, help="Target RPS (fixed/token_bucket) or initial (adaptive).")
     p_tmset.add_argument("--concurrency", type=int, dest="max_concurrency")
     p_tmset.add_argument(
         "--concurrency-per-host",
@@ -339,6 +404,30 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     )
     p_tmset.add_argument("--jitter-ms", type=float, dest="jitter_ms")
     p_tmset.add_argument("--timeout-s", type=float, dest="timeout_s")
+    p_tmset.add_argument(
+        "--burst-size",
+        type=int,
+        dest="burst_size",
+        help="Phase 4 token_bucket capacity (default 1).",
+    )
+    p_tmset.add_argument(
+        "--min-rps",
+        type=float,
+        dest="min_rps",
+        help="Phase 4 adaptive floor RPS.",
+    )
+    p_tmset.add_argument(
+        "--max-rps",
+        type=float,
+        dest="max_rps",
+        help="Phase 4 adaptive ceiling RPS.",
+    )
+    p_tmset.add_argument(
+        "--slow-ms",
+        type=float,
+        dest="slow_ms",
+        help="Phase 4 adaptive: duration_ms above this counts as pressure (default 2000).",
+    )
     add_format_argument(p_tmset)
 
     # ---- storage ----
@@ -514,6 +603,38 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_glist = g_sub.add_parser("list", help="List generators, processors, strategies.")
     add_format_argument(p_glist)
 
+    # ---- suggest (Phase 4) ----
+    p_sug = sub.add_parser(
+        "suggest",
+        help="AI/operator config suggestions for a session (heuristic, offline).",
+    )
+    p_sug.add_argument("session_id")
+    p_sug.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write suggestions into session config (payloads only when unset).",
+    )
+    p_sug.add_argument(
+        "--replace-payloads",
+        action="store_true",
+        dest="replace_payloads",
+        help="With --apply, replace existing payload sets instead of filling gaps.",
+    )
+    p_sug.add_argument(
+        "--no-match",
+        action="store_true",
+        dest="no_match",
+        help="With --apply, do not append match rules.",
+    )
+    p_sug.add_argument(
+        "--no-grep",
+        action="store_true",
+        dest="no_grep",
+        help="With --apply, do not append grep rules.",
+    )
+    add_force_argument(p_sug)
+    add_format_argument(p_sug)
+
     args = parser.parse_args(argv)
     project = _require_project(manager)
 
@@ -540,6 +661,8 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         _dispatch_results(project, args)
     elif cmd == "generators":
         _dispatch_generators(args)
+    elif cmd == "suggest":
+        _dispatch_suggest(project, args)
     else:
         cli_usage_error(f"Unknown intruder command: {cmd}")
 
@@ -1224,6 +1347,54 @@ def _dispatch_payload(project, args: argparse.Namespace) -> None:
             if not args.pool_name:
                 cli_usage_error("--pool is required for pool generator.")
             options["name"] = args.pool_name
+        elif gen == "dates":
+            if not args.start_date or not args.end_date:
+                cli_usage_error("--start-date and --end-date are required for dates generator.")
+            options["start"] = args.start_date
+            options["end"] = args.end_date
+            if args.step_days is not None:
+                options["step_days"] = args.step_days
+            if args.date_format:
+                options["format"] = args.date_format
+        elif gen == "bruteforce":
+            if args.charset:
+                options["charset"] = args.charset
+            if args.min_len is not None:
+                options["min_len"] = args.min_len
+            if args.max_len is not None:
+                options["max_len"] = args.max_len
+        elif gen == "random":
+            if args.count is not None:
+                options["count"] = args.count
+            if args.length is not None:
+                options["length"] = args.length
+            if args.min_len is not None:
+                options["min_len"] = args.min_len
+            if args.max_len is not None:
+                options["max_len"] = args.max_len
+            if args.charset:
+                options["charset"] = args.charset
+            if args.seed is not None:
+                # Prefer int seed when numeric
+                try:
+                    options["seed"] = int(args.seed)
+                except ValueError:
+                    options["seed"] = args.seed
+        elif gen == "pattern":
+            if not args.pattern:
+                cli_usage_error("--pattern is required for pattern generator.")
+            options["pattern"] = args.pattern
+            if args.start is not None:
+                options["start"] = args.start
+            if args.end is not None:
+                options["end"] = args.end
+            if args.step is not None and args.step != 1:
+                options["step"] = args.step
+            if args.seed is not None:
+                try:
+                    options["seed"] = int(args.seed)
+                except ValueError:
+                    options["seed"] = args.seed
 
         processors = list(args.processors or [])
         for pname in processors:
@@ -1305,6 +1476,14 @@ def _dispatch_timing(project, args: argparse.Namespace) -> None:
         timing["jitter_ms"] = args.jitter_ms
     if args.timeout_s is not None:
         timing["timeout_s"] = args.timeout_s
+    if getattr(args, "burst_size", None) is not None:
+        timing["burst_size"] = args.burst_size
+    if getattr(args, "min_rps", None) is not None:
+        timing["min_rps"] = args.min_rps
+    if getattr(args, "max_rps", None) is not None:
+        timing["max_rps"] = args.max_rps
+    if getattr(args, "slow_ms", None) is not None:
+        timing["slow_ms"] = args.slow_ms
     cfg["timing"] = timing
     _save_config(db_path, sess["id"], cfg)
     payload = {"session_id": sess["id"], "timing": timing}
@@ -1651,11 +1830,17 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
         "processor_parameterized": ["prefix:<text>", "suffix:<text>"],
         "strategies": sorted(s for s in KNOWN_STRATEGIES if s != "cartesian"),
         "storage_modes": sorted(KNOWN_STORAGE_MODES),
+        "timing_modes": sorted(KNOWN_TIMING_MODES),
         "phase3": {
             "generators": ["uuid", "csv", "json", "example_values", "pool"],
             "grep": True,
             "pools": True,
             "template_from_params": True,
+        },
+        "phase4": {
+            "generators": sorted(PHASE4_GENERATORS),
+            "timing_modes": ["token_bucket", "adaptive"],
+            "suggest": True,
         },
     }
     def human(p):
@@ -1664,5 +1849,67 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
         print("Parameterized:", ", ".join(p["processor_parameterized"]))
         print("Strategies:", ", ".join(p["strategies"]))
         print("Storage:", ", ".join(p["storage_modes"]))
+        print("Timing modes:", ", ".join(p["timing_modes"]))
         print("Phase 3:", ", ".join(p["phase3"]["generators"]), "+ grep/pools/from-params")
+        print(
+            "Phase 4:",
+            ", ".join(p["phase4"]["generators"]),
+            "+ adaptive/token_bucket timing + suggest",
+        )
+    _emit(payload, args, human)
+
+
+def _dispatch_suggest(project, args: argparse.Namespace) -> None:
+    db_path = project.db_path
+    sess = _get_session_or_exit(db_path, args.session_id)
+    cfg = merge_defaults(sess.get("config") or {})
+    suggestions = build_suggestions(
+        sess,
+        cfg,
+        db_path=db_path,
+        project_id=str(project.id),
+    )
+
+    applied = False
+    if args.apply:
+        new_cfg = apply_suggestions(
+            cfg,
+            suggestions,
+            replace_payloads=bool(args.replace_payloads),
+            apply_match=not bool(args.no_match),
+            apply_grep=not bool(args.no_grep),
+        )
+        _save_config(
+            db_path,
+            sess["id"],
+            new_cfg,
+            status=STATUS_DRAFT if sess["status"] == "configured" else sess["status"],
+        )
+        applied = True
+        suggestions = build_suggestions(
+            {**sess, "config": new_cfg},
+            new_cfg,
+            db_path=db_path,
+            project_id=str(project.id),
+        )
+        suggestions["applied"] = True
+
+    payload = {**suggestions, "applied": applied}
+
+    def human(p):
+        title = "Suggestions applied." if p.get("applied") else "Suggestions (not applied)."
+        cli_success(title, {
+            "Session": p.get("session_id"),
+            "Summary": p.get("summary"),
+            "Strategy": (p.get("strategy") or {}).get("type"),
+            "Timing": (p.get("timing") or {}).get("mode"),
+            "Payloads": len(p.get("payloads") or []),
+        })
+        print("Notes:")
+        for n in p.get("notes") or []:
+            print(f"  - {n}")
+        print("Commands:")
+        for c in p.get("commands") or []:
+            print(f"  {c}")
+
     _emit(payload, args, human)

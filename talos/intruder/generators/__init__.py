@@ -3,7 +3,8 @@ Package: talos.intruder.generators
 
 Purpose:
     Payload generators for Intruder (Phase 1 wordlist/numbers/static;
-    Phase 3 uuid/csv/json/example_values/pool).
+    Phase 3 uuid/csv/json/example_values/pool;
+    Phase 4 dates/bruteforce/random/pattern).
 """
 
 from __future__ import annotations
@@ -11,21 +12,29 @@ from __future__ import annotations
 from typing import Any
 
 from talos.intruder.generators.base import PayloadGenerator
+from talos.intruder.generators.bruteforce import BruteforceGenerator
 from talos.intruder.generators.csv_gen import CsvGenerator
+from talos.intruder.generators.dates import DatesGenerator
 from talos.intruder.generators.example_values import ExampleValuesGenerator
 from talos.intruder.generators.json_gen import JsonGenerator
 from talos.intruder.generators.numbers import NumbersGenerator
+from talos.intruder.generators.pattern import PatternGenerator
 from talos.intruder.generators.pool import PoolGenerator
+from talos.intruder.generators.random_gen import RandomGenerator
 from talos.intruder.generators.static import StaticGenerator
 from talos.intruder.generators.uuid_gen import UuidGenerator
 from talos.intruder.generators.wordlist import WordlistGenerator
 from talos.intruder.models import (
     ERR_UNKNOWN_PLUGIN,
+    GEN_BRUTEFORCE,
     GEN_CSV,
+    GEN_DATES,
     GEN_EXAMPLE_VALUES,
     GEN_JSON,
     GEN_NUMBERS,
+    GEN_PATTERN,
     GEN_POOL,
+    GEN_RANDOM,
     GEN_STATIC,
     GEN_UUID,
     GEN_WORDLIST,
@@ -55,6 +64,14 @@ def build_generator(name: str, options: dict[str, Any] | None = None) -> Payload
         gen = ExampleValuesGenerator()
     elif key == GEN_POOL:
         gen = PoolGenerator()
+    elif key == GEN_DATES:
+        gen = DatesGenerator()
+    elif key == GEN_BRUTEFORCE:
+        gen = BruteforceGenerator()
+    elif key == GEN_RANDOM:
+        gen = RandomGenerator()
+    elif key == GEN_PATTERN:
+        gen = PatternGenerator()
     else:
         raise ValueError(f"{ERR_UNKNOWN_PLUGIN}:generator:{name}")
     gen.open(opts)
@@ -71,5 +88,9 @@ __all__ = [
     "JsonGenerator",
     "ExampleValuesGenerator",
     "PoolGenerator",
+    "DatesGenerator",
+    "BruteforceGenerator",
+    "RandomGenerator",
+    "PatternGenerator",
     "build_generator",
 ]

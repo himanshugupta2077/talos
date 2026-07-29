@@ -32,6 +32,11 @@ Purpose:
         Generators: uuid, csv, json, example_values, pool
         template from-params (Parameter Intelligence assist)
 
+    Phase 4:
+        Timing: token_bucket, adaptive (min/max RPS, slow_ms, burst)
+        Generators: dates, bruteforce, random, pattern
+        AI suggest: offline heuristics (talos intruder suggest [--apply])
+
 Public surface:
     engine.run_session_segment, models, CLI entry (cli.run_intruder_cli).
 """

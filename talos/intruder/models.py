@@ -3,7 +3,7 @@ Module: talos.intruder.models
 
 Purpose:
     Dataclasses and constants for Intruder (sessions, templates, attempts,
-    segment outcomes, hard-cap defaults). Phase 1–3 plugins.
+    segment outcomes, hard-cap defaults). Phase 1–4 plugins.
 
 Dependencies: dataclasses, typing
 Data flow:
@@ -69,6 +69,26 @@ DEFAULT_JITTER_MS = 0
 # Phase 2: per-host in-flight cap (None = no extra host limit beyond max_concurrency)
 DEFAULT_MAX_CONCURRENCY_PER_HOST: int | None = None
 
+# Phase 4 timing modes + adaptive / token_bucket defaults
+TIMING_FIXED = "fixed"
+TIMING_UNLIMITED = "unlimited"
+TIMING_TOKEN_BUCKET = "token_bucket"
+TIMING_ADAPTIVE = "adaptive"
+KNOWN_TIMING_MODES: frozenset[str] = frozenset({
+    TIMING_FIXED,
+    TIMING_UNLIMITED,
+    TIMING_TOKEN_BUCKET,
+    TIMING_ADAPTIVE,
+})
+DEFAULT_BURST_SIZE = 1
+DEFAULT_MIN_RPS = 0.25
+DEFAULT_MAX_RPS = 10.0
+DEFAULT_ADAPTIVE_SLOW_MS = 2000.0
+DEFAULT_ADAPTIVE_WINDOW = 10
+DEFAULT_ADAPTIVE_UP_FACTOR = 1.1
+DEFAULT_ADAPTIVE_DOWN_FACTOR = 0.5
+DEFAULT_ADAPTIVE_ERROR_STATUSES: tuple[int, ...] = (429, 503, 502, 504)
+
 RESULT_BATCH_SIZE = 50
 RESULT_BATCH_FLUSH_S = 0.5
 CONTROL_FLAG_CACHE_S = 0.2
@@ -123,7 +143,7 @@ MULTI_SET_STRATEGIES: frozenset[str] = frozenset({
     STRATEGY_ZIP,
 })
 
-# Generators (Phase 1 + Phase 3)
+# Generators (Phase 1 + Phase 3 + Phase 4)
 GEN_WORDLIST = "wordlist"
 GEN_NUMBERS = "numbers"
 GEN_STATIC = "static"
@@ -132,6 +152,10 @@ GEN_CSV = "csv"
 GEN_JSON = "json"
 GEN_EXAMPLE_VALUES = "example_values"
 GEN_POOL = "pool"
+GEN_DATES = "dates"
+GEN_BRUTEFORCE = "bruteforce"
+GEN_RANDOM = "random"
+GEN_PATTERN = "pattern"
 PHASE1_GENERATORS: frozenset[str] = frozenset({GEN_WORDLIST, GEN_NUMBERS, GEN_STATIC})
 PHASE3_GENERATORS: frozenset[str] = frozenset({
     GEN_UUID,
@@ -140,12 +164,33 @@ PHASE3_GENERATORS: frozenset[str] = frozenset({
     GEN_EXAMPLE_VALUES,
     GEN_POOL,
 })
-KNOWN_GENERATORS: frozenset[str] = PHASE1_GENERATORS | PHASE3_GENERATORS
+PHASE4_GENERATORS: frozenset[str] = frozenset({
+    GEN_DATES,
+    GEN_BRUTEFORCE,
+    GEN_RANDOM,
+    GEN_PATTERN,
+})
+KNOWN_GENERATORS: frozenset[str] = (
+    PHASE1_GENERATORS | PHASE3_GENERATORS | PHASE4_GENERATORS
+)
 
 # Pool / grep defaults (Phase 3)
 DEFAULT_POOL_MAX_VALUES = 50_000
 DEFAULT_GREP_MAX_MATCHES = 50
 DEFAULT_UUID_COUNT = 10
+
+# Phase 4 advanced generator defaults / hard caps
+DEFAULT_BRUTEFORCE_CHARSET = "abcdefghijklmnopqrstuvwxyz0123456789"
+DEFAULT_BRUTEFORCE_MIN_LEN = 1
+DEFAULT_BRUTEFORCE_MAX_LEN = 3
+DEFAULT_BRUTEFORCE_MAX_COMBOS = 100_000  # refuse without --force above this
+DEFAULT_RANDOM_COUNT = 100
+DEFAULT_RANDOM_LENGTH = 8
+DEFAULT_RANDOM_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+DEFAULT_DATES_FORMAT = "%Y-%m-%d"
+DEFAULT_DATES_STEP_DAYS = 1
+DEFAULT_PATTERN_START = 0
+DEFAULT_PATTERN_END = 99
 
 # Processors (Phase 1 + Phase 2)
 PROC_URL_ENCODE = "url_encode"
@@ -303,3 +348,8 @@ ERR_INVALID_GREP = "invalid_grep"
 ERR_POOL_NOT_FOUND = "pool_not_found"
 ERR_PARAM_NOT_FOUND = "param_not_found"
 ERR_INVALID_FILE_GENERATOR = "invalid_file_generator"
+ERR_INVALID_TIMING = "invalid_timing"
+ERR_BRUTEFORCE_TOO_LARGE = "bruteforce_too_large"
+ERR_INVALID_DATES = "invalid_dates"
+ERR_INVALID_PATTERN = "invalid_pattern"
+ERR_INVALID_RANDOM = "invalid_random"

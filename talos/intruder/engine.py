@@ -230,6 +230,18 @@ async def run_session_segment(
         max_concurrency=int(timing_cfg.get("max_concurrency", DEFAULT_MAX_CONCURRENCY)),
         max_concurrency_per_host=per_host_cap,
         jitter_ms=float(timing_cfg.get("jitter_ms") or 0),
+        burst_size=int(timing_cfg.get("burst_size") or 1),
+        min_rps=float(timing_cfg.get("min_rps") or 0.25),
+        max_rps=(
+            float(timing_cfg["max_rps"])
+            if timing_cfg.get("max_rps") is not None
+            else None
+        ),
+        slow_ms=float(timing_cfg.get("slow_ms") or 2000.0),
+        adaptive_window=int(timing_cfg.get("adaptive_window") or 10),
+        up_factor=float(timing_cfg.get("up_factor") or 1.1),
+        down_factor=float(timing_cfg.get("down_factor") or 0.5),
+        error_statuses=timing_cfg.get("error_statuses"),
     )
 
     # Mark running
@@ -288,6 +300,8 @@ async def run_session_segment(
             "estimate_total": strat_prog.get("total_estimate") or progress.get("estimate_total"),
             "percent": strat_prog.get("percent"),
             "rps_ema": timing.rps_ema,
+            "effective_rps": timing.effective_rps,
+            "timing": timing.snapshot(),
             "active_duration_s": active_duration_s + (time.monotonic() - segment_start),
             "consecutive_auth_fail": consecutive_auth_fail,
             "updated_at": _now_iso(),

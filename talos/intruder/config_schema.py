@@ -3,7 +3,7 @@ Module: talos.intruder.config_schema
 
 Purpose:
     Load, default, and validate Intruder session config documents
-    (schema_version 1; Phase 1–3 plugins).
+    (schema_version 1; Phase 1–4 plugins).
 """
 
 from __future__ import annotations
@@ -16,22 +16,31 @@ from talos.intruder.generators import build_generator
 from talos.intruder.grep import validate_grep_rule
 from talos.intruder.models import (
     CONFIG_SCHEMA_VERSION,
+    DEFAULT_ADAPTIVE_SLOW_MS,
     DEFAULT_AUTH_FAIL_THRESHOLD,
+    DEFAULT_BURST_SIZE,
     DEFAULT_CONFIRM_THRESHOLD,
     DEFAULT_JITTER_MS,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MAX_DURATION_S,
     DEFAULT_MAX_RESULTS,
+    DEFAULT_MAX_RPS,
+    DEFAULT_MIN_RPS,
     DEFAULT_RPS,
     DEFAULT_SLICE_MAX_ATTEMPTS,
     DEFAULT_SLICE_MAX_WALL_S,
     DEFAULT_TIMEOUT_S,
+    ERR_BRUTEFORCE_TOO_LARGE,
     ERR_EMPTY_GENERATOR,
+    ERR_INVALID_DATES,
     ERR_INVALID_FILE_GENERATOR,
     ERR_INVALID_GREP,
     ERR_INVALID_NUMBERS,
+    ERR_INVALID_PATTERN,
+    ERR_INVALID_RANDOM,
     ERR_INVALID_STORAGE_MODE,
+    ERR_INVALID_TIMING,
     ERR_MISSING_BASELINE,
     ERR_MULTISET_UNBOUND,
     ERR_NO_VARIABLES,
@@ -43,13 +52,18 @@ from talos.intruder.models import (
     ERR_UNKNOWN_PLUGIN,
     ERR_UNSUPPORTED_CONFIG_VERSION,
     ERR_WORDLIST_TOO_LARGE,
+    GEN_BRUTEFORCE,
     GEN_CSV,
+    GEN_DATES,
     GEN_EXAMPLE_VALUES,
     GEN_JSON,
+    GEN_PATTERN,
     GEN_POOL,
+    GEN_RANDOM,
     KNOWN_GENERATORS,
     KNOWN_STORAGE_MODES,
     KNOWN_STRATEGIES,
+    KNOWN_TIMING_MODES,
     LOCATION_PATH,
     MULTI_SET_STRATEGIES,
     STORAGE_METRICS_ONLY,
@@ -59,6 +73,7 @@ from talos.intruder.models import (
     STRATEGY_SINGLE,
     STRATEGY_SNIPER,
     STRATEGY_ZIP,
+    TIMING_FIXED,
 )
 from talos.intruder.processors import build_processor, is_known_processor
 from talos.intruder.template import path_has_brace, variables_from_config
@@ -79,12 +94,17 @@ def default_config() -> dict[str, Any]:
         "payload_sets": {},
         "strategy": {"type": STRATEGY_SINGLE, "options": {}},
         "timing": {
-            "mode": "fixed",
+            "mode": TIMING_FIXED,
             "rps": DEFAULT_RPS,
             "max_concurrency": DEFAULT_MAX_CONCURRENCY,
             "max_concurrency_per_host": None,
             "jitter_ms": DEFAULT_JITTER_MS,
             "timeout_s": DEFAULT_TIMEOUT_S,
+            # Phase 4: token_bucket + adaptive
+            "burst_size": DEFAULT_BURST_SIZE,
+            "min_rps": DEFAULT_MIN_RPS,
+            "max_rps": DEFAULT_MAX_RPS,
+            "slow_ms": DEFAULT_ADAPTIVE_SLOW_MS,
         },
         "slice": {
             "max_attempts": DEFAULT_SLICE_MAX_ATTEMPTS,
@@ -182,6 +202,14 @@ def _open_generator(
             raise ValidationError(ERR_PARAM_NOT_FOUND, msg) from exc
         if msg.startswith(ERR_INVALID_FILE_GENERATOR):
             raise ValidationError(ERR_INVALID_FILE_GENERATOR, msg) from exc
+        if msg.startswith(ERR_BRUTEFORCE_TOO_LARGE):
+            raise ValidationError(ERR_BRUTEFORCE_TOO_LARGE, msg) from exc
+        if msg.startswith(ERR_INVALID_DATES):
+            raise ValidationError(ERR_INVALID_DATES, msg) from exc
+        if msg.startswith(ERR_INVALID_PATTERN):
+            raise ValidationError(ERR_INVALID_PATTERN, msg) from exc
+        if msg.startswith(ERR_INVALID_RANDOM):
+            raise ValidationError(ERR_INVALID_RANDOM, msg) from exc
         raise ValidationError(ERR_UNKNOWN_PLUGIN, msg) from exc
 
 
@@ -263,19 +291,48 @@ def validate_config(
     storage["sample_rate"] = sample_rate
     cfg["storage"] = storage
 
-    # Timing: optional host concurrency cap
+    # Timing: mode + optional host concurrency + Phase 4 knobs
     timing = cfg.get("timing") or {}
+    tmode = str(timing.get("mode") or TIMING_FIXED).strip().lower()
+    if tmode not in KNOWN_TIMING_MODES:
+        raise ValidationError(ERR_INVALID_TIMING, f"unknown timing mode: {tmode}")
+    timing["mode"] = tmode
     per_host = timing.get("max_concurrency_per_host")
     if per_host is not None and per_host != "":
         try:
             per_host_i = int(per_host)
         except (TypeError, ValueError) as exc:
-            raise ValidationError(ERR_UNKNOWN_PLUGIN, "max_concurrency_per_host must be int") from exc
+            raise ValidationError(ERR_INVALID_TIMING, "max_concurrency_per_host must be int") from exc
         if per_host_i < 1:
-            raise ValidationError(ERR_UNKNOWN_PLUGIN, "max_concurrency_per_host must be >= 1")
+            raise ValidationError(ERR_INVALID_TIMING, "max_concurrency_per_host must be >= 1")
         timing["max_concurrency_per_host"] = per_host_i
     else:
         timing["max_concurrency_per_host"] = None
+    # Normalize Phase 4 numeric knobs when present
+    for key, cast, minimum in (
+        ("burst_size", int, 1),
+        ("min_rps", float, 0.01),
+        ("max_rps", float, 0.01),
+        ("slow_ms", float, 0.0),
+        ("rps", float, 0.0),
+        ("jitter_ms", float, 0.0),
+        ("max_concurrency", int, 1),
+        ("timeout_s", float, 0.1),
+    ):
+        if key in timing and timing[key] is not None and timing[key] != "":
+            try:
+                val = cast(timing[key])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(ERR_INVALID_TIMING, f"{key} invalid") from exc
+            if val < minimum:
+                raise ValidationError(ERR_INVALID_TIMING, f"{key} must be >= {minimum}")
+            timing[key] = val
+    if (
+        timing.get("min_rps") is not None
+        and timing.get("max_rps") is not None
+        and float(timing["min_rps"]) > float(timing["max_rps"])
+    ):
+        raise ValidationError(ERR_INVALID_TIMING, "min_rps must be <= max_rps")
     cfg["timing"] = timing
 
     variables = variables_from_config(cfg)
@@ -348,6 +405,21 @@ def validate_config(
                 ERR_INVALID_FILE_GENERATOR,
                 f"{gen_name} set {set_name}: missing path/file",
             )
+        if gen_name == GEN_DATES and not (opts.get("start") and opts.get("end")):
+            raise ValidationError(
+                ERR_INVALID_DATES,
+                f"dates set {set_name}: start and end required",
+            )
+        if gen_name == GEN_PATTERN and not opts.get("pattern"):
+            raise ValidationError(
+                ERR_INVALID_PATTERN,
+                f"pattern set {set_name}: pattern required",
+            )
+        if gen_name == GEN_BRUTEFORCE:
+            # Structural only; size checked on open
+            pass
+        if gen_name == GEN_RANDOM:
+            pass
         for proc in pset.get("processors") or []:
             pname = str(proc)
             if not is_known_processor(pname):

@@ -6,7 +6,7 @@
 | **Project** | Talos |
 | **Author** | (design) |
 | **Date** | 2026-07-29 |
-| **Status** | Implemented Phase 1–3 (rev 3 design; schema 47) |
+| **Status** | Implemented Phase 1–4 (rev 3 design; schema 47) |
 | **Scope** | Talos core CLI only; Control Panel / UI deferred |
 | **Audience** | Senior engineers familiar with `talos/` |
 
@@ -631,7 +631,7 @@ Evaluation online for tags `interesting=1`; offline re-filter via `results list`
 | Stable session IDs + JSON status/results + exit codes | **1** |
 | Export JSONL | **1** |
 | Template suggest from parameters | **3** |
-| Adaptive timing / AI generator | **4+** |
+| Adaptive timing / AI generator | **4** (shipped: adaptive/token_bucket + `suggest`) |
 | Findings bridge | **not Phase 1** |
 
 ### Interaction with HTTP Manipulation Engine
@@ -872,7 +872,8 @@ talos intruder
 ├─ grep     add|list|clear    # Phase 3
 ├─ pool     list|show|export|clear|delete  # Phase 3
 ├─ results  list|show|export
-└─ generators list
+├─ generators list
+└─ suggest  <session_id> [--apply]   # Phase 4 offline AI/operator suggest
 ```
 
 Aliases: `talos intruder run|status` → session run|status.
@@ -1184,7 +1185,23 @@ Grep extract rules, project pools, file generators (csv/json/uuid), example_valu
 | CLI | payload flags: `--count`, `--column`, `--json-path`, `--param-id`, `--pool` |
 | Tests | `tests/test_intruder_phase3.py` |
 
-### Phase 4 — Adaptive timing, advanced generators, AI suggest
+### Phase 4 — Adaptive timing, advanced generators, AI suggest — **IMPLEMENTED**
+
+Adaptive rate control, advanced payload generators, offline AI/operator suggest.
+
+**Shipped:**
+
+| Item | Detail |
+|------|--------|
+| Timing modes | `fixed`, `unlimited`, **`token_bucket`** (burst_size + RPS refill), **`adaptive`** (min/max RPS, slow_ms, error statuses 429/5xx) |
+| Timing CLI | `timing set --mode adaptive\|token_bucket --min-rps --max-rps --slow-ms --burst-size` |
+| Progress | `progress_json.effective_rps` + `timing` snapshot |
+| Generators | `dates` (ISO range + strftime), `bruteforce` (charset × min/max len, cap 1e5 without force), `random` (count/length/charset/seed), `pattern` (`{n}`, `{n:04d}`, `{hex}`, `{a}`, `{rand:N}`) |
+| AI suggest | `talos intruder suggest <id> [--apply] [--replace-payloads] [--no-match] [--no-grep]` — schema `intruder_suggest/v1` (heuristic, no external LLM) |
+| Module | `talos/intruder/suggest.py`; generators under `generators/{dates,bruteforce,random_gen,pattern}.py` |
+| Tests | `tests/test_intruder_phase4.py` |
+
+**Out of scope (Phase 5 / later):** findings auto-promote, state_machine multi-request sequences, Control Panel UI, Python sandbox generators.
 
 ### Phase 5 — Hardening, optional findings promote, docs sweep
 
@@ -1465,9 +1482,11 @@ Ordered, independently reviewable. **CLI only.**
 - **Dependencies:** **PR-8** (stable CLI) — unambiguous.
 - **Description:** Connect Parameter Intelligence to setup. Shipped: `template from-params` + `example_values` generator.
 
-### PR-13: Adaptive timing + advanced generators
+### PR-13: Adaptive timing + advanced generators — **DONE (Phase 4)**
 
-- **Dependencies:** PR-10
+- **Title:** `intruder: adaptive/token_bucket timing, dates/bruteforce/random/pattern, suggest`
+- **Dependencies:** PR-10 / Phase 3
+- **Description:** Shipped Phase 4: TimingController modes, advanced generators, `intruder suggest` offline heuristics.
 
 ### PR-14: (removed / absorbed)
 
