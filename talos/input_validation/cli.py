@@ -81,6 +81,7 @@ Purpose:
         talos input-validation show --endpoint <id>  — endpoint intelligence (M10)
         talos input-validation show --host <host>    — application/host intelligence (M10)
         talos input-validation candidates            — list/filter attack candidates
+        talos input-validation reflections           — raw cross-flow / stored reflection links
         talos input-validation export parameter|host — Markdown or JSON export
         talos input-validation export csv            — per-probe CSV
         talos input-validation synthesize            — offline profiles from existing probes
@@ -393,6 +394,59 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     add_format_argument(p_synth)
 
     # ------------------------------------------------------------------
+    # reflections (cross-flow / stored reflection raw links — FP validation)
+    # ------------------------------------------------------------------
+    p_refl = sub.add_parser(
+        "reflections",
+        help=(
+            "List raw cross-flow / stored reflection links "
+            "(data-flow prioritization evidence; not confirmed XSS). "
+            "Values are redacted by default."
+        ),
+    )
+    p_refl.add_argument(
+        "--param-uuid",
+        metavar="UUID",
+        help="Filter by source parameter UUID (sha256 host|location|name).",
+    )
+    p_refl.add_argument(
+        "--host",
+        metavar="HOST",
+        help="Filter by canonical host/origin (endpoints.host).",
+    )
+    p_refl.add_argument(
+        "--source-endpoint",
+        metavar="ID",
+        help="Filter by source endpoint id.",
+    )
+    p_refl.add_argument(
+        "--sink-endpoint",
+        metavar="ID",
+        help="Filter by sink endpoint id.",
+    )
+    p_refl.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Max rows to return (default 50).",
+    )
+    p_refl.add_argument(
+        "--include-values",
+        action="store_true",
+        help=(
+            "Include value hash prefix detail only (links never store full secrets; "
+            "this flag is reserved for future value_index debug)."
+        ),
+    )
+    p_refl.add_argument(
+        "--cross-flow",
+        action="store_true",
+        default=True,
+        help=argparse.SUPPRESS,  # design alias; always cross-flow for this command
+    )
+    add_format_argument(p_refl)
+
     # candidates (Module 11/12 — prioritization list, not findings)
     # ------------------------------------------------------------------
     p_cands = sub.add_parser(
@@ -432,7 +486,10 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_cands.add_argument(
         "--capability",
         metavar="FLAG",
-        help="Require capability flag (e.g. reflective_input).",
+        help=(
+            "Require capability flag (e.g. reflective_input, "
+            "stored_reflection, html_context)."
+        ),
     )
     p_cands.add_argument(
         "--limit",
@@ -525,6 +582,8 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         _cmd_synthesize(manager, args)
     elif args.iv_cmd == "candidates":
         _cmd_candidates(manager, args)
+    elif args.iv_cmd == "reflections":
+        _cmd_reflections(manager, args)
     elif args.iv_cmd == "export":
         if not hasattr(args, "export_target") or args.export_target is None:
             p_export.print_help()
@@ -1086,14 +1145,34 @@ def _cmd_show(manager: ProjectManager, args: argparse.Namespace) -> None:
         f"  Seen       : {profile['seen_count']} flows\n"
         f"  Roles      : {', '.join(profile['appears_in_roles']) or '(none)'}\n"
         f"  Modules    : {', '.join(profile['appears_in_modules']) or '(none)'}\n"
-        f"  Reflected  : {'Yes' if profile['is_reflected'] else 'No'} "
-        f"({profile['reflection_count']}x)"
+        f"  Same-req   : {'Yes' if profile['is_reflected'] else 'No'} "
+        f"({profile['reflection_count']}x)  [same-flow reflection]"
     )
     if profile["reflection_locations"]:
         print(
             f"  Refl. loc  : {', '.join(profile['reflection_locations'])}\n"
             f"  Refl. enc  : {', '.join(profile['reflection_encoding'])}"
         )
+    cf_yes = bool(profile.get("cross_flow_reflected"))
+    cf_count = int(profile.get("cross_flow_reflection_count") or 0)
+    print(
+        f"  Cross-flow : {'Yes' if cf_yes else 'No'} "
+        f"({cf_count}x)  [stored / other-page reflection]"
+    )
+    cf_sinks = profile.get("cross_flow_sink_endpoints") or []
+    if isinstance(cf_sinks, list) and cf_sinks:
+        sink_bits: list[str] = []
+        for s in cf_sinks[:6]:
+            if isinstance(s, dict):
+                sink_bits.append(
+                    f"{s.get('method', '')} {s.get('path', '')}".strip()
+                    or str(s.get("endpoint_id") or "")[:12]
+                )
+            else:
+                sink_bits.append(str(s)[:40])
+        print(f"  CF sinks   : {', '.join(sink_bits)}")
+        if len(cf_sinks) > 6:
+            print(f"               … +{len(cf_sinks) - 6} more")
     print(
         f"  Examples   : {', '.join(str(e) for e in profile['examples']) or '(none)'}"
     )
@@ -1105,10 +1184,38 @@ def _cmd_show(manager: ProjectManager, args: argparse.Namespace) -> None:
         for line in format_profile_summary_lines(intel):
             print(f"    {line}")
         print()
+        # Surface stored sinks from live consumer candidates when present.
+        consumer_cands = (consumer or {}).get("candidates") if consumer else None
+        if not consumer_cands and intel:
+            consumer_cands = intel.get("candidates")
+        stored_any = False
+        for cand in consumer_cands or []:
+            if not isinstance(cand, dict):
+                continue
+            stored = cand.get("stored_reflection")
+            if isinstance(stored, dict) and (stored.get("sinks") or stored.get("link_count")):
+                stored_any = True
+                break
+        if stored_any or cf_yes:
+            print(
+                "  Note: stored/cross-page reflection is data-flow "
+                "prioritization evidence — not confirmed XSS."
+            )
+            print()
     elif probe_records:
         print(
             "  Intelligence Profile: (none — run "
             "'talos input-validation synthesize')"
+        )
+        print()
+    elif cf_yes:
+        print(
+            "  Cross-flow links present on parameters table, but no "
+            "iv_param_profiles document yet.\n"
+            "  XSS candidates from stored reflection require synthesize "
+            "(or an existing profile + recompute).\n"
+            "  Raw links: talos input-validation reflections "
+            f"--param-uuid {param_uuid or profile.get('param_uuid') or ''}"
         )
         print()
 
@@ -1182,6 +1289,91 @@ def _cmd_show(manager: ProjectManager, args: argparse.Namespace) -> None:
     print()
 
 
+def _cmd_reflections(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        List raw cross-flow reflection links for operator FP validation.
+        Values are never stored on the link table; reasons use param/endpoint
+        identity only. Not confirmed XSS — data-flow prioritization evidence.
+    Side effects: Read-only DB.
+    """
+    from talos.projects.value_reflection import (
+        format_cross_flow_reason,
+        list_cross_flow_reflections,
+    )
+
+    project = _require_active(manager)
+    db_path = project.db_path
+    limit = int(getattr(args, "limit", 50) or 50)
+    limit = max(1, min(limit, 10_000))
+
+    rows = list_cross_flow_reflections(
+        db_path,
+        param_uuid=(getattr(args, "param_uuid", None) or None),
+        host=(getattr(args, "host", None) or None),
+        source_endpoint_id=(getattr(args, "source_endpoint", None) or None),
+        sink_endpoint_id=(getattr(args, "sink_endpoint", None) or None),
+        limit=limit,
+    )
+
+    # Attach operator-facing reason strings (no secret values).
+    for row in rows:
+        row["reason"] = format_cross_flow_reason(row)
+        # Redact hash to prefix by default for display hygiene.
+        vh = row.get("value_hash") or ""
+        if vh and not getattr(args, "include_values", False):
+            row["value_hash_prefix"] = vh[:8]
+            row.pop("value_hash", None)
+        else:
+            row["value_hash_prefix"] = (vh[:8] if vh else "")
+
+    if wants_json(args):
+        cli_json({
+            "kind": "cross_flow_reflections",
+            "count": len(rows),
+            "disclaimer": (
+                "Data-flow prioritization evidence only — not confirmed XSS. "
+                "Full secret values are not stored on reflection links."
+            ),
+            "reflections": rows,
+        })
+        return
+
+    print(
+        "Cross-flow reflections "
+        "(data-flow prioritization evidence — not confirmed XSS)"
+    )
+    print(f"Count: {len(rows)}")
+    if not rows:
+        print(
+            "No cross-flow links yet. Enable with:\n"
+            "  talos config set parameter_intel.cross_flow.enabled true --project\n"
+            "then capture traffic (or IV multiprobe) and re-check."
+        )
+        return
+
+    print()
+    for i, row in enumerate(rows, 1):
+        reason = row.get("reason") or format_cross_flow_reason(row)
+        conf = row.get("confidence", "")
+        mode = row.get("detection_mode") or "passive"
+        vlen = row.get("value_len") or 0
+        vpref = row.get("value_hash_prefix") or (str(row.get("value_hash") or "")[:8])
+        print(f"{i}. {reason}")
+        print(
+            f"   conf={conf}  mode={mode}  value_len={vlen}  "
+            f"hash={vpref}…  obs={row.get('observation_count', 1)}"
+        )
+        print(
+            f"   source_param_uuid={row.get('source_param_uuid', '')}  "
+            f"sink_flow={str(row.get('sink_flow_id') or '')[:8]}…"
+        )
+    print()
+    print(
+        "Tip: filter with --param-uuid / --host / --source-endpoint / --sink-endpoint"
+    )
+
+
 def _cmd_candidates(manager: ProjectManager, args: argparse.Namespace) -> None:
     """
     Purpose:
@@ -1234,7 +1426,8 @@ def _cmd_candidates(manager: ProjectManager, args: argparse.Namespace) -> None:
             },
             "note": (
                 "Candidate scores are prioritization only, not confirmed "
-                "vulnerabilities."
+                "vulnerabilities. Stored/cross-page reflection is data-flow "
+                "evidence, not XSS confirmation."
             ),
         })
         return
@@ -1242,8 +1435,15 @@ def _cmd_candidates(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(
         "Attack candidates (prioritization only — not confirmed vulnerabilities)"
     )
+    print(
+        "Stored/cross-page reflection = data-flow evidence, not XSS confirmation."
+    )
     if not rows:
         print("  (none — run synthesize after probing, or lower --min-score)")
+        print(
+            "  Tip: filter stored surfaces with "
+            "--capability stored_reflection"
+        )
         print()
         return
 
@@ -1262,12 +1462,32 @@ def _cmd_candidates(manager: ProjectManager, args: argparse.Namespace) -> None:
             f"{atk:<16} {int(r.get('score') or 0):>5} "
             f"{int(r.get('confidence') or 0):>5}"
         )
+        modes = r.get("reflection_modes") or []
+        if modes:
+            print(f"      modes: {', '.join(str(m) for m in modes)}")
         reasons = r.get("reasons") or []
         if reasons:
             # Indent first reason for operators scanning the table.
             print(f"      → {reasons[0]}")
+        stored = r.get("stored_reflection")
+        if isinstance(stored, dict):
+            sinks = stored.get("sinks") or []
+            if isinstance(sinks, list):
+                for sink in sinks[:2]:
+                    if not isinstance(sink, dict):
+                        continue
+                    rsn = sink.get("reason")
+                    if rsn:
+                        print(f"      stored: {rsn}")
+                    else:
+                        method = sink.get("method") or ""
+                        path = sink.get("path") or ""
+                        print(f"      stored sink: {method} {path}".strip())
     print()
-    print(f"  {len(rows)} candidate row(s). Use --format json for full reasons.")
+    print(
+        f"  {len(rows)} candidate row(s). Use --format json for full reasons. "
+        "Filter: --capability stored_reflection"
+    )
     print()
 
 

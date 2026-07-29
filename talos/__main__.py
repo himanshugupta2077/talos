@@ -50,6 +50,7 @@ from talos.scheduler.cli import run_scheduler_cli
 from talos.input_validation.cli import run_input_validation_cli
 from talos.findings.cli import run_finding_cli
 from talos.passive.cli import run_passive_cli
+from talos.error_intel.cli import run_error_intel_cli
 from talos.configuration.cli import run_config_cli
 
 # Structured logging to stderr; keeps stdout clean for parseable output.
@@ -186,6 +187,8 @@ def main(argv: list[str] | None = None) -> None:
         run_finding_cli(manager, rest)
     elif subcommand == "passive":
         run_passive_cli(manager, rest)
+    elif subcommand in ("error-intel", "error_intel", "errors"):
+        run_error_intel_cli(manager, rest)
     else:
         cli_error(f"Unknown command: '{subcommand}'.", exit_code=None)
         _print_usage()
@@ -406,7 +409,8 @@ def _print_usage() -> None:
         "                    [--technique NAME]\n"
         "    unauth config   Show or set auto-run (auth_test auto-enqueue)\n"
         "                    [show] [--auto-run on|off]\n"
-        "    unauth filter   init | show | validate\n"
+        "    unauth filter   init | show | validate | apply\n"
+        "                    apply [--dry-run] [--force]\n"
         "    bac session-swap|method-fuzz|content-type|url-fuzz|\n"
         "        header-inject|host-fuzz|role-inject|parser-confuse\n"
         "                    [--role NAME|UUID] [--endpoint UUID]\n"
@@ -427,6 +431,9 @@ def _print_usage() -> None:
         "    synthesize      Offline profiles from existing probes (zero HTTP)\n"
         "    candidates      List attack candidates (prioritization only)\n"
         "                    [--attack|--min-score|--host|--capability]\n"
+        "    reflections     List raw cross-flow / stored reflection links\n"
+        "                    [--param-uuid|--host|--source-endpoint|\n"
+        "                     --sink-endpoint|--limit|--include-values]\n"
         "    clear-cache     Delete IV cache [--force] (optional host/endpoint/parameter)\n"
         "    exclude|include endpoint|host\n"
         "    show <param_uuid>   Parameter profile + candidates\n"
@@ -460,7 +467,15 @@ def _print_usage() -> None:
         "    detections list --category secret|infrastructure_disclosure\n"
         "    rescan --all|--document|--flow [--force]\n"
         "                               Re-run detectors after rule upgrades\n"
-        "                               (HTML inline + source maps included)\n"
+        "                               (HTML inline + source maps included)\n\n"
+        "  error-intel (aliases: error_intel, errors)\n"
+        "    status                     Cluster/observation counts by severity\n"
+        "    config show|set            Error intelligence settings\n"
+        "    errors list|show           Error clusters (fingerprint identity)\n"
+        "    observations list          Sightings (flow/param/attack filters)\n"
+        "    rescan --all|--flow [--force]\n"
+        "                               Re-run pipeline on stored bodies\n"
+        "    rollup parameter|endpoint  Parameter / endpoint error rollups\n"
     )
 
 

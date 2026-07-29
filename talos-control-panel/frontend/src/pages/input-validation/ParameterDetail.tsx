@@ -8,7 +8,9 @@ import CapabilityBadges from "./components/CapabilityBadges";
 import IvDisclaimer from "./components/IvDisclaimer";
 import ProbeEvidenceTable from "./components/ProbeEvidenceTable";
 import ProfileCards from "./components/ProfileCards";
-import { downloadJson } from "./shared";
+import { downloadJson, IV_BASE } from "./shared";
+import RelatedErrorsStrip from "../error-intelligence/components/RelatedErrorsStrip";
+import type { ParameterRollupRow } from "../error-intelligence/shared";
 
 export default function ParameterDetail() {
   const { paramUuid = "" } = useParams();
@@ -20,6 +22,8 @@ export default function ParameterDetail() {
   const [summaryLines, setSummaryLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorRollup, setErrorRollup] = useState<ParameterRollupRow[] | null>([]);
+  const [errorRollupLoading, setErrorRollupLoading] = useState(false);
 
   const load = () => {
     if (!selected || !paramUuid) return;
@@ -66,6 +70,20 @@ export default function ParameterDetail() {
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+
+    setErrorRollupLoading(true);
+    api
+      .get<{ rollup: ParameterRollupRow[] }>(
+        "/api/error-intel/rollups/parameter",
+        {
+          project_id: selected.id,
+          parameter_uuid: paramUuid,
+          limit: 8,
+        },
+      )
+      .then((r) => setErrorRollup(r.rollup || []))
+      .catch(() => setErrorRollup(null))
+      .finally(() => setErrorRollupLoading(false));
   };
 
   useEffect(load, [selected, paramUuid]);
@@ -110,7 +128,7 @@ export default function ParameterDetail() {
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
-          <button className="btn btn-ghost btn-xs mb-1" onClick={() => navigate("/input-validation?tab=parameters")}>
+          <button className="btn btn-ghost btn-xs mb-1" onClick={() => navigate(`${IV_BASE}?tab=parameters`)}>
             ← Parameters
           </button>
           <h1 className="text-xl font-semibold mono">
@@ -200,6 +218,14 @@ export default function ParameterDetail() {
         <ProfileCards profile={profile} />
       </Section>
 
+      <RelatedErrorsStrip
+        title="Related errors"
+        rows={errorRollup}
+        loading={errorRollupLoading}
+        emptyLabel="No error observations for this parameter yet."
+        limit={8}
+      />
+
       <Section title="Evidence probes">
         <ProbeEvidenceTable probes={probes} />
       </Section>
@@ -214,7 +240,7 @@ export default function ParameterDetail() {
       </details>
 
       <div className="mt-4 text-xs">
-        <Link className="link" to="/input-validation?tab=candidates">
+        <Link className="link" to={`${IV_BASE}?tab=candidates`}>
           Back to candidates
         </Link>
       </div>

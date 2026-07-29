@@ -44,13 +44,25 @@ def arg(
     }
 
 
-def cmd(cmd_id: str, path: list[str], summary: str, args: list[dict] | None = None, background: bool = False):
+def cmd(
+    cmd_id: str,
+    path: list[str],
+    summary: str,
+    args: list[dict] | None = None,
+    background: bool = False,
+    stdin_from: str | None = None,
+):
+    """
+    stdin_from: optional arg name whose value is piped to process stdin and
+    omitted from argv (for CLI commands that read free-form text from stdin).
+    """
     return {
         "id": cmd_id,
         "path": path,
         "summary": summary,
         "args": args or [],
         "background": background,
+        "stdin_from": stdin_from,
     }
 
 
@@ -575,12 +587,43 @@ COMMAND_TREE: list[dict] = [
         "label": "Attack — Unauth",
         "commands": [
             cmd("attack.unauth.run", ["attack", "unauth", "run"], "Run unauth attack recipes", [
-                arg("max_priority", flag="--max-priority", kind="number"),
-                arg("auth_mutation", flag="--auth-mutation"),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    kind="select",
+                    options=[
+                        "baseline",
+                        "empty_auth",
+                        "malformed_auth",
+                        "auth_null",
+                        "auth_whitespace",
+                        "duplicate_empty_header",
+                        "duplicate_malformed_header",
+                    ],
+                    help="Restrict to one Unauth technique (default: all recipes)",
+                ),
+            ]),
+            cmd("attack.unauth.config", ["attack", "unauth", "config"], "Show or set unauth auto-run", [
+                arg(
+                    "auto_run",
+                    flag="--auto-run",
+                    kind="select",
+                    options=["on", "off"],
+                    help="Enable (on) or disable (off) scheduler auto-enqueue of auth_test jobs",
+                ),
             ]),
             cmd("attack.unauth.filter.init", ["attack", "unauth", "filter", "init"], "Create decision filter template"),
             cmd("attack.unauth.filter.show", ["attack", "unauth", "filter", "show"], "Show decision filter"),
             cmd("attack.unauth.filter.validate", ["attack", "unauth", "filter", "validate"], "Validate decision filter"),
+            cmd(
+                "attack.unauth.filter.apply",
+                ["attack", "unauth", "filter", "apply"],
+                "Re-apply decision filter to existing unauth results / findings",
+                [
+                    arg("dry_run", flag="--dry-run", kind="boolean", help="Preview without writing"),
+                    arg("force", flag="--force", kind="boolean", help="Skip confirm; also reject CONFIRMED"),
+                ],
+            ),
         ],
     },
     {
@@ -588,8 +631,10 @@ COMMAND_TREE: list[dict] = [
         "label": "Attack — BAC",
         "commands": [
             cmd(f"attack.bac.{tech}", ["attack", "bac", tech], f"Run BAC {tech.replace('-', ' ')}", [
-                arg("role", flag="--role"),
-                arg("auto_generate", flag="--auto-generate", kind="boolean"),
+                arg("role", flag="--role", help="Attacker role name or UUID"),
+                arg("module", flag="--module", help="Module scope (name or UUID); mutex with endpoint"),
+                arg("endpoint", flag="--endpoint", help="Endpoint UUID scope; mutex with module"),
+                arg("auto_generate", flag="--auto-generate", kind="boolean", help="Auto-generate missing session tokens"),
             ])
             for tech in [
                 "session-swap", "method-fuzz", "content-type", "url-fuzz",
@@ -599,6 +644,15 @@ COMMAND_TREE: list[dict] = [
             cmd("attack.bac.filter.init", ["attack", "bac", "filter", "init"], "Create BAC decision filter template"),
             cmd("attack.bac.filter.show", ["attack", "bac", "filter", "show"], "Show BAC decision filter"),
             cmd("attack.bac.filter.validate", ["attack", "bac", "filter", "validate"], "Validate BAC decision filter"),
+            cmd(
+                "attack.bac.filter.apply",
+                ["attack", "bac", "filter", "apply"],
+                "Re-apply decision filter to existing BAC results / findings",
+                [
+                    arg("dry_run", flag="--dry-run", kind="boolean", help="Preview without writing"),
+                    arg("force", flag="--force", kind="boolean", help="Skip confirm; also reject CONFIRMED"),
+                ],
+            ),
         ],
     },
     {
@@ -639,6 +693,15 @@ COMMAND_TREE: list[dict] = [
                 arg("min_score", flag="--min-score", kind="number"),
                 arg("host", flag="--host"),
                 arg("capability", flag="--capability"),
+            ]),
+            cmd("iv.reflections", ["input-validation", "reflections"],
+                "List raw cross-flow / stored reflection links (data-flow evidence)", [
+                arg("param_uuid", flag="--param-uuid"),
+                arg("host", flag="--host"),
+                arg("source_endpoint", flag="--source-endpoint"),
+                arg("sink_endpoint", flag="--sink-endpoint"),
+                arg("limit", flag="--limit", kind="number"),
+                arg("include_values", flag="--include-values", kind="boolean"),
             ]),
             cmd("iv.clear_cache", ["input-validation", "clear-cache"], "Clear IV cache", [
                 arg("host", flag="--host"), arg("endpoint", flag="--endpoint"), arg("parameter", flag="--parameter"),
@@ -721,18 +784,112 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "error-intel",
+        "label": "Error Intelligence (Passive)",
+        "commands": [
+            cmd("error-intel.status", ["error-intel", "status"],
+                "Cluster / observation counts by severity"),
+            cmd("error-intel.config.show", ["error-intel", "config", "show"],
+                "Show error_intel_config"),
+            cmd("error-intel.config.set", ["error-intel", "config", "set"],
+                "Update one config field", [
+                arg("key", required=True,
+                    help="enabled, store_generic_http_errors, max_body_scan, …"),
+                arg("value", required=True, help="true/false or int"),
+            ]),
+            cmd("error-intel.errors.list", ["error-intel", "errors", "list"],
+                "List error clusters", [
+                arg("category", flag="--category",
+                    help="stack_trace|database|framework|…"),
+                arg("severity", flag="--severity",
+                    kind="select",
+                    options=["low", "medium", "high", "critical"]),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+            cmd("error-intel.errors.show", ["error-intel", "errors", "show"],
+                "Show one error cluster", [
+                arg("error_id", required=True),
+            ]),
+            cmd("error-intel.observations.list",
+                ["error-intel", "observations", "list"],
+                "List observations (flow / param / attack)", [
+                arg("error", flag="--error", help="Filter by error cluster id"),
+                arg("flow", flag="--flow"),
+                arg("endpoint", flag="--endpoint"),
+                arg("parameter", flag="--parameter"),
+                arg("attack", flag="--attack",
+                    kind="select",
+                    options=["proxy", "replay", "iv", "bac", "unauth", "unknown"]),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+            cmd("error-intel.rescan.all", ["error-intel", "rescan"],
+                "Rescan recent error-like flows", [
+                arg("all", flag="--all", kind="boolean", required=True, default=True),
+                arg("force", flag="--force", kind="boolean",
+                    help="Re-process even at current ERROR_INTEL_VERSION"),
+                arg("outdated", flag="--outdated", kind="boolean",
+                    help="Only missing or older scanner_version sightings"),
+                arg("limit", flag="--limit", kind="number", default="200"),
+            ]),
+            cmd("error-intel.rescan.flow", ["error-intel", "rescan"],
+                "Rescan one flow body", [
+                arg("flow", flag="--flow", required=True),
+                arg("force", flag="--force", kind="boolean"),
+            ]),
+            cmd("error-intel.rollup.parameter",
+                ["error-intel", "rollup", "parameter"],
+                "Parameter × error rollup", [
+                arg("parameter", flag="--parameter"),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+            cmd("error-intel.rollup.endpoint",
+                ["error-intel", "rollup", "endpoint"],
+                "Endpoint × error rollup", [
+                arg("endpoint", flag="--endpoint"),
+                arg("limit", flag="--limit", kind="number", default="50"),
+            ]),
+        ],
+    },
+    {
         "group": "finding",
         "label": "Findings",
         "commands": [
-            cmd("finding.list", ["finding", "list"], "List findings", [
+            cmd("finding.list", ["finding", "list"], "List findings (default PRIMARY)", [
                 arg("status", flag="--status", kind="select", options=["TRIAGING", "CONFIRMED", "REJECTED", "DUPLICATE"]),
+                arg("linked", flag="--linked", kind="boolean", help="List LINKED findings only"),
+                arg("all", flag="--all", kind="boolean", help="List PRIMARY and LINKED"),
             ]),
             cmd("finding.show", ["finding", "show"], "Show finding detail", [arg("uuid", required=True)]),
-            cmd("finding.confirm", ["finding", "confirm"], "Confirm a finding", [arg("uuid", required=True)]),
-            cmd("finding.reject", ["finding", "reject"], "Reject a finding", [arg("uuid", required=True)]),
-            cmd("finding.reopen", ["finding", "reopen"], "Reopen a finding", [arg("uuid", required=True)]),
+            cmd("finding.confirm", ["finding", "confirm"], "Confirm a finding", [
+                arg("uuid", required=True),
+                arg("linked", flag="--linked", kind="boolean", help="Also update currently LINKED children (PRIMARY only)"),
+                arg("force", flag="--force", kind="boolean", help="Skip confirm when --linked overwrites mixed statuses"),
+            ]),
+            cmd("finding.reject", ["finding", "reject"], "Reject a finding", [
+                arg("uuid", required=True),
+                arg("linked", flag="--linked", kind="boolean"),
+                arg("force", flag="--force", kind="boolean"),
+            ]),
+            cmd("finding.reopen", ["finding", "reopen"], "Reopen a finding", [
+                arg("uuid", required=True),
+                arg("linked", flag="--linked", kind="boolean"),
+                arg("force", flag="--force", kind="boolean"),
+            ]),
             cmd("finding.duplicate", ["finding", "duplicate"], "Mark as duplicate", [
                 arg("uuid", required=True), arg("of", flag="--of", required=True),
+            ]),
+            cmd(
+                "finding.note.set",
+                ["finding", "note", "set"],
+                "Set analyst notes (text piped to stdin)",
+                [
+                    arg("uuid", required=True),
+                    arg("notes", required=True, help="Free-form notes (sent on stdin)"),
+                ],
+                stdin_from="notes",
+            ),
+            cmd("finding.note.clear", ["finding", "note", "clear"], "Clear analyst notes", [
+                arg("uuid", required=True),
             ]),
             cmd("finding.group.create", ["finding", "group", "create"], "Create a finding group", [arg("name", required=True)]),
             cmd("finding.group.add", ["finding", "group", "add"], "Add finding to group", [
@@ -764,12 +921,18 @@ def find_command(cmd_id: str) -> dict | None:
 
 
 def build_argv(command: dict, values: dict[str, Any]) -> list[str]:
-    """Turn a command spec + submitted values into a safe argv list (no shell)."""
+    """Turn a command spec + submitted values into a safe argv list (no shell).
+
+    Args named in command['stdin_from'] are omitted from argv (piped separately).
+    """
     argv = list(command["path"])
     positionals: list[str] = []
     flagged: list[str] = []
+    stdin_from = command.get("stdin_from")
 
     for spec in command["args"]:
+        if stdin_from and spec["name"] == stdin_from:
+            continue
         val = values.get(spec["name"])
         if val is None or val == "" or val == []:
             continue
@@ -799,3 +962,14 @@ def build_argv(command: dict, values: dict[str, Any]) -> list[str]:
             positionals.append(value_str)
 
     return argv + positionals + flagged
+
+
+def stdin_text_for(command: dict, values: dict[str, Any]) -> str | None:
+    """Return stdin payload when command declares stdin_from, else None."""
+    key = command.get("stdin_from")
+    if not key:
+        return None
+    val = values.get(key)
+    if val is None:
+        return None
+    return str(val)

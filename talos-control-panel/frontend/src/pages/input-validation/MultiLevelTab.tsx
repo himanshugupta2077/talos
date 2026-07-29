@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { Section } from "../../components/Common";
 import CapabilityBadges from "./components/CapabilityBadges";
+import { IV_BASE } from "./shared";
 
 interface EpRow {
   endpoint_id?: string;
@@ -76,7 +77,7 @@ export default function MultiLevelTab({ projectId }: { projectId: string }) {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() => {
                     if (e.endpoint_id) {
-                      navigate(`/input-validation/endpoints/${e.endpoint_id}`);
+                      navigate(`${IV_BASE}/endpoints/${e.endpoint_id}`);
                     }
                   }}
                 >
@@ -122,7 +123,7 @@ export default function MultiLevelTab({ projectId }: { projectId: string }) {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() => {
                     if (h.host) {
-                      navigate(`/input-validation/hosts/${encodeURIComponent(h.host)}`);
+                      navigate(`${IV_BASE}/hosts/${encodeURIComponent(h.host)}`);
                     }
                   }}
                 >

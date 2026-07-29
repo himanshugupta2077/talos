@@ -68,6 +68,88 @@ export interface Module {
   is_active: number;
 }
 
+/** Role×module access map cell (GET /api/access/matrix). */
+export interface AccessCell {
+  role_id: string;
+  role_name: string;
+  module_id: string;
+  module_name: string;
+  client_allowed: string | null;
+  server_expected: string | null;
+  flow_count?: number;
+  endpoint_count?: number;
+}
+
+export type AccessValue = "ALLOW" | "DENY" | "UNKNOWN";
+
+export type AccessBulkOpName =
+  | "client_set"
+  | "server_set"
+  | "client_unset"
+  | "server_unset"
+  | "delete";
+
+export interface AccessBulkOp {
+  op: AccessBulkOpName;
+  role: string;
+  module: string;
+  value?: string;
+}
+
+export interface AccessBulkResponse extends StepsResponse {
+  ok: boolean;
+  applied: number;
+  failed: number;
+}
+
+export interface AccessCoverageRow {
+  role_name: string;
+  module_name: string;
+  client_allowed: string | null;
+  server_expected: string | null;
+  flow_count: number;
+  endpoint_count: number;
+}
+
+export interface AccessMultiRoleEndpoint {
+  endpoint_id: string;
+  method: string;
+  host: string;
+  normalized_path: string;
+  role_count: number;
+  role_names: string;
+}
+
+export interface AccessServerDenyEndpoint {
+  endpoint_id: string;
+  method: string;
+  host: string;
+  normalized_path: string;
+  role_name: string;
+  module_name: string;
+  client_allowed: string | null;
+  server_expected: string;
+  flow_count: number;
+  flow_ids?: string[];
+}
+
+export interface AccessPairSignal {
+  role_id?: string;
+  role_name: string;
+  module_id?: string;
+  module_name: string;
+  client_allowed: string | null;
+  server_expected?: string | null;
+  flow_count?: number;
+}
+
+export interface AccessSignals {
+  multi_role: AccessMultiRoleEndpoint[];
+  server_deny_endpoints: AccessServerDenyEndpoint[];
+  deny_with_flows: AccessPairSignal[];
+  allow_without_flows: AccessPairSignal[];
+}
+
 export interface EndpointRow {
   id: string;
   method: string;
@@ -345,6 +427,153 @@ export interface FlowDetailBundle {
   auth_test_result?: Record<string, any> | null;
 }
 
+// ------------------------------------------------------------------ #
+// Repeater / send API                                                 #
+// ------------------------------------------------------------------ #
+
+export type SendEditorMode = "raw" | "pretty" | "params" | "json-assist";
+
+/** One HTTP side (request or response) returned on send hydrate. */
+export interface FlowHttpSide {
+  method?: string;
+  url?: string;
+  host?: string;
+  path?: string;
+  query?: string;
+  headers: Record<string, string>;
+  cookies?: Record<string, string>;
+  body: string | null;
+  body_base64?: string | null;
+  body_encoding?: "utf8" | "base64" | string;
+  body_len?: number;
+  status_code?: number | null;
+  content_type?: string;
+}
+
+export interface SendDraftResponse {
+  parent_flow_id: string;
+  original_flow_id: string;
+  method: string;
+  url: string;
+  host: string;
+  path: string;
+  query: string;
+  request_headers: Record<string, string>;
+  request_cookies: Record<string, string>;
+  request_body: string | null;
+  request_body_base64: string | null;
+  request_body_encoding: "utf8" | "base64" | string;
+  request_body_len: number;
+  raw: string | null;
+  raw_base64: string | null;
+  raw_encoding: "utf8" | "base64" | string;
+  endpoint_id: string | null;
+  parent_source: string | null;
+  baseline_status_code: number | null;
+  endpoint_annotations: string[];
+}
+
+export interface SendOutcomeDto {
+  execution_flow_id: string | null;
+  parent_flow_id: string;
+  original_flow_id: string;
+  status_code: number | null;
+  success: boolean;
+  failure_reason: string | null;
+  verdict: "SAME" | "DIFFERENT" | "ERROR" | string | null;
+  request_body_len: number;
+  response_body_len: number;
+  source: "manual_send" | "ai_send" | string;
+  session_id: string | null;
+  profile: string;
+  profile_index: number;
+  profile_count: number;
+  note: string | null;
+  duration_ms: number | null;
+  normalizers?: string[];
+  response?: FlowHttpSide;
+  request_as_sent?: FlowHttpSide;
+}
+
+export interface SendMutationResponse {
+  steps: CommandResult[];
+  result: {
+    profile: string;
+    profile_count: number;
+    original_flow_id: string;
+    parent_flow_id: string;
+    outcomes: SendOutcomeDto[];
+  };
+}
+
+export interface SendHistoryRow {
+  id: string;
+  parent_flow_id: string | null;
+  session_id: string | null;
+  method: string;
+  url: string;
+  status_code: number | null;
+  source: string;
+  verdict: string | null;
+  note: string | null;
+  profile: string | null;
+  profile_index: number | null;
+  profile_count: number | null;
+  request_body_len: number;
+  response_body_len: number;
+  captured_at: string;
+  replay_error: string | null;
+  duration_ms: number | null;
+}
+
+export interface SendHistoryResponse {
+  original_flow_id: string;
+  count: number;
+  executions: SendHistoryRow[];
+}
+
+export interface SendTreeNode {
+  id: string;
+  parent_flow_id: string | null;
+  depth: number;
+  method: string;
+  url: string;
+  status_code: number | null;
+  verdict: string | null;
+  session_id: string | null;
+  note: string | null;
+  captured_at: string;
+  duration_ms: number | null;
+  children: SendTreeNode[];
+}
+
+export interface SendTreeResponse {
+  original_flow_id: string;
+  count: number;
+  nodes: SendTreeNode[];
+  lines: string[];
+}
+
+export interface SendDupResponse {
+  steps: CommandResult[];
+  result: {
+    session_id: string;
+    parent_flow_id: string;
+    original_flow_id: string;
+  };
+}
+
+export interface SendExportResponse {
+  steps: CommandResult[];
+  result: {
+    flow_id: string;
+    request_http_base64: string;
+    response_http_base64: string;
+    request_bytes: number;
+    response_bytes: number;
+  };
+}
+
 export interface Finding {
   id: string;
   project_id: string;
@@ -357,6 +586,12 @@ export interface Finding {
   updated_at: string;
   title: string;
   notes: string;
+  /** PRIMARY (default cluster head) or LINKED (technique variant under a PRIMARY). */
+  relation_type?: "PRIMARY" | "LINKED" | string | null;
+  parent_finding_id?: string | null;
+  cluster_key?: string | null;
+  /** Number of LINKED children (PRIMARY rows only; from list/detail SQL). */
+  linked_count?: number;
   role_name?: string | null;
   module_name?: string | null;
 }

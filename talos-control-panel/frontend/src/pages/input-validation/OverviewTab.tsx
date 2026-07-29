@@ -5,6 +5,7 @@ import { Section } from "../../components/Common";
 import CandidateScore from "./components/CandidateScore";
 import IvDisclaimer from "./components/IvDisclaimer";
 import type { CandidateRow, IvConfig, IvStatus } from "./shared";
+import { IV_BASE } from "./shared";
 
 export default function OverviewTab({
   projectId,
@@ -211,7 +212,7 @@ export default function OverviewTab({
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() => {
                     if (c.param_uuid) {
-                      navigate(`/input-validation/params/${c.param_uuid}`);
+                      navigate(`${IV_BASE}/params/${c.param_uuid}`);
                     }
                   }}
                 >

@@ -40,17 +40,19 @@ Dependencies:
         talos.projects.endpoints, talos.projects.model, talos.proxy.queue,
         talos.projects.outscope, talos.proxy.scope,
         talos.passive.queue / worker (optional passive enqueue after commit)
+        talos.error_intel.queue / worker (optional error intel enqueue after commit)
 Data flow:
     FlowQueue.get() → flow dict → attach project_id → validate
                                      → out-of-scope safety check
                                      → normalize path/query → upsert endpoint + endpoint_roles
                                      → INSERT INTO flows (db)
                                      → maybe enqueue PassiveScanJob (cheap gate only)
+                                     → maybe enqueue ErrorIntelJob (cheap gate only)
                                      → append to flows-YYYY-MM-DD.jsonl (archive)
 Side effects:
     - Writes to project SQLite database.
     - Creates/appends to JSONL archive files under <data_dir>/archive/.
-    - Optionally enqueues passive scan jobs (never blocks; never raises).
+    - Optionally enqueues passive / error-intel scan jobs (never blocks; never raises).
     - Logs dropped (invalid) flows at WARNING level.
 """
 
@@ -65,6 +67,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Optional
 
+from talos.error_intel.queue import ErrorIntelQueue
+from talos.error_intel.worker import maybe_enqueue_error_scan
 from talos.passive.queue import PassiveScanQueue
 from talos.passive.worker import maybe_enqueue_passive_scan
 from talos.projects.endpoints import NormalizedFlowURL, normalize_flow_url
@@ -74,6 +78,12 @@ from talos.projects.parameters import extract_flow_params, upsert_endpoint_param
 from talos.projects.policy import upsert_auto_priority
 from talos.projects.policy import update_endpoint_qualification
 from talos.projects.policy_score import compute_auto_priority, load_score_config
+from talos.projects.value_reflection import (
+    CrossFlowConfig,
+    load_cross_flow_config_for_project,
+    on_flow_committed,
+    set_process_cross_flow_config,
+)
 from talos.proxy.queue import FlowQueue
 from talos.proxy.scope import any_rule_matches
 from talos.url_identity import UrlIdentityError, parse_request_url
@@ -88,6 +98,11 @@ _DB_RETRY_DELAY: float = 0.1  # seconds
 # Emit a rolling stats log line every N seconds while the worker is active.
 _STATS_LOG_INTERVAL: float = 30.0
 
+# Re-load parameter_intel.cross_flow from layered config periodically so
+# `talos config set parameter_intel.cross_flow.enabled true` takes effect
+# without a full worker restart (still not per-flow YAML I/O).
+_CROSS_FLOW_CFG_RELOAD_INTERVAL: float = 60.0
+
 
 class FlowWorker:
     """
@@ -99,6 +114,7 @@ class FlowWorker:
         _project        — Active project supplying db_path and archive_dir.
         _queue          — Shared FlowQueue drained by this worker.
         _passive_queue  — Optional PassiveScanQueue for source intelligence enqueue.
+        _error_queue    — Optional ErrorIntelQueue for error intelligence enqueue.
         _out_of_scope   — Frozenset of out-of-scope Basic Scope prefixes; loaded once
                             at init as a safety backstop — the proxy addon is primary.
         _stop_event     — Set to signal the run loop to exit cleanly.
@@ -120,6 +136,7 @@ class FlowWorker:
         project: Project,
         queue: FlowQueue,
         passive_queue: Optional[PassiveScanQueue] = None,
+        error_queue: Optional[ErrorIntelQueue] = None,
     ) -> None:
         # Why store project, not just paths: may need project metadata later
         # without reloading from registry.
@@ -128,6 +145,9 @@ class FlowWorker:
         # Optional: when set, post-commit source-candidate flows enqueue a
         # PassiveScanJob. Capture path never blocks on this queue.
         self._passive_queue: Optional[PassiveScanQueue] = passive_queue
+        # Optional: when set, post-commit error-candidate flows enqueue an
+        # ErrorIntelJob. Capture path never blocks on this queue.
+        self._error_queue: Optional[ErrorIntelQueue] = error_queue
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -150,6 +170,18 @@ class FlowWorker:
         self.db_error_count: int = 0
         # Tracks when the last rolling stats line was emitted.
         self._last_stats_at: float = time.monotonic()
+
+        # Cross-flow reflection config: load at session start; periodically
+        # reloaded (see _maybe_reload_cross_flow_config). Never per-flow YAML.
+        # Defaults to enabled=false; operators opt in via parameter_intel.cross_flow.
+        try:
+            self._cross_flow_cfg: CrossFlowConfig = load_cross_flow_config_for_project(
+                project=project,
+            )
+        except Exception:
+            self._cross_flow_cfg = CrossFlowConfig()
+        set_process_cross_flow_config(self._cross_flow_cfg)
+        self._last_cross_flow_cfg_reload_at: float = time.monotonic()
 
     def start(self) -> None:
         """
@@ -208,6 +240,7 @@ class FlowWorker:
             flow = self._queue.get(timeout=0.2)
             if flow is None:
                 # Timeout with no item — check stop_event and loop.
+                self._maybe_reload_cross_flow_config()
                 self._maybe_log_stats()
                 continue
             # Outer guard: never let _process crash the loop regardless of cause.
@@ -217,6 +250,7 @@ class FlowWorker:
                 logger.exception(
                     "Unexpected error in _process — worker loop continuing"
                 )
+            self._maybe_reload_cross_flow_config()
             self._maybe_log_stats()
 
         # Drain phase: consume everything left in the queue before exiting.
@@ -293,7 +327,11 @@ class FlowWorker:
         endpoint_id: Optional[str] = None
         for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
             try:
-                endpoint_id = _persist_db(enriched, self._project.db_path)
+                endpoint_id = _persist_db(
+                    enriched,
+                    self._project.db_path,
+                    cross_flow_cfg=self._cross_flow_cfg,
+                )
                 persisted = True
                 break
             except sqlite3.IntegrityError:
@@ -348,6 +386,31 @@ class FlowWorker:
                 enriched.get("flow_id"),
             )
 
+        # Error Intelligence: cheap gate + enqueue only (never blocks /
+        # never raises into capture). Body is reloaded by ErrorIntelWorker.
+        try:
+            content_type = _extract_response_content_type(
+                enriched.get("response_headers", {})
+            )
+            # Proxy capture path — mark source for attack_type=proxy inference.
+            if not enriched.get("source"):
+                enriched = dict(enriched)
+                enriched["source"] = "proxy_capture"
+            maybe_enqueue_error_scan(
+                error_queue=self._error_queue,
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                flow=enriched,
+                endpoint_id=endpoint_id,
+                content_type=content_type,
+                inline_if_no_queue=False,
+            )
+        except Exception:
+            logger.exception(
+                "Error intel enqueue wrapper failed — flow_id=%s — capture unaffected",
+                enriched.get("flow_id"),
+            )
+
         # Archive failure is non-fatal: DB is the authoritative store.
         try:
             self._persist_archive(enriched)
@@ -399,6 +462,42 @@ class FlowWorker:
             self._archive_handle.close()
             self._archive_handle = None
             self._archive_date = None
+
+    def _maybe_reload_cross_flow_config(self) -> None:
+        """
+        Purpose:
+            Periodically re-read ``parameter_intel.cross_flow`` so operators can
+            enable/disable indexing without restarting the proxy worker.
+            Not on the per-flow hot path — interval is
+            ``_CROSS_FLOW_CFG_RELOAD_INTERVAL`` (default 60s).
+        Side effects:
+            May replace ``self._cross_flow_cfg`` and process-level cache.
+            Logs at INFO when knobs change.
+        """
+        now = time.monotonic()
+        if now - self._last_cross_flow_cfg_reload_at < _CROSS_FLOW_CFG_RELOAD_INTERVAL:
+            return
+        self._last_cross_flow_cfg_reload_at = now
+        try:
+            new_cfg = load_cross_flow_config_for_project(project=self._project)
+        except Exception:
+            logger.debug(
+                "Cross-flow config reload failed — keeping previous",
+                exc_info=True,
+            )
+            return
+        if new_cfg == self._cross_flow_cfg:
+            return
+        old = self._cross_flow_cfg
+        self._cross_flow_cfg = new_cfg
+        set_process_cross_flow_config(new_cfg)
+        logger.info(
+            "Cross-flow config reloaded — enabled=%s→%s feed_iv=%s→%s",
+            old.enabled,
+            new_cfg.enabled,
+            old.feed_iv,
+            new_cfg.feed_iv,
+        )
 
     def _maybe_log_stats(self) -> None:
         """
@@ -468,14 +567,20 @@ def _validate_flow(flow: dict) -> bool:
     return True
 
 
-def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
+def _persist_db(
+    flow: dict,
+    db_path: Path,
+    *,
+    cross_flow_cfg: Optional[CrossFlowConfig] = None,
+) -> Optional[str]:
     """
     Purpose:
         Insert a validated, project-tagged flow into the flows table and resolve
         its stable endpoint identity in the same transaction.
     Input:
-        flow    — enriched flow dict with project_id attached.
-        db_path — absolute path to the project SQLite file.
+        flow           — enriched flow dict with project_id attached.
+        db_path        — absolute path to the project SQLite file.
+        cross_flow_cfg — session-cached CrossFlowConfig (optional; defaults off).
     Output:
         Endpoint ID linked to the persisted flow, or None when endpoint
         resolution failed (flow is still stored with NULL endpoint_id).
@@ -485,6 +590,7 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
           primary record, then extracts and upserts parameters in a second
           commit (also only when endpoint_id resolved), then updates endpoint
           auto-priority score, closes connection.
+        - Cross-flow reflection indexing/scan (non-fatal third commit when enabled).
         - On normalization failure: logs ERROR, sets endpoint_id to NULL,
           continues with flow insert — does not raise.
         - On endpoint upsert failure: rolls back the failed endpoint work, logs
@@ -624,6 +730,7 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
         # Parameter extraction runs in a second commit so any failure only
         # rolls back the uncommitted param writes, not the flow record.
         extracted_param_names: list[str] = []
+        extracted_params: list = []
         if endpoint_id is not None:
             try:
                 params = extract_flow_params(
@@ -656,6 +763,7 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
                     upsert_endpoint_params(conn, endpoint_id, params, reflections)
                     conn.commit()
                     extracted_param_names = [p.name for p in params]
+                    extracted_params = list(params)
             except Exception:
                 conn.rollback()  # discard incomplete param writes only
                 logger.error(
@@ -663,6 +771,28 @@ def _persist_db(flow: dict, db_path: Path) -> Optional[str]:
                     " — parameters skipped, flow unaffected",
                     flow.get("flow_id"),
                     endpoint_id,
+                    exc_info=True,
+                )
+
+        # Cross-flow / stored reflection: index request values + sink-scan body.
+        # Non-fatal third commit — never rolls back the flow. Uses session-cached
+        # CrossFlowConfig only (no ConfigurationManager on the hot path).
+        if endpoint_id is not None and cross_flow_cfg is not None and cross_flow_cfg.enabled:
+            try:
+                on_flow_committed(
+                    conn,
+                    db_path=db_path,
+                    flow=flow,
+                    endpoint_id=endpoint_id,
+                    params=extracted_params or None,
+                    cfg=cross_flow_cfg,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.debug(
+                    "Cross-flow reflection failed — flow_id=%s — skipping",
+                    flow.get("flow_id"),
                     exc_info=True,
                 )
 

@@ -42,7 +42,11 @@ Components:
         Load and evaluate unauth-decision-filter.yaml.
 
     filter_cli.py
-        Manage the decision filter file.
+        Manage the decision filter file (init | show | validate | apply).
+
+    reclassify.py
+        Offline re-apply of the decision filter to stored unauth_results
+        and auto-reject of matching TRIAGING findings.
 
     cli.py
         talos attack unauth run / filter subcommands.

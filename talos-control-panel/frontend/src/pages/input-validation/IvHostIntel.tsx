@@ -6,7 +6,7 @@ import { NoProjectNotice, Section } from "../../components/Common";
 import CapabilityBadges from "./components/CapabilityBadges";
 import CandidateScore from "./components/CandidateScore";
 import IvDisclaimer from "./components/IvDisclaimer";
-import { CandidateRow, downloadJson, ProfileRow } from "./shared";
+import { CandidateRow, downloadJson, IV_BASE, ProfileRow } from "./shared";
 
 export default function IvHostIntel() {
   const { host: hostParam = "" } = useParams();
@@ -37,7 +37,7 @@ export default function IvHostIntel() {
     <div>
       <button
         className="btn btn-ghost btn-xs mb-1"
-        onClick={() => navigate("/input-validation?tab=multi-level")}
+        onClick={() => navigate(`${IV_BASE}?tab=multi-level`)}
       >
         ← Multi-level
       </button>
@@ -89,8 +89,7 @@ export default function IvHostIntel() {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() =>
                     c.param_uuid &&
-                    navigate(`/input-validation/params/${c.param_uuid}`)
-                  }
+                    navigate(`${IV_BASE}/params/${c.param_uuid}`)                  }
                 >
                   <td className="mono">{c.name}</td>
                   <td className="mono">{c.attack}</td>
@@ -131,8 +130,7 @@ export default function IvHostIntel() {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() =>
                     e.endpoint_id &&
-                    navigate(`/input-validation/endpoints/${e.endpoint_id}`)
-                  }
+                    navigate(`${IV_BASE}/endpoints/${e.endpoint_id}`)                  }
                 >
                   <td>{e.method || "—"}</td>
                   <td className="mono text-xs">{e.path || "—"}</td>
@@ -171,8 +169,7 @@ export default function IvHostIntel() {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() =>
                     p.param_uuid &&
-                    navigate(`/input-validation/params/${p.param_uuid}`)
-                  }
+                    navigate(`${IV_BASE}/params/${p.param_uuid}`)                  }
                 >
                   <td className="mono">{p.name}</td>
                   <td>{p.location}</td>

@@ -41,7 +41,8 @@ PHASES = [
 ]
 
 PRIORITIZATION_NOTE = (
-    "Candidate scores are prioritization only, not confirmed vulnerabilities."
+    "Candidate scores are prioritization only, not confirmed vulnerabilities. "
+    "Stored/cross-page reflection is data-flow evidence, not XSS confirmation."
 )
 
 

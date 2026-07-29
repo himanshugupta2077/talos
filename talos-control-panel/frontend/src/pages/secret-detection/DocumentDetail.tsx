@@ -10,7 +10,7 @@ import CategoryBadge from "./components/CategoryBadge";
 import RedactedValue from "./components/RedactedValue";
 import StaleVersionBadge from "./components/StaleVersionBadge";
 import type { DetectionRow, DocumentRow, OccurrenceRow } from "./shared";
-import { formatBytes, shortId } from "./shared";
+import { formatBytes, SECRETS_BASE, shortId } from "./shared";
 
 interface DetailPayload {
   document: DocumentRow;
@@ -53,7 +53,7 @@ export default function DocumentDetail() {
   if (error && !data) {
     return (
       <div>
-        <Link to="/secret-detection?tab=documents" className="link link-sm">
+        <Link to={`${SECRETS_BASE}?tab=documents`} className="link link-sm">
           back to documents
         </Link>
         <p className="mt-4 text-error">{error}</p>
@@ -66,7 +66,7 @@ export default function DocumentDetail() {
 
   return (
     <div>
-      <Link to="/secret-detection?tab=documents" className="link link-sm mb-4 inline-block">
+      <Link to={`${SECRETS_BASE}?tab=documents`} className="link link-sm mb-4 inline-block">
         back to documents
       </Link>
 
@@ -130,7 +130,7 @@ export default function DocumentDetail() {
             <dd>
               {doc.parent_document_id ? (
                 <Link
-                  to={`/secret-detection/documents/${doc.parent_document_id}`}
+                  to={`${SECRETS_BASE}/documents/${doc.parent_document_id}`}
                   className="link mono text-xs"
                 >
                   {shortId(doc.parent_document_id)}
@@ -191,7 +191,7 @@ export default function DocumentDetail() {
             {data.children.map((c) => (
               <li key={c.id}>
                 <Link
-                  to={`/secret-detection/documents/${c.id}`}
+                  to={`${SECRETS_BASE}/documents/${c.id}`}
                   className="link mono text-xs"
                 >
                   {shortId(c.id)}
@@ -226,7 +226,7 @@ export default function DocumentDetail() {
                   <tr key={d.id}>
                     <td>
                       <Link
-                        to={`/secret-detection/detections/${d.id}`}
+                        to={`${SECRETS_BASE}/detections/${d.id}`}
                         className="link link-hover"
                       >
                         <RedactedValue value={d.redacted_value} />

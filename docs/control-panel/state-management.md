@@ -223,7 +223,7 @@ ProjectProvider
 
 - List filters (reset when navigating away unless component remains mounted)
 - CLI command form values on Console
-- Attack tab selection
+- Attack hub class filter / search (local); module routes for deep work
 - IV probe table contents
 - Modal open flags
 

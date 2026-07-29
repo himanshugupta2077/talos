@@ -20,6 +20,9 @@ import {
   Parameter,
 } from "../types";
 import { DecisionBadge, formatRelativeAge, PRIORITIES } from "./endpoints/shared";
+import { IV_BASE } from "./attack/registry";
+import RelatedErrorsStrip from "./error-intelligence/components/RelatedErrorsStrip";
+import type { EndpointRollupRow } from "./error-intelligence/shared";
 
 interface EndpointDetailResponse {
   endpoint: any;
@@ -46,6 +49,8 @@ export default function EndpointDetail() {
   });
   const [tab, setTab] = useState<DetailTab>("overview");
   const [tagInput, setTagInput] = useState("");
+  const [errorRollup, setErrorRollup] = useState<EndpointRollupRow[] | null>([]);
+  const [errorRollupLoading, setErrorRollupLoading] = useState(false);
   const navigate = useNavigate();
 
   const load = () => {
@@ -58,6 +63,19 @@ export default function EndpointDetail() {
     api
       .get(`/api/endpoints/${endpointId}/adjacent`, { project_id: selected.id })
       .then(setAdjacent as any);
+    setErrorRollupLoading(true);
+    api
+      .get<{ rollup: EndpointRollupRow[] }>(
+        "/api/error-intel/rollups/endpoint",
+        {
+          project_id: selected.id,
+          endpoint_id: endpointId,
+          limit: 8,
+        },
+      )
+      .then((r) => setErrorRollup(r.rollup || []))
+      .catch(() => setErrorRollup(null))
+      .finally(() => setErrorRollupLoading(false));
   };
 
   useEffect(load, [selected, endpointId]);
@@ -163,6 +181,31 @@ export default function EndpointDetail() {
 
       {/* Actions */}
       <div className="flex flex-wrap gap-2 mb-6">
+        {(() => {
+          const preferredFlowId =
+            (policy?.baseline_flow_id &&
+              flows.some((f: any) => f.id === policy.baseline_flow_id) &&
+              policy.baseline_flow_id) ||
+            flows[0]?.id ||
+            null;
+          return preferredFlowId ? (
+            <Link
+              to={`/repeater?flow=${preferredFlowId}`}
+              className="btn btn-xs btn-primary"
+              title="Open preferred flow in Repeater (Mode 2)"
+            >
+              Send to Repeater
+            </Link>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-xs btn-disabled"
+              title="No flows for this endpoint"
+            >
+              Send to Repeater
+            </button>
+          );
+        })()}
         <div className="dropdown">
           <button tabIndex={0} className="btn btn-xs">
             Replay ▾
@@ -399,50 +442,59 @@ export default function EndpointDetail() {
       </div>
 
       {tab === "overview" && (
-        <div className="grid md:grid-cols-2 gap-4">
-          <Section title="Identity">
-            <dl className="text-sm space-y-1">
-              <Row label="Method" value={endpoint.method} mono />
-              <Row label="Canonical origin" value={origin} mono />
-              <Row label="Host" value={hostDisplay} mono />
-              <Row label="Normalized path" value={endpoint.normalized_path} mono />
-              <Row label="Endpoint ID" value={endpoint.id} mono />
-            </dl>
-          </Section>
-          <Section title="Observation">
-            <dl className="text-sm space-y-1">
-              <Row label="First seen" value={formatIST(endpoint.first_seen)} />
-              <Row label="Last seen" value={`${formatRelativeAge(endpoint.last_seen)} (${formatIST(endpoint.last_seen)})`} />
-              <Row label="Hit count" value={String(endpoint.hit_count ?? "—")} />
-              <Row
-                label="Observed roles"
-                value={roles.map((r) => r.name).join(", ") || "—"}
-              />
-              <Row
-                label="Observed modules"
-                value={modules.map((m) => m.name).join(", ") || "—"}
-              />
-            </dl>
-          </Section>
-          <Section title="Qualification & baseline">
-            <dl className="text-sm space-y-1">
-              <Row
-                label="Qualified"
-                value={
-                  policy?.qualified
-                    ? `yes · ${policy?.qualification_reason || "flow_2xx"}`
-                    : `no · ${policy?.qualification_reason || "—"}`
-                }
-              />
-              <div className="flex gap-2 items-center">
-                <span className="text-base-content/50 w-36">Baseline flow</span>
-                <UuidChip value={policy?.baseline_flow_id} />
-                {policy?.baseline_status != null && (
-                  <StatusBadge value={policy.baseline_status} />
-                )}
-              </div>
-            </dl>
-          </Section>
+        <div className="space-y-4">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Section title="Identity">
+              <dl className="text-sm space-y-1">
+                <Row label="Method" value={endpoint.method} mono />
+                <Row label="Canonical origin" value={origin} mono />
+                <Row label="Host" value={hostDisplay} mono />
+                <Row label="Normalized path" value={endpoint.normalized_path} mono />
+                <Row label="Endpoint ID" value={endpoint.id} mono />
+              </dl>
+            </Section>
+            <Section title="Observation">
+              <dl className="text-sm space-y-1">
+                <Row label="First seen" value={formatIST(endpoint.first_seen)} />
+                <Row label="Last seen" value={`${formatRelativeAge(endpoint.last_seen)} (${formatIST(endpoint.last_seen)})`} />
+                <Row label="Hit count" value={String(endpoint.hit_count ?? "—")} />
+                <Row
+                  label="Observed roles"
+                  value={roles.map((r) => r.name).join(", ") || "—"}
+                />
+                <Row
+                  label="Observed modules"
+                  value={modules.map((m) => m.name).join(", ") || "—"}
+                />
+              </dl>
+            </Section>
+            <Section title="Qualification & baseline">
+              <dl className="text-sm space-y-1">
+                <Row
+                  label="Qualified"
+                  value={
+                    policy?.qualified
+                      ? `yes · ${policy?.qualification_reason || "flow_2xx"}`
+                      : `no · ${policy?.qualification_reason || "—"}`
+                  }
+                />
+                <div className="flex gap-2 items-center">
+                  <span className="text-base-content/50 w-36">Baseline flow</span>
+                  <UuidChip value={policy?.baseline_flow_id} />
+                  {policy?.baseline_status != null && (
+                    <StatusBadge value={policy.baseline_status} />
+                  )}
+                </div>
+              </dl>
+            </Section>
+          </div>
+          <RelatedErrorsStrip
+            title="Top errors"
+            rows={errorRollup}
+            loading={errorRollupLoading}
+            emptyLabel="No error clusters linked to this endpoint yet."
+            limit={8}
+          />
         </div>
       )}
 
@@ -487,7 +539,7 @@ export default function EndpointDetail() {
                       ) : (
                         <Link
                           className="link link-hover"
-                          to={`/input-validation?tab=parameters`}
+                          to={`${IV_BASE}?tab=parameters`}
                         >
                           open IV
                         </Link>
@@ -531,6 +583,7 @@ export default function EndpointDetail() {
                   <th>Module</th>
                   <th>Source</th>
                   <th>Flow</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -551,11 +604,19 @@ export default function EndpointDetail() {
                     <td>
                       <UuidChip value={f.id} />
                     </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <Link
+                        to={`/repeater?flow=${f.id}`}
+                        className="btn btn-ghost btn-xs"
+                      >
+                        Repeater
+                      </Link>
+                    </td>
                   </tr>
                 ))}
                 {flows.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="text-center text-base-content/40 py-4">
+                    <td colSpan={8} className="text-center text-base-content/40 py-4">
                       No flows yet.
                     </td>
                   </tr>

@@ -337,6 +337,7 @@ talos [--project ID] [-h|--help]
 │  ├─ resume
 │  ├─ synthesize [--host|--param-uuid] [--dry-run]
 │  ├─ candidates [--attack] [--min-score] [--host] [--capability]
+│  ├─ reflections [--param-uuid] [--host]   # cross-flow / stored links
 │  ├─ clear-cache [--force]   # --force = confirm bypass only
 │  ├─ exclude|include endpoint|host
 │  ├─ show <parameter_uuid> | --endpoint ID | --host H
@@ -458,6 +459,31 @@ talos passive rescan --all --force
 talos passive rescan --document <document_id>
 talos passive rescan --flow <flow_id>
 # After SCANNER_VERSION bumps, rescan --all re-runs detectors on old documents.
+
+# 8c. Error Intelligence (exception / stack / DB / disclosure clusters)
+# Passive only — no extra HTTP; no auto Findings in v1.
+# Auto-feeds from proxy capture + replay/IV/BAC/unauth after flow commit.
+# Control Panel: Testing → Modules → Error Intelligence (/testing/errors)
+#   Flow deep-link: /flows/<id>#section=errors  |  API: /api/error-intel/*
+talos error-intel status
+talos error-intel config show
+talos error-intel config set enabled true
+talos error-intel config set store_generic_http_errors false
+talos error-intel errors list
+talos error-intel errors list --severity high
+talos error-intel errors list --category stack_trace
+talos error-intel errors show <error_id>
+talos error-intel observations list
+talos error-intel observations list --attack iv
+talos error-intel observations list --parameter <parameter_uuid>
+talos error-intel observations list --endpoint <endpoint_id>
+talos error-intel rescan --all
+talos error-intel rescan --all --outdated
+talos error-intel rescan --all --force
+talos error-intel rescan --flow <flow_id> --force
+talos error-intel rollup parameter
+talos error-intel rollup endpoint
+# Aliases: error_intel, errors
 
 # 9. Unauthenticated Execution
 talos attack unauth run
@@ -1178,6 +1204,11 @@ talos send diff <a> <b> --side request --format json
 | Export | `request.http` + `response.http` (or `.bin`) under `--out DIR` |
 | DB growth | Each attempt = full flow row (bodies stored); multi-send multiplies rows |
 
+**Control-panel / API contract:** call `talos.send.engine` + `talos.send.db`
+(not shell). Repeater branch id is **`flow_meta.session_id`** — do **not** use
+`flows.session_id` (that column is proxy capture session and stays NULL on
+sends). Parent, note, verdict, and profile also live in `flow_meta`.
+
 AI loop example:
 
 ```bash
@@ -1311,9 +1342,19 @@ talos attack unauth run --technique duplicate_malformed_header
 talos attack unauth filter init
 talos attack unauth filter show
 talos attack unauth filter validate
+talos attack unauth filter apply --dry-run   # preview reclassification
+talos attack unauth filter apply --force     # apply; also reject CONFIRMED
 ```
 
 Filter file: `<project_data_dir>/unauth-decision-filter.yaml`
+
+**Apply** re-evaluates stored `unauth_results` against the current filter offline
+(no re-requests). Results that flip **BYPASS → SECURE** (`passed_detection`) are
+rewritten and linked **TRIAGING** findings are auto-**REJECTED** with a system
+timeline reason (`Matched decision filter: …`). `--force` also rejects
+**CONFIRMED** findings and skips the interactive confirm. Reverse flips
+(non-BYPASS → BYPASS) are reported as `would create finding` only (no auto-create
+in v1).
 
 ### Techniques and recipes (from implementation)
 
@@ -1407,12 +1448,20 @@ talos attack bac parser-confuse --role customer
 talos attack bac filter init
 talos attack bac filter show
 talos attack bac filter validate
+talos attack bac filter apply --dry-run   # preview reclassification
+talos attack bac filter apply --force     # apply; also reject CONFIRMED
 ```
 
 Filter file: `<project_data_dir>/BAC-decision-filter.yaml`
 
 **Verdicts:** `POSSIBLE_BAC` | `SECURE` | `UNKNOWN`  
 `POSSIBLE_BAC` creates findings (display label: **Broken Access Control**).
+
+After editing the filter, `filter apply` re-evaluates stored `bac_results`.
+`POSSIBLE_BAC`→`SECURE` updates the result and auto-rejects linked
+**TRIAGING** findings as false positives with a system timeline reason
+(`Matched decision filter: …`). `--force` also rejects **CONFIRMED**.
+Reverse `POSSIBLE_BAC` is reported only (no new findings in v1).
 
 Exclude endpoints from BAC (and other attacks):
 
@@ -1483,7 +1532,15 @@ talos input-validation synthesize --format json
 talos input-validation candidates
 talos input-validation candidates --attack xss --min-score 60
 talos input-validation candidates --host api.example.com --capability reflective_input
+talos input-validation candidates --capability stored_reflection
 talos input-validation candidates --format json
+
+# Cross-flow / stored reflection links (data-flow evidence; not XSS)
+# Requires: talos config set parameter_intel.cross_flow.enabled true --project
+# FlowWorker reloads this knob ~every 60s (no full restart required; short lag OK).
+talos input-validation reflections
+talos input-validation reflections --param-uuid <param_uuid>
+talos input-validation reflections --host https://app.example.com --format json
 
 talos input-validation clear-cache --force  # --force = skip confirm (CLI-015)
 talos input-validation clear-cache --host api.example.com --force
@@ -1593,22 +1650,33 @@ After `synthesize` (or a completed planner run), parameter profiles store:
 
 | Field | Meaning |
 |-------|---------|
-| `capabilities` | Behaviour flags (`reflective_input`, `html_context`, `url_like_value`, …) |
-| `candidates` | Prioritization rows: `attack`, `score` 0–100, `confidence`, `reasons`, `evidence_flow_ids` |
+| `capabilities` | Behaviour flags (`reflective_input`, `stored_reflection`, `html_context`, `url_like_value`, …) |
+| `candidates` | Prioritization rows: `attack`, `score`, `confidence`, `reasons`, `evidence_flow_ids`, optional `reflection_modes` / `stored_reflection` |
+| `reflections` CLI | Raw cross-flow source→sink links (FP validation; no full secrets) |
+
+`reflective_input` covers same-request **or** cross-flow reflection. `stored_reflection` is set when a value later appears on another page/flow (data-flow evidence, not XSS).
 
 ```bash
-talos input-validation show <parameter_uuid>           # human: candidates under Intelligence Profile
-talos input-validation show <parameter_uuid> --format json   # capabilities + candidates keys
+# Enable passive cross-flow indexing (default off until bake-in)
+talos config set parameter_intel.cross_flow.enabled true --project
+# FlowWorker reloads this ~every 60s while the proxy is running (no full restart).
+
+talos input-validation show <parameter_uuid>           # same-req + cross-flow; dual modes
+talos input-validation show <parameter_uuid> --format json
 talos input-validation candidates --attack xss --min-score 60
-talos input-validation export parameter <parameter_uuid>     # Markdown candidates table
-talos input-validation export parameter <parameter_uuid> --format json  # schema_version visible
+talos input-validation candidates --capability stored_reflection
+talos input-validation reflections [--param-uuid UUID] [--host HOST]
+talos input-validation export parameter <parameter_uuid>
+talos input-validation export parameter <parameter_uuid> --format json
 talos input-validation export host api.example.com --format json
 ```
 
 **Important:** candidate scores are **not** confirmed vulnerabilities. They
-only rank investigation order for future attack modules. Attack modules should
+only rank investigation order for future attack modules. Stored reflection is
+**data-flow prioritization evidence**, not XSS confirmation. Attack modules should
 use `talos.input_validation.candidates.get_param_intelligence` rather than
-parsing probe tables.
+parsing probe tables. XSS candidates from stored links require an existing
+`iv_param_profiles` document (run `synthesize`).
 
 ### Operator UX (Module 12) & migration
 

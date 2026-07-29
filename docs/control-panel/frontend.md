@@ -54,7 +54,7 @@ All authenticated-domain pages assume a selected project; many render `NoProject
 |------|---------|
 | **Left sidebar** | Grouped nav links (Overview, Model, Capture, Testing, Configuration, Results) |
 | **Top header** | `AppHeader` — global runtime context + actions (not primary navigation) |
-| **Main** | `<Outlet />` for the active page (`p-6`, scrollable) |
+| **Main** | `<Outlet />` for the active page (`p-6`, scrollable). **Repeater** (`/repeater`) uses negative margin to reclaim full height for the split workbench. |
 
 ### Global top header (`AppHeader`)
 
@@ -80,8 +80,8 @@ Navigation groups (from `NAV_GROUPS`):
 |-------|--------|
 | Overview | `/`, `/projects`, `/proxy` |
 | Model | `/roles-modules`, `/access`, `/auth` |
-| Capture | `/endpoints`, `/flows`, `/mutations` (HTTP Rules) |
-| Testing | `/scheduler`, `/attack`, `/input-validation`, `/secret-detection` |
+| Capture | `/repeater`, `/endpoints`, `/flows`, `/mutations` (HTTP Rules) |
+| Testing | `/scheduler`, `/testing` (Modules hub + secrets, errors, unauth, bac, input-validation); `/attack/*` redirects to `/testing/*` |
 | Configuration | `/talos-config` |
 | Results | `/findings`, `/console` |
 
@@ -99,22 +99,30 @@ Defined in `App.tsx` with React Router v6 nested routes under `Layout`.
 | `/projects` | `Projects` |
 | `/proxy` | `Proxy` |
 | `/roles-modules` | `RolesModules` |
-| `/access` | `Access` |
+| `/access` | `Access` (+ `pages/access/*` tabs: matrix, coverage, signals) |
 | `/auth` | `Auth` |
 | `/endpoints` | `Endpoints` |
 | `/endpoints/:endpointId` | `EndpointDetail` |
 | `/flows` | `Flows` |
 | `/flows/:flowId` | `FlowDetail` |
+| `/repeater` | `Repeater` (Mode 2 send workbench) |
 | `/mutations` | `Mutations` |
 | `/scheduler` | `Scheduler` |
-| `/attack` | `Attack` |
-| `/input-validation` | `InputValidation` (tabs: overview/candidates/parameters/multi-level/run/settings) |
-| `/input-validation/params/:paramUuid` | `ParameterDetail` (IV dossier) |
-| `/input-validation/endpoints/:endpointId` | `IvEndpointIntel` |
-| `/input-validation/hosts/:host` | `IvHostIntel` |
-| `/secret-detection` | `SecretDetection` (tabs: overview/detections/documents/rules/settings) |
-| `/secret-detection/detections/:detectionId` | `DetectionDetail` |
-| `/secret-detection/documents/:documentId` | `DocumentDetail` |
+| `/testing` | Testing modules hub (Passive \| Active catalog; `Attack.tsx` / `AttackHub`) |
+| `/testing/unauth` | `UnauthModule` (tabs: overview/run/results/config; `pages/attack/unauth/*`) |
+| `/testing/bac` | `BacModule` |
+| `/testing/secrets` | `SecretDetection` (tabs: overview/detections/documents/rules/settings) |
+| `/testing/secrets/detections/:detectionId` | `DetectionDetail` |
+| `/testing/secrets/documents/:documentId` | `DocumentDetail` |
+| `/testing/errors` | `ErrorIntelligence` (tabs: overview/errors/rollups/settings) |
+| `/testing/errors/:errorId` | `ErrorClusterDetail` |
+| `/testing/input-validation` | `InputValidation` (tabs: overview/candidates/parameters/multi-level/run/settings) |
+| `/testing/input-validation/params/:paramUuid` | `ParameterDetail` (IV dossier) |
+| `/testing/input-validation/endpoints/:endpointId` | `IvEndpointIntel` |
+| `/testing/input-validation/hosts/:host` | `IvHostIntel` |
+| `/attack`, `/attack/*` | Redirect → `/testing/*` (permanent legacy) |
+| `/secret-detection/*` | Redirect → `/testing/secrets/*` |
+| `/input-validation/*` | Redirect → `/testing/input-validation/*` |
 | `/findings` | `Findings` |
 | `/findings/:findingId` | `FindingDetail` |
 | `/console` | `Console` |

@@ -142,14 +142,17 @@ Notes:
 
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
-| GET | `/api/access/matrix` | Role×module matrix | query `project_id` | `{ cells }` | — | `roles` CROSS JOIN `modules` LEFT JOIN `access_map` |
+| GET | `/api/access/matrix` | Role×module matrix + traffic counts | query `project_id` | `{ cells }` with `client_allowed`, `server_expected`, `flow_count`, `endpoint_count` | — | `roles` CROSS JOIN `modules` LEFT JOIN `access_map` + optional `flows` agg |
 | POST | `/api/access/client` | Set client allowed | body `role`, `module`, `value` | steps | scoped `access client set` (value lowercased) | — |
 | POST | `/api/access/server` | Set server expected | same | steps | scoped `access server set` | — |
 | POST | `/api/access/client/unset` | Unset client | body `role`, `module` | steps | scoped `access client unset` | — |
 | POST | `/api/access/server/unset` | Unset server | body pair | steps | scoped `access server unset` | — |
-| POST | `/api/access/delete` | Delete mapping | body pair | steps | scoped `access delete` | — |
-| POST | `/api/access/coverage` | Coverage report | query `project_id` | steps | scoped `access coverage` | — |
-| POST | `/api/access/signals` | BAC/IDOR signals | query `project_id` | steps | scoped `access signals` | — |
+| POST | `/api/access/delete` | Delete mapping | body pair | steps | scoped `access delete --force` (UI confirmed) | — |
+| POST | `/api/access/bulk` | Batch mutations | body `operations[]` (`op`, `role`, `module`, `value?`); max 200 | `{ steps, ok, applied, failed }` | sequential scoped CLI per op | — |
+| GET | `/api/access/coverage` | Structured coverage | query `project_id` | `{ rows }` | — | `get_access_coverage` |
+| GET | `/api/access/signals` | Structured signals | query `project_id` | `{ multi_role, server_deny_endpoints, deny_with_flows, allow_without_flows }` | — | access analysis helpers |
+| POST | `/api/access/coverage` | CLI coverage report | query `project_id` | steps | scoped `access coverage` | — |
+| POST | `/api/access/signals` | CLI signals report | query `project_id` | steps | scoped `access signals` | — |
 
 ---
 
@@ -259,6 +262,32 @@ Bulk mutation responses: `{ steps, bulk, ok }` where `bulk` is the CLI `--format
 
 ---
 
+## Send / Repeater (`/api/send`)
+
+Mode 2 mutable send surface for the Control Panel Repeater. **Architecture exception:** mutations call `talos.send.engine` / `talos.send.db` in-process (not CLI wrap). See `cli-integration.md` Exceptions. All routes take `project_id` query param.
+
+| Method | URL | Purpose | Request | Response | Engine | DB |
+|--------|-----|---------|---------|----------|--------|-----|
+| GET | `/api/send/draft/{flow_id}` | Materialize editable draft | path | `SendDraftResponse` (raw dual + annotations) | `draft_from_flow` | read |
+| GET | `/api/send/history` | Send history under root | query `from`, `session?`, `parent?`, `source?`, `limit?` | `{ original_flow_id, count, executions[] }` with `duration_ms` | `list_send_history` | read |
+| GET | `/api/send/tree` | Structured tree + ASCII lines | query `from`, `limit?` | `{ nodes, lines, … }` | history + `build_send_tree` | read |
+| GET | `/api/send/show/{flow_id}` | Request/response hydrate | query `include_bodies?` | show DTO + `duration_ms` | `get_flow_show` | read |
+| GET | `/api/send/diff` | Request and/or response diff | query `a`, `b`, `side` | request/response diff | pure diffs | read |
+| POST | `/api/send/once` | Once / repeat / parallel | body: `parent_flow_id`, `edit.raw_base64`\|`raw`, `profile`, … | **2xx** `{ steps, result.outcomes[] }`; precondition **409** `{ detail }` only | `send_once` / `send_repeat` / `send_parallel` | insert flow |
+| POST | `/api/send/redo/{flow_id}` | Re-fire as-sent | optional note | `{ steps, result }` | `redo_send` | insert |
+| POST | `/api/send/dup/{flow_id}` | Mint `session_id` branch | — | `{ steps, result.session_id }` | uuid | — |
+| POST | `/api/send/note/{flow_id}` | Note on send row only | body `note` | `{ steps, result }` | `update_send_note` | update meta |
+| POST | `/api/send/export/{flow_id}` | Base64 request/response.http | — | `{ steps, result.*_base64 }` | serialize | read |
+
+**POST once rules (v1):**
+
+- Accept `edit.raw_base64` and/or `edit.raw` only; structured-only edit → **400**.
+- Profiles: `{ type: "once" }` \| `{ type: "repeat", n, delay_ms? }` \| `{ type: "parallel", n }` with `1 ≤ n ≤ 50`. Parallel concurrency = engine default `min(n, 10)`.
+- Logout annotation → **409** (no flow inserted, no `steps` body).
+- UI hardcodes `source: "manual_send"`.
+
+---
+
 ## Scheduler (`/api/scheduler`)
 
 | Method | URL | Purpose | Request | Response | CLI | DB / runtime |
@@ -302,18 +331,43 @@ Legacy path prefix; UI label is **HTTP Rules**. All writes via `talos config htt
 
 ---
 
+## Error Intelligence (`/api/error-intel`)
+
+Passive error clusters from stored HTTP responses. **Intelligence only** — no Findings bridge in v1. All routes require `project_id`. Reads use `talos.error_intel.db`; mutations shell out to `talos error-intel …`.
+
+| Method | URL | Purpose | Request | Response | CLI / DB |
+|--------|-----|---------|---------|----------|----------|
+| GET | `/status` | Counts + config snapshot | `project_id` | enabled, clusters, observations, by_severity, by_category, scanner_version, … | DB |
+| GET | `/overview` | Status + top clusters + empty_state | `project_id`, `top_n?` | `{ status, top_clusters, empty_state, note }` | DB (top prefers medium+) |
+| GET | `/config` | Config + keys allowlist | `project_id` | `{ config, scanner_version, keys }` | DB |
+| POST | `/config` | Set config key(s) | body `key`/`value` or `updates` | `{ steps }` | `error-intel config set` |
+| GET | `/errors` | Filtered cluster list | `project_id`, severity (multi/csv), category?, flags?, q?, min_observations?, hide_low_noise?, limit, offset | `{ errors, total, limit, offset, count }` | `list_clusters` + `count_clusters` |
+| GET | `/errors/{error_id}` | Cluster dossier | `project_id` | `{ error, observations, sibling_clusters }` | DB |
+| GET | `/observations` | Observation list | filters + limit/offset | `{ observations, limit, offset, count }` | DB |
+| GET | `/rollups/parameter` | Parameter rollup | `parameter_uuid?`, limit | `{ rollup }` | DB |
+| GET | `/rollups/endpoint` | Endpoint rollup | `endpoint_id?`, limit | `{ rollup }` | DB |
+| POST | `/rescan` | Rescan bodies | body mode=all\|flow, id?, force?, outdated?, limit? | `{ steps }` | `error-intel rescan` |
+| GET | `/by-flow/{flow_id}` | Flow-scoped sightings | `project_id` | observations (max 20), clusters, scanner_enabled | DB |
+
+---
+
 ## Attack (`/api/attack`)
 
 ### Unauth
 
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
-| GET | `/unauth/results` | Recent results | verdict?, limit? | `{ results }` | — | `unauth_results` JOIN flows |
+| GET | `/unauth/techniques` | Technique picker metadata | — | `{ techniques, items[{name,description,mutation_family,recipe_count}], total_recipes }` | — | Core recipes/variants (fallback static names) |
+| GET | `/unauth/overview` | Workspace aggregate | `project_id`, top_n? | counts, testable_endpoints, total_recipes, estimated_jobs_all, jobs, auto_run, techniques, recent_bypass, empty_state | — | unauth_results, endpoints/policy, scheduler_jobs; auto-run via Core attack_config |
+| GET | `/unauth/results` | Recent results | verdict?, auth_mutation?, request_mutation?, search?, limit? | `{ results }` | — | `unauth_results` JOIN flows |
 | GET | `/unauth/summary` | Verdict counts | `project_id` | `{ counts }` | — | group by verdict |
-| POST | `/unauth/run` | Run recipes | body max_priority?, auth_mutation? | steps | `attack unauth run` | — |
+| POST | `/unauth/run` | Enqueue recipes | body `technique?` | steps | `attack unauth run [--technique NAME]` | — |
 | POST | `/unauth/filter/init` | Init filter | — | steps | `attack unauth filter init` | — |
 | POST | `/unauth/filter/show` | Show filter | — | steps | `… filter show` | — |
 | POST | `/unauth/filter/validate` | Validate filter | — | steps | `… filter validate` | — |
+| POST | `/unauth/filter/apply` | Re-apply filter to stored results | body `dry_run?` `force?` | ApplySummary JSON (counts + rows) | Core `apply_unauth_decision_filter` (not CLI steps) | unauth_results, findings, finding_timeline |
+
+Auto-run mutations use layered configuration (`POST /api/configuration/value` key `attack.unauth_auto_run`), not a dedicated attack route. Console also exposes `attack unauth config --auto-run on|off`.
 
 ### BAC
 
@@ -366,12 +420,14 @@ Scope body fields: `host`, `endpoint`, `parameter`, `param_uuid`, `ignore_cache`
 
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
-| GET | `/api/findings` | List | status? | `{ findings }` | — | findings + evidence role/module |
-| GET | `/api/findings/{finding_id}` | Detail | — | finding, evidence, timeline, duplicates | — | findings*, evidence, timeline |
-| POST | `/{id}/confirm` | Confirm | — | steps | `finding confirm` | — |
-| POST | `/{id}/reject` | Reject | — | steps | `finding reject` | — |
-| POST | `/{id}/reopen` | Reopen | — | steps | `finding reopen` | — |
+| GET | `/api/findings` | List | status?, view=`primary`\|`linked`\|`all` | `{ findings, view }` (+ `linked_count` on PRIMARY) | — | findings + evidence role/module |
+| GET | `/api/findings/{finding_id}` | Detail | — | finding, evidence, timeline, duplicates, parent, linked | — | findings*, evidence, timeline |
+| POST | `/{id}/confirm` | Confirm | body linked?, force? | steps | `finding confirm [--linked] [--force]` | — |
+| POST | `/{id}/reject` | Reject | body linked?, force? | steps | `finding reject [--linked] [--force]` | — |
+| POST | `/{id}/reopen` | Reopen | body linked?, force? | steps | `finding reopen [--linked] [--force]` | — |
 | POST | `/{id}/duplicate` | Mark duplicate | body `of` | steps | `finding duplicate --of` | — |
+| POST | `/{id}/notes` | Set notes | body `notes` | steps | `finding note set` (stdin) | — |
+| DELETE | `/{id}/notes` | Clear notes | — | steps | `finding note clear` | — |
 | GET | `/{id}/report` | Generate report | — | steps | `finding report` | — |
 | GET | `/groups/list` | List groups | `project_id` | `{ groups }` | — | finding_groups + members |
 | GET | `/groups/{group_id}/members` | Members | — | `{ findings }` | — | join |
@@ -380,8 +436,6 @@ Scope body fields: `host`, `endpoint`, `parameter`, `param_uuid`, `ignore_cache`
 | POST | `/groups/remove-member` | Remove member | body pair | steps | `group remove` | — |
 | POST | `/groups/delete` | Delete group | body group, remove_findings? | steps | `group remove [--remove-findings]` | — |
 | GET | `/groups/report/{group_name}` | Group report | — | steps | `finding report --group` | — |
-
-Note: `NotesBody` is defined in `findings.py` but no notes endpoint is wired in the current file.
 
 ---
 

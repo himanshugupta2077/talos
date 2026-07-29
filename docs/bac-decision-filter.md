@@ -45,7 +45,15 @@ talos attack bac filter init      # create starter file
 # Edit the file
 talos attack bac filter validate  # check syntax and structure
 talos attack bac filter show      # review active config
+talos attack bac filter apply --dry-run   # preview reclassification of stored results
+talos attack bac filter apply --force     # apply; also reject CONFIRMED findings
 ```
+
+After editing the filter, **apply** re-evaluates stored `bac_results` offline.
+Responses that match **passed_detection** flip `POSSIBLE_BAC`→`SECURE` and
+linked **TRIAGING** findings are auto-rejected as false positives with a system
+timeline reason (`Matched decision filter: …`). Reverse `POSSIBLE_BAC` is
+reported only (no new findings in v1).
 
 ---
 

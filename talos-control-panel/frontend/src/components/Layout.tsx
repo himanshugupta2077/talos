@@ -21,11 +21,10 @@ type IconName =
   | "auth"
   | "endpoints"
   | "flows"
+  | "repeater"
   | "mutations"
   | "scheduler"
   | "attack"
-  | "input"
-  | "source"
   | "findings"
   | "console"
   | "config"
@@ -55,6 +54,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Capture",
     items: [
+      { to: "/repeater", label: "Repeater", icon: "repeater" },
       { to: "/endpoints", label: "Endpoints", icon: "endpoints" },
       { to: "/flows", label: "Flows", icon: "flows" },
       { to: "/mutations", label: "HTTP Rules", icon: "mutations" },
@@ -64,9 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Testing",
     items: [
       { to: "/scheduler", label: "Scheduler", icon: "scheduler" },
-      { to: "/attack", label: "Attack", icon: "attack" },
-      { to: "/input-validation", label: "Input Validation", icon: "input" },
-      { to: "/secret-detection", label: "Secret Detection", icon: "source" },
+      { to: "/testing", label: "Modules", icon: "attack" },
     ],
   },
   {
@@ -139,6 +137,13 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
       <path d="M8.2 7.5 15.5 11M8.2 16.5 15.5 13" />
     </>
   ),
+  repeater: (
+    <>
+      <path d="M4 7h16v10H4z" />
+      <path d="M7 10h6M7 13h10" />
+      <path d="M17 4v3M17 17v3" />
+    </>
+  ),
   mutations: (
     <>
       <path d="M4 20 14 10" />
@@ -159,19 +164,6 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="12" r="4" />
       <circle cx="12" cy="12" r="1" />
       <path d="M12 2v2M12 20v2M2 12h2M20 12h2" />
-    </>
-  ),
-  input: (
-    <>
-      <path d="M9 12 11 14l4-4" />
-      <path d="M12 3 4 7v5c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V7l-8-4z" />
-    </>
-  ),
-  source: (
-    <>
-      <circle cx="11" cy="11" r="6" />
-      <path d="M16 16l4 4" />
-      <path d="M9 11h4M11 9v4" />
     </>
   ),
   findings: (

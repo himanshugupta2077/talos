@@ -58,10 +58,13 @@ from talos.configuration.http_engine import HTTPManipulationEngine
 from talos.configuration.manager import load_effective_config
 from talos.configuration.model import EffectiveConfig
 from talos.projects.access import get_active_role_id, get_active_module_id
-from talos.projects.db import seed_default_context
+from talos.projects.db import migrate_project_db, seed_default_context
 from talos.projects.manager import ProjectManager, NoActiveProject, ProjectNotFound
 from talos.projects.model import Project, ScopeConstraints
 from talos.projects.outscope import load_prefix_set
+from talos.error_intel.db import get_config as get_error_intel_config
+from talos.error_intel.queue import ErrorIntelQueue
+from talos.error_intel.worker import ErrorIntelWorker
 from talos.passive.db import get_config as get_passive_config
 from talos.passive.queue import PassiveScanQueue
 from talos.passive.worker import SourceScanWorker
@@ -94,6 +97,8 @@ class TalosAddon:
         _worker         — FlowWorker thread started at addon init; stopped in done().
         _passive_queue  — Bounded PassiveScanQueue for SourceScanWorker.
         _passive_worker — SourceScanWorker daemon; started after FlowWorker.
+        _error_queue    — Bounded ErrorIntelQueue for ErrorIntelWorker.
+        _error_worker   — ErrorIntelWorker daemon; started after FlowWorker.
 
     Note:
         ReplayScheduler no longer runs inside the proxy process. Start it with
@@ -149,6 +154,10 @@ class TalosAddon:
         # during a live session take effect on next proxy restart.
         self._out_of_scope: frozenset[str] = load_prefix_set(project.db_path)
 
+        # Bring schema current (error_intel / passive / findings tables) before
+        # any config or role reads. No-op when already at SCHEMA_VERSION.
+        migrate_project_db(project.db_path)
+
         # Ensure global role and module exist before reading active IDs.
         # Must run before any call to get_active_role_id / get_active_module_id.
         seed_default_context(project.db_path)
@@ -171,12 +180,24 @@ class TalosAddon:
             queue_max = 500
         self._passive_queue = PassiveScanQueue(maxsize=queue_max)
 
+        # Error Intelligence queue: same capture-safe pattern as passive.
+        try:
+            error_cfg = get_error_intel_config(project.db_path)
+            error_queue_max = int(error_cfg.queue_maxsize)
+        except Exception:
+            logger.exception(
+                "Failed to load error_intel_config — using default queue size"
+            )
+            error_queue_max = 500
+        self._error_queue = ErrorIntelQueue(maxsize=error_queue_max)
+
         # Start the worker thread. Must happen after the queue is ready so no
         # flows are enqueued before the worker is consuming.
         self._worker = FlowWorker(
             project=project,
             queue=flow_queue,
             passive_queue=self._passive_queue,
+            error_queue=self._error_queue,
         )
         self._worker.start()
 
@@ -194,10 +215,24 @@ class TalosAddon:
                 "passive scan"
             )
 
+        # Error Intelligence worker — after FlowWorker so jobs land against
+        # committed flows. Failures here must not block capture.
+        self._error_worker = ErrorIntelWorker(
+            project=project,
+            queue=self._error_queue,
+        )
+        try:
+            self._error_worker.start()
+        except Exception:
+            logger.exception(
+                "ErrorIntelWorker failed to start — capture continues without "
+                "error intelligence"
+            )
+
         logger.info(
             "Proxy addon loaded. project=%s scope_entries=%d "
             "out_of_scope_prefixes=%d store_bodies=%s max_body=%d drop_headers=%d "
-            "http_engine=%s http_rules=%d passive_queue_max=%d",
+            "http_engine=%s http_rules=%d passive_queue_max=%d error_queue_max=%d",
             project.id,
             len(self._scope),
             len(self._out_of_scope),
@@ -207,6 +242,7 @@ class TalosAddon:
             "on" if self._http_engine.enabled else "off",
             len(self._http_engine.rules),
             queue_max,
+            error_queue_max,
         )
 
     def done(self) -> None:
@@ -217,12 +253,17 @@ class TalosAddon:
         Side effects:
             - Stops FlowWorker (DB + archive drain).
             - Stops SourceScanWorker (passive queue drain).
+            - Stops ErrorIntelWorker (error intel queue drain).
         """
         self._worker.stop()
         try:
             self._passive_worker.stop()
         except Exception:
             logger.exception("SourceScanWorker stop failed")
+        try:
+            self._error_worker.stop()
+        except Exception:
+            logger.exception("ErrorIntelWorker stop failed")
 
     def request(self, flow: http.HTTPFlow) -> None:
         """

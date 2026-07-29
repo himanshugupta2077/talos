@@ -70,8 +70,16 @@ def _talos_argv(args: list[str]) -> list[str]:
         *args,
     ]
 
-def run(args: list[str], timeout: Optional[int] = None) -> CommandResult:
-    """Run a single talos CLI invocation and capture its result."""
+def run(
+    args: list[str],
+    timeout: Optional[int] = None,
+    stdin_text: Optional[str] = None,
+) -> CommandResult:
+    """Run a single talos CLI invocation and capture its result.
+
+    When ``stdin_text`` is set, it is piped to the process stdin (used for
+    commands that read free-form content from stdin, e.g. ``finding note set``).
+    """
     argv = _talos_argv(args)
     start = time.monotonic()
     try:
@@ -81,6 +89,7 @@ def run(args: list[str], timeout: Optional[int] = None) -> CommandResult:
             env=_talos_env(),
             capture_output=True,
             text=True,
+            input=stdin_text,
             timeout=timeout or config.CLI_TIMEOUT,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -193,6 +202,22 @@ def run_scoped(project_id: str, args: list[str], timeout: Optional[int] = None) 
     beforehand. Both steps are returned so the UI can show exactly what ran.
     """
     return run_sequence([["project", "open", project_id], args], timeout=timeout)
+
+
+def run_scoped_with_stdin(
+    project_id: str,
+    args: list[str],
+    stdin_text: str,
+    timeout: Optional[int] = None,
+) -> list[CommandResult]:
+    """
+    Project-scoped command that feeds ``stdin_text`` to the CLI process
+    (e.g. ``finding note set <uuid>``).
+    """
+    open_result = run(["project", "open", project_id], timeout=timeout)
+    if not open_result.ok:
+        return [open_result]
+    return [open_result, run(args, timeout=timeout, stdin_text=stdin_text)]
 
 
 def run_scoped_with_editor_content(

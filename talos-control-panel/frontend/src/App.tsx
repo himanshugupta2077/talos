@@ -17,6 +17,11 @@ import FlowDetail from "./pages/FlowDetail";
 import Mutations from "./pages/Mutations";
 import Scheduler from "./pages/Scheduler";
 import Attack from "./pages/Attack";
+import UnauthModule from "./pages/attack/modules/UnauthModule";
+import BacModule from "./pages/attack/modules/BacModule";
+import LegacySecretRedirect from "./pages/attack/LegacySecretRedirect";
+import LegacyIvRedirect from "./pages/attack/LegacyIvRedirect";
+import LegacyAttackRedirect from "./pages/attack/LegacyAttackRedirect";
 import InputValidation from "./pages/InputValidation";
 import ParameterDetail from "./pages/input-validation/ParameterDetail";
 import IvEndpointIntel from "./pages/input-validation/IvEndpointIntel";
@@ -24,10 +29,13 @@ import IvHostIntel from "./pages/input-validation/IvHostIntel";
 import SecretDetection from "./pages/SecretDetection";
 import DetectionDetail from "./pages/secret-detection/DetectionDetail";
 import DocumentDetail from "./pages/secret-detection/DocumentDetail";
+import ErrorIntelligence from "./pages/ErrorIntelligence";
+import ErrorClusterDetail from "./pages/error-intelligence/ErrorClusterDetail";
 import Findings from "./pages/Findings";
 import FindingDetail from "./pages/FindingDetail";
 import Console from "./pages/Console";
 import TalosConfig from "./pages/TalosConfig";
+import Repeater from "./pages/Repeater";
 
 export default function App() {
   return (
@@ -47,16 +55,51 @@ export default function App() {
               <Route path="/endpoints/:endpointId" element={<EndpointDetail />} />
               <Route path="/flows" element={<Flows />} />
               <Route path="/flows/:flowId" element={<FlowDetail />} />
+              <Route path="/repeater" element={<Repeater />} />
               <Route path="/mutations" element={<Mutations />} />
               <Route path="/scheduler" element={<Scheduler />} />
-              <Route path="/attack" element={<Attack />} />
-              <Route path="/input-validation" element={<InputValidation />} />
-              <Route path="/input-validation/params/:paramUuid" element={<ParameterDetail />} />
-              <Route path="/input-validation/endpoints/:endpointId" element={<IvEndpointIntel />} />
-              <Route path="/input-validation/hosts/:host" element={<IvHostIntel />} />
-              <Route path="/secret-detection" element={<SecretDetection />} />
-              <Route path="/secret-detection/detections/:detectionId" element={<DetectionDetail />} />
-              <Route path="/secret-detection/documents/:documentId" element={<DocumentDetail />} />
+
+              {/* Canonical Testing hub + modules */}
+              <Route path="/testing" element={<Attack />} />
+              <Route path="/testing/unauth" element={<UnauthModule />} />
+              <Route path="/testing/bac" element={<BacModule />} />
+              <Route path="/testing/secrets" element={<SecretDetection />} />
+              <Route
+                path="/testing/secrets/detections/:detectionId"
+                element={<DetectionDetail />}
+              />
+              <Route
+                path="/testing/secrets/documents/:documentId"
+                element={<DocumentDetail />}
+              />
+              <Route path="/testing/errors" element={<ErrorIntelligence />} />
+              <Route
+                path="/testing/errors/:errorId"
+                element={<ErrorClusterDetail />}
+              />
+              <Route path="/testing/input-validation" element={<InputValidation />} />
+              <Route
+                path="/testing/input-validation/params/:paramUuid"
+                element={<ParameterDetail />}
+              />
+              <Route
+                path="/testing/input-validation/endpoints/:endpointId"
+                element={<IvEndpointIntel />}
+              />
+              <Route
+                path="/testing/input-validation/hosts/:host"
+                element={<IvHostIntel />}
+              />
+
+              {/* Legacy /attack/* → /testing/* (preserve path, search, hash) */}
+              <Route path="/attack/*" element={<LegacyAttackRedirect />} />
+              <Route path="/attack" element={<LegacyAttackRedirect />} />
+              {/* Older bookmarks → nested under Testing */}
+              <Route path="/secret-detection/*" element={<LegacySecretRedirect />} />
+              <Route path="/secret-detection" element={<LegacySecretRedirect />} />
+              <Route path="/input-validation/*" element={<LegacyIvRedirect />} />
+              <Route path="/input-validation" element={<LegacyIvRedirect />} />
+
               <Route path="/findings" element={<Findings />} />
               <Route path="/findings/:findingId" element={<FindingDetail />} />
               <Route path="/console" element={<Console />} />

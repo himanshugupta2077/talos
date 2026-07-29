@@ -1,168 +1,225 @@
-import { useEffect, useState } from "react";
+/**
+ * Access Model workspace — matrix editor, coverage, BAC/IDOR signals.
+ * Full parity with `talos access client|server|delete|show|coverage|signals`.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
-import { useAction } from "../hooks/useAction";
-import { NoProjectNotice } from "../components/Common";
-import { StepsResponse } from "../types";
-
-interface Cell {
-  role_id: string;
-  role_name: string;
-  module_id: string;
-  module_name: string;
-  client_allowed: string | null;
-  server_expected: string | null;
-}
-
-const VALUES = ["ALLOW", "DENY", "UNKNOWN"];
-
-function ValueBadge({ v }: { v: string | null }) {
-  if (!v) return <span className="text-base-content/30">·</span>;
-  const cls = v === "ALLOW" ? "badge-success" : v === "DENY" ? "badge-error" : "badge-ghost";
-  return <span className={`badge badge-xs ${cls}`}>{v}</span>;
-}
+import { ModuleHelp, NoProjectNotice } from "../components/Common";
+import type { AccessCell } from "../types";
+import CoverageTab from "./access/CoverageTab";
+import MatrixTab from "./access/MatrixTab";
+import SignalsTab from "./access/SignalsTab";
+import {
+  AccessStats,
+  AccessTab,
+  computeStats,
+  MatrixFilter,
+} from "./access/shared";
 
 export default function Access() {
   const { selected } = useProject();
-  const [cells, setCells] = useState<Cell[]>([]);
-  const [report, setReport] = useState<StepsResponse | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = (searchParams.get("tab") as AccessTab) || "matrix";
+  const tab: AccessTab = ["matrix", "coverage", "signals"].includes(tabParam)
+    ? tabParam
+    : "matrix";
 
-  const load = () =>
-    selected && api.get<{ cells: Cell[] }>("/api/access/matrix", { project_id: selected.id }).then((r) => setCells(r.cells));
+  const [cells, setCells] = useState<AccessCell[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [jumpFilter, setJumpFilter] = useState<MatrixFilter | null>(null);
+
+  const load = useCallback(async () => {
+    if (!selected) return;
+    setLoading(true);
+    try {
+      const r = await api.get<{ cells: AccessCell[] }>("/api/access/matrix", {
+        project_id: selected.id,
+      });
+      setCells(r.cells || []);
+    } finally {
+      setLoading(false);
+    }
+  }, [selected]);
 
   useEffect(() => {
     load();
-  }, [selected]);
+  }, [load]);
 
-  const setClient = useAction("Set client access", (role: string, module: string, value: string) =>
-    api.post("/api/access/client", { role, module, value }, { project_id: selected!.id })
-  );
-  const setServer = useAction("Set server access", (role: string, module: string, value: string) =>
-    api.post("/api/access/server", { role, module, value }, { project_id: selected!.id })
-  );
-  const coverage = useAction("Access coverage", () =>
-    api.post("/api/access/coverage", {}, { project_id: selected!.id })
-  );
-  const signals = useAction("Access signals", () =>
-    api.post("/api/access/signals", {}, { project_id: selected!.id })
-  );
+  const stats: AccessStats = useMemo(() => computeStats(cells), [cells]);
+
+  const setTab = (t: AccessTab) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", t);
+    setSearchParams(next, { replace: true });
+  };
+
+  const jumpMatrix = (filter: MatrixFilter) => {
+    setJumpFilter(filter);
+    setTab("matrix");
+  };
 
   if (!selected) return <NoProjectNotice />;
 
-  const roles = [...new Map(cells.map((c) => [c.role_id, c.role_name])).entries()];
-  const modules = [...new Map(cells.map((c) => [c.module_id, c.module_name])).entries()];
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold">Access Model</h1>
-        <div className="flex gap-2">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Access Model</h1>
+          <p className="text-sm text-base-content/60 mt-0.5">
+            Two-layer role × module map — client exposure vs server enforcement.
+            Feeds BAC candidate discovery.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <Link to="/roles-modules" className="btn btn-xs btn-ghost">
+            Roles &amp; Modules
+          </Link>
+          <Link to="/auth" className="btn btn-xs btn-ghost">
+            Auth
+          </Link>
+          <Link to="/testing/bac" className="btn btn-xs btn-outline">
+            BAC
+          </Link>
           <button
-            className="btn btn-sm"
-            disabled={coverage.running}
-            onClick={async () => {
-              const r = await coverage.run();
-              setReport(r);
-            }}
+            type="button"
+            className="btn btn-xs btn-ghost"
+            disabled={loading}
+            onClick={() => load()}
           >
-            Coverage report
+            {loading ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              "Refresh"
+            )}
           </button>
-          <button
-            className="btn btn-sm"
-            disabled={signals.running}
-            onClick={async () => {
-              const r = await signals.run();
-              setReport(r);
-            }}
-          >
-            BAC/IDOR signals
-          </button>
+          <ModuleHelp title="How the Access Model works">
+            <p>
+              <strong className="text-base-content/70">Client allowed</strong> is
+              what the product UI exposes for a role in a feature area (buttons,
+              menus).{" "}
+              <strong className="text-base-content/70">Server expected</strong> is
+              your assertion of what the backend should enforce. Values: ALLOW,
+              DENY, UNKNOWN — never auto-inferred.
+            </p>
+            <p>
+              CLI:{" "}
+              <span className="mono">
+                talos access client|server set|unset
+              </span>
+              , <span className="mono">delete</span>,{" "}
+              <span className="mono">coverage</span>,{" "}
+              <span className="mono">signals</span>. Create roles and modules on{" "}
+              <Link className="link" to="/roles-modules">
+                Roles &amp; Modules
+              </Link>
+              , capture with the active pair, then fill this matrix.
+            </p>
+            <p>
+              <strong className="text-base-content/70">BAC surface:</strong> a
+              module where one role is ALLOW and another is DENY/UNKNOWN becomes
+              candidate material for{" "}
+              <Link className="link" to="/testing/bac">
+                Broken Access Control
+              </Link>{" "}
+              testing (plus qualified 2xx proxy flows).
+            </p>
+            <p>
+              <strong className="text-base-content/70">Example:</strong> admin /
+              user × orders — client+server ALLOW for admin, DENY for user. Capture
+              admin traffic on orders, then run BAC.
+            </p>
+          </ModuleHelp>
         </div>
       </div>
 
-      {roles.length === 0 || modules.length === 0 ? (
-        <div className="panel p-8 text-center text-base-content/50">
-          Create at least one role and one module first.
-        </div>
-      ) : (
-        <div className="overflow-x-auto panel">
-          <table className="table table-tight">
-            <thead>
-              <tr>
-                <th>Role \ Module</th>
-                {modules.map(([id, name]) => (
-                  <th key={id}>{name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {roles.map(([roleId, roleName]) => (
-                <tr key={roleId}>
-                  <td className="font-medium">{roleName}</td>
-                  {modules.map(([moduleId, moduleName]) => {
-                    const cell = cells.find((c) => c.role_id === roleId && c.module_id === moduleId);
-                    return (
-                      <td key={moduleId}>
-                        <div className="flex flex-col gap-1">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[10px] text-base-content/40 w-10">client</span>
-                            <ValueBadge v={cell?.client_allowed || null} />
-                            <select
-                              className="select select-xs select-bordered ml-1"
-                              value=""
-                              onChange={async (e) => {
-                                if (!e.target.value) return;
-                                await setClient.run(roleName, moduleName, e.target.value);
-                                await load();
-                                e.target.value = "";
-                              }}
-                            >
-                              <option value="">set…</option>
-                              {VALUES.map((v) => (
-                                <option key={v} value={v}>
-                                  {v}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-[10px] text-base-content/40 w-10">server</span>
-                            <ValueBadge v={cell?.server_expected || null} />
-                            <select
-                              className="select select-xs select-bordered ml-1"
-                              value=""
-                              onChange={async (e) => {
-                                if (!e.target.value) return;
-                                await setServer.run(roleName, moduleName, e.target.value);
-                                await load();
-                                e.target.value = "";
-                              }}
-                            >
-                              <option value="">set…</option>
-                              {VALUES.map((v) => (
-                                <option key={v} value={v}>
-                                  {v}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Stats strip */}
+      {cells.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="badge badge-outline">
+            {stats.roleCount}×{stats.moduleCount} grid
+          </span>
+          <span className="badge badge-ghost">
+            client set {stats.clientSet}/{stats.cellCount}
+          </span>
+          <span className="badge badge-ghost">
+            server set {stats.serverSet}/{stats.cellCount}
+          </span>
+          {stats.mismatch > 0 && (
+            <button
+              type="button"
+              className="badge badge-warning badge-outline cursor-pointer"
+              onClick={() => jumpMatrix("mismatch")}
+              title="Show cells where client ≠ server"
+            >
+              {stats.mismatch} mismatch
+            </button>
+          )}
+          {stats.fullyUnset > 0 && (
+            <button
+              type="button"
+              className="badge badge-ghost cursor-pointer"
+              onClick={() => jumpMatrix("unset")}
+            >
+              {stats.fullyUnset} fully unset
+            </button>
+          )}
+          {stats.bacModules > 0 ? (
+            <button
+              type="button"
+              className="badge badge-primary badge-outline cursor-pointer"
+              onClick={() => jumpMatrix("bac_ready")}
+            >
+              {stats.bacModules} BAC-ready module
+              {stats.bacModules === 1 ? "" : "s"}
+            </button>
+          ) : (
+            <span className="badge badge-ghost opacity-70">
+              no BAC surface yet
+            </span>
+          )}
+          {stats.withTraffic > 0 && (
+            <span className="badge badge-ghost">
+              {stats.withTraffic} with traffic
+            </span>
+          )}
         </div>
       )}
 
-      {report && (
-        <div className="panel p-4 mt-6 mono text-xs whitespace-pre-wrap">
-          {report.steps.map((s, i) => (
-            <pre key={i}>{s.stdout || s.stderr}</pre>
-          ))}
-        </div>
+      <div role="tablist" className="tabs tabs-boxed w-fit mb-2 flex-wrap">
+        {(
+          [
+            ["matrix", "Matrix"],
+            ["coverage", "Coverage"],
+            ["signals", "Signals"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            type="button"
+            className={`tab ${tab === id ? "tab-active" : ""}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "matrix" && (
+        <MatrixTab
+          projectId={selected.id}
+          cells={cells}
+          onReload={load}
+          jumpFilter={jumpFilter}
+          onJumpFilterConsumed={() => setJumpFilter(null)}
+        />
+      )}
+      {tab === "coverage" && <CoverageTab projectId={selected.id} />}
+      {tab === "signals" && (
+        <SignalsTab projectId={selected.id} onJumpMatrix={jumpMatrix} />
       )}
     </div>
   );

@@ -2,6 +2,7 @@
  * Input Validation workspace — Overview | Candidates | Parameters |
  * Multi-level | Run | Settings
  *
+ * Nested under Testing hub as Active module (`/testing/input-validation`).
  * Surfaces M1–M12 intelligence for operators: status, candidates,
  * parameter/endpoint/host dossiers, adaptive run controls, full config.
  */
@@ -10,7 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
-import { ModuleHelp, NoProjectNotice } from "../components/Common";
+import { NoProjectNotice } from "../components/Common";
 import OverviewTab from "./input-validation/OverviewTab";
 import CandidatesTab from "./input-validation/CandidatesTab";
 import ParametersTab from "./input-validation/ParametersTab";
@@ -25,6 +26,10 @@ import {
   IvTab,
   isIvTab,
 } from "./input-validation/shared";
+import ModuleShell from "./attack/ModuleShell";
+import { getAttackModule } from "./attack/registry";
+
+const module = getAttackModule("iv")!;
 
 export default function InputValidation() {
   const { selected } = useProject();
@@ -102,16 +107,11 @@ export default function InputValidation() {
   if (!selected) return <NoProjectNotice />;
 
   return (
-    <div>
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-xl font-semibold">Input Validation</h1>
-          <p className="text-sm text-base-content/60 mt-0.5">
-            Characterization intelligence — profiles, candidates, multi-level learning.
-            Not an exploit engine.
-          </p>
-        </div>
-        <ModuleHelp title="How Input Validation works">
+    <ModuleShell
+      module={module}
+      helpTitle="How Input Validation works"
+      help={
+        <>
           <p>
             <strong>Overview</strong> shows budget, progress, confidence, and top
             prioritization targets after a run.
@@ -137,9 +137,9 @@ export default function InputValidation() {
             Happy path: Enable → Run standard → wait for scheduler → Synthesize → review
             Candidates → open parameter dossiers.
           </p>
-        </ModuleHelp>
-      </div>
-
+        </>
+      }
+    >
       <div role="tablist" className="tabs tabs-boxed w-fit mb-6 flex-wrap">
         {IV_TABS.map(({ id, label }) => (
           <button
@@ -184,6 +184,6 @@ export default function InputValidation() {
           onRefresh={load}
         />
       )}
-    </div>
+    </ModuleShell>
   );
 }

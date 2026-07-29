@@ -10,6 +10,7 @@ import {
   formatUptime,
 } from "./format";
 import type { ProjectDashboard } from "./types";
+import { SECRETS_BASE } from "../attack/registry";
 import {
   CoverageMeter,
   MiniBars,
@@ -641,7 +642,7 @@ export function PassivePanel({ data }: { data: ProjectDashboard }) {
   return (
     <PanelShell
       title="Secret Detection"
-      to="/secret-detection"
+      to={SECRETS_BASE}
       badge={
         <StatusDot
           tone={

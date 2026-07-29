@@ -15,12 +15,15 @@ It answers questions such as:
 - What character classes are accepted vs rejected?
 - How is input transformed (trim, encode, case fold)?
 - Is the value reflected, and in which context (HTML, JSON, JS, URL)?
+- Does a distinctive request value later appear on **another page/flow** (stored / cross-page reflection)?
 - What length bounds and type constraints apply?
 - How does the parser handle duplicates, nulls, arrays?
 
 IV intentionally avoids exploit-shaped payloads on the default `standard` budget. Edge characterization (e.g. CRLF-style strings) appears only on `deep` / `exhaustive`.
 
 **Candidates are prioritization hints, not confirmed findings.** Attack modules must still verify. IV never creates findings and never runs exploit chains.
+
+**Stored / cross-page reflection** is **data-flow prioritization evidence** (value written on one endpoint observed later on a sink response). It is **not** XSS confirmation.
 
 | Property | Value |
 |----------|--------|
@@ -141,7 +144,15 @@ After each IV job settles, the scheduler calls `continue_param_plan()` so the ne
 | Validation | `iv_validation` | Core + semantic business rules (`semantic_rules`); no SQLi/XSS strings under standard |
 | Parser | `iv_parser` | Dup keys, JSON null/empty/omit, array styles, normalization stages |
 | Transformations | analysis | Offline / finalize: trim, case, encode transforms |
-| Reflection | analysis | Endpoint-local reflection context |
+| Reflection | analysis | Same-request reflection context (multiprobe / probe response) |
+
+**Cross-flow / stored reflection (parameter intelligence):** separately from the IV reflection analysis phase, every committed flow (proxy worker **and** replay/IV) can index distinctive request values and scan later response bodies for matches on the **same host**. Links are stored in `cross_flow_reflections` and merged into param profiles as `observed.reflection.cross_flow` (see §6–§7). Disabled by default:
+
+```text
+talos config set parameter_intel.cross_flow.enabled true --project
+```
+
+**Worker config reload:** the proxy `FlowWorker` reloads `parameter_intel.cross_flow` about every 60s while running, so enabling mid-session takes effect without a full restart (expect up to ~1 minute lag). Replay/CLI paths load project YAML on demand via `ensure_process_cross_flow_config`.
 
 **Surfaces (M9):** inject locations include query, body, path segments, headers, cookies, multipart fields/filenames, GraphQL variables, XML leaves. Session/auth artifacts are skipped by default.
 
@@ -254,8 +265,9 @@ Capabilities are **surface/behaviour flags**, not vulns. Derived from observed r
 
 | Capability flag | Typical derivation |
 |-----------------|-------------------|
-| `reflective_input` | reflection state = reflected |
-| `html_context` / `js_context` / `json_context` / `url_context` | reflection contexts or content-type |
+| `reflective_input` | top-level, same-request, **or** cross-flow reflection state = reflected |
+| `stored_reflection` | nested `cross_flow.state = reflected` (source→sink on another flow/page) |
+| `html_context` / `js_context` / `json_context` / `url_context` | union of top-level + same_request + cross_flow sink contexts |
 | `xml_body` | XML content-type / XML leaf surface / xml reflection |
 | `json_parser` | JSON content-type or JSON parser keys present |
 | `unicode_support` | unicode class soft-accepted |
@@ -281,7 +293,20 @@ Name alone does **not** invent `url_like_value`; candidate scorers use name toke
   "score": 0,
   "confidence": 0,
   "reasons": ["human-readable evidence trail"],
-  "evidence_flow_ids": ["flow-uuid", "..."]
+  "evidence_flow_ids": ["flow-uuid", "..."],
+  "reflection_modes": ["same_request", "cross_flow"],
+  "stored_reflection": {
+    "link_count": 1,
+    "sinks": [
+      {
+        "method": "GET",
+        "path": "/profile",
+        "context": "html",
+        "encoding": "raw",
+        "reason": "value from username@POST /register reflected on GET /profile (html, raw)"
+      }
+    ]
+  }
 }
 ```
 
@@ -289,9 +314,11 @@ Name alone does **not** invent `url_like_value`; candidate scorers use name toke
 |-------|------|
 | `attack` | Stable label (see vocabulary below) |
 | `score` | Prioritization strength 0–100 |
-| `confidence` | Quality of evidence used for the score (averaged from contributing entries) |
-| `reasons` | Why this score exists (includes negative-evidence notes) |
+| `confidence` | Quality of evidence used for the score (averaged from contributing **positive** entries) |
+| `reasons` | Why this score exists (includes negative-evidence notes); stored reasons often first |
 | `evidence_flow_ids` | Supporting flow UUIDs (capped at 20) |
+| `reflection_modes` | Optional: `same_request` and/or `cross_flow` |
+| `stored_reflection` | Optional: sink summary when cross-flow evidence contributed |
 
 **Emit floor:** only candidates with `score >= MIN_EMIT_SCORE` (**25**) are kept. Sorted by score desc, then attack name.
 
@@ -310,8 +337,8 @@ Each scorer reads a `_ProfileView` over:
 | `observed.acceptance.classes[cls].outcome` | Soft-accept / rejected for taxonomy classes (`quote`, `markup`, `control`, …) |
 | `tested[key].outcome` | Validation/parser negatives and family keys (`crlf`, `quote`, `type:url`, …) |
 | `observed.types[tname].outcome` | Soft-accept / rejected for type probes (e.g. `url`) |
-| `observed.reflection` | state, contexts, evidence flows |
-| `capabilities[]` | Derived flags (often driven by soft-accept + reflection) |
+| `observed.reflection` | top-level state/contexts; nested `same_request` + `cross_flow` when merged |
+| `capabilities[]` | Derived flags (often driven by soft-accept + reflection / stored_reflection) |
 | `observed.parser` | Structural behaviours (not always outcome labels; behaviours like `first_wins`) |
 | `name` / `location` | Name-token and surface biases |
 
@@ -328,12 +355,13 @@ Negative evidence **lowers** scores and is recorded in `reasons` (e.g. “negati
 
 ### 7.3 XSS (`_score_xss`)
 
-**Goal:** prioritize reflected injection-relevant parameters, especially HTML context with markup accepted.
+**Goal:** prioritize reflected injection-relevant parameters, especially HTML context with markup accepted. **Stored / cross-page reflection satisfies the reflection gate** the same way same-request reflection does.
 
 | Signal | Score delta | IV outcome / evidence |
 |--------|-------------|------------------------|
-| Reflective input (capability or reflection state) | +30 | Multiprobe/reflection synthesis; not an outcome label itself |
-| `html_context` | +25 | Reflection context / HTML content-type while reflected |
+| Reflective input (any mode: same-request or cross-flow) | +30 | Multiprobe/reflection synthesis **or** stored links merged into profile |
+| Stored / cross-flow specifically | +12 | Once per candidate when `cross_flow` reflected |
+| `html_context` | +25 | Same-request or stored sink context / HTML content-type while reflected |
 | `js_context` | +22 | JS/javascript context |
 | `url_context` + reflected | +8 | URL context |
 | `json_context` + reflected | +5 | JSON context (lower XSS relevance) |
@@ -342,10 +370,19 @@ Negative evidence **lowers** scores and is recorded in `reasons` (e.g. “negati
 | Class `markup` **rejected** | −20 | Negative evidence |
 | Class `quote` **rejected** | −8 | Negative evidence |
 | **High-priority pattern:** reflected + HTML context + markup soft-accept | `score = max(score, 85)` | Combined |
+| **Stored + HTML without markup tests** | `score = max(score, 55)` | Prioritization floor only |
 
-**Gate:** if **not** reflected and running score &lt; 40 → **no XSS candidate** (avoids noise from pure markup acceptance without reflection).
+**Gate:** if **not** reflected (neither same-request nor cross-flow) and running score &lt; 40 → **no XSS candidate** (avoids noise from pure markup acceptance without reflection).
 
-**Evidence flows:** markup/quote class entries + reflection `evidence_flow_ids`.
+**Profile requirement:** XSS candidates from stored reflection need an existing `iv_param_profiles` document (after synthesize, or recompute on an existing profile). Operators without IV still see `parameters.cross_flow_*` flags and raw links via `talos input-validation reflections`. Soft profile stubs on first link are **out of scope**.
+
+**Evidence flows:** markup/quote class entries + reflection / cross-flow source+sink flow IDs.
+
+**Reason example (stored-only):**
+
+```text
+value from username@POST /register reflected on GET /profile (html, raw)
+```
 
 ---
 
@@ -514,12 +551,19 @@ talos input-validation status
 talos input-validation synthesize [--host HOST | --param-uuid UUID]
 talos input-validation show <parameter_uuid>
 talos input-validation candidates [--attack xss] [--min-score 50] [--host HOST]
+talos input-validation candidates --capability stored_reflection
+talos input-validation reflections [--param-uuid UUID] [--host HOST]
 talos input-validation export parameter <uuid> --format json|markdown
+
+# Cross-flow / stored reflection index (layered config; default off)
+talos config set parameter_intel.cross_flow.enabled true --project
 ```
+
+`show` prints **same-request** and **cross-flow** passive flags, dual reflection modes on the intelligence profile, and stored sink reasons. `candidates` reasons may lead with cross-page strings; filter with `--capability stored_reflection`.
 
 ### 8.3 Control panel
 
-Routes under `/input-validation` (overview, candidates board, parameter/endpoint/host dossiers) backed by `/api/input-validation/*` (status, profiles, candidates, config/run wrappers). See `docs/control-panel/pages.md`.
+Routes under `/attack/input-validation` (overview, candidates board, parameter/endpoint/host dossiers; legacy `/input-validation/*` redirects) backed by `/api/input-validation/*` (status, profiles, candidates, config/run wrappers). Candidates expand shows `reflection_modes` + stored sinks; capability badges highlight `stored_reflection`. See `docs/control-panel/pages.md`.
 
 ---
 
@@ -530,6 +574,8 @@ Routes under `/input-validation` (overview, candidates board, parameter/endpoint
 - Bypass auth pre-check or send HTTP outside the scheduler  
 - Replace BAC / unauth engines (candidates are a handoff for prioritization only)  
 - Treat soft-accept as “safe” or reject as “secure” without manual review  
+- Treat **stored reflection** as confirmed XSS (it is data-flow prioritization evidence only)  
+- Produce XSS candidates from stored links **without** an `iv_param_profiles` row  
 
 ---
 
@@ -543,6 +589,9 @@ Routes under `/input-validation` (overview, candidates board, parameter/endpoint
 | `iv_endpoint_profiles` / `iv_app_profiles` | Multi-level rollups (M10) |
 | `input_validation_config` | Enablement, budget, analysis toggles, exclusions |
 | `scheduler_jobs` | `iv_*` job types executed by the daemon |
+| `value_index` | Cross-flow value index (host + value hash + source param; full match string ≤256) |
+| `cross_flow_reflections` | Source→sink links (no full secrets; hash + value_len only) |
+| `parameters.cross_flow_*` | Passive flags: `cross_flow_reflected`, count, sink endpoint list JSON |
 
 Profile envelope: `schema_version`, `engine_version` (e.g. `iv-evidence-2`), `profile_version`, `updated_at`.
 
@@ -559,6 +608,7 @@ Profile envelope: `schema_version`, `engine_version` (e.g. `iv-evidence-2`), `pr
 | Profile skeleton | `profile.py` |
 | Probe → profile | `synthesize.py` |
 | Multiprobe canaries | `multiprobe.py` |
+| Cross-flow value index / sink scan | `talos/projects/value_reflection.py` |
 | Char classes | `taxonomy.py` |
 | Length search | `length_search.py` |
 | Types / validation families | `type_intel.py` |

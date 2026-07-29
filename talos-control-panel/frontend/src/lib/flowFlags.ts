@@ -43,6 +43,8 @@ export interface FlowFlagSources {
   has_finding_evidence?: boolean;
   is_replay?: boolean;
   body_truncated?: boolean;
+  /** Error Intelligence observations for this flow (eager by-flow fetch). */
+  error_observation_count?: number;
 }
 
 export type HealthChipKind =
@@ -55,7 +57,8 @@ export type HealthChipKind =
   | "session_refresh"
   | "qualified"
   | "baseline"
-  | "is_replay";
+  | "is_replay"
+  | "errors";
 
 export interface HealthChip {
   kind: HealthChipKind;
@@ -135,6 +138,15 @@ export function buildHealthChips(src: FlowFlagSources): HealthChip[] {
 
   if (src.original_flow_id || src.is_replay) {
     chips.push({ kind: "is_replay", label: "Replay", tone: "neutral" });
+  }
+
+  const errN = src.error_observation_count ?? 0;
+  if (errN > 0) {
+    chips.push({
+      kind: "errors",
+      label: `errors: ${errN}`,
+      tone: "warning",
+    });
   }
 
   return chips;

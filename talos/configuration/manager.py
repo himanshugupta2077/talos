@@ -55,8 +55,10 @@ from talos.configuration.http_rules import parse_rules, sort_rules
 from talos.configuration.model import (
     AttackConfigSection,
     CaptureConfigSection,
+    CrossFlowConfigSection,
     EffectiveConfig,
     HttpConfigSection,
+    ParameterIntelConfigSection,
     ProxyConfigSection,
     SchedulerConfigSection,
     ValueSource,
@@ -470,6 +472,27 @@ class ConfigurationManager:
         if enabled and not url:
             enabled = False
 
+        pi_raw = merged.get("parameter_intel") or {}
+        cf_raw = pi_raw.get("cross_flow") or {} if isinstance(pi_raw, dict) else {}
+        if not isinstance(cf_raw, dict):
+            cf_raw = {}
+
+        cross_flow = CrossFlowConfigSection(
+            enabled=bool(cf_raw.get("enabled", False)),
+            feed_iv=bool(cf_raw.get("feed_iv", True)),
+            active_sink_probe=bool(cf_raw.get("active_sink_probe", False)),
+            value_index_ttl_hours=int(cf_raw.get("value_index_ttl_hours", 72)),
+            value_index_max_per_host=int(cf_raw.get("value_index_max_per_host", 50_000)),
+            value_index_max_sources_per_value=int(
+                cf_raw.get("value_index_max_sources_per_value", 8)
+            ),
+            min_value_len=int(cf_raw.get("min_value_len", 6)),
+            scan_hot_set_k=int(cf_raw.get("scan_hot_set_k", 2000)),
+            scan_time_budget_ms=int(cf_raw.get("scan_time_budget_ms", 20)),
+            max_body_scan_bytes=int(cf_raw.get("max_body_scan_bytes", 2_000_000)),
+            canary_ttl_hours=int(cf_raw.get("canary_ttl_hours", 24)),
+        )
+
         return EffectiveConfig(
             proxy=ProxyConfigSection(
                 upstream_enabled=enabled,
@@ -492,6 +515,7 @@ class ConfigurationManager:
                 enabled=bool(http_raw.get("enabled", True)),
                 rules=tuple(rules),
             ),
+            parameter_intel=ParameterIntelConfigSection(cross_flow=cross_flow),
             raw=merged,
             sources=sources,
             global_path=str(self.global_path),

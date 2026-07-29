@@ -40,7 +40,7 @@ Purpose:
     --auto-generate   — Auto-generate a session token for each attacker role that
                         lacks one (replays the login flow inline).
 
-    filter            — Manage BAC-decision-filter.yaml (init | show | validate).
+    filter            — Manage BAC-decision-filter.yaml (init | show | validate | apply).
 
     Auth prerequisites (checked per attacker role):
         - At least one auth flow with an extractor configured → ERROR + no jobs if missing.

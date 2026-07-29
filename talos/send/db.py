@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,18 @@ from talos.send import draft as draft_mod
 from talos.send.raw_http import serialize_request
 
 SEND_SOURCES: frozenset[str] = frozenset({"manual_send", "ai_send"})
+
+
+def _duration_ms(captured_at, response_end) -> Optional[int]:
+    """Compute HTTP interval ms when both timestamps parse; else None."""
+    if not captured_at or not response_end:
+        return None
+    try:
+        start = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(response_end).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return max(0, int((end - start).total_seconds() * 1000))
 
 
 def _connect_ro(db_path: Path) -> sqlite3.Connection:
@@ -184,7 +197,7 @@ def list_send_history(
     sql = f"""
         SELECT id, method, url, host, path, query,
                status_code, source, original_flow_id, replay_reason,
-               replay_error, captured_at, flow_meta,
+               replay_error, captured_at, response_end, flow_meta,
                request_body, response_body
         FROM flows
         WHERE {" AND ".join(where)}
@@ -201,7 +214,7 @@ def list_send_history(
                 f"""
                 SELECT id, method, url, host, path, query,
                        status_code, source, original_flow_id, replay_reason,
-                       replay_error, captured_at, flow_meta,
+                       replay_error, captured_at, response_end, flow_meta,
                        request_body, response_body
                 FROM flows
                 WHERE original_flow_id = ?
@@ -233,6 +246,7 @@ def list_send_history(
         d["profile"] = meta.get("profile")
         d["profile_index"] = meta.get("profile_index")
         d["profile_count"] = meta.get("profile_count")
+        d["duration_ms"] = _duration_ms(d.get("captured_at"), d.get("response_end"))
 
         if session_id is not None and d.get("session_id") != session_id:
             continue
@@ -265,7 +279,8 @@ def get_flow_show(db_path: Path, flow_id: str) -> Optional[dict]:
                    request_body, response_body, response_headers,
                    status_code, content_type, source,
                    original_flow_id, replay_reason, replay_error,
-                   flow_meta, captured_at, endpoint_id, role_id, module_id,
+                   flow_meta, captured_at, response_end,
+                   endpoint_id, role_id, module_id,
                    length(request_body)  AS request_body_len,
                    length(response_body) AS response_body_len
             FROM flows
@@ -281,6 +296,7 @@ def get_flow_show(db_path: Path, flow_id: str) -> Optional[dict]:
         d["flow_meta"] = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
     except (ValueError, TypeError):
         d["flow_meta"] = {}
+    d["duration_ms"] = _duration_ms(d.get("captured_at"), d.get("response_end"))
     return d
 
 

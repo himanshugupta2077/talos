@@ -504,3 +504,615 @@ def test_stored_profile_round_trip_includes_candidates(db_path: Path):
     assert loaded is not None
     assert loaded.get("candidates")
     assert any(c.get("attack") == ATTACK_XSS for c in loaded["candidates"])
+
+
+# ---------------------------------------------------------------------------
+# PR5 / PR6 — Stored / cross-flow reflection
+# ---------------------------------------------------------------------------
+
+from talos.input_validation.candidates import (  # noqa: E402
+    empty_candidate,
+    load_and_merge_cross_flow,
+)
+from talos.input_validation.profile import (  # noqa: E402
+    CAPABILITY_STORED_REFLECTION,
+)
+from talos.projects.value_reflection import (  # noqa: E402
+    CrossFlowConfig,
+    merge_cross_flow_reflection,
+    set_process_cross_flow_config,
+    reset_process_cross_flow_config,
+)
+
+
+@pytest.fixture(autouse=True)
+def _cross_flow_feed_iv_defaults():
+    """Ensure feed_iv=True for merge tests; reset process cache after each test."""
+    set_process_cross_flow_config(CrossFlowConfig(enabled=False, feed_iv=True))
+    yield
+    reset_process_cross_flow_config()
+
+
+def _stored_only_profile(**kwargs) -> dict:
+    """Multiprobe not_reflected + nested cross_flow reflected (post-merge shape)."""
+    p = _profile(name=kwargs.pop("name", "username"), **kwargs)
+    p["observed"]["reflection"] = {
+        "state": "reflected",
+        "confidence": 80,
+        "uncertainty": "low",
+        "contexts": ["html"],
+        "encoding": "raw",
+        "evidence_flow_ids": ["src-flow", "sink-flow"],
+        "modes": ["same_request", "cross_flow"],
+        "same_request": {
+            "state": "not_reflected",
+            "confidence": 88,
+            "uncertainty": "none",
+            "evidence_flow_ids": ["probe-flow"],
+            "contexts": [],
+            "encoding": "",
+        },
+        "cross_flow": {
+            "state": "reflected",
+            "confidence": 80,
+            "uncertainty": "low",
+            "link_count": 1,
+            "contexts": ["html"],
+            "encoding": "raw",
+            "evidence_flow_ids": ["src-flow", "sink-flow"],
+            "sinks": [
+                {
+                    "sink_method": "GET",
+                    "sink_path": "/profile",
+                    "sink_endpoint_id": "ep-sink",
+                    "sink_flow_id": "sink-flow",
+                    "context": "html",
+                    "encoding": "raw",
+                    "confidence": 80,
+                    "detection_mode": "passive",
+                    "reason": (
+                        "value from username@POST /register reflected on "
+                        "GET /profile (html, raw)"
+                    ),
+                }
+            ],
+        },
+    }
+    return p
+
+
+def _insert_cross_flow_link(
+    db_path: Path,
+    *,
+    param_uuid: str,
+    host: str = "https://app.example.com",
+    source_param_name: str = "username",
+    source_method: str = "POST",
+    source_path: str = "/register",
+    sink_method: str = "GET",
+    sink_path: str = "/profile",
+    sink_context: str = "html",
+    confidence: int = 80,
+) -> None:
+    link_id = str(uuid.uuid4())
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO cross_flow_reflections (
+                id, project_id, host,
+                source_flow_id, first_source_flow_id,
+                source_endpoint_id, source_param_id, source_param_uuid,
+                source_param_name, source_location, source_method, source_path,
+                source_role_id,
+                sink_flow_id, sink_endpoint_id, sink_method, sink_path,
+                sink_content_type, sink_context, sink_role_id,
+                encoding, transforms,
+                value_hash, value_len, match_kind, confidence, detection_mode,
+                first_seen_at, last_seen_at, observation_count
+            ) VALUES (
+                ?, 'proj', ?,
+                'src-flow', 'src-flow',
+                NULL, NULL, ?,
+                ?, 'body', ?, ?,
+                NULL,
+                'sink-flow', NULL, ?, ?,
+                'text/html', ?, NULL,
+                'raw', '[]',
+                'deadbeef', 9, 'exact', ?, 'passive',
+                '2026-01-01T00:00:00+00:00', '2026-01-01T00:01:00+00:00', 1
+            )
+            """,
+            (
+                link_id,
+                host,
+                param_uuid,
+                source_param_name,
+                source_method,
+                source_path,
+                sink_method,
+                sink_path,
+                sink_context,
+                confidence,
+            ),
+        )
+        conn.commit()
+
+
+def test_derive_stored_reflection_capability():
+    profile = _stored_only_profile()
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_REFLECTIVE_INPUT in caps
+    assert CAPABILITY_STORED_REFLECTION in caps
+    assert CAPABILITY_HTML_CONTEXT in caps
+    # Order: stored_reflection immediately after reflective_input
+    assert caps.index(CAPABILITY_STORED_REFLECTION) == caps.index(
+        CAPABILITY_REFLECTIVE_INPUT
+    ) + 1
+
+
+def test_derive_stored_only_from_nested_without_top_level():
+    """Stale profile: only nested cross_flow reflected, top-level not yet merged."""
+    profile = _profile(name="username")
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "contexts": [],
+        "cross_flow": {
+            "state": "reflected",
+            "confidence": 80,
+            "contexts": ["html"],
+            "sinks": [{"context": "html", "sink_method": "GET", "sink_path": "/p"}],
+        },
+    }
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_STORED_REFLECTION in caps
+    assert CAPABILITY_REFLECTIVE_INPUT in caps
+    assert CAPABILITY_HTML_CONTEXT in caps
+
+
+def test_xss_stored_only_passes_gate_and_reasons():
+    profile = _stored_only_profile()
+    enrich_profile_capabilities_and_candidates(profile)
+    xss = _cand(profile["candidates"], ATTACK_XSS)
+    assert xss is not None
+    # +30 reflected +12 stored +25 html = 67; floor 55 for stored+html
+    assert xss["score"] >= 55
+    assert xss["score"] == 67  # 30+12+25, no markup
+    assert "cross_flow" in (xss.get("reflection_modes") or [])
+    assert xss["reasons"][0].startswith("value from username@POST /register")
+    assert "GET /profile" in xss["reasons"][0]
+    assert "input is reflected in responses" in xss["reasons"]
+    assert xss.get("stored_reflection") is not None
+    assert xss["stored_reflection"]["link_count"] == 1
+    assert xss["stored_reflection"]["sinks"][0]["path"] == "/profile"
+    assert "src-flow" in xss["evidence_flow_ids"]
+    assert "sink-flow" in xss["evidence_flow_ids"]
+    # Confidence from positive contributors only (stored link + context),
+    # not multiprobe same_request not_reflected conf (88).
+    assert 70 <= xss["confidence"] <= 80
+    assert xss["confidence"] != 88
+
+
+def test_xss_stored_html_without_markup_floor_55():
+    profile = _stored_only_profile()
+    # Only json context → lower; override to html for floor test already html
+    cands = score_candidates(apply_capabilities(profile))
+    xss = _cand(cands, ATTACK_XSS)
+    assert xss is not None
+    assert xss["score"] >= 55
+
+
+def test_xss_stored_json_emits_with_lower_relevance():
+    profile = _stored_only_profile()
+    profile["observed"]["reflection"]["contexts"] = ["json"]
+    profile["observed"]["reflection"]["cross_flow"]["contexts"] = ["json"]
+    profile["observed"]["reflection"]["cross_flow"]["sinks"][0]["context"] = "json"
+    profile["observed"]["reflection"]["cross_flow"]["sinks"][0]["reason"] = (
+        "value from username@POST /register reflected on GET /profile (json, raw)"
+    )
+    enrich_profile_capabilities_and_candidates(profile)
+    xss = _cand(profile["candidates"], ATTACK_XSS)
+    assert xss is not None
+    # 30 + 12 + 5 json = 47
+    assert xss["score"] == 47
+    reasons = " ".join(xss["reasons"]).lower()
+    assert "json" in reasons
+
+
+def test_xss_high_priority_keeps_stored_reason_not_always_first():
+    profile = _stored_only_profile()
+    profile["observed"]["acceptance"] = {
+        "classes": {
+            "markup": {"outcome": "accepted", "confidence": 90},
+        },
+        "chars": {},
+    }
+    # Also same-request reflected so high-priority pattern applies cleanly
+    profile["observed"]["reflection"]["same_request"]["state"] = "reflected"
+    profile["observed"]["reflection"]["same_request"]["contexts"] = ["html"]
+    enrich_profile_capabilities_and_candidates(profile)
+    xss = _cand(profile["candidates"], ATTACK_XSS)
+    assert xss is not None
+    assert xss["score"] >= 85
+    assert xss["reasons"][0].startswith("high-priority:")
+    assert any("username@POST /register" in r for r in xss["reasons"])
+
+
+def test_empty_candidate_extras():
+    c = empty_candidate(
+        ATTACK_XSS,
+        score=67,
+        confidence=78,
+        reasons=["value from username@POST /register reflected on GET /profile (html, raw)"],
+        evidence_flow_ids=["a", "b"],
+        reflection_modes=["cross_flow"],
+        stored_reflection={"link_count": 1, "sinks": []},
+    )
+    assert c["reflection_modes"] == ["cross_flow"]
+    assert c["stored_reflection"]["link_count"] == 1
+    # Without extras, keys absent
+    bare = empty_candidate(ATTACK_XSS, score=10)
+    assert "reflection_modes" not in bare
+    assert "stored_reflection" not in bare
+
+
+def test_load_and_merge_cross_flow_from_db(db_path: Path):
+    host = "https://app.example.com"
+    loc, name = "body", "username"
+    uid = make_param_uuid(host, loc, name)
+    profile = empty_param_profile(param_uuid=uid, host=host, location=loc, name=name)
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "uncertainty": "none",
+        "contexts": [],
+        "encoding": "",
+        "evidence_flow_ids": ["probe-flow"],
+    }
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    out = load_and_merge_cross_flow(db_path, profile, persist=False, score=True)
+    refl = out["observed"]["reflection"]
+    assert refl["same_request"]["state"] == "not_reflected"
+    assert refl["cross_flow"]["state"] == "reflected"
+    assert refl["state"] == "reflected"
+    assert refl["confidence"] == 80
+    assert CAPABILITY_STORED_REFLECTION in out["capabilities"]
+    assert CAPABILITY_REFLECTIVE_INPUT in out["capabilities"]
+    xss = _cand(out["candidates"], ATTACK_XSS)
+    assert xss is not None
+    assert xss["reasons"][0].startswith("value from username@POST /register")
+
+
+def test_load_and_merge_respects_feed_iv_false(db_path: Path):
+    set_process_cross_flow_config(CrossFlowConfig(enabled=True, feed_iv=False))
+    host = "https://app.example.com"
+    uid = make_param_uuid(host, "body", "username")
+    profile = empty_param_profile(
+        param_uuid=uid, host=host, location="body", name="username",
+    )
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "contexts": [],
+        "evidence_flow_ids": [],
+    }
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+    load_and_merge_cross_flow(db_path, profile, persist=False, score=True)
+    refl = profile["observed"]["reflection"]
+    assert "cross_flow" not in refl or refl.get("cross_flow") is None or (
+        refl.get("state") == "not_reflected"
+    )
+    assert CAPABILITY_STORED_REFLECTION not in (profile.get("capabilities") or [])
+
+
+def test_load_and_merge_respects_project_yaml_feed_iv_false(db_path: Path):
+    """
+    Issue 2 regression: project.yaml feed_iv=false is honored on consume path
+    via ensure_process_cross_flow_config (not just process cache set by tests).
+    """
+    from talos.projects.value_reflection import (
+        ensure_process_cross_flow_config,
+        load_cross_flow_config_for_project,
+        reset_process_cross_flow_config,
+    )
+
+    # Clear process cache so load_and_merge must load project YAML.
+    reset_process_cross_flow_config()
+    project_dir = db_path.parent
+    (project_dir / "project.yaml").write_text(
+        "parameter_intel:\n"
+        "  cross_flow:\n"
+        "    enabled: true\n"
+        "    feed_iv: false\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_cross_flow_config_for_project(project_dir)
+    assert loaded.feed_iv is False
+    assert loaded.enabled is True
+
+    reset_process_cross_flow_config()
+    host = "https://app.example.com"
+    uid = make_param_uuid(host, "body", "username")
+    profile = empty_param_profile(
+        param_uuid=uid, host=host, location="body", name="username",
+    )
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "contexts": [],
+        "evidence_flow_ids": [],
+    }
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    load_and_merge_cross_flow(db_path, profile, persist=False, score=True)
+    # ensure_process should have installed feed_iv=false from YAML
+    cfg = ensure_process_cross_flow_config(project_dir)
+    assert cfg.feed_iv is False
+    refl = profile["observed"]["reflection"]
+    assert refl.get("state") == "not_reflected"
+    assert CAPABILITY_STORED_REFLECTION not in (profile.get("capabilities") or [])
+
+
+def test_get_param_intelligence_recompute_merges_links(db_path: Path):
+    host = "https://app.example.com"
+    loc, name = "body", "username"
+    uid = make_param_uuid(host, loc, name)
+    profile = empty_param_profile(param_uuid=uid, host=host, location=loc, name=name)
+    # Stored profile: multiprobe only, no cross_flow yet
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "uncertainty": "none",
+        "contexts": [],
+        "evidence_flow_ids": ["probe"],
+    }
+    profile["capabilities"] = []
+    profile["candidates"] = []
+    upsert_param_profile(
+        db_path, param_uuid=uid, host=host, location=loc, param_name=name, profile=profile,
+    )
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    intel = get_param_intelligence(db_path, uid, recompute=True)
+    assert intel is not None
+    assert CAPABILITY_STORED_REFLECTION in intel["capabilities"]
+    xss = _cand(intel["candidates"], ATTACK_XSS)
+    assert xss is not None
+    assert "username@POST /register" in xss["reasons"][0]
+    assert intel["profile"]["observed"]["reflection"]["state"] == "reflected"
+
+
+def test_get_param_intelligence_default_path_merges_live_links(db_path: Path):
+    """
+    Issue 1 regression: recompute=False with non-empty caps/candidates still
+    live-merges when cross_flow links exist (parity with list_candidates).
+    """
+    host = "https://app.example.com"
+    loc, name = "body", "username"
+    uid = make_param_uuid(host, loc, name)
+    profile = empty_param_profile(param_uuid=uid, host=host, location=loc, name=name)
+    # Profile synthesized *before* proxy traffic created links — stale
+    # multiprobe-only reflection, but capabilities/candidates already filled
+    # (the condition that previously skipped merge on get_param_intelligence).
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "uncertainty": "none",
+        "contexts": [],
+        "evidence_flow_ids": ["probe"],
+    }
+    profile["capabilities"] = ["strict_length"]
+    profile["candidates"] = [
+        {
+            "attack": "ssrf",
+            "score": 30,
+            "confidence": 50,
+            "reasons": ["placeholder"],
+            "evidence_flow_ids": [],
+        }
+    ]
+    upsert_param_profile(
+        db_path, param_uuid=uid, host=host, location=loc, param_name=name, profile=profile,
+    )
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    # list_candidates already merged live links without recompute
+    rows = list_candidates(db_path, attack=ATTACK_XSS, min_score=40, recompute=False)
+    assert rows, "list_candidates should surface stored XSS from live links"
+
+    # get_param_intelligence must match (was: still strict_length / not_reflected)
+    intel = get_param_intelligence(db_path, uid, recompute=False)
+    assert intel is not None
+    assert CAPABILITY_STORED_REFLECTION in intel["capabilities"]
+    assert intel["profile"]["observed"]["reflection"]["state"] == "reflected"
+    xss = _cand(intel["candidates"], ATTACK_XSS)
+    assert xss is not None
+    assert "username@POST /register" in xss["reasons"][0]
+    assert "cross_flow" in (xss.get("reflection_modes") or [])
+
+
+def test_list_candidates_batched_pass_through(db_path: Path):
+    host = "https://app.example.com"
+    loc, name = "body", "username"
+    uid = make_param_uuid(host, loc, name)
+    profile = empty_param_profile(param_uuid=uid, host=host, location=loc, name=name)
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "uncertainty": "none",
+        "contexts": [],
+        "evidence_flow_ids": ["probe"],
+    }
+    # Persist without candidates so list path re-scores after merge
+    profile["capabilities"] = []
+    profile["candidates"] = []
+    upsert_param_profile(
+        db_path, param_uuid=uid, host=host, location=loc, param_name=name, profile=profile,
+    )
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    rows = list_candidates(
+        db_path, attack=ATTACK_XSS, min_score=40, recompute=True,
+    )
+    assert rows
+    row = rows[0]
+    assert row["param_uuid"] == uid
+    assert "reflection_modes" in row
+    assert "cross_flow" in (row["reflection_modes"] or [])
+    assert row.get("stored_reflection") is not None
+    assert row["reasons"][0].startswith("value from username@POST /register")
+    assert CAPABILITY_STORED_REFLECTION in row["capabilities"]
+
+    # Capability filter
+    by_cap = list_candidates(
+        db_path, capability=CAPABILITY_STORED_REFLECTION, recompute=True,
+    )
+    assert any(r["param_uuid"] == uid for r in by_cap)
+
+
+def test_list_candidates_default_path_merges_live_links(db_path: Path):
+    """recompute=False still merges when batched links exist (stale profile)."""
+    host = "https://app.example.com"
+    loc, name = "body", "username"
+    uid = make_param_uuid(host, loc, name)
+    profile = empty_param_profile(param_uuid=uid, host=host, location=loc, name=name)
+    # Old stored JSON: not reflected, has empty candidates that would skip re-score
+    # without link-aware merge.
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "contexts": [],
+        "evidence_flow_ids": [],
+    }
+    # Give it a non-XSS candidate so capabilities/candidates are non-empty
+    profile["capabilities"] = ["url_like_value"]
+    profile["candidates"] = [
+        {
+            "attack": "ssrf",
+            "score": 30,
+            "confidence": 50,
+            "reasons": ["placeholder"],
+            "evidence_flow_ids": [],
+        }
+    ]
+    upsert_param_profile(
+        db_path, param_uuid=uid, host=host, location=loc, param_name=name, profile=profile,
+    )
+    _insert_cross_flow_link(db_path, param_uuid=uid, host=host)
+
+    rows = list_candidates(db_path, attack=ATTACK_XSS, min_score=40, recompute=False)
+    assert rows, "live links should merge into stale profile without recompute flag"
+    assert rows[0]["reasons"][0].startswith("value from username@POST /register")
+
+
+def test_merge_then_score_pure_path():
+    """Pure merge_cross_flow_reflection + score without DB."""
+    profile = _profile(name="username")
+    profile["observed"]["reflection"] = {
+        "state": "not_reflected",
+        "confidence": 88,
+        "uncertainty": "none",
+        "contexts": [],
+        "encoding": "",
+        "evidence_flow_ids": ["probe-flow"],
+    }
+    links = [{
+        "source_param_name": "username",
+        "source_method": "POST",
+        "source_path": "/register",
+        "source_flow_id": "src-flow",
+        "first_source_flow_id": "src-flow",
+        "sink_flow_id": "sink-flow",
+        "sink_method": "GET",
+        "sink_path": "/profile",
+        "sink_context": "html",
+        "encoding": "raw",
+        "confidence": 80,
+        "detection_mode": "passive",
+    }]
+    merge_cross_flow_reflection(profile, links)
+    enrich_profile_capabilities_and_candidates(profile)
+    assert CAPABILITY_STORED_REFLECTION in profile["capabilities"]
+    xss = _cand(profile["candidates"], ATTACK_XSS)
+    assert xss is not None
+    assert xss["score"] == 67
+
+
+def test_format_candidates_lines_includes_stored_sinks():
+    from talos.input_validation.candidates import format_candidates_lines
+
+    lines = format_candidates_lines([
+        {
+            "attack": "xss",
+            "score": 67,
+            "confidence": 78,
+            "reasons": [
+                "value from username@POST /register reflected on GET /profile (html, raw)",
+            ],
+            "reflection_modes": ["cross_flow"],
+            "stored_reflection": {
+                "link_count": 1,
+                "sinks": [
+                    {
+                        "reason": (
+                            "value from username@POST /register reflected "
+                            "on GET /profile (html, raw)"
+                        ),
+                    },
+                ],
+            },
+        },
+    ])
+    joined = "\n".join(lines)
+    assert "modes=cross_flow" in joined
+    assert "stored:" in joined
+    assert "POST /register" in joined
+
+
+def test_format_profile_summary_dual_reflection_modes():
+    from talos.input_validation.synthesize import format_profile_summary_lines
+
+    profile = {
+        "schema_version": 2,
+        "profile_version": 1,
+        "requests_used": 1,
+        "observed": {
+            "reflection": {
+                "state": "reflected",
+                "confidence": 80,
+                "uncertainty": "low",
+                "encoding": "raw",
+                "contexts": ["html"],
+                "modes": ["cross_flow"],
+                "same_request": {
+                    "state": "not_reflected",
+                    "confidence": 88,
+                    "contexts": [],
+                },
+                "cross_flow": {
+                    "state": "reflected",
+                    "confidence": 80,
+                    "link_count": 1,
+                    "contexts": ["html"],
+                    "sinks": [
+                        {
+                            "reason": (
+                                "value from username@POST /register reflected "
+                                "on GET /profile (html, raw)"
+                            ),
+                        },
+                    ],
+                },
+            },
+        },
+        "capabilities": ["reflective_input", "stored_reflection"],
+        "candidates": [],
+    }
+    joined = "\n".join(format_profile_summary_lines(profile))
+    assert "modes=cross_flow" in joined
+    assert "same_request:" in joined
+    assert "cross_flow:" in joined
+    assert "sink:" in joined
+    assert "data-flow prioritization evidence" in joined

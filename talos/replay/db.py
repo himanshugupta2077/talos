@@ -205,6 +205,8 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
         None
     Side effects:
         Inserts one row into flows.
+        After successful INSERT: best-effort cross-flow index/scan via
+        on_flow_committed (non-fatal; multiprobe canaries + sink GET responses).
         Raises sqlite3.Error on DB write failure — caller handles.
 
     Columns written:
@@ -273,6 +275,149 @@ def insert_replayed_flow(db_path: Path, flow: dict) -> None:
             ),
         )
         conn.commit()
+
+        # Cross-flow reflection (PR3b): index multiprobe canaries + scan sinks.
+        # Non-fatal — flow is already committed. Uses process-cached config only
+        # (never ConfigurationManager.load per insert).
+        try:
+            _maybe_cross_flow_on_replay(conn, db_path, flow)
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            import logging
+            logging.getLogger(__name__).debug(
+                "Cross-flow reflection on replay failed — flow_id=%s — skipping",
+                flow.get("id"),
+                exc_info=True,
+            )
+
+    # Error Intelligence (Phase 6): cheap gate + inline scan when no proxy
+    # worker queue is available (scheduler / IV / BAC / unauth path).
+    # Non-fatal — never fails the replay insert.
+    try:
+        _maybe_error_intel_on_replay(db_path, flow)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).debug(
+            "Error intel on replay failed — flow_id=%s — skipping",
+            flow.get("id"),
+            exc_info=True,
+        )
+
+
+def _maybe_error_intel_on_replay(db_path: Path, flow: dict) -> None:
+    """
+    Purpose:
+        Best-effort Error Intelligence scan after a successfully inserted
+        replay / attack flow. Uses inline process (no proxy ErrorIntelQueue
+        in the scheduler process). Attack context is taken from flow_meta
+        (IV parameter_uuid, BAC attack_module, …).
+    Side effects:
+        May write error_clusters / error_observations. Never raises.
+    """
+    from talos.error_intel.worker import maybe_enqueue_error_scan
+
+    project_id = flow.get("project_id") or ""
+    if not project_id:
+        return
+    content_type = flow.get("content_type") or ""
+    # Ensure id is available as flow_id for the enqueue helper.
+    enriched = dict(flow)
+    if not enriched.get("flow_id") and enriched.get("id"):
+        enriched["flow_id"] = enriched["id"]
+    maybe_enqueue_error_scan(
+        error_queue=None,
+        db_path=db_path,
+        project_id=str(project_id),
+        flow=enriched,
+        endpoint_id=flow.get("endpoint_id"),
+        content_type=str(content_type),
+        inline_if_no_queue=True,
+    )
+
+
+def _maybe_cross_flow_on_replay(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    flow: dict,
+) -> None:
+    """
+    Purpose:
+        Best-effort on_flow_committed for a successfully inserted replay flow.
+        Re-extracts params when possible; always tries multiprobe meta canary.
+    Side effects:
+        May write value_index / cross_flow_reflections / parameters flags.
+    """
+    from talos.projects.value_reflection import (
+        ensure_process_cross_flow_config,
+        on_flow_committed,
+    )
+
+    # Load layered config at most once per process (scheduler has no FlowWorker).
+    cfg = ensure_process_cross_flow_config(db_path.parent)
+    if not cfg.enabled:
+        return
+
+    endpoint_id = flow.get("endpoint_id")
+    if not endpoint_id:
+        return
+
+    # Best-effort param re-extract from the replay request.
+    params = None
+    try:
+        from talos.projects.parameters import extract_flow_params
+
+        raw_headers = flow.get("request_headers") or {}
+        if isinstance(raw_headers, str):
+            raw_headers = json.loads(raw_headers) if raw_headers else {}
+        raw_cookies = flow.get("request_cookies") or {}
+        if isinstance(raw_cookies, str):
+            raw_cookies = json.loads(raw_cookies) if raw_cookies else {}
+
+        # Prefer normalized_path from endpoint when available.
+        ep_path = ""
+        row = conn.execute(
+            "SELECT normalized_path FROM endpoints WHERE id = ?",
+            (endpoint_id,),
+        ).fetchone()
+        if row is not None:
+            ep_path = row[0] if not isinstance(row, sqlite3.Row) else row["normalized_path"]
+
+        params = extract_flow_params(
+            query=flow.get("query") or "",
+            request_body=flow.get("request_body"),
+            request_headers=raw_headers if isinstance(raw_headers, dict) else {},
+            request_cookies=raw_cookies if isinstance(raw_cookies, dict) else {},
+            path=flow.get("path") or "",
+            normalized_path=ep_path or "",
+            role_id=flow.get("role_id") or "",
+            module_id=flow.get("module_id") or "",
+        )
+    except Exception:  # noqa: BLE001
+        params = None
+
+    flow_meta = flow.get("flow_meta") or {}
+    if isinstance(flow_meta, str):
+        try:
+            flow_meta = json.loads(flow_meta) if flow_meta else {}
+        except (ValueError, TypeError):
+            flow_meta = {}
+
+    multiprobe_meta = None
+    if isinstance(flow_meta, dict):
+        multiprobe_meta = flow_meta.get("multiprobe")
+        if multiprobe_meta is not None and not isinstance(multiprobe_meta, dict):
+            multiprobe_meta = None
+
+    on_flow_committed(
+        conn,
+        db_path=db_path,
+        flow=flow,
+        endpoint_id=endpoint_id,
+        params=params,
+        multiprobe_meta=multiprobe_meta if isinstance(multiprobe_meta, dict) else None,
+        cfg=cfg,
+    )
 
 
 def _to_json(value: object) -> str:
@@ -536,3 +681,137 @@ def insert_unauth_result(db_path: Path, result_row: dict) -> None:
             ),
         )
         conn.commit()
+
+
+def list_unauth_results(db_path: Path) -> list[dict]:
+    """
+    Purpose:
+        Return all unauth_results rows (for offline reclassification).
+    Input:
+        db_path — absolute Path to the project's talos.db.
+    Output:
+        List of result dicts (may be empty).
+    Side effects:
+        Read-only after migrate.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return []
+    with _connect_ro(db_path) as conn:
+        rows = conn.execute("SELECT * FROM unauth_results").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_unauth_result_verdict(
+    db_path: Path,
+    replay_flow_id: str,
+    *,
+    verdict: str,
+    matched_section: Optional[str] = None,
+    matched_group: Optional[str] = None,
+    matched_rules: Optional[str] = None,
+) -> bool:
+    """
+    Purpose:
+        Rewrite the decision-filter verdict and match metadata on an existing
+        unauth_results row (used by offline filter apply / reclassify).
+    Input:
+        db_path         — absolute Path to the project's talos.db.
+        replay_flow_id  — PK of the unauth_results row.
+        verdict         — BYPASS | SECURE | UNKNOWN.
+        matched_section — 'passed_detection' | 'failed_detection' | None.
+        matched_group   — group_id or None.
+        matched_rules   — JSON array string of rule IDs, or None.
+    Output:
+        True if a row was updated; False if replay_flow_id not found.
+    Side effects:
+        Updates unauth_results; commits.
+    """
+    migrate_project_db(db_path)
+    with _connect_rw(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE unauth_results
+            SET verdict = ?,
+                matched_section = ?,
+                matched_group = ?,
+                matched_rules = ?
+            WHERE replay_flow_id = ?
+            """,
+            (
+                verdict,
+                matched_section,
+                matched_group,
+                matched_rules,
+                replay_flow_id,
+            ),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def list_bac_results(db_path: Path) -> list[dict]:
+    """
+    Purpose:
+        Return all bac_results rows (for offline reclassification).
+    Input:
+        db_path — absolute Path to the project's talos.db.
+    Output:
+        List of result dicts (may be empty).
+    Side effects:
+        Read-only after migrate.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return []
+    with _connect_ro(db_path) as conn:
+        rows = conn.execute("SELECT * FROM bac_results").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_bac_result_verdict(
+    db_path: Path,
+    replay_flow_id: str,
+    *,
+    verdict: str,
+    matched_section: Optional[str] = None,
+    matched_group: Optional[str] = None,
+    matched_rules: Optional[str] = None,
+) -> bool:
+    """
+    Purpose:
+        Rewrite the decision-filter verdict and match metadata on an existing
+        bac_results row (used by offline filter apply / reclassify).
+    Input:
+        db_path         — absolute Path to the project's talos.db.
+        replay_flow_id  — PK of the bac_results row.
+        verdict         — POSSIBLE_BAC | SECURE | UNKNOWN.
+        matched_section — 'passed_detection' | 'failed_detection' | None.
+        matched_group   — group_id or None.
+        matched_rules   — JSON array string of rule descriptions, or None.
+    Output:
+        True if a row was updated; False if replay_flow_id not found.
+    Side effects:
+        Updates bac_results; commits.
+    """
+    migrate_project_db(db_path)
+    with _connect_rw(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE bac_results
+            SET verdict = ?,
+                matched_section = ?,
+                matched_group = ?,
+                matched_rules = ?
+            WHERE replay_flow_id = ?
+            """,
+            (
+                verdict,
+                matched_section,
+                matched_group,
+                matched_rules,
+                replay_flow_id,
+            ),
+        )
+        conn.commit()
+    return cur.rowcount > 0

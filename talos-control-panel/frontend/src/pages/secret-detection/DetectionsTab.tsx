@@ -10,6 +10,7 @@ import {
   CATEGORIES,
   CONFIDENCE_LEVELS,
   DetectionRow,
+  SECRETS_BASE,
   selectClass,
   shortId,
 } from "./shared";
@@ -177,7 +178,7 @@ export default function DetectionsTab({ projectId }: { projectId: string }) {
         columns={columns}
         rows={rows}
         rowKey={(d) => d.id}
-        onRowClick={(d) => navigate(`/secret-detection/detections/${d.id}`)}
+        onRowClick={(d) => navigate(`${SECRETS_BASE}/detections/${d.id}`)}
         emptyLabel="No detections match filters."
         storageKey="passive-detections"
       />

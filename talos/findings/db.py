@@ -472,6 +472,37 @@ def list_evidence(db_path: Path, finding_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def find_findings_by_evidence_ref(
+    db_path: Path,
+    evidence_type: str,
+    reference_id: str,
+) -> list[dict]:
+    """
+    Purpose:
+        Resolve findings that attach a given evidence type + reference_id
+        (e.g. unauth_result → replay_flow_id).
+    Input:
+        evidence_type — one of EVIDENCE_TYPE_* constants.
+        reference_id  — UUID of the referenced object.
+    Output:
+        List of finding dicts (may be empty; usually 0–1).
+    """
+    if not reference_id:
+        return []
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT f.*
+            FROM findings f
+            JOIN finding_evidence fe ON fe.finding_id = f.id
+            WHERE fe.evidence_type = ? AND fe.reference_id = ?
+            ORDER BY f.created_at ASC
+            """,
+            (evidence_type, reference_id),
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 # ------------------------------------------------------------------ #
 # Timeline CRUD                                                        #
 # ------------------------------------------------------------------ #

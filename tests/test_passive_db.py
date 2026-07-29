@@ -65,9 +65,10 @@ def db_path(tmp_path: Path) -> Path:
 # Schema                                                               #
 # ------------------------------------------------------------------ #
 
-def test_schema_version_is_41():
-    """Schema v39 = passive tables; v40 = parent_document_id; v41 = max_scan_time_ms."""
-    assert SCHEMA_VERSION == 41
+def test_schema_version_is_current():
+    """Schema v39+ passive tables; v42 = cross-flow; v43 = error intel."""
+    assert SCHEMA_VERSION == 44
+    assert SCHEMA_VERSION >= 41
 
 
 def test_fresh_db_has_passive_tables(db_path: Path):

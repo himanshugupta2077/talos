@@ -52,6 +52,7 @@ from talos.input_validation.profile import (
     CAPABILITY_PATH_PARAMETER,
     CAPABILITY_REDIRECT_LIKE,
     CAPABILITY_REFLECTIVE_INPUT,
+    CAPABILITY_STORED_REFLECTION,
     CAPABILITY_STRICT_LENGTH,
     CAPABILITY_UNICODE_SUPPORT,
     CAPABILITY_URL_CONTEXT,
@@ -78,8 +79,10 @@ _SOFT_ACCEPT: frozenset[str] = frozenset({
 })
 
 # Stable derivation order (deterministic, human-friendly).
+# stored_reflection sits immediately after reflective_input (cross-flow design §7).
 _CAPABILITY_ORDER: tuple[str, ...] = (
     CAPABILITY_REFLECTIVE_INPUT,
+    CAPABILITY_STORED_REFLECTION,
     CAPABILITY_HTML_CONTEXT,
     CAPABILITY_JSON_CONTEXT,
     CAPABILITY_JS_CONTEXT,
@@ -148,11 +151,50 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
         parser_obs = {}
 
     # --- Reflection / context ------------------------------------------------
-    contexts = list(refl.get("contexts") or [])
-    if str(refl.get("state") or "").lower() == "reflected":
+    # Nested modes (same_request / cross_flow) from stored-reflection merge.
+    same_req = refl.get("same_request") if isinstance(refl.get("same_request"), dict) else {}
+    cross_flow = refl.get("cross_flow") if isinstance(refl.get("cross_flow"), dict) else {}
+
+    top_state = str(refl.get("state") or "").lower()
+    same_state = str(same_req.get("state") or "").lower()
+    cross_state = str(cross_flow.get("state") or "").lower()
+
+    # reflective_input = value observed in some in-scope response body
+    # (same-request and/or cross-flow). Not "this endpoint echoes the param".
+    reflected = (
+        top_state == "reflected"
+        or same_state == "reflected"
+        or cross_state == "reflected"
+    )
+    if reflected:
         found.add(CAPABILITY_REFLECTIVE_INPUT)
-        for ctx in contexts:
+
+    # stored_reflection: durable source→sink evidence on another flow/page.
+    if cross_state == "reflected":
+        found.add(CAPABILITY_STORED_REFLECTION)
+
+    # Context flags from union of top-level + same_request + cross_flow sinks.
+    contexts: list[str] = []
+    for src in (refl, same_req, cross_flow):
+        if not isinstance(src, dict):
+            continue
+        for ctx in src.get("contexts") or []:
             c = str(ctx).lower()
+            if c == "javascript":
+                c = "js"
+            if c and c not in contexts:
+                contexts.append(c)
+    for sink in (cross_flow.get("sinks") or []) if isinstance(cross_flow, dict) else []:
+        if not isinstance(sink, dict):
+            continue
+        c = str(sink.get("context") or sink.get("sink_context") or "").lower()
+        if c == "javascript":
+            c = "js"
+        if c and c not in contexts:
+            contexts.append(c)
+
+    if reflected:
+        for c in contexts:
             if c == "html":
                 found.add(CAPABILITY_HTML_CONTEXT)
             elif c == "json":
@@ -170,7 +212,7 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
         found.add(CAPABILITY_JSON_PARSER)
     if ct == "xml":
         found.add(CAPABILITY_XML_BODY)
-    if ct == "html" and str(refl.get("state") or "").lower() == "reflected":
+    if ct == "html" and reflected:
         found.add(CAPABILITY_HTML_CONTEXT)
 
     # --- Location / surface -------------------------------------------------

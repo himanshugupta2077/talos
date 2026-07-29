@@ -4,8 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .routers import (
     access, attack, auth, auth_config, configuration, console, endpoints,
-    findings, flows, input_validation, mutations, modules, passive,
-    projects, proxy, replay, roles, scheduler,
+    error_intel, findings, flows, input_validation, mutations, modules,
+    passive, projects, proxy, replay, roles, scheduler, send,
 )
 
 app = FastAPI(title="Talos Control Panel API", version="1.0.0")
@@ -21,9 +21,9 @@ app.add_middleware(
 for router in (
     projects.router, proxy.router, roles.router, modules.router,
     access.router, auth.router, auth_config.router, endpoints.router,
-    flows.router, replay.router, scheduler.router, mutations.router,
+    flows.router, replay.router, send.router, scheduler.router, mutations.router,
     attack.router, input_validation.router, passive.router,
-    findings.router, console.router, configuration.router,
+    error_intel.router, findings.router, console.router, configuration.router,
 ):
     app.include_router(router)
 

@@ -1639,7 +1639,9 @@ def get_parameter_profile(
                 p.example_values, p.seen_count,
                 p.appears_in_roles, p.appears_in_modules,
                 p.is_reflected, p.reflection_count,
-                p.reflection_locations, p.reflection_encoding
+                p.reflection_locations, p.reflection_encoding,
+                p.cross_flow_reflected, p.cross_flow_reflection_count,
+                p.cross_flow_sink_endpoints
             FROM parameters p
             JOIN endpoints e ON e.id = p.endpoint_id
             WHERE p.id = ?
@@ -1719,6 +1721,21 @@ def get_parameter_profile(
         except (json.JSONDecodeError, TypeError):
             reflection_encoding = []
 
+        try:
+            cross_flow_sinks = json.loads(row["cross_flow_sink_endpoints"] or "[]")
+        except (json.JSONDecodeError, TypeError, KeyError):
+            cross_flow_sinks = []
+        if not isinstance(cross_flow_sinks, list):
+            cross_flow_sinks = []
+
+        # Schema v42+ columns; tolerate pre-migration DBs via KeyError.
+        try:
+            cross_flow_reflected = bool(row["cross_flow_reflected"])
+            cross_flow_count = int(row["cross_flow_reflection_count"] or 0)
+        except (KeyError, TypeError, ValueError):
+            cross_flow_reflected = False
+            cross_flow_count = 0
+
         param_uuid = make_param_uuid(row["host"], row["location"], row["name"])
         return {
             "id": row["id"],
@@ -1737,6 +1754,9 @@ def get_parameter_profile(
             "reflection_count": row["reflection_count"],
             "reflection_locations": reflection_locations,
             "reflection_encoding": reflection_encoding,
+            "cross_flow_reflected": cross_flow_reflected,
+            "cross_flow_reflection_count": cross_flow_count,
+            "cross_flow_sink_endpoints": cross_flow_sinks,
             "iv_phases": iv_phases,
             "iv_reflection": reflection_iv,
             "param_uuid": param_uuid,

@@ -134,6 +134,22 @@ export default function FlowActions({
   const items = (
     <>
       {wrapItem(
+        variant === "menu" ? (
+          <Link to={`/repeater?flow=${flow.id}`} onClick={finish}>
+            Send to Repeater
+          </Link>
+        ) : (
+          <Link
+            to={`/repeater?flow=${flow.id}`}
+            className={itemClass}
+            onClick={finish}
+          >
+            Send to Repeater
+          </Link>
+        ),
+        "repeater"
+      )}
+      {wrapItem(
         <button
           type="button"
           className={itemClass}
@@ -239,7 +255,8 @@ export default function FlowActions({
       {variant === "panel" ? (
         <div className={`flex flex-col gap-0.5 ${className}`}>
           <p className="text-[11px] text-base-content/50 mb-1 px-1 leading-snug">
-            Replay sends the stored request as-is (session refresh is Core-owned).
+            <strong>Send to Repeater</strong> opens Mode 2 edit → send with lineage.
+            <strong> Replay</strong> re-sends the stored request as-is (Mode 1).
             Export writes Markdown via <span className="mono">talos flow export</span>.
           </p>
           {items}
@@ -247,8 +264,8 @@ export default function FlowActions({
             <div className="text-[10px] text-success px-1 mt-1">{copyMsg}</div>
           )}
           <div className="divider my-1" />
-          <Link to="/attack" className="btn btn-xs btn-ghost justify-start">
-            Open Attack (BAC / unauth)
+          <Link to="/testing" className="btn btn-xs btn-ghost justify-start">
+            Open Testing modules (BAC / unauth)
           </Link>
         </div>
       ) : (

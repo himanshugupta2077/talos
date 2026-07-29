@@ -9,7 +9,7 @@ import ConfidenceChip from "./components/ConfidenceChip";
 import CategoryBadge from "./components/CategoryBadge";
 import RedactedValue from "./components/RedactedValue";
 import type { DetectionRow, DocumentRow, OccurrenceRow } from "./shared";
-import { shortId } from "./shared";
+import { SECRETS_BASE, shortId } from "./shared";
 
 interface DetailPayload {
   detection: DetectionRow;
@@ -51,7 +51,7 @@ export default function DetectionDetail() {
   if (error && !data) {
     return (
       <div>
-        <Link to="/secret-detection?tab=detections" className="link link-sm">
+        <Link to={`${SECRETS_BASE}?tab=detections`} className="link link-sm">
           back to detections
         </Link>
         <p className="mt-4 text-error">{error}</p>
@@ -64,7 +64,7 @@ export default function DetectionDetail() {
 
   return (
     <div>
-      <Link to="/secret-detection?tab=detections" className="link link-sm mb-4 inline-block">
+      <Link to={`${SECRETS_BASE}?tab=detections`} className="link link-sm mb-4 inline-block">
         back to detections
       </Link>
 
@@ -167,7 +167,7 @@ export default function DetectionDetail() {
             <dd>
               {d.document_id ? (
                 <Link
-                  to={`/secret-detection/documents/${d.document_id}`}
+                  to={`${SECRETS_BASE}/documents/${d.document_id}`}
                   className="link mono text-xs"
                 >
                   {shortId(d.document_id)}
@@ -234,7 +234,7 @@ export default function DetectionDetail() {
             {siblings.map((s) => (
               <li key={s.id}>
                 <Link
-                  to={`/secret-detection/detections/${s.id}`}
+                  to={`${SECRETS_BASE}/detections/${s.id}`}
                   className="link mono text-xs"
                 >
                   {shortId(s.id)}

@@ -522,8 +522,8 @@ intel = get_param_intelligence(db_path, param_id_or_uuid)
 CLI: `show`, `candidates`, and `export parameter|host [--format json|markdown]`
 display candidates. No findings are created by IV candidate scoring.
 
-Control Panel: Input Validation page shows budget/status, candidates table,
-and profiles (read APIs under `/api/input-validation/…`).
+Control Panel: Attack → Input Validation module shows budget/status, candidates table,
+and profiles (read APIs under `/api/input-validation/…`; UI at `/attack/input-validation`).
 
 ## Cache Strategy
 

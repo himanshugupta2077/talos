@@ -26,6 +26,9 @@ import FlowSessionPanel, { SessionIntel } from "./flows/FlowSessionPanel";
 import FlowRelatedPanel from "./flows/FlowRelatedPanel";
 import FlowTimeline, { buildTimelineEvents } from "./flows/FlowTimeline";
 import FlowDebugPanel from "./flows/FlowDebugPanel";
+import FlowErrorsPanel from "./flows/FlowErrorsPanel";
+import { SECRETS_BASE } from "./attack/registry";
+import type { ErrorByFlowResponse } from "./error-intelligence/shared";
 
 interface Derived {
   duration_ms?: number | null;
@@ -75,7 +78,7 @@ interface Intelligence {
   session: SessionIntel | null;
 }
 
-type LeftTab = "overview" | "http" | "replay" | "timeline" | "debug";
+type LeftTab = "overview" | "http" | "replay" | "timeline" | "errors" | "debug";
 
 export default function FlowDetail() {
   const { flowId } = useParams();
@@ -92,6 +95,8 @@ export default function FlowDetail() {
     has_finding: boolean;
     scanner_version: string | null;
   } | null>(null);
+  const [errorIntel, setErrorIntel] = useState<ErrorByFlowResponse | null>(null);
+  const [errorIntelFailed, setErrorIntelFailed] = useState(false);
   const [adjacent, setAdjacent] = useState<{ prev_id: string | null; next_id: string | null }>({
     prev_id: null,
     next_id: null,
@@ -138,6 +143,18 @@ export default function FlowDetail() {
       .get(`/api/passive/by-flow/${flowId}`, { project_id: selected.id })
       .then(setPassive)
       .catch(() => setPassive(null));
+    api
+      .get<ErrorByFlowResponse>(`/api/error-intel/by-flow/${flowId}`, {
+        project_id: selected.id,
+      })
+      .then((r) => {
+        setErrorIntel(r);
+        setErrorIntelFailed(false);
+      })
+      .catch(() => {
+        setErrorIntel(null);
+        setErrorIntelFailed(true);
+      });
   };
 
   useEffect(load, [selected, flowId, filterQs]);
@@ -177,14 +194,24 @@ export default function FlowDetail() {
     return () => window.removeEventListener("keydown", onKey);
   }, [adjacent, navigate, searchParams]);
 
-  // Hash section deep-links
+  // Hash section deep-links (+ optional ?tab= for workspace-style links)
   useEffect(() => {
     const hash = window.location.hash.replace("#", "");
     if (hash.startsWith("section=")) {
       const s = hash.slice("section=".length) as LeftTab;
-      if (["overview", "http", "replay", "timeline", "debug"].includes(s)) setTab(s);
+      if (["overview", "http", "replay", "timeline", "errors", "debug"].includes(s)) {
+        setTab(s);
+      }
+    } else {
+      const tabQ = searchParams.get("tab");
+      if (
+        tabQ &&
+        ["overview", "http", "replay", "timeline", "errors", "debug"].includes(tabQ)
+      ) {
+        setTab(tabQ as LeftTab);
+      }
     }
-  }, [flowId]);
+  }, [flowId, searchParams]);
 
   if (!selected) {
     return (
@@ -218,11 +245,16 @@ export default function FlowDetail() {
     findings: related?.findings,
   });
 
+  const errorObsCount = errorIntel?.observation_count ?? 0;
   const tabs: { id: LeftTab; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "http", label: "HTTP" },
     { id: "replay", label: "Replay" },
     { id: "timeline", label: "Timeline" },
+    {
+      id: "errors",
+      label: errorObsCount > 0 ? `Errors · ${errorObsCount}` : "Errors",
+    },
     { id: "debug", label: "Debug" },
   ];
 
@@ -343,6 +375,7 @@ export default function FlowDetail() {
             results: { diff, bac, unauth, auth_test: authTest },
             endpoint_policy: endpoint_policy || intel?.endpoint,
             has_auth_material: derived?.has_auth_material,
+            error_observation_count: errorObsCount,
           }}
         />
       </div>
@@ -417,6 +450,16 @@ export default function FlowDetail() {
 
         {tab === "timeline" && <FlowTimeline events={timeline} />}
 
+        {tab === "errors" && flowId && (
+          <FlowErrorsPanel
+            projectId={selected.id}
+            flowId={flowId}
+            data={errorIntel}
+            loadError={errorIntelFailed}
+            onRefresh={load}
+          />
+        )}
+
         {tab === "debug" && <FlowDebugPanel flow={flow} derived={derived} />}
       </div>
 
@@ -477,7 +520,7 @@ export default function FlowDetail() {
               <div>
                 <span className="text-base-content/50">Document </span>
                 <Link
-                  to={`/secret-detection/documents/${passive.document_id}`}
+                  to={`${SECRETS_BASE}/documents/${passive.document_id}`}
                   className="link mono"
                 >
                   {passive.document_id.slice(0, 8)}
@@ -497,7 +540,7 @@ export default function FlowDetail() {
               </div>
               <div className="flex flex-wrap gap-1 pt-1">
                 <Link
-                  to={`/secret-detection/documents/${passive.document_id}`}
+                  to={`${SECRETS_BASE}/documents/${passive.document_id}`}
                   className="btn btn-xs"
                 >
                   Open document

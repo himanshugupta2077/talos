@@ -9,6 +9,7 @@ import {
   LOCATIONS,
   ProfileRow,
   inputClass,
+  IV_BASE,
   selectClass,
 } from "./shared";
 
@@ -131,7 +132,7 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
                 className="cursor-pointer hover:bg-base-200"
                 onClick={() => {
                   if (p.param_uuid) {
-                    navigate(`/input-validation/params/${p.param_uuid}`);
+                    navigate(`${IV_BASE}/params/${p.param_uuid}`);
                   }
                 }}
               >

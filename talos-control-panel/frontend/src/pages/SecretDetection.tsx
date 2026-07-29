@@ -2,6 +2,7 @@
  * Secret Detection workspace — Overview | Detections | Documents |
  * Rules | Settings
  *
+ * Nested under Testing hub as Passive module (`/testing/secrets`).
  * Full CLI parity for `talos passive …` (Phase 13 Control Panel).
  */
 
@@ -9,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
-import { ModuleHelp, NoProjectNotice } from "../components/Common";
+import { NoProjectNotice } from "../components/Common";
 import OverviewTab from "./secret-detection/OverviewTab";
 import DetectionsTab from "./secret-detection/DetectionsTab";
 import DocumentsTab from "./secret-detection/DocumentsTab";
@@ -23,6 +24,10 @@ import {
   PassiveTab,
   isPassiveTab,
 } from "./secret-detection/shared";
+import ModuleShell from "./attack/ModuleShell";
+import { getAttackModule } from "./attack/registry";
+
+const module = getAttackModule("secrets")!;
 
 export default function SecretDetection() {
   const { selected } = useProject();
@@ -84,16 +89,10 @@ export default function SecretDetection() {
   if (!selected) return <NoProjectNotice />;
 
   return (
-    <div>
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-xl font-semibold">Secret Detection</h1>
-          <p className="text-sm text-base-content/60 mt-0.5">
-            Passive secret &amp; disclosure scan of captured client-side bodies.
-            Zero outbound validation.
-          </p>
-        </div>
-        <ModuleHelp title="How Secret Detection works">
+    <ModuleShell
+      module={module}
+      help={
+        <>
           <p>
             After proxy capture, source-like response bodies (HTML, JS, JSON,
             CSS, source maps) are scanned for secrets and infrastructure
@@ -124,9 +123,9 @@ export default function SecretDetection() {
             <span className="mono">attack_type=passive_secret</span>). Manage
             lifecycle on the Findings page.
           </p>
-        </ModuleHelp>
-      </div>
-
+        </>
+      }
+    >
       <div role="tablist" className="tabs tabs-boxed w-fit mb-6 flex-wrap">
         {PASSIVE_TABS.map(({ id, label }) => (
           <button
@@ -163,6 +162,6 @@ export default function SecretDetection() {
           onRefresh={load}
         />
       )}
-    </div>
+    </ModuleShell>
   );
 }

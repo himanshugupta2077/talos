@@ -81,6 +81,7 @@ from talos.input_validation.phases import (
 from talos.input_validation.candidates import (
     enrich_profile_capabilities_and_candidates,
     format_candidates_lines,
+    load_and_merge_cross_flow,
 )
 from talos.input_validation.profile import (
     MAX_ATTEMPTS,
@@ -272,9 +273,20 @@ def synthesize_param_profile(
     _fill_transforms(profile, completed)
     _fill_parser_and_normalization(profile, completed, probe_summaries)
     _fill_reflection(profile, completed, probe_summaries)
+    # PR5: merge cross-flow / stored reflection links after probe same-request
+    # fill. score=False — capabilities + candidates run once in _fill_capabilities.
+    # Final upsert (below) persists the merged profile (persist=False here).
+    if param_uuid:
+        load_and_merge_cross_flow(
+            path,
+            profile,
+            persist=False,
+            score=False,
+        )
     _fill_surface(profile, identity, completed)
     _fill_attempts(profile, probe_summaries)
-    # Module 11: central capabilities + attack candidate scores.
+    # Module 11: central capabilities + attack candidate scores
+    # (sees stored_reflection / top-level reflected from merge above).
     _fill_capabilities(profile, identity["location"])
     _fill_synthesis_meta(profile, probes, probe_summaries)
 
@@ -658,13 +670,65 @@ def format_profile_summary_lines(profile: dict[str, Any] | None) -> list[str]:
 
     refl = obs.get("reflection") or {}
     if refl:
+        modes = refl.get("modes") or []
+        mode_txt = ",".join(modes) if modes else "(none)"
         lines.append(
             f"Reflection: state={refl.get('state', 'unknown')}  "
             f"confidence={refl.get('confidence', 0)}  "
             f"uncertainty={refl.get('uncertainty', '?')}  "
             f"encoding={refl.get('encoding') or '(none)'}  "
-            f"contexts={','.join(refl.get('contexts') or []) or '(none)'}"
+            f"contexts={','.join(refl.get('contexts') or []) or '(none)'}  "
+            f"modes={mode_txt}"
         )
+        same_req = (
+            refl.get("same_request")
+            if isinstance(refl.get("same_request"), dict)
+            else None
+        )
+        if same_req:
+            lines.append(
+                f"  same_request: state={same_req.get('state', 'unknown')}  "
+                f"confidence={same_req.get('confidence', 0)}  "
+                f"contexts={','.join(same_req.get('contexts') or []) or '(none)'}"
+            )
+        cross = (
+            refl.get("cross_flow")
+            if isinstance(refl.get("cross_flow"), dict)
+            else None
+        )
+        if cross:
+            link_n = cross.get("link_count")
+            if link_n is None:
+                sinks_tmp = cross.get("sinks") or []
+                link_n = len(sinks_tmp) if isinstance(sinks_tmp, list) else 0
+            lines.append(
+                f"  cross_flow: state={cross.get('state', 'unknown')}  "
+                f"confidence={cross.get('confidence', 0)}  "
+                f"link_count={link_n}  "
+                f"contexts={','.join(cross.get('contexts') or []) or '(none)'}"
+            )
+            sinks = cross.get("sinks") or []
+            if isinstance(sinks, list):
+                for sink in sinks[:5]:
+                    if not isinstance(sink, dict):
+                        continue
+                    reason = sink.get("reason") or ""
+                    if not reason:
+                        method = sink.get("sink_method") or sink.get("method") or ""
+                        path = sink.get("sink_path") or sink.get("path") or ""
+                        ctx = sink.get("sink_context") or sink.get("context") or "other"
+                        enc = sink.get("encoding") or "raw"
+                        reason = (
+                            f"reflected on {method} {path}".strip()
+                            + f" ({ctx}, {enc})"
+                        )
+                    lines.append(f"    sink: {reason}")
+                if len(sinks) > 5:
+                    lines.append(f"    … +{len(sinks) - 5} more sink(s)")
+            lines.append(
+                "  (stored/cross-page reflection is data-flow prioritization "
+                "evidence — not confirmed XSS)"
+            )
 
     acceptance = obs.get("acceptance") or {}
     classes = acceptance.get("classes") or {}

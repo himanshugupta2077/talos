@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 44
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -107,10 +107,13 @@ CREATE TABLE IF NOT EXISTS parameters (
     seen_count           INTEGER NOT NULL DEFAULT 1,          -- number of flows where observed
     appears_in_roles     TEXT    NOT NULL DEFAULT '[]',       -- JSON array of role UUIDs
     appears_in_modules   TEXT    NOT NULL DEFAULT '[]',       -- JSON array of module UUIDs
-    is_reflected         INTEGER NOT NULL DEFAULT 0,          -- boolean: value seen in response
-    reflection_count     INTEGER NOT NULL DEFAULT 0,          -- how many times reflected
+    is_reflected         INTEGER NOT NULL DEFAULT 0,          -- boolean: value seen in response (same-flow only)
+    reflection_count     INTEGER NOT NULL DEFAULT 0,          -- how many times reflected (same-flow)
     reflection_locations TEXT    NOT NULL DEFAULT '[]',       -- JSON array: html|json|xml|javascript|other
     reflection_encoding  TEXT    NOT NULL DEFAULT '[]',       -- JSON array: raw|html_encoded|url_encoded|other
+    cross_flow_reflected       INTEGER NOT NULL DEFAULT 0,    -- boolean: value seen in another flow's response
+    cross_flow_reflection_count INTEGER NOT NULL DEFAULT 0,   -- count of cross-flow reflection observations
+    cross_flow_sink_endpoints  TEXT    NOT NULL DEFAULT '[]', -- JSON array of sink endpoint ids
     UNIQUE (endpoint_id, name, location)
 );
 
@@ -988,7 +991,370 @@ CREATE TABLE IF NOT EXISTS passive_scan_config (
     store_suppressed_detections  INTEGER NOT NULL DEFAULT 0,
     queue_maxsize                INTEGER NOT NULL DEFAULT 500,
     max_scan_time_ms             INTEGER NOT NULL DEFAULT 0
-);"""
+);
+
+-- ------------------------------------------------------------------ --
+-- value_index: distinctive request values for cross-flow reflection   --
+-- (schema v42). One row per (host, value_hash, source_param_uuid).    --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS value_index (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    host                 TEXT    NOT NULL,              -- endpoints.host canonical origin
+    value_hash           TEXT    NOT NULL,              -- sha256(value_norm)[:32]
+    value_match          TEXT    NOT NULL,              -- FULL value for matching (len <= 256)
+    value_len            INTEGER NOT NULL,
+    source_flow_id       TEXT    NOT NULL,              -- most recent observing flow
+    first_source_flow_id TEXT    NOT NULL,              -- first flow that introduced this triple
+    source_endpoint_id   TEXT,
+    source_param_id      TEXT,
+    source_param_uuid    TEXT    NOT NULL,
+    source_param_name    TEXT    NOT NULL,
+    source_location      TEXT    NOT NULL,
+    source_method        TEXT    NOT NULL DEFAULT '',
+    source_path          TEXT    NOT NULL DEFAULT '',   -- normalized_path
+    source_role_id       TEXT,
+    first_seen_at        TEXT    NOT NULL,
+    last_seen_at         TEXT    NOT NULL,
+    hit_count            INTEGER NOT NULL DEFAULT 1,
+    is_canary            INTEGER NOT NULL DEFAULT 0,
+    expires_at           TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_value_index_host_hash_param
+    ON value_index (host, value_hash, source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_host_hash
+    ON value_index (host, value_hash);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_param
+    ON value_index (source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_expires
+    ON value_index (expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_host_canary_seen
+    ON value_index (host, is_canary DESC, last_seen_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- cross_flow_reflections: source→sink value reflection links (v42)  --
+-- Does not store full secret values — only hash + length.             --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS cross_flow_reflections (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    host                 TEXT    NOT NULL,
+
+    source_flow_id       TEXT    NOT NULL,
+    first_source_flow_id TEXT    NOT NULL,
+    source_endpoint_id   TEXT,
+    source_param_id      TEXT,
+    source_param_uuid    TEXT    NOT NULL,
+    source_param_name    TEXT    NOT NULL,
+    source_location      TEXT    NOT NULL,
+    source_method        TEXT    NOT NULL DEFAULT '',
+    source_path          TEXT    NOT NULL DEFAULT '',
+    source_role_id       TEXT,
+
+    sink_flow_id         TEXT    NOT NULL,
+    sink_endpoint_id     TEXT,
+    sink_method          TEXT    NOT NULL DEFAULT '',
+    sink_path            TEXT    NOT NULL DEFAULT '',
+    sink_content_type    TEXT    NOT NULL DEFAULT '',
+    sink_context         TEXT    NOT NULL DEFAULT 'other',
+    sink_role_id         TEXT,
+    encoding             TEXT    NOT NULL DEFAULT 'raw',
+    transforms           TEXT    NOT NULL DEFAULT '[]',
+
+    value_hash           TEXT    NOT NULL,
+    value_len            INTEGER NOT NULL DEFAULT 0,
+    match_kind           TEXT    NOT NULL DEFAULT 'exact',
+    confidence           INTEGER NOT NULL DEFAULT 70,
+    detection_mode       TEXT    NOT NULL DEFAULT 'passive',
+    first_seen_at        TEXT    NOT NULL,
+    last_seen_at         TEXT    NOT NULL,
+    observation_count    INTEGER NOT NULL DEFAULT 1,
+
+    UNIQUE (source_param_uuid, sink_flow_id, value_hash, encoding)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_param
+    ON cross_flow_reflections (source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_host_seen
+    ON cross_flow_reflections (host, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_sink_ep
+    ON cross_flow_reflections (sink_endpoint_id);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_source_ep
+    ON cross_flow_reflections (source_endpoint_id);
+
+-- ------------------------------------------------------------------ --
+-- Error Intelligence (schema v43)                                     --
+-- error_clusters: unique fingerprint per project                      --
+-- error_observations: each flow / attack sighting                     --
+-- error_intel_config: single-row defaults (id='default')              --
+-- Intelligence only — no finding_id / auto Findings in v1.             --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS error_clusters (
+    id                   TEXT    PRIMARY KEY,   -- UUID
+    project_id           TEXT    NOT NULL,
+    fingerprint          TEXT    NOT NULL,     -- SHA-256 of identity tuple
+    category             TEXT    NOT NULL,     -- stack_trace|database|…
+    severity             TEXT    NOT NULL,     -- low|medium|high|critical
+    language             TEXT    NOT NULL DEFAULT 'unknown',
+    framework            TEXT,
+    database             TEXT,
+    server               TEXT,
+    exception_type       TEXT,
+    message_norm         TEXT,
+    technologies_json    TEXT    NOT NULL DEFAULT '[]',
+    has_stack_trace      INTEGER NOT NULL DEFAULT 0,
+    has_path_leak        INTEGER NOT NULL DEFAULT 0,
+    has_internal_host    INTEGER NOT NULL DEFAULT 0,
+    has_version_leak     INTEGER NOT NULL DEFAULT 0,
+    confidence           INTEGER NOT NULL DEFAULT 0,
+    evidence_snippet     TEXT,
+    first_seen           TEXT,
+    last_seen            TEXT,
+    observation_count    INTEGER NOT NULL DEFAULT 0,
+    scanner_version      TEXT,
+    UNIQUE (project_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_clusters_project_seen
+    ON error_clusters (project_id, last_seen DESC);
+
+CREATE INDEX IF NOT EXISTS idx_error_clusters_category_sev
+    ON error_clusters (project_id, category, severity);
+
+CREATE INDEX IF NOT EXISTS idx_error_clusters_exception
+    ON error_clusters (project_id, exception_type);
+
+CREATE TABLE IF NOT EXISTS error_observations (
+    id                   TEXT    PRIMARY KEY,   -- UUID
+    error_id             TEXT    NOT NULL REFERENCES error_clusters(id),
+    flow_id              TEXT,
+    endpoint_id          TEXT,
+    parameter_uuid       TEXT,
+    parameter_name       TEXT,
+    attack_type          TEXT    NOT NULL DEFAULT 'unknown',
+    payload_redacted     TEXT,
+    response_status      INTEGER,
+    response_length      INTEGER,
+    duration_ms          REAL,
+    response_hash        TEXT,
+    artifacts_json       TEXT    NOT NULL DEFAULT '[]',
+    detectors_json       TEXT    NOT NULL DEFAULT '[]',
+    observed_at          TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_observations_error
+    ON error_observations (error_id, observed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_error_observations_flow
+    ON error_observations (flow_id);
+
+CREATE INDEX IF NOT EXISTS idx_error_observations_endpoint
+    ON error_observations (endpoint_id);
+
+CREATE INDEX IF NOT EXISTS idx_error_observations_param
+    ON error_observations (parameter_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_error_observations_attack
+    ON error_observations (attack_type);
+
+-- One observation per flow when flow_id is set (NULL/empty allowed multi).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_error_observations_flow_unique
+    ON error_observations (flow_id)
+    WHERE flow_id IS NOT NULL AND flow_id != '';
+
+CREATE TABLE IF NOT EXISTS error_intel_config (
+    id                           TEXT    PRIMARY KEY DEFAULT 'default',
+    enabled                      INTEGER NOT NULL DEFAULT 1,
+    store_generic_http_errors    INTEGER NOT NULL DEFAULT 0,
+    max_body_scan                INTEGER NOT NULL DEFAULT 512000,
+    gate_sniff_bytes             INTEGER NOT NULL DEFAULT 16384,
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500,
+    evidence_snippet_max         INTEGER NOT NULL DEFAULT 4096,
+    error_header_names_json      TEXT    NOT NULL DEFAULT '[]'
+);
+"""
+
+# Shared CREATE statements for cross-flow reflection tables (schema v42).
+# Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync
+# with the CREATE TABLE blocks embedded in _DDL above.
+_CROSS_FLOW_SCHEMA_V42_DDL = """
+CREATE TABLE IF NOT EXISTS value_index (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    host                 TEXT    NOT NULL,
+    value_hash           TEXT    NOT NULL,
+    value_match          TEXT    NOT NULL,
+    value_len            INTEGER NOT NULL,
+    source_flow_id       TEXT    NOT NULL,
+    first_source_flow_id TEXT    NOT NULL,
+    source_endpoint_id   TEXT,
+    source_param_id      TEXT,
+    source_param_uuid    TEXT    NOT NULL,
+    source_param_name    TEXT    NOT NULL,
+    source_location      TEXT    NOT NULL,
+    source_method        TEXT    NOT NULL DEFAULT '',
+    source_path          TEXT    NOT NULL DEFAULT '',
+    source_role_id       TEXT,
+    first_seen_at        TEXT    NOT NULL,
+    last_seen_at         TEXT    NOT NULL,
+    hit_count            INTEGER NOT NULL DEFAULT 1,
+    is_canary            INTEGER NOT NULL DEFAULT 0,
+    expires_at           TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_value_index_host_hash_param
+    ON value_index (host, value_hash, source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_host_hash
+    ON value_index (host, value_hash);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_param
+    ON value_index (source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_expires
+    ON value_index (expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_value_index_host_canary_seen
+    ON value_index (host, is_canary DESC, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS cross_flow_reflections (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    host                 TEXT    NOT NULL,
+
+    source_flow_id       TEXT    NOT NULL,
+    first_source_flow_id TEXT    NOT NULL,
+    source_endpoint_id   TEXT,
+    source_param_id      TEXT,
+    source_param_uuid    TEXT    NOT NULL,
+    source_param_name    TEXT    NOT NULL,
+    source_location      TEXT    NOT NULL,
+    source_method        TEXT    NOT NULL DEFAULT '',
+    source_path          TEXT    NOT NULL DEFAULT '',
+    source_role_id       TEXT,
+
+    sink_flow_id         TEXT    NOT NULL,
+    sink_endpoint_id     TEXT,
+    sink_method          TEXT    NOT NULL DEFAULT '',
+    sink_path            TEXT    NOT NULL DEFAULT '',
+    sink_content_type    TEXT    NOT NULL DEFAULT '',
+    sink_context         TEXT    NOT NULL DEFAULT 'other',
+    sink_role_id         TEXT,
+    encoding             TEXT    NOT NULL DEFAULT 'raw',
+    transforms           TEXT    NOT NULL DEFAULT '[]',
+
+    value_hash           TEXT    NOT NULL,
+    value_len            INTEGER NOT NULL DEFAULT 0,
+    match_kind           TEXT    NOT NULL DEFAULT 'exact',
+    confidence           INTEGER NOT NULL DEFAULT 70,
+    detection_mode       TEXT    NOT NULL DEFAULT 'passive',
+    first_seen_at        TEXT    NOT NULL,
+    last_seen_at         TEXT    NOT NULL,
+    observation_count    INTEGER NOT NULL DEFAULT 1,
+
+    UNIQUE (source_param_uuid, sink_flow_id, value_hash, encoding)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_param
+    ON cross_flow_reflections (source_param_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_host_seen
+    ON cross_flow_reflections (host, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_sink_ep
+    ON cross_flow_reflections (sink_endpoint_id);
+
+CREATE INDEX IF NOT EXISTS idx_cross_flow_reflections_source_ep
+    ON cross_flow_reflections (source_endpoint_id);
+"""
+
+# Shared CREATE statements for Error Intelligence (schema v43).
+# Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync
+# with the CREATE TABLE blocks embedded in _DDL above.
+_ERROR_INTEL_SCHEMA_V43_DDL = """
+CREATE TABLE IF NOT EXISTS error_clusters (
+    id                   TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
+    fingerprint          TEXT    NOT NULL,
+    category             TEXT    NOT NULL,
+    severity             TEXT    NOT NULL,
+    language             TEXT    NOT NULL DEFAULT 'unknown',
+    framework            TEXT,
+    database             TEXT,
+    server               TEXT,
+    exception_type       TEXT,
+    message_norm         TEXT,
+    technologies_json    TEXT    NOT NULL DEFAULT '[]',
+    has_stack_trace      INTEGER NOT NULL DEFAULT 0,
+    has_path_leak        INTEGER NOT NULL DEFAULT 0,
+    has_internal_host    INTEGER NOT NULL DEFAULT 0,
+    has_version_leak     INTEGER NOT NULL DEFAULT 0,
+    confidence           INTEGER NOT NULL DEFAULT 0,
+    evidence_snippet     TEXT,
+    first_seen           TEXT,
+    last_seen            TEXT,
+    observation_count    INTEGER NOT NULL DEFAULT 0,
+    scanner_version      TEXT,
+    UNIQUE (project_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_error_clusters_project_seen
+    ON error_clusters (project_id, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_error_clusters_category_sev
+    ON error_clusters (project_id, category, severity);
+CREATE INDEX IF NOT EXISTS idx_error_clusters_exception
+    ON error_clusters (project_id, exception_type);
+
+CREATE TABLE IF NOT EXISTS error_observations (
+    id                   TEXT    PRIMARY KEY,
+    error_id             TEXT    NOT NULL REFERENCES error_clusters(id),
+    flow_id              TEXT,
+    endpoint_id          TEXT,
+    parameter_uuid       TEXT,
+    parameter_name       TEXT,
+    attack_type          TEXT    NOT NULL DEFAULT 'unknown',
+    payload_redacted     TEXT,
+    response_status      INTEGER,
+    response_length      INTEGER,
+    duration_ms          REAL,
+    response_hash        TEXT,
+    artifacts_json       TEXT    NOT NULL DEFAULT '[]',
+    detectors_json       TEXT    NOT NULL DEFAULT '[]',
+    observed_at          TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_error_observations_error
+    ON error_observations (error_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_error_observations_flow
+    ON error_observations (flow_id);
+CREATE INDEX IF NOT EXISTS idx_error_observations_endpoint
+    ON error_observations (endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_error_observations_param
+    ON error_observations (parameter_uuid);
+CREATE INDEX IF NOT EXISTS idx_error_observations_attack
+    ON error_observations (attack_type);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_error_observations_flow_unique
+    ON error_observations (flow_id)
+    WHERE flow_id IS NOT NULL AND flow_id != '';
+
+CREATE TABLE IF NOT EXISTS error_intel_config (
+    id                           TEXT    PRIMARY KEY DEFAULT 'default',
+    enabled                      INTEGER NOT NULL DEFAULT 1,
+    store_generic_http_errors    INTEGER NOT NULL DEFAULT 0,
+    max_body_scan                INTEGER NOT NULL DEFAULT 512000,
+    gate_sniff_bytes             INTEGER NOT NULL DEFAULT 16384,
+    queue_maxsize                INTEGER NOT NULL DEFAULT 500,
+    evidence_snippet_max         INTEGER NOT NULL DEFAULT 4096,
+    error_header_names_json      TEXT    NOT NULL DEFAULT '[]'
+);
+"""
 
 # Shared CREATE statements for Passive Source Intelligence (schema v39).
 # Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync
@@ -1132,6 +1498,10 @@ def init_project_db(db_path: Path) -> None:
         # Seed passive scan defaults (single-row config). Safe on every init.
         conn.execute(
             "INSERT OR IGNORE INTO passive_scan_config (id) VALUES ('default')"
+        )
+        # Seed Error Intelligence defaults (schema v43). Safe on every init.
+        conn.execute(
+            "INSERT OR IGNORE INTO error_intel_config (id) VALUES ('default')"
         )
         conn.commit()
 
@@ -1444,6 +1814,32 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
                 "ADD COLUMN max_scan_time_ms INTEGER NOT NULL DEFAULT 0"
             )
 
+    if from_version < 42:
+        # Cross-page / stored reflection: value index + source→sink links.
+        conn.executescript(_CROSS_FLOW_SCHEMA_V42_DDL)
+        existing_params = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(parameters)").fetchall()
+        }
+        if existing_params:
+            cross_flow_cols = [
+                ("cross_flow_reflected", "INTEGER NOT NULL DEFAULT 0"),
+                ("cross_flow_reflection_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("cross_flow_sink_endpoints", "TEXT NOT NULL DEFAULT '[]'"),
+            ]
+            for col_name, col_def in cross_flow_cols:
+                if col_name not in existing_params:
+                    conn.execute(
+                        f"ALTER TABLE parameters ADD COLUMN {col_name} {col_def}"
+                    )
+
+    if from_version < 43:
+        # Error Intelligence — clusters, observations, config (no Findings).
+        conn.executescript(_ERROR_INTEL_SCHEMA_V43_DDL)
+        conn.execute(
+            "INSERT OR IGNORE INTO error_intel_config (id) VALUES ('default')"
+        )
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -1562,6 +1958,12 @@ def migrate_project_db(db_path: Path) -> None:
         v39 → v40: source_documents.parent_document_id + logical_source_name
                    for source-map virtual documents (Phase 10).
         v40 → v41: passive_scan_config.max_scan_time_ms (soft scan budget).
+        v41 → v42: Cross-flow reflection: value_index, cross_flow_reflections,
+                   parameters.cross_flow_reflected / _count / _sink_endpoints.
+        v42 → v43: Error Intelligence: error_clusters, error_observations,
+                   error_intel_config (intelligence only; no Findings).
+        v43 → v44: error_observations unique index on flow_id (non-null) so
+                   concurrent stores cannot double-count the same flow.
     """
     if not db_path.exists():
         return
@@ -2664,6 +3066,87 @@ def migrate_project_db(db_path: Path) -> None:
                     "ADD COLUMN max_scan_time_ms INTEGER NOT NULL DEFAULT 0"
                 )
             conn.execute("UPDATE schema_version SET version = 41")
+            conn.commit()
+
+        if current < 42:
+            # Cross-page / stored reflection value index + link table.
+            conn.executescript(_CROSS_FLOW_SCHEMA_V42_DDL)
+            existing_params = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(parameters)").fetchall()
+            }
+            if existing_params:
+                cross_flow_cols = [
+                    ("cross_flow_reflected", "INTEGER NOT NULL DEFAULT 0"),
+                    ("cross_flow_reflection_count", "INTEGER NOT NULL DEFAULT 0"),
+                    ("cross_flow_sink_endpoints", "TEXT NOT NULL DEFAULT '[]'"),
+                ]
+                for col_name, col_def in cross_flow_cols:
+                    if col_name not in existing_params:
+                        conn.execute(
+                            f"ALTER TABLE parameters ADD COLUMN {col_name} {col_def}"
+                        )
+            conn.execute("UPDATE schema_version SET version = 42")
+            conn.commit()
+
+        if current < 43:
+            # Error Intelligence — clusters, observations, config (no Findings).
+            conn.executescript(_ERROR_INTEL_SCHEMA_V43_DDL)
+            conn.execute(
+                "INSERT OR IGNORE INTO error_intel_config (id) VALUES ('default')"
+            )
+            conn.execute("UPDATE schema_version SET version = 43")
+            conn.commit()
+
+        if current < 44:
+            # One observation per non-null flow_id. Dedup any pre-existing
+            # duplicates (keep newest by observed_at) before creating the
+            # unique index so migration cannot fail on dirty data.
+            existing_tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "error_observations" in existing_tables:
+                # Keep the newest observation per flow_id; drop the rest.
+                conn.execute(
+                    """
+                    DELETE FROM error_observations
+                    WHERE flow_id IS NOT NULL
+                      AND flow_id != ''
+                      AND EXISTS (
+                        SELECT 1 FROM error_observations o2
+                        WHERE o2.flow_id = error_observations.flow_id
+                          AND (
+                            o2.observed_at > error_observations.observed_at
+                            OR (
+                              o2.observed_at = error_observations.observed_at
+                              AND o2.id > error_observations.id
+                            )
+                          )
+                      )
+                    """
+                )
+                # Re-derive cluster observation_count after dedup.
+                conn.execute(
+                    """
+                    UPDATE error_clusters
+                    SET observation_count = (
+                        SELECT COUNT(*) FROM error_observations o
+                        WHERE o.error_id = error_clusters.id
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                        idx_error_observations_flow_unique
+                    ON error_observations (flow_id)
+                    WHERE flow_id IS NOT NULL AND flow_id != ''
+                    """
+                )
+            conn.execute("UPDATE schema_version SET version = 44")
             conn.commit()
 
 

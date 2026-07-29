@@ -6,6 +6,7 @@ import { NoProjectNotice, Section, UuidChip } from "../../components/Common";
 import CapabilityBadges from "./components/CapabilityBadges";
 import StateChip from "./components/StateChip";
 import type { ProfileRow } from "./shared";
+import { IV_BASE } from "./shared";
 
 export default function IvEndpointIntel() {
   const { endpointId = "" } = useParams();
@@ -34,7 +35,7 @@ export default function IvEndpointIntel() {
     <div>
       <button
         className="btn btn-ghost btn-xs mb-1"
-        onClick={() => navigate("/input-validation?tab=multi-level")}
+        onClick={() => navigate(`${IV_BASE}?tab=multi-level`)}
       >
         ← Multi-level
       </button>
@@ -87,8 +88,7 @@ export default function IvEndpointIntel() {
                   className="cursor-pointer hover:bg-base-200"
                   onClick={() =>
                     p.param_uuid &&
-                    navigate(`/input-validation/params/${p.param_uuid}`)
-                  }
+                    navigate(`${IV_BASE}/params/${p.param_uuid}`)                  }
                 >
                   <td className="mono">{p.name}</td>
                   <td>{p.location}</td>

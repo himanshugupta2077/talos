@@ -185,10 +185,23 @@ talos
     │           Infer semantic types: uuid | jwt | email | objectid | url | ip |
     │                                 hash | timestamp | filename | boolean |
     │                                 integer | float | array | string
-    │           Passive Reflection Intelligence:
-    │             detect if param values appear in response (raw / html_encoded / url_encoded)
+    │           Passive Reflection Intelligence (same-flow):
+    │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)
     │             record: is_reflected, reflection_count, reflection_locations, reflection_encoding
+    │           Cross-flow / stored reflection (parameter_intel.cross_flow; default off):
+    │             on_flow_committed after proxy param upsert **and** after insert_replayed_flow
+    │             index distinctive request values → value_index; scan later response bodies
+    │             persist source→sink links → cross_flow_reflections; flags on parameters.cross_flow_*
+    │             merge into IV profiles as observed.reflection.cross_flow + stored_reflection capability
     │           Track: seen_count, appears_in_roles, appears_in_modules
+    │
+    ├── PASSIVE SOURCE INTELLIGENCE (source-like bodies → secrets / disclosure)
+    │       is_source_candidate? → PassiveScanQueue → SourceScanWorker
+    │
+    ├── ERROR INTELLIGENCE (error-like responses — Phases 0–9 landed; Findings deferred)
+    │       is_error_candidate? → ErrorIntelQueue → ErrorIntelWorker
+    │       package: talos.error_intel — clusters + observations; no Findings in v1
+    │       Control Panel: Testing hub Passive module + Flow Errors tab (`/testing/errors`)
     │
     ├── compute auto-priority score
     ├── update endpoint qualification (sets qualified/baseline_flow_id/qualification_reason)
@@ -199,7 +212,8 @@ talos
     SQLite:
         - flows
         - endpoints
-        - parameters  (v25: semantic_type, reflection intel, role/module tracking)
+        - parameters  (v25: semantic_type, same-flow reflection; v42: cross_flow_*)
+        - value_index / cross_flow_reflections  (v42: stored / cross-page value links)
         - roles/modules
         - access_map
         - endpoint_policy  (priority + exclusion + qualification + baseline_flow_id)
@@ -337,28 +351,37 @@ talos
     │
     ├── Capabilities & attack candidates (Module 11):
     │     talos.input_validation.capabilities — derive flags from observed
+    │       reflective_input (same-request or cross-flow); stored_reflection
     │     talos.input_validation.candidates — score prioritization candidates
-    │       {attack, score 0–100, confidence, reasons[], evidence_flow_ids[]}
+    │       {attack, score 0–100, confidence, reasons[], evidence_flow_ids[],
+    │        reflection_modes?, stored_reflection?}
     │       xss | sqli | open_redirect | ssrf | hpp | header_injection |
     │       path_traversal | mass_assignment
+    │       XSS: stored/cross-page evidence satisfies reflection gate (+12 stored)
+    │     Cross-flow merge: load_and_merge_cross_flow after _fill_reflection
+    │       (synthesize) and on list_candidates / get_param_intelligence
     │     Stable consumer API (attack modules — no probe-table parsing):
     │       get_param_intelligence(db, param_id|uuid)
     │       list_candidates(db, attack=…, min_score=…, host=…)
     │     synthesize writes capabilities + candidates onto param profiles
-    │     CLI show/export/candidates display; scores ≠ confirmed vulns
+    │     CLI show/export/candidates/reflections; scores ≠ confirmed vulns
     │
     ├── Operator experience (Module 12 — CLI / control panel / docs truth):
     │     CLI: run --budget, config --probe-strategy|--budget, status
     │       (requests_used, confidence buckets, pending plan actions),
-    │       candidates [--attack|--min-score|--host], synthesize,
-    │       show profile, export parameter|host [--format markdown|json]
+    │       candidates [--attack|--min-score|--host|--capability], synthesize,
+    │       reflections (raw cross-flow links), show (dual reflection modes),
+    │       export parameter|host [--format markdown|json]
     │       with schema_version / engine_version / capabilities / candidates
+    │     Config: parameter_intel.cross_flow.enabled (default false) via
+    │       talos config set … --project
     │     Control panel: /api/input-validation/status (full), /profiles,
     │       /profiles/{uuid}, /candidates; Input Validation page surfaces
-    │       budget, confidence, candidates table, profiles (read-level)
+    │       budget, confidence, candidates + stored sinks, profiles (read-level)
     │     Docs: architecture, about-talos, cli-cheat-sheet, updates.md
     │     Migration note: pre-revamp probes → synthesize; stale → clear-cache
     │     Canaries: multiprobe prefix TL + high-entropy hex (not weak __TL__)
+    │     value_reflection hooks: FlowWorker + insert_replayed_flow
     │
     ├── Phase 1: Baseline     — capture normal endpoint behaviour
     ├── Phase 1b: Multiprobe  — one multi-signal request (canary + taxonomy samples)
@@ -925,6 +948,409 @@ Future hook: `endpoint_extraction_candidate` metadata on route aggregates for JS
 
 ---
 
+## Error Intelligence
+
+Passive, zero-HTTP subsystem that captures **what an error contains**
+(exception types, stack frames, DB vendors, path/host/version leaks),
+fingerprints identical errors across the whole project, and links them to
+flows / endpoints / parameters / attacks.
+
+Package: **`talos.error_intel`**. UI label: **Error Intelligence**. Optional
+product synonym **Improper Error Management** only if/when a Findings bridge
+exists later — **not** a Finding subtype in v1.
+
+### Why this is not Input Validation
+
+| Layer | Job |
+|-------|-----|
+| **Input Validation** | How did the app treat a mutation? (`accepted` / `rejected` / …) |
+| **Error Intelligence** | What did the rejection *contain*? (`SQLSyntaxErrorException`, path leak, …) |
+
+IV keeps a thin `ResponseFingerprint.error_signature` (status + error JSON keys
++ HTML hints) for outcome classification. Error Intelligence **owns** rich error
+parsing so IV does not become a second secret/stack-trace scanner.
+
+Reuse (do not fork):
+
+- Body volatility stripping ideas from `talos.input_validation.fingerprint.normalize_body_for_hash` (Phase 4)
+- Passive Source Intelligence pipeline shape (`talos.passive`: gate → queue → worker → detectors → score → store)
+- Cross-flow hook style from `talos.projects.value_reflection.on_flow_committed`
+- Infrastructure detector path/traceback concepts — **lift, do not bolt** Error Intelligence onto secret scanning (secrets run on source-like bodies; errors run on **error-like** HTTP responses)
+
+### Architectural placement
+
+```
+Traffic / Replay / Attacks
+        │
+        ▼
+   Flow committed (body on flows table)
+        │
+        ├── Parameter Intelligence
+        ├── Reflection Intelligence (value_reflection)
+        ├── Passive Source Intelligence (source-like only)
+        └── Error Intelligence  ← error-like responses
+```
+
+Sibling of `talos.passive` and `talos.input_validation`, not a submodule of either.
+
+### Decision log (Phase 0 — design freeze)
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Package name | `talos.error_intel` | Clear product/UI name; avoids vague `talos.errors` |
+| Worker | Dedicated `ErrorIntelWorker` (Phase 6) | Different candidate gate and all-response scope from `SourceScanWorker` |
+| Job execution | Own queue/worker — **not** `ReplayScheduler` | Same rationale as passive: local analysis only |
+| Source of truth | `flows.response_body` after commit | Job carries `flow_id`; worker reloads body (no multi-MB bodies twice) |
+| Generic 4xx storage | Default **off** (`store_generic_http_errors=false`) | Avoid flood of boring 400/404 chrome; gate may still enqueue |
+| 404 default pages | Only stored if `store_generic_http_errors=true` | Low-value noise by default |
+| Scanner versioning | `ERROR_INTEL_VERSION` | Rescan invalidation like `SCANNER_VERSION` |
+| Intelligence vs findings | Clusters + observations only in v1 | No auto Findings; optional “Improper Error Management” bridge is a later product decision |
+| Status scope | Not status≥400 alone | Stack / exception JSON on 200 is in scope |
+| Attack modules | Never parse errors | Call `observe_error(...)` or rely on post-flow enqueue |
+| IV coupling | Independent write path | Optional later: link `error_id` on rejected IV profiles by `flow_id` |
+| Determinism | Rules + extractors + scoring | No LLM in v1 |
+| Fingerprint inputs | Status **bucket** + category + language + exception + frames/message hashes | Endpoint / param / attack_type live on **observations** only |
+| Secrets in stacks | Cap snippets; redact in list UIs | Source-like error bodies may still feed passive secret scan separately |
+
+### Locked invariants
+
+1. **Passive only** — no extra HTTP; only observe stored responses.
+2. **Intelligence first** — tables store errors + sightings; **no auto Findings in v1**.
+3. **Capture-safe** — cheap gate in FlowWorker; heavy parse on a dedicated queue/worker. Never block `TalosAddon.response()` or expensive work inside `_persist_db`.
+4. **Body source of truth** — job carries `flow_id`; worker reloads `flows.response_body`.
+5. **Not status≥400 alone** — stack traces / exception classes on 200 are in scope.
+6. **Attack modules never parse errors** — they call `observe_error(...)` (or automatic post-flow hook).
+7. **IV remains independent** — optional later link; IV does not reimplement classifiers.
+8. **Deterministic** — rules + extractors + scoring; no LLM in v1.
+
+### Target pipeline
+
+```
+Response (flow)
+      │
+      ▼
+┌─────────────────┐
+│  Cheap Gate     │  is_error_candidate?
+│  (status / CT / │  empty body? image? pure static asset?
+│   body sniff)   │
+└────────┬────────┘
+         │ no → ignore
+         ▼
+┌─────────────────┐
+│  Error Detector │  multi-stage pattern + structure match
+│  Orchestrator   │  (Phase 2+)
+└────────┬────────┘
+         │ no hits → ignore (or generic http if configured)
+         ▼
+┌─────────────────┐
+│  Extractors     │  exception type, frames, paths, hosts, versions
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  Normalize      │  strip UUIDs, timestamps, line numbers, req IDs
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  Fingerprint    │  → error_id (cluster identity)
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  Classify       │  category + language + tech + severity
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  Store          │  error_clusters + error_observations
+└─────────────────┘
+```
+
+### Phase status
+
+| Phase | Scope | Status |
+|-------|--------|--------|
+| 0 | Design freeze + this decision log + package skeleton | **Done** |
+| 1 | `is_error_candidate` gate | **Done** |
+| 2 | Detector stages A–G + `ErrorDetectorOrchestrator` | **Done** |
+| 3 | Classification model (category + severity scoring) | **Done** |
+| 4 | Normalize + fingerprint | **Done** |
+| 5 | Schema v43 + `error_clusters` / `error_observations` / config CRUD | **Done** |
+| 6 | Queue + `ErrorIntelWorker` + FlowWorker / replay hooks | **Done** |
+| 7 | Parameter / attack context enrich + rollups | **Done** |
+| 8 | CLI (`talos error-intel …`) | **Done** |
+| 9 | Control Panel (Passive workspace + Flow Errors tab) | **Done** (UI under Testing hub `/testing/errors`; API `/api/error-intel/*`; intelligence only) |
+| 10 | Docs + golden fixtures expansion | In progress (partial with 0–9) |
+
+### Public entrypoint
+
+```python
+observe_error(
+    *,
+    project_id: str,
+    flow_id: str,
+    response_status: int | None = None,
+    response_headers: dict | str | None = None,
+    response_body: str | bytes | None = None,  # or load from DB
+    endpoint_id: str | None = None,
+    parameter_uuid: str | None = None,
+    parameter_name: str | None = None,
+    attack_type: str | None = None,   # proxy | replay | iv | bac | unauth | …
+    payload: str | None = None,       # redacted/truncated in storage
+    duration_ms: float | None = None,
+) -> list[ErrorObservation]
+```
+
+Production path prefers **enqueue-by-flow_id** (Phase 6) so callers never pass
+multi-MB bodies twice. Contextual enrich:
+
+```python
+attach_error_context(project_id=…, flow_id=…, parameter_uuid=…, attack_type=…, payload=…)
+```
+
+### Phase 1 — Candidate gate
+
+| Module | Role |
+|--------|------|
+| `talos.error_intel.candidate` | `is_error_candidate(...)` — cheap pure gate for FlowWorker / observe |
+| `talos.error_intel.observe` | `observe_error` / `attach_error_context` public API (Phase 0–2: gate only, returns `[]`) |
+
+**Positive signals (any may pass):**
+
+| Signal | Examples |
+|--------|----------|
+| Status 4xx/5xx | 400, 401, 403, 404, 422, 500, 502, 503 with scannable body |
+| Error-shaped JSON on 2xx | keys `error`, `exception`, `fault`, `trace`, `stack` (+ variants) |
+| Stack / exception markers | `Traceback`, `SQLException`, `at com.`, `System.*Exception`, `panic:`, `SQLSTATE` |
+| Framework error chrome | Whitelabel Error Page, Werkzeug Debugger, ASP.NET, Laravel whoops |
+| Server error headers | `X-Exception`, `X-Error-Message`, … (config list) |
+
+**Hard reject:** empty body without error headers; `image/*` / media / PDF / WASM
+(CT or magic); pure static asset path when body is deferred and CT empty.
+
+**Not required:** source-like Content-Type (JSON APIs and plain-text 500s are primary).
+
+**Store policy is not the gate:** a generic nginx 404 HTML may pass the gate;
+`store_generic_http_errors` (default false) decides later whether Stage G
+clusters are persisted.
+
+### Phase 2 — Detector stages (landed)
+
+Pure multi-stage pipeline: decoded text (+ status/headers) → `ErrorDetectResult`.
+
+| Stage | Module | Family | Notes |
+|-------|--------|--------|-------|
+| A | `detectors/stack_trace.py` | `stack_trace` | Java, .NET, Python, JS, PHP, Ruby, Go, Rust |
+| B | `detectors/database.py` | `database` | SQLSTATE, ORA, MySQL, PG, SQLite, JDBC, Mongo/Redis, Hibernate |
+| C | `detectors/framework.py` | `framework` | Spring Whitelabel, Werkzeug, Django, Laravel, Rails, ASP.NET, Tomcat/Jetty, Next/Express |
+| D | `detectors/infrastructure.py` | `infrastructure` | Cloudflare, AWS, Azure, GCP, Envoy, k8s, nginx, Apache, IIS |
+| E | `detectors/security.py` | `security` | JWT, OAuth, CSRF, CORS, AuthN/Z (+ `WWW-Authenticate`) |
+| F | `detectors/disclosure.py` | `disclosure` | Paths / private IPs / internal hosts / versions as **artifacts** (+ optional matches); runs on 5xx or after strong hit |
+| G | `detectors/http_generic.py` | `http_generic` | JSON/problem+json/HTML title/plain status — only if **no strong hit** and (`store_generic_http_errors` **or** 5xx) |
+
+**Public API:**
+
+```python
+from talos.error_intel import detect_errors, ErrorDetectorOrchestrator
+
+result = detect_errors(body, status_code=500, content_type="text/plain")
+result.primary          # highest-specificity RawErrorMatch
+result.matches          # all stage hits
+result.artifacts        # ErrorArtifact list (path/host/version/…)
+result.strong_hit       # True when stack/db/framework/security/infra fired
+result.detectors_fired  # ordered unique detector_id list
+```
+
+`ERROR_INTEL_VERSION = 0.3.0` (Phases 3–5: classify + normalize/fingerprint + schema v43).
+
+### Phase 3 — Classification (landed)
+
+| Module | Role |
+|--------|------|
+| `talos.error_intel.classify` | `classify_error` / `classify_from_detect` → `ClassifiedError` |
+
+Maps primary `RawErrorMatch` + sibling matches + disclosure artifacts to:
+
+- **category** (closed set below)
+- **severity** via additive score → bands (`SCORE_*_MIN` in constants)
+- **language / framework / database / server / technologies[]**
+- **flags**: `has_stack_trace`, `has_path_leak`, `has_internal_host`, `has_version_leak`
+- **confidence** 0–100 from detector seed (+ multi-family agree boost)
+- **message_norm**, **evidence_snippet**, **fingerprint** (via Phase 4)
+
+Severity rubric (deterministic):
+
+| Severity | Examples |
+|----------|----------|
+| **Low** | Generic 400 validation; nginx default 404 |
+| **Medium** | Structured validation codes; 5xx without stack; auth text |
+| **High** | Stack trace; SQL exception; path leak; framework debug page |
+| **Critical** | Stack + SQL/query fragment; credentials/connection string; private key / cloud keys |
+
+### Phase 4 — Normalize + fingerprint (landed)
+
+| Module | Role |
+|--------|------|
+| `talos.error_intel.normalize` | Strip UUIDs, timestamps, line numbers, req IDs, path user segments |
+| `talos.error_intel.fingerprint` | Identity tuple → SHA-256 fingerprint |
+
+```text
+fingerprint = SHA256(
+  status_bucket | category | language | exception_type |
+  framework | database | normalized_stack_hash |
+  normalized_message_hash | server_bucket
+)
+```
+
+**Not** in fingerprint: `endpoint_id`, `parameter_*`, `attack_type` (observations only).
+
+Stack example:
+
+```
+at com.example.UserService.load(UserService.java:142)
+→ at com.example.UserService.load(UserService.java:<LINE>)
+```
+
+Same Hibernate / SQL exception with different line numbers or request IDs → **one** fingerprint.
+
+### Category taxonomy (v1 closed set)
+
+| category | Meaning |
+|----------|---------|
+| `stack_trace` | Language stack / exception dump |
+| `database` | SQL / NoSQL engine error |
+| `framework` | Framework-branded error page / handler |
+| `infrastructure` | Proxy / CDN / ingress / web server |
+| `security` | AuthN/Z, JWT, CSRF, CORS, policy |
+| `validation` | App validation / 4xx business error |
+| `http` | Generic status-only / empty-ish error |
+| `disclosure` | Paths/hosts/versions without full stack |
+| `unknown` | Matched gate but weak classification |
+
+### Schema v43 — Phase 5 (landed)
+
+| Table | Role |
+|-------|------|
+| `error_clusters` | Unique fingerprint per project; category, severity, tech flags, evidence snippet |
+| `error_observations` | Sightings: flow / endpoint / parameter / attack_type / artifacts |
+| `error_intel_config` | Single-row defaults (`enabled`, `store_generic_http_errors`, scan caps) |
+
+No `finding_id` column in v1.
+
+**CRUD:** `talos.error_intel.db` — `upsert_error_cluster`, `insert_error_observation`,
+`store_classified_error`, `get_config` / `update_config`, list helpers.
+
+```python
+from talos.error_intel import classify_error
+from talos.error_intel.db import store_classified_error
+
+classified = classify_error(body, status_code=500)
+cluster, obs, created = store_classified_error(
+    db_path, project_id, classified,
+    flow_id=…, attack_type="iv", parameter_uuid=…,
+)
+```
+
+`observe_error(...)` (Phase 6+) enqueues or processes inline when `db_path`
+is provided; returns stored `ErrorObservation` list. Prefer enqueue-by-flow_id
+on the capture path (`maybe_enqueue_error_scan`).
+
+### Phase 6 — Queue, worker, hooks (landed)
+
+| Module | Role |
+|--------|------|
+| `talos.error_intel.queue` | Bounded `ErrorIntelQueue` — drop-on-full, never blocks capture |
+| `talos.error_intel.worker` | `ErrorIntelWorker` + `maybe_enqueue_error_scan` + `process_error_scan_sync` |
+| FlowWorker | Post-commit cheap gate → enqueue (`inline_if_no_queue=False`) |
+| Proxy addon | Starts `ErrorIntelWorker` after FlowWorker (mirrors passive) |
+| `insert_replayed_flow` | Post-commit inline scan (scheduler / IV / BAC / unauth; no daemon queue) |
+| `observe_error` | Public API: enqueue or process + store |
+| `attach_error_context` | Parameter / attack enrich without re-parse |
+
+**Attack context** is inferred from `flows.source` + `flow_meta` automatically:
+
+| Signal | `attack_type` |
+|--------|----------------|
+| `source=proxy_capture` | `proxy` |
+| `flow_meta.generated_by=input_validation` | `iv` |
+| `flow_meta.attack_module=bac` | `bac` |
+| `flow_meta.attack_module=unauth` | `unauth` |
+| other `auto_replay` / `manual_replay` / `manual_send` / `ai_send` | `replay` |
+
+IV `parameter_uuid` / `parameter_name` / `payload` come from `flow_meta` on the
+replay row. `attach_error_context` fills empty observation fields after the fact.
+
+**Dedup:** one observation set per `flow_id` unless `force` / CLI `--force`.
+Same fingerprint across proxy + IV + BAC → one cluster, many observations.
+
+### Phase 7 — Parameter / endpoint rollups (landed)
+
+| Helper | Role |
+|--------|------|
+| `parameter_error_rollup` | Clusters linked to parameters (counts per param×error) |
+| `endpoint_error_rollup` | Top clusters per endpoint |
+
+Schema already carried `parameter_uuid` on observations (Phase 5); no new tables.
+
+### Phase 8 — CLI (landed)
+
+```text
+talos error-intel status
+talos error-intel config show|set
+talos error-intel errors list|show
+talos error-intel observations list [--endpoint|--parameter|--attack|--flow]
+talos error-intel rescan --all|--flow ID [--force]
+talos error-intel rollup parameter|endpoint
+```
+
+Aliases: `error_intel`, `errors`. Scanner version: `ERROR_INTEL_VERSION = 0.4.0`.
+
+### Package layout (current)
+
+```text
+talos/error_intel/
+  __init__.py           # public exports
+  constants.py          # categories, severities, ERROR_INTEL_VERSION
+  models.py             # ErrorCluster, ErrorObservation, RawErrorMatch, job
+  config.py             # ErrorIntelConfig
+  candidate.py          # is_error_candidate (Phase 1)
+  observe.py            # observe_error / attach_error_context
+  normalize.py          # Phase 4 — error-specific normalization
+  fingerprint.py        # Phase 4 — identity tuple → fingerprint
+  classify.py           # Phase 3 — category + severity + ClassifiedError
+  db.py                 # Phase 5–7 — cluster / observation / config / rollups
+  queue.py              # Phase 6 — ErrorIntelQueue
+  worker.py             # Phase 6 — ErrorIntelWorker + maybe_enqueue_error_scan
+  cli.py                # Phase 8 — talos error-intel …
+  detectors/
+    base.py             # decode, snippet, build_raw_error_match
+    stack_trace.py      # Stage A
+    database.py         # Stage B
+    framework.py        # Stage C
+    infrastructure.py   # Stage D
+    security.py         # Stage E
+    disclosure.py       # Stage F
+    http_generic.py     # Stage G
+    orchestrator.py     # detect_errors / ErrorDetectResult
+```
+
+### Relationship to existing code
+
+| Existing | Relationship |
+|----------|----------------|
+| IV `error_signature` | Keep for IV outcomes; optional `extras["error_ids"]` later |
+| `classify_outcome` → `rejected` | Unchanged; does not store stack content |
+| `talos.passive` InfrastructureDetector | Owns source-like bodies; Error Intel owns error-shaped HTTP responses. Share pure regex helpers if useful; clear ownership: error *event* vs secret *material* |
+| Findings | v1: none |
+
+### Success criteria (detection quality — target)
+
+1. Same Java `SQLSyntaxErrorException` from proxy + IV + BAC → one `error_id`, three observations with distinct `attack_type`.
+2. `400 Invalid email` is not high-severity (and may not store by default).
+3. Line numbers / request IDs alone do not fork clusters.
+4. Stack on HTTP 200 JSON still detected.
+5. IV `rejected` works with Error Intelligence disabled.
+6. Capture path never fails if error worker crashes (non-fatal enqueue).
+
+---
+
 ## Access Model (Two-Layer)
 
 Talos separates **observed client behaviour** from **intended server enforcement**.
@@ -1387,7 +1813,8 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.send.request_diff` | Pure request-side comparison (method/url/headers/cookies/body); richer response payload helpers | DB, network |
 | `talos.send.engine` | Async send-once / repeat / parallel / redo via same httpx/proxy/timeout stack as replay; INSERT new flow (`manual_send`/`ai_send`); lineage + session/note/profile in `flow_meta`; diff vs root capture | Exact-replay semantics, capture mutation |
 | `talos.send.db` | History filters (root/session/parent/source); note UPDATE on send rows only; export HTTP files; tree lines | Schema migration beyond flows |
-| `talos.send.cli` | Full Repeater CLI (from/edit/once/redo/dup/show/export/history/tree/diff/note); immediate send (no scheduler); `--format json` for AI | Control panel UI |
+| `talos.send.cli` | Full Repeater CLI (from/edit/once/redo/dup/show/export/history/tree/diff/note); immediate send (no scheduler); `--format json` for AI | — |
+| Control Panel Repeater | `/repeater` + `/api/send/*` workbench; mutations call `talos.send.engine` in-process (CLI exception); drafts in browser localStorage | Redesign of send semantics |
 | `talos.scheduler.scheduler.ReplayScheduler` | Daemon thread: consume pending jobs from scheduler_jobs; annotation pre-check (logout/dangerous); per-cycle config reload; configurable jitter; mark job done/failed/skipped (`endpoint_excluded` / `endpoint_not_qualified` → skipped); trigger `create_finding_from_verdict` after BAC and auth outcomes | Direct execution (delegates to replay/auth engines), CLI parsing |
 | `talos.projects.bac.candidates` | BAC candidate generation from access matrix × testable endpoints (2xx flows); mutually exclusive endpoint/module scope + attacker role filter | Write path, attack execution |
 | `talos.projects.bac.engine` | BAC attack execution; re-checks Endpoint Policy before HTTP; outbound httpx uses project upstream via `get_upstream_url` | Candidate generation, CLI |
@@ -1623,7 +2050,7 @@ Shutdown:
   registry.json                   index of all projects + active state + constraints
   projects/
     <id>/
-      talos.db                    structured data (SCHEMA_VERSION 40)
+      talos.db                    structured data (SCHEMA_VERSION 43)
       archive/
         flows-YYYY-MM-DD.jsonl    raw capture archive
       headers_drop.txt            capture header filter template copy
@@ -1702,18 +2129,23 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 40` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 43` (`talos.projects.db`). WAL mode and foreign keys are enabled.
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
-parent/logical columns for source maps and HTML extractors.
+parent/logical columns for source maps and HTML extractors; v42 adds
+cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
+`parameters.cross_flow_*`); v43 adds Error Intelligence (`error_clusters`,
+`error_observations`, `error_intel_config`).
 
 ### Tables (current)
 
 | Table | Purpose |
 |-------|---------|
-| `schema_version` | Single version integer (40) |
+| `schema_version` | Single version integer (43) |
 | `flows` | Captured and replayed HTTP exchanges |
 | `endpoints` | Deduplicated method + **canonical origin** (`host` column) + normalized_path |
-| `parameters` | Endpoint Intelligence parameter inventory |
+| `parameters` | Endpoint Intelligence parameter inventory (v42: `cross_flow_*` flags) |
+| `value_index` | Distinctive request values for cross-flow matching (v42) |
+| `cross_flow_reflections` | Source→sink stored-reflection links (v42) |
 | `sessions` | Session identity placeholders |
 | `roles` / `modules` | Access-model identities and feature areas |
 | `access_map` | client_allowed + server_expected per role×module |
@@ -1754,6 +2186,12 @@ parent/logical columns for source maps and HTML extractors.
 | `finding_evidence` | Evidence references |
 | `finding_timeline` | Immutable event log |
 | `finding_groups` / `finding_group_members` | User groups |
+| `source_documents` / `source_occurrences` / `passive_detections` | Passive Source Intelligence |
+| `passive_scan_config` | Passive scan defaults |
+| `value_index` / `cross_flow_reflections` | Cross-flow / stored reflection (v42) |
+| `error_clusters` | Error Intelligence unique fingerprints (v43) |
+| `error_observations` | Error sightings: flow / param / attack_type (v43) |
+| `error_intel_config` | Error Intelligence defaults (v43) |
 
 ### Scheduler job types
 
@@ -1792,7 +2230,7 @@ source, and limit). Ordered by `captured_at` DESC for chronological discovery.
 
 ### Migrations
 
-`migrate_project_db(db_path)` upgrades older databases in place up to version 35. Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
+`migrate_project_db(db_path)` upgrades older databases in place up to `SCHEMA_VERSION` (43). Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
 
 Notable milestones:
 
@@ -1804,6 +2242,9 @@ Notable milestones:
 | v24–v30 | IV tables, qualification, providers, manual session, scheduler_state |
 | v31–v34 | Findings, unauth_results, proxy_config, finding relationships (PRIMARY/LINKED) |
 | v35 | IV multi-level profiles: `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles` |
+| v39–v41 | Passive Source Intelligence tables + source-map columns + scan budget |
+| v42 | Cross-flow reflection: `value_index`, `cross_flow_reflections` |
+| v43 | Error Intelligence: `error_clusters`, `error_observations`, `error_intel_config` |
 
 ---
 
@@ -1925,8 +2366,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Replay scheduler — daemon thread started alongside proxy; priority queue with dedup and overflow guards; annotation pre-checks; configurable jitter; `talos scheduler` CLI for status/config/enqueue/clear (`talos.scheduler`)
 - [x] Out-of-scope domain list — per-project block list that overrides the scope allow-list; enforced at proxy capture and worker persist; CLI via `talos project outscope` (`talos.projects.outscope`, `talos.projects.outscope_cli`)
 - [x] HTTP Manipulation Engine — single declarative rule engine for request **and** response modification; replaces former `capture.header_rules` + `request_mutations` / `talos mutation`; rules in layered `http.rules` (global + project concatenated, priority-sorted); match conditions (host/path/method/status/headers/endpoint/context); actions (headers, cookies, query, URL/method, body, status, delay/drop/abort); master switch `http.enabled`; CLI `talos config http` (list/show/create/delete/enable/disable/set-priority/set-match/add-action/export/import/…); proxy `request()` + `response()` hooks (`talos.configuration.http_engine`, `talos.configuration.http_rules`, `talos.configuration.http_cli`)
-- [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
-- [x] Broken Access Control (BAC) — access-matrix candidate generation, eight attack modules + parser-confuse, decision filter, scoped `--endpoint`/`--module NAME|UUID`/`--role NAME|UUID`, results in `bac_results`, findings on `POSSIBLE_BAC` (`talos.projects.bac`)
+- [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip BYPASS→SECURE (`talos attack unauth filter apply [--dry-run] [--force]`, `talos.projects.unauth.reclassify`); exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
+- [x] Broken Access Control (BAC) — access-matrix candidate generation, eight attack modules + parser-confuse, decision filter, scoped `--endpoint`/`--module NAME|UUID`/`--role NAME|UUID`, results in `bac_results`, findings on `POSSIBLE_BAC`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip POSSIBLE_BAC→SECURE (`talos attack bac filter apply [--dry-run] [--force]`, `talos.projects.bac.reclassify`) (`talos.projects.bac`)
 - [x] Input Validation Engine — eight analysis phases via scheduler job types `iv_*`; disabled by default; parameter cache tables; CLI `talos input-validation` (`talos.input_validation`)
 - [x] IV Evidence Foundations (Module 1) — `ResponseFingerprint` + `compare_fingerprints` + `classify_outcome` + `IV_PROFILE_SCHEMA_VERSION` / `profile_envelope`; pure helpers only (no change to default probe matrix / request volume); tests in `tests/test_iv_fingerprint.py` (`talos.input_validation.fingerprint`, `talos.input_validation.outcomes`)
 - [x] IV Profile Data Model (Module 2) — versioned parameter/endpoint/app profiles (`observed`/`inferred`, confidence, `tested`, `attempts`, capabilities, candidates placeholders); tables `iv_param_profiles` / `iv_endpoint_profiles` / `iv_app_profiles` (schema v35); CRUD in `talos.input_validation.db`; pure shape helpers in `talos.input_validation.profile`; no probe-volume change; tests in `tests/test_iv_profile.py`

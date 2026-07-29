@@ -57,6 +57,21 @@ BUILTIN_DEFAULTS: dict = {
         "enabled": True,
         "rules": [],
     },
+    "parameter_intel": {
+        "cross_flow": {
+            "enabled": False,  # master: index + scan (bake-in off until validated)
+            "feed_iv": True,  # merge into profiles / scoring when enabled
+            "active_sink_probe": False,  # P2
+            "value_index_ttl_hours": 72,
+            "value_index_max_per_host": 50_000,
+            "value_index_max_sources_per_value": 8,
+            "min_value_len": 6,
+            "scan_hot_set_k": 2000,
+            "scan_time_budget_ms": 20,  # hard abort; fail open
+            "max_body_scan_bytes": 2_000_000,
+            "canary_ttl_hours": 24,
+        },
+    },
 }
 
 # Top-level sections exposed as first-class CLI resources.
@@ -66,6 +81,7 @@ CONFIG_SECTIONS: tuple[str, ...] = (
     "scheduler",
     "attack",
     "http",
+    "parameter_intel",
 )
 
 # Dot-path keys that operators commonly get/set (for help and validation).
@@ -81,6 +97,17 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "attack.unauth_auto_run",
     "http.enabled",
     "http.rules",
+    "parameter_intel.cross_flow.enabled",
+    "parameter_intel.cross_flow.feed_iv",
+    "parameter_intel.cross_flow.active_sink_probe",
+    "parameter_intel.cross_flow.value_index_ttl_hours",
+    "parameter_intel.cross_flow.value_index_max_per_host",
+    "parameter_intel.cross_flow.value_index_max_sources_per_value",
+    "parameter_intel.cross_flow.min_value_len",
+    "parameter_intel.cross_flow.scan_hot_set_k",
+    "parameter_intel.cross_flow.scan_time_budget_ms",
+    "parameter_intel.cross_flow.max_body_scan_bytes",
+    "parameter_intel.cross_flow.canary_ttl_hours",
 )
 
 # Machine-readable presentation + type metadata for Control Panel / automation.
@@ -108,6 +135,13 @@ SECTION_META: dict[str, dict] = {
         "description": (
             "HTTP Manipulation Engine — declarative rules that modify "
             "requests and responses (headers, body, status, cookies, URL)."
+        ),
+    },
+    "parameter_intel": {
+        "label": "Parameter intelligence",
+        "description": (
+            "Passive parameter intelligence, including cross-flow / stored "
+            "reflection indexing for XSS prioritization evidence."
         ),
     },
 }
@@ -213,6 +247,122 @@ SETTING_SCHEMA: tuple[dict, ...] = (
             "Rules from global and project layers are concatenated and sorted "
             "by priority. Empty by default — no traffic is modified."
         ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.enabled",
+        "section": "parameter_intel",
+        "label": "Cross-flow reflection enabled",
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Master switch for passive cross-flow value indexing and sink "
+            "scanning. Off by default until bake-in validates false-positive rate."
+        ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.feed_iv",
+        "section": "parameter_intel",
+        "label": "Feed IV profiles",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When true, merge cross-flow reflection links into IV parameter "
+            "profiles and candidate scoring."
+        ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.active_sink_probe",
+        "section": "parameter_intel",
+        "label": "Active sink probes",
+        "type": "bool",
+        "default": False,
+        "description": (
+            "P2 (unimplemented): when true, would enqueue limited scheduler "
+            "GETs of likely sinks after multiprobe canaries when same-request "
+            "reflection is absent. Setting this has no runtime effect yet."
+        ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.value_index_ttl_hours",
+        "section": "parameter_intel",
+        "label": "Value index TTL (hours)",
+        "type": "int",
+        "default": 72,
+        "minimum": 1,
+        "unit": "hours",
+        "description": "How long organic indexed values remain matchable.",
+    },
+    {
+        "key": "parameter_intel.cross_flow.value_index_max_per_host",
+        "section": "parameter_intel",
+        "label": "Max index rows per host",
+        "type": "int",
+        "default": 50_000,
+        "minimum": 100,
+        "description": "Hard cap on value_index rows per host; prune oldest non-canaries.",
+    },
+    {
+        "key": "parameter_intel.cross_flow.value_index_max_sources_per_value",
+        "section": "parameter_intel",
+        "label": "Max sources per value",
+        "type": "int",
+        "default": 8,
+        "minimum": 1,
+        "description": (
+            "Skip indexing a new source param when this many distinct sources "
+            "already index the same value hash on the host."
+        ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.min_value_len",
+        "section": "parameter_intel",
+        "label": "Min value length",
+        "type": "int",
+        "default": 6,
+        "minimum": 4,
+        "description": (
+            "Floor length for non-canary index eligibility (Rules B/C/D). "
+            "Canaries (Rule A) are exempt. Hard rejects still apply."
+        ),
+    },
+    {
+        "key": "parameter_intel.cross_flow.scan_hot_set_k",
+        "section": "parameter_intel",
+        "label": "Hot-set size K",
+        "type": "int",
+        "default": 2000,
+        "minimum": 1,
+        "description": "Max value_index rows scanned per response (canaries first).",
+    },
+    {
+        "key": "parameter_intel.cross_flow.scan_time_budget_ms",
+        "section": "parameter_intel",
+        "label": "Scan time budget (ms)",
+        "type": "int",
+        "default": 20,
+        "minimum": 1,
+        "unit": "milliseconds",
+        "description": "Hard abort mid-scan; fail open (skip remaining candidates).",
+    },
+    {
+        "key": "parameter_intel.cross_flow.max_body_scan_bytes",
+        "section": "parameter_intel",
+        "label": "Max body scan bytes",
+        "type": "int",
+        "default": 2_000_000,
+        "minimum": 1024,
+        "unit": "bytes",
+        "description": "Decode/scan cap for response bodies during sink matching.",
+    },
+    {
+        "key": "parameter_intel.cross_flow.canary_ttl_hours",
+        "section": "parameter_intel",
+        "label": "Canary TTL (hours)",
+        "type": "int",
+        "default": 24,
+        "minimum": 1,
+        "unit": "hours",
+        "description": "TTL for multiprobe canary rows in value_index.",
     },
 )
 

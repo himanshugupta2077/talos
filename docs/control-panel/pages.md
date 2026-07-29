@@ -15,6 +15,7 @@ flowchart TD
     AU[Auth]
   end
   subgraph capture [Capture]
+    RP[Repeater /repeater]
     E[Endpoints]
     ED[EndpointDetail]
     F[Flows]
@@ -23,14 +24,16 @@ flowchart TD
   end
   subgraph testing [Testing]
     S[Scheduler]
-    AT[Attack]
+    AT[Attack hub]
+    ATU[Unauth]
+    ATB[BAC]
+    SI[SecretDetection]
+    SID[DetectionDetail]
+    SIDO[DocumentDetail]
     IV[InputValidation]
     IVP[IvParamDetail]
     IVE[IvEndpointIntel]
     IVH[IvHostIntel]
-    SI[SecretDetection]
-    SID[DetectionDetail]
-    SIDO[DocumentDetail]
   end
   subgraph configuration [Configuration]
     TC[TalosConfig /talos-config]
@@ -43,11 +46,14 @@ flowchart TD
   E --> ED
   F --> FD
   FI --> FID
+  AT --> ATU
+  AT --> ATB
+  AT --> SI
+  SI --> SID
+  SI --> SIDO
   IV --> IVP
   IV --> IVE
   IV --> IVH
-  SI --> SID
-  SI --> SIDO
   SID -.-> FI
   SID -.-> F
   SIDO -.-> F
@@ -177,18 +183,34 @@ Related workspaces keep contextual controls but link here for ownership: Proxy, 
 
 ## Access Model (`/access`)
 
-**File:** `Access.tsx`
+**File:** `Access.tsx` (+ `pages/access/*`)
+
+Operator workspace for the two-layer access map (client_allowed + server_expected). Full CLI parity with `talos access *`; roles/modules lifecycle stays on `/roles-modules`.
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | Edit client_allowed / server_expected matrix; run coverage & signals reports |
-| **Backend** | `GET /api/access/matrix`; `POST /client`, `/server`; `POST /coverage`, `/signals` |
-| **CLI** | `access client/server set`, `access coverage`, `access signals` |
-| **DB** | CROSS JOIN roles×modules + access_map |
-| **Components** | Matrix table, value badges, inline selects |
-| **Workflow** | Requires ≥1 role and module; set cell values; optional CLI report output in panel |
+| **Purpose** | Edit role×module matrix; bulk fill; structured coverage & BAC/IDOR signals |
+| **Route query** | `?tab=matrix\|coverage\|signals` (default `matrix`) |
+| **Backend** | `GET /api/access/matrix` (enriched with flow/endpoint counts); `POST /client`, `/server`, `/client/unset`, `/server/unset`, `/delete` (`--force`); `POST /bulk`; `GET /coverage`, `GET /signals` (structured); `POST /coverage\|signals` CLI parity |
+| **CLI** | `access client\|server set\|unset`, `access delete --force`, `access show` (matrix), `access coverage`, `access signals` |
+| **DB** | CROSS JOIN roles×modules + access_map; optional flows aggregation; analysis via `talos.projects.access` helpers |
+| **Components** | Tab shell, stats strip, `MatrixTab` (sticky grid, cell drawer, multi-select bulk bar), `CoverageTab`, `SignalsTab`, `ModuleHelp`, `SideDrawer`, `ConfirmButton` |
+| **Workflow** | Create roles/modules → capture with active pair → fill matrix (click cell or bulk row/column) → Coverage for expected vs observed → Signals for investigation → BAC |
 
-Unset/delete access endpoints exist on the backend but are not exposed on this page UI.
+### Tabs
+
+| Tab | Role |
+|-----|------|
+| **Matrix** | Proper Client / Server chips per cell (full ALLOW/DENY/UNKNOWN labels); **click cycles** values (`— → ALLOW → DENY → UNKNOWN → —`, Shift+click reverse); filters; multi-select / row-column bulk CLI apply; hide global; traffic counts under cell |
+| **Coverage** | Structured table from `get_access_coverage`; status chips (observed / gap / unexpected / boundary) are UI helpers only |
+| **Signals** | Four sections matching CLI: multi-role endpoints, server DENY endpoints, client DENY+flows, ALLOW without flows; links to endpoint detail / BAC / matrix filters |
+
+### Smart helpers (derived, not new Talos rules)
+
+- **BAC-ready modules** — ≥1 role ALLOW and ≥1 DENY/UNKNOWN on same module (non-global)
+- **Mismatch** — both layers set and differ
+- **Mirror C→S** — bulk copy client_allowed → server_expected for selection
+- Values are **never** auto-inferred from traffic
 
 ---
 
@@ -304,9 +326,9 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules names); LEFT JOINs to `replay_diffs`, `bac_results`, `unauth_results`, `finding_evidence` when flags requested |
 | **Components** | `DataTable` (boxed cells, column resize + reorder + show/hide; Actions header visible), `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
-| **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ replay/enqueue/export/assign login/control/copy helpers |
+| **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ **Send to Repeater** / replay/enqueue/export/assign login/control/copy helpers |
 
-**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. Table: click a column header to sort; drag header edges to resize; Columns menu for show/hide; layout persisted under `storageKey=flows`. Actions ⋮ opens a dropdown (`dropdown-open` + overflow-visible) that is not clipped by the table panel.
+**Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. **Send to Repeater** opens Mode 2 edit-and-send; **Replay** remains exact Mode 1. Table: click a column header to sort; drag header edges to resize; Columns menu for show/hide; layout persisted under `storageKey=flows`. Actions ⋮ opens a dropdown (`dropdown-open` + overflow-visible) that is not clipped by the table panel.
 
 **Signals (only when Core has rows):** ↺ replay · Δ diff · A attack · F finding evidence · trunc body truncated.
 
@@ -314,7 +336,10 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 
 ## Flow detail (`/flows/:flowId`)
 
-**File:** `FlowDetail.tsx` + `pages/flows/*` + `components/http/*`
+**File:** `FlowDetail.tsx` + `pages/flows/*` + `components/http/*`  
+**Tabs:** Overview · HTTP · Replay · Timeline · **Errors** · Debug  
+**Deep-link:** `/flows/:flowId#section=errors` (hash allowlist); optional `?tab=errors`  
+**Errors tab:** Eager `GET /api/error-intel/by-flow/{id}` for badge + `FlowErrorsPanel` (historical obs when scanner disabled; rescan CTA when empty + enabled)
 
 | Aspect | Detail |
 |--------|--------|
@@ -322,8 +347,8 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **Backend** | `GET /api/flows/{id}` (flow + derived + results + endpoint_policy), `/related`, `/intelligence`, filter-aware `/adjacent`, replay, enqueue, export |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules), replay_diffs, bac/unauth/auth_test results, finding_evidence, scheduler_jobs, endpoint_policy, role_auth_* / session_health_* |
-| **Components** | `HttpInspector` (Pretty default + Raw; request also Params / JWT), `HttpPrettyView`, `FlowActions` bottom panels, health chips, summary + `flow_meta`, Replay/Timeline/Debug tabs, Session/Related panels, `ModuleHelp` |
-| **Workflow** | Header + health chips → full-width tabs (Overview / HTTP / Replay / Timeline / Debug) → operator panels below (Actions / Session / Attack / Related); keyboard ←/→ adjacent, Esc → list |
+| **Components** | `HttpInspector` (Pretty default + Raw; request also Params / JWT), `HttpPrettyView`, `FlowActions` bottom panels, health chips, summary + `flow_meta`, Replay/Timeline/Errors/Debug tabs, `FlowErrorsPanel`, Session/Related panels, `ModuleHelp` |
+| **Workflow** | Header + health chips → full-width tabs (Overview / HTTP / Replay / Timeline / Errors / Debug) → operator panels below (Actions / Session / Attack / Related / Source scan); keyboard ←/→ adjacent, Esc → list |
 
 **Layout:** Full-width main workspace; Request | Response side-by-side under the HTTP tab; Actions / Session / Attack results / Related in a grid **below** the workspace (not a sticky right rail). Footer prev/next.
 
@@ -332,6 +357,32 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 **Honesty:** “Replay modified / different role” is disabled until Core exposes it; deep-link to Attack for BAC/unauth. Diff chips are Core summary rows (status/length/verdict), not a UI reimplementation of the verdict engine.
 
 **Operator guidance:** `How Flow inspection works` covers Pretty/Raw, bottom panels, replay behavior, and keyboard shortcuts.
+
+**Send vs Replay:** `FlowActions` leads with **Send to Repeater** (Mode 2 → `/repeater?flow=`) and keeps **Replay now** / Enqueue (Mode 1 exact). Replay tab may link **Open send history in Repeater** when child sources include `manual_send` / `ai_send`.
+
+---
+
+## Repeater (`/repeater`)
+
+**File:** `Repeater.tsx` + `pages/repeater/*` + `components/http/HttpRequestEditor.tsx`  
+**Deep-link:** `/repeater?flow={uuid}`  
+**Nav:** Capture group (first-class tool, not under Testing Modules)
+
+| Aspect | Detail |
+|--------|--------|
+| **Purpose** | Burp-style Mode 2 workbench: edit request → send → compare with lineage |
+| **Backend** | `/api/send/*` (draft, once/redo/dup/note/export, history/tree/show/diff) |
+| **Engine** | In-process `talos.send.engine` (CLI exception; see `cli-integration.md`) |
+| **DB** | No new tables — `flows` + `flow_meta` on each send (`source ∈ {manual_send, ai_send}`) |
+| **Components** | Multi-tab strip, `HttpRequestEditor`, read-only `HttpInspector` response, history list/tree, multi-send dialog, `ModuleHelp`, keyboard shortcuts |
+| **Client state** | `localStorage` key `talos-cp-repeater-v1:{projectId}` (drafts only; multi-window conflict toast) |
+| **Workflow** | Open from Flow/Endpoint/Finding or flow UUID → edit (pretty/raw/params/json) → **Send** (`Ctrl+Enter`) → response + history; parent stays after send; **Fork** advances parent |
+
+**Send path contract:** UI always serializes the full editor document to raw HTTP bytes (`serializeDraft` → `edit.raw_base64`). Structured modes are editing conveniences only.
+
+**Operator guidance:** page-level `How the Repeater works`; inline CL auto toggle, logout disable, multi-send caps (N≤50, parallel conc ≤10, no mid-flight cancel).
+
+**Entry points:** Flow Actions, Endpoint header (baseline_flow_id → first flows[] row) + per-flow Repeater column, Finding evidence `original_flow` / `replay_flow` only.
 
 ---
 
@@ -382,71 +433,128 @@ Priority presets: Lowest(10) … Highest(100); advanced mode exposes numeric pri
 
 ---
 
-## Attack (`/attack`)
+## Testing modules (`/testing`)
 
-**File:** `Attack.tsx` (tabs: BAC, Unauth)
+**Files:** `Attack.tsx` (hub re-export) + `pages/attack/*` + module workspaces
+
+Testing is a **hub + module** workspace (sidebar label **Modules** under the **Testing** group). Modules are classified as **Passive** (observe captured traffic only) or **Active** (outbound requests / auth mutation). Canonical URLs are under `/testing/*`; `/attack/*` permanently redirects.
+
+| Route | Purpose |
+|-------|---------|
+| `/testing` | Hub — Passive \| Active columns, class filter, search, compact KPI cards |
+| `/testing/unauth` | Unauthenticated Execution (Active) — full unauth workspace |
+| `/testing/bac` | BAC (Active) — Overview / Run / Results / Filter workspace |
+| `/testing/input-validation` | Input Validation (Active) — characterization workspace |
+| `/testing/input-validation/params/:id` | Parameter dossier |
+| `/testing/input-validation/endpoints/:id` | Endpoint intelligence dossier |
+| `/testing/input-validation/hosts/:host` | Host intelligence dossier |
+| `/testing/secrets` | Secret Detection (Passive) — full passive scan workspace |
+| `/testing/secrets/detections/:id` | Detection dossier |
+| `/testing/secrets/documents/:id` | Document dossier |
+| `/testing/errors` | Error Intelligence (Passive) — cluster triage workspace |
+| `/testing/errors/:id` | Error cluster dossier |
+| `/attack/*` | Legacy redirect → `/testing/*` |
+| `/secret-detection/*` | Legacy redirect → `/testing/secrets/*` |
+| `/input-validation/*` | Legacy redirect → `/testing/input-validation/*` |
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | Launch unauth/BAC attacks; view results and decision-filter helpers |
-| **Backend** | `/api/attack/unauth/*`, `/api/attack/bac/*`; unauth auto-run from configuration `attack.unauth_auto_run` |
-| **CLI** | `attack unauth run`, `attack bac <technique>`, filter init/show/validate; auto-run via layered config |
-| **DB** | unauth_results, bac_results (+ joins) for display |
-| **Components** | Auto-run banner + Configure link, technique buttons, summary cards, results tables |
-| **Workflow** | See effective auto-run + source → run manually → results; toggle auto-run under **Talos Configuration → Attack** |
+| **Purpose** | Discover and launch security tests; module-specific run + results |
+| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
+| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `talos input-validation …`; `talos passive …` for secrets |
+| **DB** | unauth_results, bac_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
+| **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
+| **Workflow** | Hub → open module card → run / triage → Findings for global lifecycle |
+| **Nav** | Sidebar group **Testing** → **Modules** (`/testing`) + **Scheduler** (modules are not separate nav entries) |
 
-Long runs may hit the 60s CLI timeout.
+### Unauthenticated Execution (`/testing/unauth`)
+
+**Files:** `pages/attack/modules/UnauthModule.tsx` + `pages/attack/unauth/*`
+
+Tabbed workspace with full Core CLI parity for `talos attack unauth …`.
+
+| Tab | Role |
+|-----|------|
+| **Overview** | Verdict KPIs, testable endpoints, job pressure, auto-run chip, recent BYPASS, quick “run all recipes”, readiness empty states |
+| **Run** | Technique cards (description + recipe count), job estimate (upper bound), enqueue CTA → `attack unauth run [--technique]`, last stdout preview |
+| **Results** | Filterable DataTable (verdict, auth/request mutation, path search); row → flow detail; light poll while jobs in flight |
+| **Filter & Config** | Inline auto-run toggle (`attack.unauth_auto_run` via layered config); decision filter init/show/validate with inline YAML; **Apply filter** dry-run preview + confirm to reclassify stored unauth results and auto-reject TRIAGING findings that flip BYPASS→SECURE |
+
+Pipeline shown to operators: strip auth → technique → optional request mutation → replay → SECURE \| BYPASS \| UNKNOWN. Endpoint inclusion is Endpoint Policy only. Auto-run enqueues classic **auth_test** jobs (distinct from `unauth_attack` recipe runs).
+
+Long active enqueues may hit the 60s CLI timeout; execution itself is scheduler-side.
+
+### BAC (`/testing/bac`)
+
+**Files:** `pages/attack/modules/BacModule.tsx` + `pages/attack/bac/*`
+
+Tabbed workspace with full Core CLI parity for `talos attack bac …`. Default product action enqueues **all eight technique families**.
+
+| Tab | Role |
+|-----|------|
+| **Overview** | Candidate/auth readiness chips, verdict KPIs, job pressure, recent POSSIBLE_BAC, one-click **Run all techniques** |
+| **Run** | Technique multi-select (default: all), role + project/module/endpoint scope, `--auto-generate`, job estimate, CLI preview, enqueue |
+| **Results** | Filterable DataTable (verdict, technique, module, attacker role, path search); row → flow detail; poll while jobs in flight |
+| **Filter** | Decision filter init/show/validate with inline YAML for `BAC-decision-filter.yaml`; **Apply filter** dry-run preview + confirm to reclassify stored BAC results and auto-reject TRIAGING findings that flip POSSIBLE_BAC→SECURE |
+
+Pipeline: access-matrix candidates → auth prereqs per attacker role → jobs per flow × variant → POSSIBLE_BAC \| SECURE \| UNKNOWN. Scope flags match CLI (`--role`, `--module` XOR `--endpoint`). Multi-technique run is sequential CLI invocations (no Core `bac run` command).
+
+**Adding a module:** append to `ATTACK_MODULES` in `registry.ts`, add route + panel under `pages/attack/modules/`, optionally wire hub KPIs.
 
 ---
 
-## Input Validation (`/input-validation`)
+## Input Validation (`/testing/input-validation`)
 
-**Files:** `InputValidation.tsx` + `pages/input-validation/*`
+**Files:** `InputValidation.tsx` + `pages/input-validation/*`  
+**IA:** Active module under **Attack** hub (not a separate sidebar item).
 
 IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 intelligence surface.
 
 | Route | Purpose |
 |-------|---------|
-| `/input-validation?tab=overview` | Status KPIs, confidence, top candidates, empty-state CTAs |
+| `/testing/input-validation?tab=overview` | Status KPIs, confidence, top candidates, empty-state CTAs |
 | `?tab=candidates` | Attack prioritization board (filters, drill-down) |
 | `?tab=parameters` | Parameter intelligence inventory |
 | `?tab=multi-level` | Endpoint + host profile lists (M10) |
 | `?tab=run` | Scope, budget run/resume/synthesize/clear, phase shortcuts |
 | `?tab=settings` | Enable, workers, budget, max req, phases, auth artifacts, excludes |
-| `/input-validation/params/:paramUuid` | Parameter dossier (capabilities, candidates, observed cards, tested, probes→flows) |
-| `/input-validation/endpoints/:endpointId` | Endpoint intelligence dossier |
-| `/input-validation/hosts/:host` | Application/host intelligence dossier |
+| `/testing/input-validation/params/:paramUuid` | Parameter dossier (capabilities, candidates, observed cards, tested, probes→flows) |
+| `/testing/input-validation/endpoints/:endpointId` | Endpoint intelligence dossier |
+| `/testing/input-validation/hosts/:host` | Application/host intelligence dossier |
+| `/input-validation/*` | Legacy redirect → `/testing/input-validation/*` |
 
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Operator UX for characterization intelligence — not an exploit runner |
 | **Backend** | `/api/input-validation/*` status, overview, profiles, candidates, endpoints, hosts, show, export JSON, config/run CLI wrappers |
-| **CLI** | Full `talos input-validation *` parity for config/run/synthesize/candidates/show/export/exclude |
-| **DB** | `input_validation_config`, `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`, `iv_probe_results`, caches |
-| **Components** | Tabs (Endpoints-style), `CapabilityBadges`, `CandidateScore`, `ProfileCards`, `ProbeEvidenceTable`, `ScopeBar` |
+| **CLI** | Full `talos input-validation *` parity for config/run/synthesize/candidates/reflections/show/export/exclude |
+| **DB** | `input_validation_config`, `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`, `iv_probe_results`, caches; cross-flow via `value_index` / `cross_flow_reflections` when `parameter_intel.cross_flow.enabled` |
+| **Components** | `ModuleShell`, tabs (Endpoints-style), `CapabilityBadges` (highlights `stored_reflection`), `CandidateScore`, `ProfileCards` (dual reflection modes + sinks), `ProbeEvidenceTable`, `ScopeBar` |
 | **Workflow** | Enable → Run standard → wait (auto-refresh) → Synthesize → Candidates → open parameter dossier → evidence flows |
 | **Polling** | Overview/status every 5s while `running+queued > 0` |
 
-Candidate scores are always labeled **prioritization only**, not confirmed vulnerabilities.
+Candidate scores are always labeled **prioritization only**, not confirmed vulnerabilities. **Stored / cross-page reflection** is data-flow evidence (source→sink), not XSS confirmation; candidates expand shows `reflection_modes` and sink reasons when present.
 
 ---
 
-## Secret Detection (`/secret-detection`)
+## Secret Detection (`/testing/secrets`)
 
-**Files:** `SecretDetection.tsx` + `pages/secret-detection/*`
+**Files:** `SecretDetection.tsx` + `pages/secret-detection/*`  
+**IA:** Passive module under **Testing** hub (not a separate sidebar item).
 
 Secret Detection workspace (Passive Source Intelligence engine) — full parity with
 `talos passive …` (Phase 13).
 
 | Route | Purpose |
 |-------|---------|
-| `/secret-detection?tab=overview` | Status KPIs, enable/disable, rescan, recent detections |
+| `/testing/secrets?tab=overview` | Status KPIs, enable/disable, rescan, recent detections |
 | `?tab=detections` | Redacted detection inventory + filters |
 | `?tab=documents` | Source document inventory (body identity + scan status) |
 | `?tab=rules` | Loaded YAML detector packs (read-only) |
 | `?tab=settings` | Full `passive_scan_config` via CLI set |
-| `/secret-detection/detections/:id` | Detection dossier (context, siblings, flow/finding links) |
-| `/secret-detection/documents/:id` | Document dossier (occurrences, children, detections, rescan) |
+| `/testing/secrets/detections/:id` | Detection dossier (context, siblings, flow/finding links) |
+| `/testing/secrets/documents/:id` | Document dossier (occurrences, children, detections, rescan) |
+| `/secret-detection/*` | Legacy redirect to `/testing/secrets/*` |
 
 | Aspect | Detail |
 |--------|--------|
@@ -454,12 +562,39 @@ Secret Detection workspace (Passive Source Intelligence engine) — full parity 
 | **Backend** | `/api/passive/*` status, overview, config, rules, documents, detections, rescan, by-flow |
 | **CLI** | Full `talos passive status\|config\|rules\|documents\|detections\|rescan` parity; Console tree group `passive` |
 | **DB** | `source_documents`, `source_occurrences`, `passive_detections`, `passive_scan_config` (reads); writes via CLI only |
-| **Integrations** | Dashboard card; Flow detail “Source scan” panel; Finding evidence deep links for `source_document` / `passive_detection` |
-| **Workflow** | Proxy capture → Overview → Detections triage → open finding for HIGH secrets → rescan after rule upgrades |
+| **Integrations** | Testing hub KPI card; Dashboard card; Flow detail “Source scan” panel; Finding evidence deep links |
+| **Workflow** | Testing hub → Secret Detection → Overview → Detections triage → open finding for HIGH secrets |
 | **Safety** | Detection payloads never include `raw_value`; list UIs show `redacted_value` only |
 
 ---
 
+## Error Intelligence (`/testing/errors`)
+
+**Files:** `ErrorIntelligence.tsx` + `pages/error-intelligence/*`  
+**IA:** Passive module under **Testing** hub (peer of Secret Detection).
+
+Error Intelligence workspace (Phase 9) — clusters error-like stored responses.
+**Intelligence only in v1** (no Findings bridge).
+
+| Route | Purpose |
+|-------|---------|
+| `/testing/errors?tab=overview` | Status, severity dist, enable/rescan, top clusters |
+| `?tab=errors` | Cluster inventory; default filter medium+; hide low infra/http noise |
+| `?tab=rollups` | Parameter × error and endpoint × error rollups |
+| `?tab=settings` | `error_intel_config` + rescan (outdated / force / one flow) |
+| `/testing/errors/:errorId` | Cluster dossier (evidence, siblings, observations → flows) |
+
+| Aspect | Detail |
+|--------|--------|
+| **Purpose** | Operator UX for error/stack/SQL/disclosure clusters — not active probing |
+| **Backend** | `/api/error-intel/*` status, overview, config, errors, observations, rollups, rescan, by-flow |
+| **CLI** | `talos error-intel …`; Console tree group `error-intel` |
+| **DB** | `error_clusters`, `error_observations`, `error_intel_config` (reads); writes via CLI only |
+| **Integrations** | Testing hub KPI; Flow detail Errors tab (`#section=errors`); Endpoint + IV parameter related-error strips |
+| **Workflow** | Testing hub → Error Intelligence → Overview/Errors → open cluster → Flow HTTP for full body |
+| **Safety** | Evidence snippets capped; mandatory sensitivity warning; no full bodies in EI UI |
+
+---
 
 ## Findings (`/findings`)
 
@@ -467,14 +602,14 @@ Secret Detection workspace (Passive Source Intelligence engine) — full parity 
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | List findings; client-side filters; manage groups |
-| **Backend** | list, groups list/create/delete/report |
-| **CLI** | `finding group create/remove`, `finding report --group` |
-| **DB** | findings, groups |
-| **Components** | `DataTable`, group badges, report pre |
-| **Workflow** | Filter by status/type/verdict/role/module → open detail; create groups |
+| **Purpose** | List findings (default PRIMARY + linked count); filters; manage groups |
+| **Backend** | list (`view=primary\|linked\|all`, status), groups list/create/delete/report |
+| **CLI** | parity with `finding list [--linked\|--all] [--status]`; groups/report via CLI |
+| **DB** | findings (+ relation_type, linked_count), groups |
+| **Components** | `DataTable` (Rel / notes columns), relation view select, group badges, report pre |
+| **Workflow** | PRIMARY triage list → open detail; switch to LINKED/all when needed; create groups |
 
-Status filter is server-side; other filters are client-side on the loaded list.
+Status + relation view are server-side; type/verdict/role/module filters are client-side on the loaded list.
 
 ---
 
@@ -484,12 +619,12 @@ Status filter is server-side; other filters are client-side on the loaded list.
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | Lifecycle (confirm/reject/reopen/duplicate), evidence, timeline, report |
-| **Backend** | detail, confirm/reject/reopen/duplicate, groups add, report |
-| **CLI** | matching `finding *` |
-| **DB** | findings, evidence, timeline, duplicates |
-| **Components** | Evidence cards with flow links, timeline list |
-| **Workflow** | Triage finding → confirm/reject → optional group/report |
+| **Purpose** | Lifecycle (confirm/reject/reopen/duplicate + optional `--linked`), analyst notes, cluster, evidence, timeline, report |
+| **Backend** | detail (+ parent/linked), confirm/reject/reopen (linked/force body), notes set/clear, groups add, report |
+| **CLI** | matching `finding *` including `note set\|clear` (stdin) and lifecycle `--linked` |
+| **DB** | findings, evidence, timeline, duplicates, cluster relations |
+| **Components** | Notes editor, Apply-to-linked checkbox, cluster links, evidence cards, timeline |
+| **Workflow** | Triage PRIMARY → notes → confirm/reject (optionally bulk-linked) → optional group/report |
 
 ---
 
@@ -528,8 +663,8 @@ Background commands show pid/status instead of step logging. Results of normal r
 Backend routes without dedicated primary UI (reachable via Console or unused):
 
 - Project workspace is complete for core `talos project *` surface (create/open/close/delete/purge/rename/description/scope/constraints/outscope); export/import/clone/archive remain future CLI work
-- Access unset/delete
 - Endpoint path policy UI
-- Finding notes (model defined, no endpoint)
 - `talos ui` background start (in command tree only)
 - Auth page now covers TTL, expiry signals, validation control flows, extractors, recovery, and secondary auth-bypass testing
+- Finding notes + PRIMARY/LINKED list/lifecycle and unauth `--technique` are wired (P0 trust repair)
+- Access Model page covers full `talos access *` (set/unset/delete/bulk/coverage/signals)

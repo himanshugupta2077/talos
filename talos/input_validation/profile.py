@@ -118,6 +118,9 @@ CHARSET_CLASSES: frozenset[str] = frozenset({
 # Capability flags for attack modules (Module 11 derives flags + scores candidates).
 # Stored as a list of strings on the profile; filled by capabilities.py / synthesizer.
 CAPABILITY_REFLECTIVE_INPUT = "reflective_input"
+# Value observed in some in-scope response (same-request and/or cross-flow).
+# Prefer showing CAPABILITY_STORED_REFLECTION + sinks when stored-only.
+CAPABILITY_STORED_REFLECTION = "stored_reflection"
 CAPABILITY_HTML_CONTEXT = "html_context"
 CAPABILITY_JSON_CONTEXT = "json_context"
 CAPABILITY_URL_CONTEXT = "url_context"
@@ -136,6 +139,7 @@ CAPABILITY_URL_LIKE_VALUE = "url_like_value"
 
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
     CAPABILITY_REFLECTIVE_INPUT,
+    CAPABILITY_STORED_REFLECTION,
     CAPABILITY_HTML_CONTEXT,
     CAPABILITY_JSON_CONTEXT,
     CAPABILITY_URL_CONTEXT,

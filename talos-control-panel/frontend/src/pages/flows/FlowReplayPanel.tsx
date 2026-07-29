@@ -103,6 +103,23 @@ export default function FlowReplayPanel({
           </ul>
         )}
       </div>
+
+      {children.some(
+        (c) => c.source === "manual_send" || c.source === "ai_send"
+      ) && (
+        <div className="panel p-3">
+          <Link
+            to={`/repeater?flow=${originalFlowId || children[0]?.id || ""}`}
+            className="link text-sm"
+          >
+            Open send history in Repeater
+          </Link>
+          <p className="text-[10px] text-base-content/50 mt-1">
+            Mode 2 sends are edited/re-fired from the Repeater workspace — not
+            listed here as exact replays.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import StaleVersionBadge from "./components/StaleVersionBadge";
 import {
   DocumentRow,
   SCAN_STATUSES,
+  SECRETS_BASE,
   SOURCE_KINDS,
   formatBytes,
   selectClass,
@@ -165,7 +166,7 @@ export default function DocumentsTab({ projectId }: { projectId: string }) {
         columns={columns}
         rows={rows}
         rowKey={(d) => d.id}
-        onRowClick={(d) => navigate(`/secret-detection/documents/${d.id}`)}
+        onRowClick={(d) => navigate(`${SECRETS_BASE}/documents/${d.id}`)}
         emptyLabel="No source documents yet. Capture traffic with the proxy."
         storageKey="passive-documents"
       />

@@ -2,6 +2,43 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel Repeater UI (`/repeater`)
+
+### Problem
+
+Mode 2 (`talos send`) was CLI-only. Operators living in the Control Panel had no
+interactive edit → send → compare surface, and exact **Replay** was easy to
+conflate with mutable send.
+
+### Decision
+
+Ship a first-class **Capture → Repeater** workspace:
+
+| Piece | Role |
+|-------|------|
+| Route `/repeater` | Multi-tab request/response workbench + history |
+| `GET/POST /api/send/*` | Draft, once/repeat/parallel, redo, dup, note, export, history, tree, show, diff |
+| In-process engine | Mutations call `talos.send.engine` (documented CLI exception); raw-only edit payload |
+| Client drafts | `localStorage` per project; parent stays after Send; Fork advances parent |
+| Entry points | Flow Actions, Endpoint header + row, Finding `original_flow`/`replay_flow` |
+
+**Still out of scope:** Intruder, schedule/continuous send, token refresh, redirects,
+server draft table, Monaco editor, parent-less compose.
+
+### Operator surface
+
+- Sidebar **Capture → Repeater**; jump palette keywords `send, burp, edit, once`
+- **Send to Repeater** from Flow Detail / list ⋮, Endpoint, Finding evidence
+- Keyboard: `Ctrl+Enter` send, `Ctrl+Shift+Enter` redo, `?` shortcuts help
+
+### Files
+
+- Backend: `talos_ui/routers/send.py`, `list_send_history` + `duration_ms`
+- Frontend: `pages/Repeater.tsx`, `pages/repeater/*`, `HttpRequestEditor.tsx`
+- Docs: `cli-integration.md` Exceptions, `pages.md`, `routing.md`
+
+---
+
 ## Repeater Phase 2 — CLI completeness (`talos send`)
 
 ### Problem
@@ -29,8 +66,9 @@ a control panel and without Intruder.
 | History | `--session`, `--parent`, `--source`, `--limit`; columns include verdict/note/parent |
 | `send tree` | ASCII parent→child under a root |
 
-**Still out of scope:** control panel UI, Intruder (payloads/wordlists), schedule/continuous,
+**Still out of scope (CLI Phase 2):** Intruder (payloads/wordlists), schedule/continuous,
 token refresh, redirect following. Mode 1 `talos replay` unchanged.
+**Control Panel Repeater UI** shipped separately (see section above).
 
 ### Operator surface
 
@@ -82,6 +120,290 @@ talos send diff <a> <b>
 ```
 
 Slogan: **Replay = identity-preserving re-execution. Send = free mutation with full lineage.**
+
+---
+
+## Error Intelligence Phase 9 + Testing hub rename (Control Panel)
+
+### Problem
+
+Error Intelligence Phases 0–8 shipped core detection, storage, hooks, and CLI, but operators had no Control Panel surface. The Testing sidebar group still labeled its hub **Attack** (`/attack`), which mismatched Passive modules and product language.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| Testing URLs | Canonical `/testing/*`; permanent `/attack/*` redirects |
+| Sidebar | Testing group → **Modules** + Scheduler |
+| EI workspace | Passive module at `/testing/errors` (Overview · Errors · Rollups · Settings) + detail `/testing/errors/:id` |
+| Flow Errors | `#section=errors` tab; eager `/api/error-intel/by-flow/{id}` |
+| Cross-links | Endpoint + IV parameter related-error strips |
+| API | `/api/error-intel/*` (reads via `talos.error_intel.db`; config/rescan via CLI) |
+| Findings | Still **none** — intelligence only |
+
+**Not renamed:** backend `/api/attack/*`, CLI `talos attack …`, directory `pages/attack/`.
+
+### Operator surface
+
+- Control Panel: **Testing → Modules → Error Intelligence**
+- Flow: **Errors** tab (badge when observations exist)
+- CLI unchanged (`talos error-intel …`); Console tree includes Error Intelligence group
+
+### Design
+
+`docs/design-testing-error-intelligence.md`
+
+---
+
+## Error Intelligence — Phases 6–8 (queue, hooks, rollups, CLI)
+
+### Problem
+
+Phases 3–5 could classify and store errors only via explicit
+`store_classified_error` calls. Capture, replay, IV, BAC, and Unauth did not
+automatically feed Error Intelligence, and operators had no CLI without the
+Control Panel.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `ErrorIntelQueue` | Bounded drop-on-full queue (mirrors passive) |
+| `ErrorIntelWorker` | Daemon: reload body by `flow_id` → classify → store |
+| `maybe_enqueue_error_scan` | Cheap post-commit hook; never raises / never blocks |
+| FlowWorker + proxy addon | Enqueue after commit; worker started with passive |
+| `insert_replayed_flow` | Inline scan for scheduler / IV / BAC / unauth paths |
+| `observe_error` / `attach_error_context` | Public API + dual-path param enrich |
+| Rollups | `parameter_error_rollup` / `endpoint_error_rollup` |
+| CLI | `talos error-intel status\|config\|errors\|observations\|rescan\|rollup` |
+| Scanner version | `ERROR_INTEL_VERSION = 0.4.0` |
+| Findings | Still **none** — intelligence only |
+
+**Attack type** is inferred from `flows.source` + `flow_meta` (IV
+`generated_by`, BAC/unauth `attack_module`). Parameter linkage rides on IV
+`flow_meta.parameter_uuid` automatically; `attach_error_context` can enrich
+later without re-parse.
+
+**Control Panel (Phase 9):** Shipped — see section above.
+
+### Operator surface
+
+```bash
+talos error-intel status
+talos error-intel config show
+talos error-intel errors list --severity high
+talos error-intel observations list --attack iv
+talos error-intel rescan --all --outdated
+talos error-intel rescan --all --force
+talos error-intel rollup parameter
+```
+
+```python
+from talos.error_intel import observe_error, attach_error_context, maybe_enqueue_error_scan
+
+# After a flow is committed (or pass db_path for inline store):
+observe_error(project_id=…, flow_id=…, db_path=…, attack_type="iv",
+              parameter_uuid=…, parameter_name="username")
+
+attach_error_context(project_id=…, flow_id=…, parameter_uuid=…,
+                     attack_type="iv", db_path=…)
+```
+
+### Tests
+
+- `tests/test_error_intel_worker.py` — queue, worker, enqueue, observe, attach,
+  fingerprint dedup across proxy/IV, rollups, version 0.4.0
+- Prior error-intel + passive worker suites remain green
+
+---
+
+## Error Intelligence — Phases 3–5 (classify, fingerprint, schema v43)
+
+### Problem
+
+Phase 2 produced raw detector hits (`RawErrorMatch`) but nothing turned them
+into a stable project-wide error identity, severity, or stored intelligence.
+The same Hibernate exception on proxy + IV + BAC would not collapse, and there
+was no SQLite home for clusters / sightings.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `normalize.py` | Strip line numbers, UUIDs, timestamps, request IDs, path user segments |
+| `fingerprint.py` | SHA-256 of identity tuple (status_bucket, category, language, exception, framework, database, stack/message hashes, server) |
+| `classify.py` | `ClassifiedError` — category, severity bands, tech fields, flags, confidence, fingerprint |
+| Schema **v43** | `error_clusters`, `error_observations`, `error_intel_config` |
+| `talos.error_intel.db` | Upsert cluster by fingerprint; insert observation; config CRUD |
+| Scanner version | `ERROR_INTEL_VERSION = 0.3.0` (superseded by 0.4.0 in Phases 6–8) |
+| Findings | Still **none** — no `finding_id`, no auto Findings |
+
+**Fingerprint excludes** endpoint / parameter / attack_type (those live on
+observations only). Same SQL exception with different line numbers → one
+`error_id`, multiple observations.
+
+**Originally deferred (now landed in Phases 6–8):** queue/worker/FlowWorker
+hooks, CLI. **Still deferred:** Control Panel (9).
+
+### Operator surface
+
+```python
+from talos.error_intel import classify_error, detect_errors
+from talos.error_intel.db import store_classified_error
+
+c = classify_error(body, status_code=500)
+# c.fingerprint, c.severity, c.exception_type, c.category, …
+
+cluster, obs, created = store_classified_error(
+    db_path, project_id, c,
+    flow_id=flow_id, attack_type="iv", parameter_uuid=param_uuid,
+)
+```
+
+### Tests
+
+- `tests/test_error_intel_classify_fingerprint.py` — normalize stability, fingerprint dedup, severity bands
+- `tests/test_error_intel_db.py` — schema v43, cluster upsert, multi-attack observations, config
+
+---
+
+## Error Intelligence — Phase 2 (detector stages)
+
+### Problem
+
+Phase 0–1 only *gated* error-like responses. Operators still needed structured
+extraction: exception type, language, DB vendor, framework chrome, path leaks —
+as pure detector hits before fingerprint/schema.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| Stages A–G | stack → database → framework → infrastructure → security → disclosure → http_generic |
+| `detect_errors(...)` | Pure API → `ErrorDetectResult` (`matches`, `artifacts`, `primary`, `strong_hit`) |
+| Stage G policy | Only when **no strong hit** and (`store_generic_http_errors` **or** 5xx) |
+| Stage F | Paths/hosts/versions as `ErrorArtifact`; runs on 5xx or after strong hit |
+| Scanner version | `ERROR_INTEL_VERSION = 0.2.0` |
+| Findings / DB | Still **none** — no schema, no worker, no auto Findings |
+
+**Originally deferred (now landed in Phases 3–5):** classify, normalize+fingerprint,
+schema v43. **Still deferred:** queue/worker hooks (6), CLI (8), Control Panel (9).
+
+### Operator surface
+
+```python
+from talos.error_intel import detect_errors, is_error_candidate
+
+is_error_candidate(status_code=500, body=stack_bytes)
+result = detect_errors(stack_bytes, status_code=500, content_type="text/plain")
+result.primary.exception_type   # e.g. java.sql.SQLSyntaxErrorException
+result.artifacts                # path / host / version disclosures
+```
+
+### Tests
+
+- `tests/test_error_intel_detectors.py` — language matrix, SQL, framework, infra, security, Stage G policy
+- Prior: `tests/test_error_intel_candidate.py`, `tests/test_error_intel_models.py`
+
+---
+
+## Error Intelligence — Phases 0–1 (detection foundation)
+
+### Problem
+
+IV collapses interesting rejections into a coarse `rejected` outcome (and a thin
+`error_signature`). Passive secret scan only runs on **source-like** bodies.
+Operators still need to know *what* the error was (Hibernate vs validation vs
+nginx 502), fingerprint the same exception across proxy/IV/BAC, and link
+sightings to parameters — without turning IV into a stack-trace scanner or
+auto-creating Findings.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| Package `talos.error_intel` | Sibling of `talos.passive` / `talos.input_validation` |
+| Design freeze | `docs/architecture.md` → **Error Intelligence** decision log + invariants |
+| Phase 0 skeleton | `constants`, `models`, `config`, `observe_error` API |
+| Phase 1 gate | `is_error_candidate` — status / headers / CT+magic / body marker sniff |
+| Findings | **None in v1** (intelligence tables only — schema v43 later) |
+| Generic 4xx storage | Default **off** (`store_generic_http_errors=false`) — store policy, not gate |
+| Scanner version | Was `0.1.0`; Phase 2 → `0.2.0`; Phases 3–5 → `0.3.0` |
+
+**Originally deferred (now landed through Phase 5):** detectors, classify,
+fingerprint, schema v43. **Still deferred:** queue/worker, CLI, Control Panel,
+IV/BAC parameter enrich hooks.
+
+### Operator surface (Phases 0–1)
+
+Library-only gate + observe stub:
+
+```python
+from talos.error_intel import is_error_candidate, observe_error
+
+is_error_candidate(status_code=500, content_type="text/plain", body=stack_bytes)
+observe_error(project_id=…, flow_id=…, response_status=500, response_body=…)  # → [] until Phase 5–6
+```
+
+### Tests
+
+- `tests/test_error_intel_candidate.py`
+- `tests/test_error_intel_models.py`
+
+---
+
+## Cross-page / stored reflection intelligence (schema v42)
+
+### Problem
+
+Same-request reflection only: values submitted on a write endpoint (e.g. `POST /register`) that later appear on a sink (`GET /profile`) never linked. XSS candidate scoring gated on same-flow reflection, so second-order surfaces stayed invisible to prioritization.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| Schema v42 | `value_index`, `cross_flow_reflections`, `parameters.cross_flow_*` |
+| `talos.projects.value_reflection` | Distinctiveness policy, index/scan, `on_flow_committed` |
+| Dual ingest | FlowWorker (proxy) + `insert_replayed_flow` (replay/IV canaries) |
+| Config | `parameter_intel.cross_flow.*` layered defaults; **`enabled=false`** until bake-in |
+| IV merge | `load_and_merge_cross_flow` after `_fill_reflection`; nested `same_request` / `cross_flow` |
+| Capability | `stored_reflection`; `reflective_input` includes cross-flow |
+| XSS scoring | Stored evidence satisfies reflection gate; +12 stored; canonical sink reasons |
+| CLI | `input-validation reflections`; show dual modes; candidates `--capability stored_reflection` |
+| Control panel | Candidates expand + ProfileCards sinks; disclaimer reinforces data-flow only |
+
+**Not in this release:** active canary+sink probes (P2), fine DOM context (P3), soft profile stubs without `iv_param_profiles`.
+
+### Operator happy path
+
+```bash
+talos config set parameter_intel.cross_flow.enabled true --project
+# Capture write then sink traffic (or IV multiprobe + later GETs)
+talos input-validation reflections
+talos input-validation synthesize
+talos input-validation candidates --capability stored_reflection
+talos input-validation show <parameter_uuid>
+```
+
+Reasons look like: `value from username@POST /register reflected on GET /profile (html, raw)`.
+
+### Config default
+
+`parameter_intel.cross_flow.enabled` defaults to **false**. After FP validation on bake-in projects, new installs may flip the default to true (documented here when that lands).
+
+`FlowWorker` reloads `parameter_intel.cross_flow` about every 60 seconds while the proxy is running, so mid-session `talos config set … enabled true` takes effect without a full worker restart (short lag expected). `active_sink_probe` is registered as a P2 knob but is **unimplemented** (setting it has no runtime effect).
+
+### Correctness notes (post-QA)
+
+- `value_index.last_seen_at` uses max(old, new); `source_flow_id` tracks the most recent observation under clock skew.
+- Timestamp ordering parses ISO instants so `Z` and `+00:00` compare equal.
+- `min_value_len` applies to non-canary Rules B/C/D (canaries exempt).
+- `parameters.cross_flow_reflection_count` counts **distinct edges** (INSERT only); link `observation_count` tracks re-observations.
+
+### Tests
+
+- `tests/test_cross_flow_reflection.py`
+- `tests/test_iv_candidates.py` (stored-only matrix, batched list, feed_iv)
 
 ---
 

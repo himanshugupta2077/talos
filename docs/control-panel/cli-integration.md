@@ -10,6 +10,14 @@ How the Control Panel executes Talos commands. Implementation: `talos_ui/cli.py`
 
 The CLI is the single source of truth for mutations. Reads may go through SQLite (`db.py`); writes go through this module.
 
+### Exceptions
+
+**Repeater (`/api/send/*` mutations):** may call `talos.send.engine` / `talos.send.db` **in-process** (async `await` of engine coroutines). Must not open ad-hoc SQL. Must return synthetic `steps` for CommandLog. Reads remain free to import Python as elsewhere.
+
+Why: full raw bodies in argv/temp files are brittle; multi-send can run many minutes beyond default `CLI_TIMEOUT`; the engine already exposes clean `SendOutcome` dataclasses.
+
+Exact Mode 1 replay (`/api/replay/*`) stays a thin CLI wrap (`talos replay …`).
+
 ---
 
 ## Command construction

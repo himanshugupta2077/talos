@@ -117,6 +117,37 @@ class HttpConfigSection:
 
 
 @dataclass(frozen=True)
+class CrossFlowConfigSection:
+    """
+    Purpose:
+        Cross-flow / stored reflection knobs under parameter_intel.cross_flow.
+        Mirrors talos.projects.value_reflection.CrossFlowConfig defaults.
+    """
+
+    enabled: bool = False
+    feed_iv: bool = True
+    active_sink_probe: bool = False
+    value_index_ttl_hours: int = 72
+    value_index_max_per_host: int = 50_000
+    value_index_max_sources_per_value: int = 8
+    min_value_len: int = 6
+    scan_hot_set_k: int = 2000
+    scan_time_budget_ms: int = 20
+    max_body_scan_bytes: int = 2_000_000
+    canary_ttl_hours: int = 24
+
+
+@dataclass(frozen=True)
+class ParameterIntelConfigSection:
+    """
+    Purpose:
+        Parameter intelligence settings (cross-flow reflection, etc.).
+    """
+
+    cross_flow: CrossFlowConfigSection = field(default_factory=CrossFlowConfigSection)
+
+
+@dataclass(frozen=True)
 class EffectiveConfig:
     """
     Purpose:
@@ -124,15 +155,16 @@ class EffectiveConfig:
         Runtime components receive this instead of opening files themselves.
 
     Fields:
-        proxy     — upstream proxy mode.
-        capture   — body storage + drop headers.
-        scheduler — job delay / queue size.
-        attack    — attack toggles.
-        http      — HTTP manipulation engine (rules + master switch).
-        raw       — full merged dict tree (for generic get / effective views).
-        sources   — dotted path → ValueSource for inheritance display.
-        global_path  — path to global config file (may not exist yet).
-        project_path — path to project.yaml (None when no project bound).
+        proxy            — upstream proxy mode.
+        capture          — body storage + drop headers.
+        scheduler        — job delay / queue size.
+        attack           — attack toggles.
+        http             — HTTP manipulation engine (rules + master switch).
+        parameter_intel  — parameter intelligence (cross-flow reflection).
+        raw              — full merged dict tree (for generic get / effective views).
+        sources          — dotted path → ValueSource for inheritance display.
+        global_path      — path to global config file (may not exist yet).
+        project_path     — path to project.yaml (None when no project bound).
     """
 
     proxy: ProxyConfigSection = field(default_factory=ProxyConfigSection)
@@ -140,6 +172,9 @@ class EffectiveConfig:
     scheduler: SchedulerConfigSection = field(default_factory=SchedulerConfigSection)
     attack: AttackConfigSection = field(default_factory=AttackConfigSection)
     http: HttpConfigSection = field(default_factory=HttpConfigSection)
+    parameter_intel: ParameterIntelConfigSection = field(
+        default_factory=ParameterIntelConfigSection
+    )
     raw: dict = field(default_factory=dict)
     sources: dict[str, ValueSource] = field(default_factory=dict)
     global_path: Optional[str] = None

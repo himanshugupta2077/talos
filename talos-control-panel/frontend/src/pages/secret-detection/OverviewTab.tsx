@@ -8,7 +8,7 @@ import ConfidenceChip from "./components/ConfidenceChip";
 import CategoryBadge from "./components/CategoryBadge";
 import RedactedValue from "./components/RedactedValue";
 import type { DetectionRow, PassiveConfig, PassiveStatus } from "./shared";
-import { shortId } from "./shared";
+import { SECRETS_BASE, shortId } from "./shared";
 
 export default function OverviewTab({
   projectId,
@@ -201,7 +201,7 @@ export default function OverviewTab({
                   <tr key={d.id} className="hover">
                     <td>
                       <Link
-                        to={`/secret-detection/detections/${d.id}`}
+                        to={`${SECRETS_BASE}/detections/${d.id}`}
                         className="link link-hover"
                       >
                         <RedactedValue value={d.redacted_value} />

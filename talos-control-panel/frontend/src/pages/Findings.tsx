@@ -11,10 +11,13 @@ import { Finding, FindingGroup } from "../types";
 
 const STATUSES = ["TRIAGING", "CONFIRMED", "REJECTED", "DUPLICATE"];
 
+type RelationView = "primary" | "linked" | "all";
+
 export default function Findings() {
   const { selected } = useProject();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [status, setStatus] = useState("");
+  const [view, setView] = useState<RelationView>("primary");
   const [attackType, setAttackType] = useState("");
   const [verdict, setVerdict] = useState("");
   const [role, setRole] = useState("");
@@ -25,10 +28,16 @@ export default function Findings() {
 
   const load = () => {
     if (!selected) return;
-    api.get<{ findings: Finding[] }>("/api/findings", { project_id: selected.id, status: status || undefined }).then((r) => setFindings(r.findings));
+    api
+      .get<{ findings: Finding[] }>("/api/findings", {
+        project_id: selected.id,
+        status: status || undefined,
+        view,
+      })
+      .then((r) => setFindings(r.findings));
     api.get<{ groups: FindingGroup[] }>("/api/findings/groups/list", { project_id: selected.id }).then((r) => setGroups(r.groups));
   };
-  useEffect(load, [selected, status]);
+  useEffect(load, [selected, status, view]);
 
   const createGroup = useAction("Create finding group", () =>
     api.post("/api/findings/groups", { name: groupName }, { project_id: selected!.id })
@@ -56,6 +65,22 @@ export default function Findings() {
   );
 
   const columns: Column<Finding>[] = [
+    {
+      key: "relation",
+      header: "Rel",
+      render: (f) => {
+        const rel = (f.relation_type || "PRIMARY").toUpperCase();
+        if (rel === "LINKED") {
+          return <span className="badge badge-ghost badge-xs">LINKED</span>;
+        }
+        const n = f.linked_count ?? 0;
+        return (
+          <span className="badge badge-outline badge-xs" title={n ? `${n} linked variant(s)` : "PRIMARY"}>
+            PRIMARY{n > 0 ? ` +${n}` : ""}
+          </span>
+        );
+      },
+    },
     { key: "title", header: "Title", render: (f) => <span className="font-medium">{f.title || "(untitled)"}</span> },
     {
       key: "attack_type",
@@ -69,6 +94,19 @@ export default function Findings() {
     },
     { key: "verdict", header: "Verdict", render: (f) => <StatusBadge value={f.verdict} /> },
     { key: "status", header: "Status", render: (f) => <StatusBadge value={f.status} /> },
+    {
+      key: "notes",
+      header: "Notes",
+      render: (f) =>
+        f.notes?.trim() ? (
+          <span className="text-xs text-base-content/70 truncate max-w-[8rem] inline-block" title={f.notes}>
+            {f.notes.trim().slice(0, 40)}
+            {f.notes.trim().length > 40 ? "…" : ""}
+          </span>
+        ) : (
+          <span className="text-base-content/30">—</span>
+        ),
+    },
     { key: "role_name", header: "Role", render: (f) => f.role_name || <span className="text-base-content/30">—</span> },
     { key: "module_name", header: "Module", render: (f) => f.module_name || <span className="text-base-content/30">—</span> },
     { key: "created_at", header: "Created", className: "text-xs", sortValue: (f) => f.created_at, render: (f) => formatIST(f.created_at) },
@@ -83,6 +121,16 @@ export default function Findings() {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
+        <select
+          className={selectClass}
+          value={view}
+          onChange={(e) => setView(e.target.value as RelationView)}
+          title="CLI: default PRIMARY · --linked · --all"
+        >
+          <option value="primary">PRIMARY (default)</option>
+          <option value="linked">LINKED only</option>
+          <option value="all">All (PRIMARY + LINKED)</option>
+        </select>
         <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All statuses</option>
           {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}

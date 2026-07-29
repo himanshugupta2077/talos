@@ -68,6 +68,7 @@ from talos.input_validation.profile import (
     CAPABILITY_PATH_PARAMETER,
     CAPABILITY_REDIRECT_LIKE,
     CAPABILITY_REFLECTIVE_INPUT,
+    CAPABILITY_STORED_REFLECTION,
     CAPABILITY_URL_CONTEXT,
     CAPABILITY_URL_LIKE_VALUE,
     CAPABILITY_XML_BODY,
@@ -134,18 +135,134 @@ def empty_candidate(
     confidence: int = 0,
     reasons: list[str] | None = None,
     evidence_flow_ids: list[str] | None = None,
+    reflection_modes: list[str] | None = None,
+    stored_reflection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Purpose: Build one candidate dict with clamped score/confidence.
     Side effects: None.
+
+    Optional cross-flow extras (XSS):
+        reflection_modes  — e.g. ["same_request", "cross_flow"]
+        stored_reflection — sink summary dict for CP/CLI expand
     """
-    return {
+    out: dict[str, Any] = {
         "attack": attack,
         "score": _clamp(score),
         "confidence": _clamp(confidence),
         "reasons": list(reasons or []),
         "evidence_flow_ids": list(evidence_flow_ids or []),
     }
+    if reflection_modes is not None:
+        out["reflection_modes"] = list(reflection_modes)
+    if stored_reflection is not None:
+        out["stored_reflection"] = stored_reflection
+    return out
+
+
+def load_and_merge_cross_flow(
+    db_path: Path | str,
+    profile: dict[str, Any],
+    *,
+    persist: bool = False,
+    links: list[dict[str, Any]] | None = None,
+    score: bool = True,
+) -> dict[str, Any]:
+    """
+    Purpose:
+        Load ``cross_flow_reflections`` for ``profile['param_uuid']``, merge
+        into ``observed.reflection`` (nested same_request / cross_flow), then
+        optionally re-derive capabilities + candidates.
+
+    Input:
+        db_path  — project SQLite path.
+        profile  — mutable param intelligence document.
+        persist  — when True, write profile back via ``upsert_param_profile``.
+        links    — pre-loaded link rows (skip DB when provided, including []).
+        score    — when True (default), apply_capabilities + score_candidates.
+
+    Output:
+        The same profile dict (mutated).
+
+    Side effects:
+        Mutates profile reflection / capabilities / candidates.
+        When persist=True, writes iv_param_profiles.
+    """
+    if not isinstance(profile, dict):
+        return profile
+
+    from talos.projects.value_reflection import (
+        ensure_process_cross_flow_config,
+        list_cross_flow_reflections,
+        merge_cross_flow_reflection,
+    )
+
+    path = Path(db_path)
+    # Consume-path: install project YAML knobs once (feed_iv, etc.).
+    # Ingest paths (worker/replay) already call ensure/set; this is idempotent.
+    cfg = ensure_process_cross_flow_config(path.parent)
+    # feed_iv gates IV consumption; when False, leave profile unchanged.
+    if not cfg.feed_iv:
+        if score:
+            enrich_profile_capabilities_and_candidates(profile)
+        return profile
+
+    param_uuid = str(profile.get("param_uuid") or "").strip()
+    resolved_links: list[dict[str, Any]]
+    if links is not None:
+        resolved_links = list(links)
+    elif param_uuid:
+        resolved_links = list_cross_flow_reflections(
+            path, param_uuid=param_uuid, limit=50,
+        )
+    else:
+        resolved_links = []
+
+    # Merge even with empty links so nested cross_flow block is explicit
+    # after recompute (same_request snapshot preserved).
+    merge_cross_flow_reflection(profile, resolved_links)
+
+    if score:
+        enrich_profile_capabilities_and_candidates(profile)
+
+    if persist and param_uuid:
+        from talos.input_validation import db as iv_db
+
+        path = Path(db_path)
+        host = str(profile.get("host") or "")
+        location = str(profile.get("location") or "")
+        name = str(profile.get("name") or "")
+        if host and location and name:
+            from talos.input_validation.profile import ensure_profile_shape
+
+            iv_db.upsert_param_profile(
+                path,
+                param_uuid=param_uuid,
+                host=host,
+                location=location,
+                param_name=name,
+                profile=ensure_profile_shape(profile),
+                bump_version=False,
+            )
+
+    return profile
+
+
+def _should_merge_cross_flow(
+    *,
+    recompute: bool,
+    links: list[dict[str, Any]] | None,
+) -> bool:
+    """
+    Decide whether list/get paths should run load_and_merge_cross_flow.
+
+    - recompute=True → always merge (explicit empty cross_flow when no links).
+    - live links present → merge so default CP/list path is not stale after
+      proxy-only traffic with an older profile JSON.
+    """
+    if recompute:
+        return True
+    return bool(links)
 
 
 def score_candidates(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -250,8 +367,11 @@ def get_param_intelligence(
         db_path          — project SQLite path.
         param_id_or_uuid — ``parameters.id`` row UUID **or** param_uuid
                            (sha256 host|location|name).
-        recompute        — when True, re-run capability + candidate scoring
-                           on the loaded profile (does not persist).
+        recompute        — when True, always re-merge cross-flow links and
+                           re-score capabilities/candidates (does not persist).
+                           When False, still live-merges if cross_flow links
+                           exist (parity with list_candidates) so stored
+                           reflection is not stale after late proxy traffic.
 
     Output:
         dict with keys::
@@ -266,7 +386,7 @@ def get_param_intelligence(
 
         None when neither parameters row nor iv_param_profiles match.
 
-    Side effects: Read-only DB.
+    Side effects: Read-only DB (in-memory merge only; never persists).
     """
     from talos.input_validation import db as iv_db
     from talos.input_validation.profile import ensure_profile_shape
@@ -306,6 +426,9 @@ def get_param_intelligence(
         location = str(profile.get("location") or "")
         name = str(profile.get("name") or "")
 
+    # Product decision (§6.3): XSS candidates from stored reflection require
+    # an existing iv_param_profiles document. No soft stubs on first link.
+    had_profile_doc = profile is not None
     if profile is None:
         # Passive row exists but no synthesized profile yet.
         profile = {
@@ -322,7 +445,34 @@ def get_param_intelligence(
     else:
         profile = ensure_profile_shape(dict(profile))
 
-    if recompute or not profile.get("candidates") or not profile.get("capabilities"):
+    # Cross-flow merge (P1): only on real profile docs. Parity with
+    # list_candidates: merge when recompute=True OR live links exist, so a
+    # profile synthesized before proxy traffic still surfaces stored_reflection
+    # without requiring recompute/re-synthesize. persist=False (memory only).
+    param_uuid = param_uuid or str(profile.get("param_uuid") or "")
+    links: list[dict[str, Any]] | None = None
+    if had_profile_doc and param_uuid:
+        from talos.projects.value_reflection import list_cross_flow_reflections
+
+        links = list_cross_flow_reflections(
+            path, param_uuid=param_uuid, limit=50,
+        )
+    needs_score = (
+        recompute
+        or not profile.get("candidates")
+        or not profile.get("capabilities")
+    )
+    if had_profile_doc and param_uuid and _should_merge_cross_flow(
+        recompute=recompute, links=links,
+    ):
+        load_and_merge_cross_flow(
+            path,
+            profile,
+            persist=False,
+            links=links,
+            score=True,
+        )
+    elif needs_score:
         enrich_profile_capabilities_and_candidates(profile)
 
     return {
@@ -383,9 +533,10 @@ def list_candidates(
 
         Sorted by score desc, then confidence desc, then param_uuid.
 
-    Side effects: Read-only DB.
+    Side effects: Read-only DB (in-memory merge only; never persists).
     """
     from talos.input_validation import db as iv_db
+    from talos.projects.value_reflection import batch_list_cross_flow_reflections
 
     path = Path(db_path)
     profiles = iv_db.list_param_profiles(path, host=host, limit=max(limit * 2, 500))
@@ -393,10 +544,34 @@ def list_candidates(
     cap_filter = (capability or "").strip() or None
     rows: list[dict[str, Any]] = []
 
+    # Batched link load (avoid N+1) — design §6.2.
+    uuids = [
+        str(p.get("param_uuid") or "")
+        for p in profiles
+        if p.get("param_uuid")
+    ]
+    links_by_uuid = batch_list_cross_flow_reflections(
+        path, uuids, limit_per_param=50,
+    ) if uuids else {}
+
     for prof in profiles:
-        work = dict(prof) if recompute else prof
-        if recompute or not work.get("candidates") or not work.get("capabilities"):
-            work = dict(prof)
+        work = dict(prof)
+        pu = str(work.get("param_uuid") or "")
+        links = links_by_uuid.get(pu) or []
+        needs_score = (
+            recompute
+            or not work.get("candidates")
+            or not work.get("capabilities")
+        )
+        if _should_merge_cross_flow(recompute=recompute, links=links):
+            load_and_merge_cross_flow(
+                path,
+                work,
+                persist=False,
+                links=links,
+                score=True,
+            )
+        elif needs_score:
             enrich_profile_capabilities_and_candidates(work)
 
         caps = list(work.get("capabilities") or [])
@@ -426,6 +601,9 @@ def list_candidates(
                 "reasons": list(cand.get("reasons") or []),
                 "evidence_flow_ids": list(cand.get("evidence_flow_ids") or []),
                 "capabilities": caps,
+                # Explicit pass-through for CP/CLI stored-reflection UX.
+                "reflection_modes": list(cand.get("reflection_modes") or []),
+                "stored_reflection": cand.get("stored_reflection"),
             })
             if len(rows) >= limit:
                 break
@@ -446,6 +624,7 @@ def list_candidates(
 def format_candidates_lines(candidates: list[dict[str, Any]] | None) -> list[str]:
     """
     Purpose: Human-readable candidate lines for CLI show / export.
+    Includes reflection_modes and stored sink reasons when present.
     Side effects: None.
     """
     if not candidates:
@@ -458,11 +637,32 @@ def format_candidates_lines(candidates: list[dict[str, Any]] | None) -> list[str
         reason_txt = "; ".join(str(r) for r in reasons[:4])
         if len(reasons) > 4:
             reason_txt += f"; +{len(reasons) - 4} more"
+        modes = c.get("reflection_modes") or []
+        mode_suffix = f"  modes={','.join(modes)}" if modes else ""
         lines.append(
             f"{c.get('attack', '?')}: score={c.get('score', 0)}  "
             f"confidence={c.get('confidence', 0)}"
+            + mode_suffix
             + (f"  — {reason_txt}" if reason_txt else "")
         )
+        stored = c.get("stored_reflection")
+        if isinstance(stored, dict):
+            sinks = stored.get("sinks") or []
+            if isinstance(sinks, list):
+                for sink in sinks[:3]:
+                    if not isinstance(sink, dict):
+                        continue
+                    rsn = sink.get("reason")
+                    if rsn:
+                        lines.append(f"    stored: {rsn}")
+                    else:
+                        method = sink.get("method") or ""
+                        path = sink.get("path") or ""
+                        ctx = sink.get("context") or "other"
+                        enc = sink.get("encoding") or "raw"
+                        lines.append(
+                            f"    stored: sink {method} {path} ({ctx}, {enc})".strip()
+                        )
     return lines
 
 
@@ -613,73 +813,212 @@ def _entry_conf(entry: Any, default: int = 60) -> int:
 
 def _score_xss(ctx: _ProfileView) -> dict[str, Any] | None:
     """
-    XSS candidate: reflection + HTML/JS/attr context + markup/quote accepted.
-    High when reflected HTML and ``<>`` (markup) soft-accepted.
+    XSS candidate: reflection (same-request and/or cross-flow/stored) +
+    HTML/JS/attr context + markup/quote accepted.
+
+    Stored / cross-page evidence satisfies the reflection gate and contributes
+    ordered reasons naming source and sink endpoints. Prioritization only —
+    not XSS confirmation.
     """
     score = 0
     reasons: list[str] = []
-    confs: list[int] = []
+    confs: list[int] = []  # positive contributing confidences only
     flows = ctx.flows_for_classes("markup", "quote")
 
-    reflected = ctx.has(CAPABILITY_REFLECTIVE_INPUT) or (
-        str(ctx.refl.get("state") or "").lower() == "reflected"
+    cross = ctx.refl.get("cross_flow") if isinstance(ctx.refl.get("cross_flow"), dict) else {}
+    same = ctx.refl.get("same_request") if isinstance(ctx.refl.get("same_request"), dict) else {}
+    modes = list(ctx.refl.get("modes") or [])
+
+    cross_state = str(cross.get("state") or "").lower()
+    same_state = str(same.get("state") or "").lower()
+    top_state = str(ctx.refl.get("state") or "").lower()
+
+    stored = (
+        ctx.has(CAPABILITY_STORED_REFLECTION)
+        or cross_state == "reflected"
     )
+    reflected = (
+        ctx.has(CAPABILITY_REFLECTIVE_INPUT)
+        or top_state == "reflected"
+        or same_state == "reflected"
+        or stored
+    )
+
+    # Build stored sink reasons (canonical format) — max 2 for reasons[0..].
+    stored_reasons: list[str] = []
+    stored_sinks_out: list[dict[str, Any]] = []
+    if stored:
+        sinks = list(cross.get("sinks") or [])
+        for sink in sinks[:2]:
+            if not isinstance(sink, dict):
+                continue
+            reason = str(sink.get("reason") or "").strip()
+            if not reason:
+                from talos.projects.value_reflection import format_cross_flow_reason
+
+                # Sink shape may use sink_* keys from profile merge.
+                reason = format_cross_flow_reason({
+                    "source_param_name": ctx.name or "param",
+                    "source_method": sink.get("source_method") or "",
+                    "source_path": sink.get("source_path") or "",
+                    "source_location": ctx.location or "",
+                    "sink_method": sink.get("sink_method") or sink.get("method") or "",
+                    "sink_path": sink.get("sink_path") or sink.get("path") or "",
+                    "sink_context": sink.get("context") or sink.get("sink_context") or "other",
+                    "encoding": sink.get("encoding") or "raw",
+                })
+            if reason:
+                stored_reasons.append(reason)
+            stored_sinks_out.append({
+                "method": sink.get("sink_method") or sink.get("method") or "",
+                "path": sink.get("sink_path") or sink.get("path") or "",
+                "endpoint_id": sink.get("sink_endpoint_id") or sink.get("endpoint_id"),
+                "flow_id": sink.get("sink_flow_id") or sink.get("flow_id"),
+                "context": sink.get("context") or sink.get("sink_context") or "other",
+                "encoding": sink.get("encoding") or "raw",
+                "reason": reason,
+            })
+        # Evidence from cross_flow / top-level.
+        for fid in list(cross.get("evidence_flow_ids") or []) + list(
+            ctx.refl.get("evidence_flow_ids") or []
+        ):
+            s = str(fid)
+            if s and s not in flows:
+                flows.append(s)
+        cross_conf = _clamp(cross.get("confidence") or 0)
+        if cross_conf > 0:
+            confs.append(cross_conf)
+        elif stored:
+            confs.append(70)
+
+    # Reflection modes for candidate extras.
+    reflection_modes: list[str] = list(modes)
+    if not reflection_modes:
+        if same_state in ("reflected", "not_reflected", "conflicting"):
+            reflection_modes.append("same_request")
+        if cross_state in ("reflected", "not_reflected", "conflicting"):
+            reflection_modes.append("cross_flow")
+        if reflected and not reflection_modes:
+            # Legacy profiles without nested modes: same-request only.
+            reflection_modes.append("same_request")
+
+    # --- Score components ------------------------------------------------
     if reflected:
         score += 30
-        reasons.append("input is reflected in responses")
-        confs.append(_entry_conf(ctx.refl, 70))
-        flows = list(dict.fromkeys(flows + list(ctx.refl.get("evidence_flow_ids") or [])))
+        # Confidence: prefer stored link conf when top-level is stored-only;
+        # do not average multiprobe "not_reflected" confidence.
+        if stored and same_state != "reflected":
+            # confs already has cross conf above
+            pass
+        else:
+            confs.append(_entry_conf(ctx.refl, 70))
+        flows = list(dict.fromkeys(
+            flows + list(ctx.refl.get("evidence_flow_ids") or [])
+        ))
+
+    if stored:
+        score += 12  # once per candidate
 
     if ctx.has(CAPABILITY_HTML_CONTEXT):
         score += 25
-        reasons.append("reflection context includes html")
         confs.append(75)
     if ctx.has(CAPABILITY_JS_CONTEXT):
         score += 22
-        reasons.append("reflection context includes javascript")
         confs.append(75)
     if ctx.has(CAPABILITY_URL_CONTEXT) and reflected:
         score += 8
-        reasons.append("reflection in url context")
     if ctx.has(CAPABILITY_JSON_CONTEXT) and reflected:
         score += 5
-        reasons.append("reflection in json context (lower XSS relevance)")
 
     markup_ok = ctx.class_soft_accept("markup")
     quote_ok = ctx.class_soft_accept("quote")
     if markup_ok:
         score += 28
-        reasons.append("markup characters (e.g. <>) accepted")
         confs.append(_entry_conf(ctx.acceptance.get("markup"), 80))
     if quote_ok:
         score += 12
-        reasons.append("quote characters accepted")
         confs.append(_entry_conf(ctx.acceptance.get("quote"), 75))
 
     if ctx.class_rejected("markup"):
         score -= 20
-        reasons.append("negative evidence: markup rejected")
-        confs.append(_entry_conf(ctx.acceptance.get("markup") or ctx.tested.get("markup"), 85))
+        # Negative evidence is not a positive conf contributor.
     if ctx.class_rejected("quote"):
         score -= 8
-        reasons.append("negative evidence: quotes rejected")
 
     # Strong pattern: reflected HTML + accepts <>
+    high_priority = False
     if reflected and ctx.has(CAPABILITY_HTML_CONTEXT) and markup_ok:
         score = max(score, 85)
-        if "high-priority: reflected HTML with markup accepted" not in reasons:
-            reasons.append("high-priority: reflected HTML with markup accepted")
+        high_priority = True
+
+    # Stored + html without markup tests → prioritization floor.
+    if stored and ctx.has(CAPABILITY_HTML_CONTEXT) and not markup_ok:
+        score = max(score, 55)
 
     if not reflected and score < 40:
         # Without reflection, XSS candidate is weak noise.
         return None
 
+    # --- Reason ordering (CP uses reasons[0]) ----------------------------
+    # 1. Stored canonical reasons first (stored-only default), unless
+    #    high-priority same-request pattern takes index 0.
+    # 2. "input is reflected in responses"
+    # 3. Context reasons
+    # 4. Acceptance
+    # 5. Negative evidence
+    ordered: list[str] = []
+
+    if high_priority:
+        ordered.append("high-priority: reflected HTML with markup accepted")
+        for r in stored_reasons:
+            if r not in ordered:
+                ordered.append(r)
+    else:
+        for r in stored_reasons:
+            ordered.append(r)
+
+    if reflected:
+        ordered.append("input is reflected in responses")
+
+    if ctx.has(CAPABILITY_HTML_CONTEXT):
+        ordered.append("reflection context includes html")
+    if ctx.has(CAPABILITY_JS_CONTEXT):
+        ordered.append("reflection context includes javascript")
+    if ctx.has(CAPABILITY_URL_CONTEXT) and reflected:
+        ordered.append("reflection in url context")
+    if ctx.has(CAPABILITY_JSON_CONTEXT) and reflected:
+        ordered.append("reflection in json context (lower XSS relevance)")
+
+    if markup_ok:
+        ordered.append("markup characters (e.g. <>) accepted")
+    if quote_ok:
+        ordered.append("quote characters accepted")
+    if ctx.class_rejected("markup"):
+        ordered.append("negative evidence: markup rejected")
+    if ctx.class_rejected("quote"):
+        ordered.append("negative evidence: quotes rejected")
+
+    # When reflective_input is solely via cross_flow, at least one stored
+    # reason is required (design §7).
+    if stored and same_state != "reflected" and not stored_reasons:
+        # Fallback generic stored reason if sinks missing reason text.
+        ordered.insert(0, "stored/cross-page reflection observed")
+
+    stored_block: dict[str, Any] | None = None
+    if stored:
+        stored_block = {
+            "link_count": int(cross.get("link_count") or len(stored_sinks_out) or 0),
+            "sinks": stored_sinks_out,
+        }
+
     return empty_candidate(
         ATTACK_XSS,
         score=score,
         confidence=_avg_conf(*confs) if confs else 55,
-        reasons=reasons,
+        reasons=ordered,
         evidence_flow_ids=flows[:20],
+        reflection_modes=reflection_modes,
+        stored_reflection=stored_block,
     )
 
 
@@ -1092,6 +1431,7 @@ __all__ = [
     "score_candidates",
     "apply_candidates",
     "enrich_profile_capabilities_and_candidates",
+    "load_and_merge_cross_flow",
     "get_param_intelligence",
     "list_candidates",
     "format_candidates_lines",

@@ -20,5 +20,16 @@ Purpose:
         4. Scheduler executes via bac.engine.execute_bac_job.
         5. Results stored in bac_results table; verdict: POSSIBLE_BAC | SECURE | UNKNOWN.
 
+Components:
+    decision_filter.py
+        Load and evaluate BAC-decision-filter.yaml.
+
+    filter_cli.py
+        Manage the decision filter file (init | show | validate | apply).
+
+    reclassify.py
+        Offline re-apply of the decision filter to stored bac_results
+        and auto-reject of matching TRIAGING findings.
+
 Dependencies: talos.projects.bac.candidates, .auth_prereq, .variants, .engine, .cli
 """

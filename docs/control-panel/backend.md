@@ -30,6 +30,7 @@ backend/
         ├── endpoints.py
         ├── flows.py
         ├── replay.py
+        ├── send.py              # Repeater / Mode 2 send (in-process engine)
         ├── scheduler.py
         ├── mutations.py
         ├── attack.py
@@ -61,9 +62,11 @@ Router registration order (include order):
 
 1. projects, proxy, roles, modules  
 2. access, auth, auth_config, endpoints  
-3. flows, replay, scheduler, mutations  
+3. flows, replay, send, scheduler, mutations  
 4. attack, input_validation, findings, console  
 5. configuration (layered `talos config` surface)
+
+**Note:** `send` router mutations call `talos.send.engine` in-process (CLI exception documented in `cli-integration.md`).
 
 ### Health endpoint
 
@@ -192,7 +195,7 @@ Each router is an `APIRouter` with a `/api/<domain>` prefix and FastAPI tags.
 | `proxy.py` | `/api/proxy` | Start/stop/restart/status/config/logs via Talos proxy CLI + runtime log |
 | `roles.py` | `/api/roles` | List (DB), create/set/unset/rename/delete (CLI) |
 | `modules.py` | `/api/modules` | List (DB), create/set/unset/rename/delete (CLI) |
-| `access.py` | `/api/access` | Matrix (DB), client/server set, coverage/signals |
+| `access.py` | `/api/access` | Matrix+counts (DB), client/server set/unset, delete --force, bulk, GET coverage/signals, CLI coverage/signals |
 | `auth.py` | `/api/auth` | Artifact names (set/unset/clear --force), auth-bypass test, test-results |
 | `auth_config.py` | `/api/auth-config` | Per-role provider, session file/apply/clear, login flows, extractors (get/set/remove), test (JSON full tokens), validate/refresh, TTL, expiry signals (incl. headers), control flows, reset-health; enriched state snapshot |
 | `endpoints.py` | `/api/endpoints` | Endpoint Workspace: resolved list/summary/coverage, bulk multi-ID mutations, rules CRUD+preview, detail+policy explain |
@@ -203,6 +206,8 @@ Each router is an `APIRouter` with a `/api/<domain>` prefix and FastAPI tags.
 | `mutations.py` | `/api/mutations` | HTTP Rules (Manipulation Engine): list/summary, engine toggle, create/update, enable/disable, import/export, reorder, duplicate |
 | `attack.py` | `/api/attack` | Unauth + BAC run/results/filters |
 | `input_validation.py` | `/api/input-validation` | IV engine control + caches + export |
+| `passive.py` | `/api/passive` | Secret Detection status/docs/detections/rescan |
+| `error_intel.py` | `/api/error-intel` | Error Intelligence clusters/observations/rollups/rescan (reads via `talos.error_intel.db`; config/rescan via CLI) |
 | `findings.py` | `/api/findings` | List/detail/lifecycle, groups, reports |
 | `console.py` | `/api/console` | Tree + modeled run + raw run |
 

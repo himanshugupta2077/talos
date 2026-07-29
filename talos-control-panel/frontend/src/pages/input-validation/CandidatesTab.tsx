@@ -9,6 +9,7 @@ import {
   CandidateRow,
   downloadJson,
   inputClass,
+  IV_BASE,
   selectClass,
 } from "./shared";
 
@@ -105,11 +106,21 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
             placeholder="host"
           />
           <input
-            className={`${inputClass} w-40 mono`}
+            className={`${inputClass} w-44 mono`}
             value={capability}
             onChange={(e) => setCapability(e.target.value)}
-            placeholder="capability"
+            placeholder="capability (e.g. stored_reflection)"
+            list="iv-capability-hints"
+            title="Filter by capability flag"
           />
+          <datalist id="iv-capability-hints">
+            <option value="stored_reflection" />
+            <option value="reflective_input" />
+            <option value="html_context" />
+            <option value="js_context" />
+            <option value="json_context" />
+            <option value="url_context" />
+          </datalist>
           <input
             className={`${inputClass} w-40`}
             value={search}
@@ -167,7 +178,12 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
                         <CandidateScore score={c.score} confidence={c.confidence} />
                       </td>
                       <td className="max-w-xs truncate text-xs">
-                        {(c.reasons || [])[0] || "—"}
+                        <div className="truncate">{(c.reasons || [])[0] || "—"}</div>
+                        {(c.reflection_modes || []).includes("cross_flow") && (
+                          <span className="badge badge-warning badge-outline badge-xs mt-0.5">
+                            stored
+                          </span>
+                        )}
                       </td>
                       <td>
                         {c.param_uuid && (
@@ -175,7 +191,7 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
                             className="btn btn-ghost btn-xs"
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/input-validation/params/${c.param_uuid}`);
+                              navigate(`${IV_BASE}/params/${c.param_uuid}`);
                             }}
                           >
                             Open
@@ -186,6 +202,18 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
                     {open && (
                       <tr className="bg-base-200/40">
                         <td colSpan={7} className="text-xs p-3">
+                          {(c.reflection_modes || []).length > 0 && (
+                            <>
+                              <div className="font-medium mb-1">Reflection modes</div>
+                              <div className="flex flex-wrap gap-1 mb-2">
+                                {(c.reflection_modes || []).map((m) => (
+                                  <span key={m} className="badge badge-ghost badge-xs mono">
+                                    {m}
+                                  </span>
+                                ))}
+                              </div>
+                            </>
+                          )}
                           <div className="font-medium mb-1">Reasons</div>
                           <ul className="list-disc list-inside mb-2">
                             {(c.reasons || []).map((r, j) => (
@@ -193,6 +221,33 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
                             ))}
                             {!(c.reasons || []).length && <li className="text-base-content/40">—</li>}
                           </ul>
+                          {c.stored_reflection &&
+                            (c.stored_reflection.sinks || []).length > 0 && (
+                              <>
+                                <div className="font-medium mb-1">
+                                  Stored / cross-page sinks{" "}
+                                  <span className="font-normal text-base-content/50">
+                                    (data-flow evidence, not XSS)
+                                  </span>
+                                </div>
+                                <ul className="list-disc list-inside mb-2 mono">
+                                  {(c.stored_reflection.sinks || []).map((s, j) => (
+                                    <li key={j}>
+                                      {s.reason ||
+                                        `${s.method || ""} ${s.path || ""} (${s.context || "other"}, ${s.encoding || "raw"})`.trim()}
+                                      {s.flow_id && (
+                                        <>
+                                          {" "}
+                                          <Link className="link" to={`/flows/${s.flow_id}`}>
+                                            {s.flow_id.slice(0, 8)}
+                                          </Link>
+                                        </>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
                           {(c.evidence_flow_ids || []).length > 0 && (
                             <>
                               <div className="font-medium mb-1">Evidence flows</div>

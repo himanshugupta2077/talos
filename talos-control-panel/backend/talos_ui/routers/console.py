@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Any
 
 from .. import cli
-from ..command_tree import COMMAND_TREE, build_argv, find_command
+from ..command_tree import COMMAND_TREE, build_argv, find_command, stdin_text_for
 
 router = APIRouter(prefix="/api/console", tags=["console"])
 
@@ -25,13 +25,17 @@ def run_command(body: RunBody):
     if command is None:
         return {"error": f"unknown command '{body.command_id}'"}
     argv = build_argv(command, body.values)
+    stdin_text = stdin_text_for(command, body.values)
     if command.get("background"):
         result = cli.process_manager.start(command["id"], argv)
         return {"background": True, **result}
     if body.project_id:
-        results = cli.run_scoped(body.project_id, argv)
+        if stdin_text is not None:
+            results = cli.run_scoped_with_stdin(body.project_id, argv, stdin_text)
+        else:
+            results = cli.run_scoped(body.project_id, argv)
         return {"steps": [r.to_dict() for r in results]}
-    result = cli.run(argv)
+    result = cli.run(argv, stdin_text=stdin_text)
     return {"steps": [result.to_dict()]}
 
 

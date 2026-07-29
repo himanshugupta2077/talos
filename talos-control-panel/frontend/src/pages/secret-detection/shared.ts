@@ -1,5 +1,8 @@
 /** Shared types and constants for Secret Detection (passive scan) workspace. */
 
+/** Nested under Attack hub — re-export so secret-detection pages share one path constant. */
+export { SECRETS_BASE } from "../attack/registry";
+
 export type PassiveTab =
   | "overview"
   | "detections"

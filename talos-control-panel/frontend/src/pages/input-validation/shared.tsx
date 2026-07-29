@@ -1,5 +1,7 @@
 /** Shared types and constants for the Input Validation workspace. */
 
+export { IV_BASE } from "../attack/registry";
+
 export type IvTab =
   | "overview"
   | "candidates"
@@ -78,6 +80,22 @@ export interface IvConfig {
   excluded_endpoints: string[];
 }
 
+/** Sink summary from cross-flow / stored reflection (prioritization evidence). */
+export interface StoredReflectionSink {
+  method?: string;
+  path?: string;
+  endpoint_id?: string;
+  flow_id?: string;
+  context?: string;
+  encoding?: string;
+  reason?: string;
+}
+
+export interface StoredReflection {
+  link_count?: number;
+  sinks?: StoredReflectionSink[];
+}
+
 export interface CandidateRow {
   param_uuid?: string;
   host?: string;
@@ -89,6 +107,10 @@ export interface CandidateRow {
   reasons?: string[];
   evidence_flow_ids?: string[];
   capabilities?: string[];
+  /** e.g. ["same_request", "cross_flow"] */
+  reflection_modes?: string[];
+  /** Present when XSS (or other) score used stored/cross-page evidence */
+  stored_reflection?: StoredReflection | null;
 }
 
 export interface ProfileRow {
