@@ -209,6 +209,34 @@ class TestRawHttp:
         assert parsed["host"] == "example.com"
         assert parsed["request_body"] is None
         assert parsed["request_headers"]["Accept"] == "*/*"
+        # Absolute URL must use ?query (not path;params from urlunparse mixup).
+        assert parsed["url"] == "https://example.com/path?q=1"
+        assert ";" not in parsed["url"].split("?", 1)[0] or "path" in parsed["url"]
+
+    def test_parse_query_string_in_absolute_url(self) -> None:
+        raw = (
+            b"GET /v1/item?q=1&x=2 HTTP/1.1\r\n"
+            b"Host: api.example.com\r\n"
+            b"\r\n"
+        )
+        parsed = parse_request(raw, default_scheme="https")
+        assert parsed["path"] == "/v1/item"
+        assert parsed["query"] == "q=1&x=2"
+        assert parsed["url"] == "https://api.example.com/v1/item?q=1&x=2"
+        assert ";q=" not in parsed["url"]
+
+        # serialize → parse keeps query on the request line and absolute URL.
+        again = parse_request(
+            serialize_request(
+                parsed["method"],
+                parsed["url"],
+                parsed["request_headers"],
+                parsed["request_body"],
+            ),
+            default_scheme="https",
+        )
+        assert again["url"] == parsed["url"]
+        assert again["query"] == "q=1&x=2"
 
     def test_post_with_body_round_trip(self) -> None:
         body = b'{"a":1}'
@@ -249,6 +277,20 @@ class TestRawHttp:
         assert d2["endpoint_id"] == "ep-1"
         assert d2["request_body"] == b'{"qty":99}'
         assert d2["edit_mode"] == "raw"
+
+    def test_apply_raw_resyncs_cookies_from_header(self) -> None:
+        d = draft_from_flow(_parent_flow())
+        assert d["request_cookies"].get("sid") == "abc"
+        raw = (
+            b"GET /v1/item HTTP/1.1\r\n"
+            b"Host: api.example.com\r\n"
+            b"Cookie: token=new; other=1\r\n"
+            b"\r\n"
+        )
+        d2 = apply_raw_message(d, raw)
+        assert d2["request_headers"]["Cookie"] == "token=new; other=1"
+        assert d2["request_cookies"] == {"token": "new", "other": "1"}
+        assert "sid" not in d2["request_cookies"]
 
     def test_parse_empty_raises(self) -> None:
         with pytest.raises(ValueError):

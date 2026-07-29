@@ -404,6 +404,67 @@ def test_baseline_selection_still_proxy_capture_only(db_path: Path) -> None:
 # Phase 2                                                              #
 # ------------------------------------------------------------------ #
 
+def test_raw_file_wire_url_keeps_query_string(db_path: Path) -> None:
+    """Regression: raw parse must not turn ?query into path;params for httpx."""
+    parent_id = _insert_capture(db_path)
+    raw = (
+        b"GET /v1/item?q=1&x=2 HTTP/1.1\r\n"
+        b"Host: api.example.com\r\n"
+        b"Cookie: token=rawtok\r\n"
+        b"\r\n"
+    )
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        outcome, client = _run_send(
+            client_cls,
+            _mock_response(200, b"ok"),
+            parent_id,
+            db_path,
+            "proj",
+            raw_message=raw,
+        )
+    assert outcome.success
+    call_kwargs = client.request.await_args.kwargs
+    assert call_kwargs["url"] == "https://api.example.com/v1/item?q=1&x=2"
+    assert ";q=" not in call_kwargs["url"]
+
+    stored = send_db.get_flow_for_send(db_path, outcome.execution_flow_id)  # type: ignore[arg-type]
+    assert stored is not None
+    assert stored["url"] == "https://api.example.com/v1/item?q=1&x=2"
+    assert stored["query"] == "q=1&x=2"
+    cookies = (
+        json.loads(stored["request_cookies"])
+        if isinstance(stored.get("request_cookies"), str)
+        else (stored.get("request_cookies") or {})
+    )
+    assert cookies == {"token": "rawtok"}
+
+
+def test_history_session_filter_finds_recent_among_many(db_path: Path) -> None:
+    """Session filter must not miss recent rows when many older sends exist."""
+    root = _insert_capture(db_path)
+    session = str(uuid.uuid4())
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        client.request = AsyncMock(return_value=_mock_response())
+        client_cls.return_value = client
+
+        for _ in range(15):
+            asyncio.run(send_once(root, db_path, "proj", reason="noise"))
+        targeted = asyncio.run(
+            send_once(root, db_path, "proj", session_id=session, reason="keep")
+        )
+
+    assert targeted.success
+    hist = send_db.list_send_history(
+        db_path, root, limit=5, session_id=session
+    )
+    assert len(hist) == 1
+    assert hist[0]["id"] == targeted.execution_flow_id
+    assert hist[0]["session_id"] == session
+
+
 def test_phase2_edits_cookie_path_host_json_and_meta(db_path: Path) -> None:
     parent_id = _insert_capture(
         db_path,

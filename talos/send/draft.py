@@ -411,6 +411,11 @@ def apply_raw_message(
     out["query"] = parsed["query"]
     out["request_headers"] = dict(parsed["request_headers"])
     out["request_body"] = parsed["request_body"]
+    # Keep request_cookies in sync with Cookie header (header is source of truth
+    # for raw edits — avoids stale map winning request_diff / UI cookie panels).
+    out["request_cookies"] = _parse_cookie_header(
+        _header_value(out["request_headers"], "Cookie") or ""
+    )
     out["edit_mode"] = "raw"
     return out
 

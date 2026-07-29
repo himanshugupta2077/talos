@@ -164,26 +164,52 @@ def list_send_history(
     else:
         sources = tuple(sorted(SEND_SOURCES))
     placeholders = ",".join("?" * len(sources))
-    # Over-fetch when JSON filters need post-filtering (SQLite JSON1 may be absent).
-    fetch_limit = max(1, limit)
-    if session_id or parent_flow_id:
-        fetch_limit = max(fetch_limit * 20, 500)
+    limit_n = max(1, limit)
+
+    # Prefer SQL-side filters on flow_meta (json_extract) so session/parent
+    # history is correct under large trees — not "oldest N then post-filter".
+    where = [
+        "original_flow_id = ?",
+        f"source IN ({placeholders})",
+    ]
+    params: list[object] = [root, *sources]
+    if session_id is not None:
+        where.append("json_extract(flow_meta, '$.session_id') = ?")
+        params.append(session_id)
+    if parent_flow_id is not None:
+        where.append("json_extract(flow_meta, '$.parent_flow_id') = ?")
+        params.append(parent_flow_id)
+    params.append(limit_n)
+
+    sql = f"""
+        SELECT id, method, url, host, path, query,
+               status_code, source, original_flow_id, replay_reason,
+               replay_error, captured_at, flow_meta,
+               request_body, response_body
+        FROM flows
+        WHERE {" AND ".join(where)}
+        ORDER BY captured_at ASC
+        LIMIT ?
+    """
 
     with _connect_ro(db_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT id, method, url, host, path, query,
-                   status_code, source, original_flow_id, replay_reason,
-                   replay_error, captured_at, flow_meta,
-                   request_body, response_body
-            FROM flows
-            WHERE original_flow_id = ?
-              AND source IN ({placeholders})
-            ORDER BY captured_at ASC
-            LIMIT ?
-            """,
-            (root, *sources, fetch_limit),
-        ).fetchall()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            # Fallback without JSON1: scan all matching sends then filter.
+            rows = conn.execute(
+                f"""
+                SELECT id, method, url, host, path, query,
+                       status_code, source, original_flow_id, replay_reason,
+                       replay_error, captured_at, flow_meta,
+                       request_body, response_body
+                FROM flows
+                WHERE original_flow_id = ?
+                  AND source IN ({placeholders})
+                ORDER BY captured_at ASC
+                """,
+                (root, *sources),
+            ).fetchall()
 
     results: list[dict] = []
     for row in rows:
@@ -213,7 +239,7 @@ def list_send_history(
         if parent_flow_id is not None and d.get("parent_flow_id") != parent_flow_id:
             continue
         results.append(d)
-        if len(results) >= max(1, limit):
+        if len(results) >= limit_n:
             break
     return results
 

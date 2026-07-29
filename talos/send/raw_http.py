@@ -246,7 +246,9 @@ def _resolve_url(
     else:
         host_only = hostname.rsplit(":", 1)[0] if ":" in hostname else hostname
 
-    url = urlunparse((scheme, authority, path or "/", query, "", ""))
+    # urlunparse: (scheme, netloc, path, params, query, fragment)
+    # Query must be the 5th component — putting it in params yields path;query.
+    url = urlunparse((scheme, authority, path or "/", "", query, ""))
     return url, host_only, path or "/", query
 
 
