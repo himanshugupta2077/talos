@@ -32,6 +32,7 @@ import httpx
 
 from talos.intruder import db as intruder_db
 from talos.intruder.config_schema import merge_defaults
+from talos.intruder.findings_bridge import findings_config_from, maybe_promote_result
 from talos.intruder.generators import build_generator
 from talos.intruder.grep import evaluate_grep_rules, rules_to_pool
 from talos.intruder.match import evaluate_match_rules
@@ -181,6 +182,8 @@ async def run_session_segment(
     matched = int(progress.get("matched") or 0)
     errors = int(progress.get("errors") or 0)
     consecutive_auth_fail = int(progress.get("consecutive_auth_fail") or 0)
+    findings_promoted = int(progress.get("findings_promoted") or 0)
+    fcfg = findings_config_from(cfg)
     # Phase 3: batch pool writes per segment flush
     pool_buffer: dict[str, list[str]] = {}
 
@@ -304,6 +307,7 @@ async def run_session_segment(
             "timing": timing.snapshot(),
             "active_duration_s": active_duration_s + (time.monotonic() - segment_start),
             "consecutive_auth_fail": consecutive_auth_fail,
+            "findings_promoted": findings_promoted,
             "updated_at": _now_iso(),
             "baseline_fingerprint": baseline_fp,
         })
@@ -625,8 +629,28 @@ async def run_session_segment(
                 if fid:
                     result.flow_id = fid
 
+                # Phase 5: optional findings promote (fail-soft, capped)
+                row = attempt_result_to_row(result)
+                row["id"] = str(uuid.uuid4())
+                if fcfg.get("promote") and (interesting or row.get("match_tags")):
+                    try:
+                        finding_id, findings_promoted = maybe_promote_result(
+                            db_path,
+                            project_id,
+                            session,
+                            row,
+                            fcfg=fcfg,
+                            findings_promoted=findings_promoted,
+                            job_id=job_id,
+                        )
+                        if finding_id:
+                            row["finding_id"] = finding_id
+                            result.finding_id = finding_id
+                    except Exception as exc:  # noqa: BLE001
+                        _log.debug("Intruder findings promote skipped: %s", exc)
+
                 sent += 1
-                buffer.append(attempt_result_to_row(result))
+                buffer.append(row)
 
                 if (
                     len(buffer) >= RESULT_BATCH_SIZE

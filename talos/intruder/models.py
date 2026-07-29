@@ -3,7 +3,7 @@ Module: talos.intruder.models
 
 Purpose:
     Dataclasses and constants for Intruder (sessions, templates, attempts,
-    segment outcomes, hard-cap defaults). Phase 1–4 plugins.
+    segment outcomes, hard-cap defaults). Phase 1–5 plugins.
 
 Dependencies: dataclasses, typing
 Data flow:
@@ -192,6 +192,25 @@ DEFAULT_DATES_STEP_DAYS = 1
 DEFAULT_PATTERN_START = 0
 DEFAULT_PATTERN_END = 99
 
+# Phase 5: optional findings promote (off by default)
+FINDINGS_ON_INTERESTING = "interesting"
+FINDINGS_ON_MATCHED = "matched"  # alias of interesting (match tags or grep tags)
+KNOWN_FINDINGS_ON: frozenset[str] = frozenset({
+    FINDINGS_ON_INTERESTING,
+    FINDINGS_ON_MATCHED,
+})
+DEFAULT_FINDINGS_PROMOTE = False
+DEFAULT_FINDINGS_MAX = 25
+DEFAULT_FINDINGS_ONLY_SUCCESS = True
+CLUSTER_BY_SESSION = "session"
+CLUSTER_BY_ENDPOINT = "endpoint"
+KNOWN_FINDINGS_CLUSTER_BY: frozenset[str] = frozenset({
+    CLUSTER_BY_SESSION,
+    CLUSTER_BY_ENDPOINT,
+})
+ATTACK_TYPE_INTRUDER = "intruder"
+VERDICT_INTRUDER_MATCH = "MATCH"
+
 # Processors (Phase 1 + Phase 2)
 PROC_URL_ENCODE = "url_encode"
 PROC_URL_DECODE = "url_decode"
@@ -296,6 +315,7 @@ class AttemptResult:
     duration_ms: Optional[float]
     metrics: dict[str, Any] = field(default_factory=dict)
     flow_id: Optional[str] = None
+    finding_id: Optional[str] = None
     match_tags: list[str] = field(default_factory=list)
     grepped: dict[str, list[str]] = field(default_factory=dict)
     interesting: bool = False
@@ -353,3 +373,5 @@ ERR_BRUTEFORCE_TOO_LARGE = "bruteforce_too_large"
 ERR_INVALID_DATES = "invalid_dates"
 ERR_INVALID_PATTERN = "invalid_pattern"
 ERR_INVALID_RANDOM = "invalid_random"
+ERR_INVALID_FINDINGS = "invalid_findings"
+ERR_FINDINGS_NO_MATCH = "findings_no_match"

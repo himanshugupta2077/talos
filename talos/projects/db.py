@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 47
+SCHEMA_VERSION = 48
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1245,6 +1245,7 @@ CREATE TABLE IF NOT EXISTS intruder_results (
     match_tags_json  TEXT    NOT NULL DEFAULT '[]',
     grepped_json     TEXT    NOT NULL DEFAULT '{}',
     flow_id          TEXT,
+    finding_id       TEXT,                             -- Phase 5 optional findings promote
     created_at       TEXT    NOT NULL,
     UNIQUE (session_id, attempt_index)
 );
@@ -1252,6 +1253,8 @@ CREATE INDEX IF NOT EXISTS idx_intruder_results_session
     ON intruder_results (session_id, attempt_index);
 CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
     ON intruder_results (session_id, interesting) WHERE interesting = 1;
+CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
+    ON intruder_results (finding_id) WHERE finding_id IS NOT NULL;
 
 -- ------------------------------------------------------------------ --
 -- Intruder (Phase 3): extracted value pools for chaining              --
@@ -1973,6 +1976,7 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
                 match_tags_json  TEXT    NOT NULL DEFAULT '[]',
                 grepped_json     TEXT    NOT NULL DEFAULT '{}',
                 flow_id          TEXT,
+                finding_id       TEXT,
                 created_at       TEXT    NOT NULL,
                 UNIQUE (session_id, attempt_index)
             );
@@ -1980,6 +1984,8 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
                 ON intruder_results (session_id, attempt_index);
             CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
                 ON intruder_results (session_id, interesting) WHERE interesting = 1;
+            CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
+                ON intruder_results (finding_id) WHERE finding_id IS NOT NULL;
         """)
 
     if from_version < 47:
@@ -1999,6 +2005,23 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
             CREATE INDEX IF NOT EXISTS idx_intruder_pools_project
                 ON intruder_pools (project_id, updated_at DESC);
         """)
+
+    if from_version < 48:
+        # Intruder Phase 5: optional findings promote lineage on results.
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(intruder_results)").fetchall()
+        }
+        if "finding_id" not in cols:
+            conn.execute(
+                "ALTER TABLE intruder_results ADD COLUMN finding_id TEXT"
+            )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
+                ON intruder_results (finding_id) WHERE finding_id IS NOT NULL
+            """
+        )
 
 
 def _seed_default_context(db_path: Path) -> None:
@@ -2128,6 +2151,7 @@ def migrate_project_db(db_path: Path) -> None:
                    (tab metadata only; drafts re-materialize from parent flow).
         v45 → v46: intruder_sessions + intruder_results — Intruder Phase 1 engine.
         v46 → v47: intruder_pools — Intruder Phase 3 extracted value pools.
+        v47 → v48: intruder_results.finding_id — Phase 5 optional findings promote.
     """
     if not db_path.exists():
         return
@@ -3384,6 +3408,7 @@ def migrate_project_db(db_path: Path) -> None:
                     match_tags_json  TEXT    NOT NULL DEFAULT '[]',
                     grepped_json     TEXT    NOT NULL DEFAULT '{}',
                     flow_id          TEXT,
+                    finding_id       TEXT,
                     created_at       TEXT    NOT NULL,
                     UNIQUE (session_id, attempt_index)
                 );
@@ -3391,6 +3416,8 @@ def migrate_project_db(db_path: Path) -> None:
                     ON intruder_results (session_id, attempt_index);
                 CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
                     ON intruder_results (session_id, interesting) WHERE interesting = 1;
+                CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
+                    ON intruder_results (finding_id) WHERE finding_id IS NOT NULL;
             """)
             conn.execute("UPDATE schema_version SET version = 46")
             conn.commit()
@@ -3413,6 +3440,32 @@ def migrate_project_db(db_path: Path) -> None:
                     ON intruder_pools (project_id, updated_at DESC);
             """)
             conn.execute("UPDATE schema_version SET version = 47")
+            conn.commit()
+
+        if current < 48:
+            # Intruder Phase 5: optional findings promote lineage on results.
+            try:
+                cols = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(intruder_results)"
+                    ).fetchall()
+                }
+            except sqlite3.OperationalError:
+                cols = set()
+            if cols and "finding_id" not in cols:
+                conn.execute(
+                    "ALTER TABLE intruder_results ADD COLUMN finding_id TEXT"
+                )
+            if cols:
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
+                        ON intruder_results (finding_id)
+                        WHERE finding_id IS NOT NULL
+                    """
+                )
+            conn.execute("UPDATE schema_version SET version = 48")
             conn.commit()
 
 

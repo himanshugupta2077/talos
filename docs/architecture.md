@@ -1815,7 +1815,7 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.send.db` | History filters (root/session/parent/source); note UPDATE on send rows only; export HTTP files; tree lines | Schema migration beyond flows |
 | `talos.send.cli` | Full Repeater CLI (from/edit/once/redo/dup/show/export/history/tree/diff/note); immediate send (no scheduler); `--format json` for AI | — |
 | Control Panel Repeater | `/repeater` + `/api/send/*` workbench; mutations call `talos.send.engine` in-process (CLI exception); drafts in browser localStorage | Redesign of send semantics |
-| `talos.intruder` | High-volume mutation engine (Phase 1–4): template + generators (wordlist/numbers/static/uuid/csv/json/example_values/pool/dates/bruteforce/random/pattern) + single/sniper/pitchfork/zip/cluster_bomb; timing fixed/unlimited/token_bucket/adaptive; storage modes; host concurrency caps; session clone; grep extract → `intruder_pools`; param-intel `from-params`; offline `suggest`; time-sliced `intruder_session` jobs; metrics table; no findings bridge | Findings promote, UI (later) |
+| `talos.intruder` | High-volume mutation engine (Phase 1–5): template + generators (wordlist/numbers/static/uuid/csv/json/example_values/pool/dates/bruteforce/random/pattern) + single/sniper/pitchfork/zip/cluster_bomb; timing fixed/unlimited/token_bucket/adaptive; storage modes; host concurrency caps; session clone; grep extract → `intruder_pools`; param-intel `from-params`; offline `suggest`; optional findings promote (default off, max_findings cap, `finding_id` lineage); time-sliced `intruder_session` jobs; metrics table | Control Panel UI, state_machine (later) |
 | `talos.scheduler.scheduler.ReplayScheduler` | Daemon thread: consume pending jobs from scheduler_jobs; annotation pre-check (logout/dangerous); per-cycle config reload; configurable jitter; mark job done/failed/skipped (`endpoint_excluded` / `endpoint_not_qualified` → skipped); trigger `create_finding_from_verdict` after BAC and auth outcomes | Direct execution (delegates to replay/auth engines), CLI parsing |
 | `talos.projects.bac.candidates` | BAC candidate generation from access matrix × testable endpoints (2xx flows); mutually exclusive endpoint/module scope + attacker role filter | Write path, attack execution |
 | `talos.projects.bac.engine` | BAC attack execution; re-checks Endpoint Policy before HTTP; outbound httpx uses project upstream via `get_upstream_url` | Candidate generation, CLI |
@@ -2131,7 +2131,7 @@ Empty in-scope list → nothing captured (strict opt-in).
 ## Database Schema (per project)
 
 `SCHEMA_VERSION = 46` (`talos.projects.db`). WAL mode and foreign keys are enabled.
-Intruder tables: `intruder_sessions`, `intruder_results` (v46); `intruder_pools` (v47).
+Intruder tables: `intruder_sessions`, `intruder_results` (v46; `finding_id` v48); `intruder_pools` (v47).
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,

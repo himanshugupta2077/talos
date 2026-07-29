@@ -2,7 +2,7 @@
 Module: talos.intruder.cli
 
 Purpose:
-    CLI for Talos Intruder (Phase 1–4):
+    CLI for Talos Intruder (Phase 1–5):
 
         talos intruder session create|list|show|configure|validate|run|
                                pause|resume|stop|status|delete|clone
@@ -14,6 +14,7 @@ Purpose:
         talos intruder match add|list|clear
         talos intruder grep add|list|clear
         talos intruder pool list|show|export|clear|delete
+        talos intruder findings set|show|promote   # Phase 5
         talos intruder results list|show|export
         talos intruder generators list
         talos intruder suggest <session_id> [--apply]   # Phase 4
@@ -25,7 +26,8 @@ Data flow:
     argv → project gate → handlers → session/engine/db → stdout
 Side effects:
     Session CRUD, scheduler enqueue, HTTP on --right-now / engine path,
-    pool writes from grep extract; suggest --apply mutates config.
+    pool writes from grep extract; suggest --apply mutates config;
+    optional findings promote (off by default).
 """
 
 from __future__ import annotations
@@ -60,13 +62,22 @@ from talos.intruder.config_schema import (
     storage_requires_confirm,
     validate_config,
 )
+from talos.intruder.findings_bridge import (
+    findings_config_from,
+    promote_session_results,
+)
 from talos.intruder.grep import validate_grep_rule
 from talos.intruder.models import (
+    CLUSTER_BY_ENDPOINT,
+    CLUSTER_BY_SESSION,
+    DEFAULT_FINDINGS_MAX,
     ERR_CONFIRM_REQUIRED,
     ERR_ENDPOINT_ANNOTATED_DANGEROUS,
     ERR_ENDPOINT_ANNOTATED_LOGOUT,
     ERR_OUT_OF_SCOPE,
     ERR_SESSION_BUSY,
+    FINDINGS_ON_INTERESTING,
+    KNOWN_FINDINGS_CLUSTER_BY,
     KNOWN_GENERATORS,
     KNOWN_PROCESSORS,
     KNOWN_STORAGE_MODES,
@@ -106,11 +117,12 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="talos intruder",
         description=(
-            "Intruder: high-volume mutation attack engine (Phase 1–4). "
+            "Intruder: high-volume mutation attack engine (Phase 1–5). "
             "Template + payload sets + single/sniper/pitchfork/zip/cluster_bomb; "
             "grep extract pools; csv/json/uuid/example_values + dates/bruteforce/"
             "random/pattern generators; adaptive/token_bucket timing; AI suggest; "
-            "param-intel template assist; storage modes; scheduler time-slices. "
+            "param-intel template assist; storage modes; scheduler time-slices; "
+            "optional findings promote (off by default). "
             "Distinct from 'talos send' (Repeater) and 'talos input-validation'."
         ),
     )
@@ -603,6 +615,65 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_glist = g_sub.add_parser("list", help="List generators, processors, strategies.")
     add_format_argument(p_glist)
 
+    # ---- findings (Phase 5) ----
+    p_f = sub.add_parser(
+        "findings",
+        help="Optional findings promote (Phase 5; off by default).",
+    )
+    f_sub = p_f.add_subparsers(dest="findings_cmd", metavar="<action>")
+    f_sub.required = True
+
+    p_fset = f_sub.add_parser("set", help="Configure findings promote policy.")
+    p_fset.add_argument("session_id")
+    p_fset.add_argument(
+        "--promote",
+        choices=["on", "off", "true", "false", "1", "0"],
+        help="Enable or disable promote (default off).",
+    )
+    p_fset.add_argument(
+        "--max",
+        type=int,
+        dest="max_findings",
+        help=f"Max findings per session (default {DEFAULT_FINDINGS_MAX}).",
+    )
+    p_fset.add_argument(
+        "--on",
+        dest="on_mode",
+        choices=["interesting", "matched"],
+        help="Which results to promote (default interesting).",
+    )
+    p_fset.add_argument(
+        "--cluster-by",
+        choices=sorted(KNOWN_FINDINGS_CLUSTER_BY),
+        dest="cluster_by",
+        help="Cluster key: session (default) or endpoint.",
+    )
+    p_fset.add_argument(
+        "--only-success",
+        choices=["on", "off", "true", "false", "1", "0"],
+        dest="only_success",
+        help="Only promote successful HTTP attempts (default on).",
+    )
+    add_force_argument(p_fset)
+    add_format_argument(p_fset)
+
+    p_fshow = f_sub.add_parser("show", help="Show findings promote config + counts.")
+    p_fshow.add_argument("session_id")
+    add_format_argument(p_fshow)
+
+    p_fprom = f_sub.add_parser(
+        "promote",
+        help="Offline promote interesting results without finding_id (opt-in).",
+    )
+    p_fprom.add_argument("session_id")
+    p_fprom.add_argument(
+        "--enable",
+        action="store_true",
+        help="Treat promote as on for this call even if config has promote=false.",
+    )
+    add_force_argument(p_fprom)
+    add_format_argument(p_fprom)
+
     # ---- suggest (Phase 4) ----
     p_sug = sub.add_parser(
         "suggest",
@@ -659,6 +730,8 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         _dispatch_pool(project, args)
     elif cmd == "results":
         _dispatch_results(project, args)
+    elif cmd == "findings":
+        _dispatch_findings(project, args)
     elif cmd == "generators":
         _dispatch_generators(args)
     elif cmd == "suggest":
@@ -1756,6 +1829,7 @@ def _dispatch_results(project, args: argparse.Namespace) -> None:
                 "match_tags": r["match_tags"],
                 "grepped": r.get("grepped") or {},
                 "flow_id": r["flow_id"],
+                "finding_id": r.get("finding_id"),
                 "created_at": r["created_at"],
             }
             for r in rows
@@ -1823,6 +1897,127 @@ def _dispatch_results(project, args: argparse.Namespace) -> None:
         return
 
 
+def _dispatch_findings(project, args: argparse.Namespace) -> None:
+    db_path = project.db_path
+    project_id = project.id
+    action = args.findings_cmd
+    sess = _get_session_or_exit(db_path, args.session_id)
+    cfg = merge_defaults(sess.get("config") or {})
+
+    if action == "set":
+        block = dict(cfg.get("findings") or {})
+        if getattr(args, "promote", None) is not None:
+            block["promote"] = str(args.promote).lower() in ("on", "true", "1")
+        if getattr(args, "max_findings", None) is not None:
+            block["max_findings"] = int(args.max_findings)
+        if getattr(args, "on_mode", None) is not None:
+            block["on"] = args.on_mode
+        if getattr(args, "cluster_by", None) is not None:
+            block["cluster_by"] = args.cluster_by
+        if getattr(args, "only_success", None) is not None:
+            block["only_success"] = str(args.only_success).lower() in (
+                "on", "true", "1",
+            )
+        cfg["findings"] = block
+        # Validate (promote on requires match rules)
+        try:
+            cfg, _ = validate_config(
+                cfg,
+                open_generators=False,
+                force=bool(getattr(args, "force", False)),
+                db_path=db_path,
+                project_id=project_id,
+            )
+        except ValidationError as exc:
+            cli_precondition_error(f"{exc.code}: {exc.message}")
+        _save_config(db_path, sess["id"], cfg)
+        fcfg = findings_config_from(cfg)
+        payload = {"session_id": sess["id"], "findings": fcfg}
+        def human(p):
+            cli_success("Findings promote config updated.", {
+                "Session": p["session_id"],
+                "Promote": "on" if p["findings"]["promote"] else "off",
+                "Max": p["findings"]["max_findings"],
+                "On": p["findings"]["on"],
+                "Cluster by": p["findings"]["cluster_by"],
+            })
+        _emit(payload, args, human)
+        return
+
+    if action == "show":
+        fcfg = findings_config_from(cfg)
+        already = intruder_db.count_results_with_findings(db_path, sess["id"])
+        interesting = intruder_db.count_results(
+            db_path, sess["id"], interesting_only=True
+        )
+        progress = sess.get("progress") or {}
+        payload = {
+            "session_id": sess["id"],
+            "findings": fcfg,
+            "results_interesting": interesting,
+            "results_promoted": already,
+            "progress_findings_promoted": progress.get("findings_promoted"),
+        }
+        def human(p):
+            f = p["findings"]
+            print(f"Session: {p['session_id']}")
+            print(f"  Promote:     {'on' if f['promote'] else 'off'}")
+            print(f"  On:          {f['on']}")
+            print(f"  Max:         {f['max_findings']}")
+            print(f"  Only success:{f['only_success']}")
+            print(f"  Cluster by:  {f['cluster_by']}")
+            print(f"  Interesting: {p['results_interesting']}")
+            print(f"  Promoted:    {p['results_promoted']}")
+        _emit(payload, args, human)
+        return
+
+    if action == "promote":
+        force_enable = bool(getattr(args, "enable", False))
+        fcfg = findings_config_from(cfg)
+        if not fcfg.get("promote") and not force_enable:
+            cli_precondition_error(
+                "findings.promote is off. Use --enable for a one-shot offline "
+                "promote, or: talos intruder findings set <id> --promote on"
+            )
+        # Hardening: confirm when many interesting unpromoted rows
+        unpromoted = intruder_db.list_results(
+            db_path,
+            sess["id"],
+            interesting_only=True,
+            unpromoted_only=True,
+            limit=10_000,
+        )
+        if len(unpromoted) > 50 and not getattr(args, "force", False):
+            confirm_or_exit(
+                f"Promote up to {min(len(unpromoted), fcfg['max_findings'])} "
+                f"interesting result(s) to Findings?",
+                force=False,
+            )
+        result = promote_session_results(
+            db_path,
+            project_id,
+            {**sess, "config": cfg},
+            fcfg=fcfg,
+            force_enable=force_enable,
+        )
+        payload = {"session_id": sess["id"], **result}
+        def human(p):
+            cli_success(
+                f"Promoted {p['promoted']} finding(s).",
+                {
+                    "Session": p["session_id"],
+                    "Promoted": p["promoted"],
+                    "Skipped": p["skipped"],
+                    "Capped": p.get("capped"),
+                    "Total promoted": p.get("findings_promoted_total"),
+                },
+            )
+        _emit(payload, args, human)
+        return
+
+    cli_usage_error(f"Unknown findings action: {action}")
+
+
 def _dispatch_generators(args: argparse.Namespace) -> None:
     payload = {
         "generators": sorted(KNOWN_GENERATORS),
@@ -1842,6 +2037,13 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
             "timing_modes": ["token_bucket", "adaptive"],
             "suggest": True,
         },
+        "phase5": {
+            "findings_promote": True,
+            "default_promote": False,
+            "default_max_findings": DEFAULT_FINDINGS_MAX,
+            "cluster_by": [CLUSTER_BY_SESSION, CLUSTER_BY_ENDPOINT],
+            "on": [FINDINGS_ON_INTERESTING, "matched"],
+        },
     }
     def human(p):
         print("Generators:", ", ".join(p["generators"]))
@@ -1855,6 +2057,11 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
             "Phase 4:",
             ", ".join(p["phase4"]["generators"]),
             "+ adaptive/token_bucket timing + suggest",
+        )
+        print(
+            "Phase 5: findings promote (default off, max",
+            p["phase5"]["default_max_findings"],
+            ")",
         )
     _emit(payload, args, human)
 

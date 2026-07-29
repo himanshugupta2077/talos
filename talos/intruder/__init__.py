@@ -37,6 +37,11 @@ Purpose:
         Generators: dates, bruteforce, random, pattern
         AI suggest: offline heuristics (talos intruder suggest [--apply])
 
+    Phase 5:
+        Optional findings promote (off by default; max_findings cap)
+        Hardening: promote requires match/tag_interesting; idempotent finding_id
+        Docs sweep; schema 48 finding_id on intruder_results
+
 Public surface:
     engine.run_session_segment, models, CLI entry (cli.run_intruder_cli).
 """

@@ -97,6 +97,7 @@ def attempt_result_to_row(result: AttemptResult) -> dict[str, Any]:
         "match_tags": result.match_tags,
         "grepped": result.grepped,
         "flow_id": result.flow_id,
+        "finding_id": getattr(result, "finding_id", None),
     }
 
 
@@ -123,6 +124,7 @@ def export_results_csv(rows: list[dict[str, Any]], path: Path) -> int:
         "grepped",
         "variables",
         "flow_id",
+        "finding_id",
     ]
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
@@ -141,6 +143,7 @@ def export_results_csv(rows: list[dict[str, Any]], path: Path) -> int:
                 "grepped": json.dumps(row.get("grepped") or {}),
                 "variables": json.dumps(row.get("variables") or {}),
                 "flow_id": row.get("flow_id"),
+                "finding_id": row.get("finding_id"),
             }
             writer.writerow(out)
     return len(rows)

@@ -277,13 +277,15 @@ def insert_results_batch(
                     status_code, success, failure_reason, duration_ms,
                     body_length, word_count, line_count, body_hash,
                     fingerprint_json, metrics_json, interesting,
-                    match_tags_json, grepped_json, flow_id, created_at
+                    match_tags_json, grepped_json, flow_id, finding_id,
+                    created_at
                 ) VALUES (
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?
+                    ?, ?, ?, ?,
+                    ?
                 )
                 """,
                 (
@@ -305,6 +307,7 @@ def insert_results_batch(
                     _json_dumps(r.get("match_tags") or []),
                     _json_dumps(r.get("grepped") or {}),
                     r.get("flow_id"),
+                    r.get("finding_id"),
                     r.get("created_at") or now,
                 ),
             )
@@ -336,6 +339,7 @@ def list_results(
     session_id: str,
     *,
     interesting_only: bool = False,
+    unpromoted_only: bool = False,
     limit: int = 200,
     offset: int = 0,
     min_attempt: Optional[int] = None,
@@ -347,6 +351,8 @@ def list_results(
     params: list[Any] = [session_id]
     if interesting_only:
         sql += " AND interesting = 1"
+    if unpromoted_only:
+        sql += " AND (finding_id IS NULL OR finding_id = '')"
     if min_attempt is not None:
         sql += " AND attempt_index >= ?"
         params.append(min_attempt)
@@ -361,6 +367,59 @@ def list_results(
     with _connect(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_result_row(r) for r in rows]
+
+
+def set_result_finding_id(
+    db_path: Path,
+    result_id: str,
+    finding_id: str,
+) -> bool:
+    """Link a findings row to an intruder_results row by result UUID."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE intruder_results SET finding_id = ? WHERE id = ?",
+            (finding_id, result_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def set_result_finding_id_by_attempt(
+    db_path: Path,
+    session_id: str,
+    attempt_index: int,
+    finding_id: str,
+) -> bool:
+    """Link findings by (session_id, attempt_index)."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE intruder_results
+            SET finding_id = ?
+            WHERE session_id = ? AND attempt_index = ?
+            """,
+            (finding_id, session_id, attempt_index),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def count_results_with_findings(db_path: Path, session_id: str) -> int:
+    """Count results that already have a finding_id (promoted)."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM intruder_results
+            WHERE session_id = ?
+              AND finding_id IS NOT NULL
+              AND finding_id != ''
+            """,
+            (session_id,),
+        ).fetchone()
+    return int(row["c"]) if row else 0
 
 
 def get_result(
@@ -521,6 +580,7 @@ def _session_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _result_row(row: sqlite3.Row) -> dict[str, Any]:
+    keys = set(row.keys())
     return {
         "id": row["id"],
         "session_id": row["session_id"],
@@ -540,6 +600,7 @@ def _result_row(row: sqlite3.Row) -> dict[str, Any]:
         "match_tags": _json_loads(row["match_tags_json"], []),
         "grepped": _json_loads(row["grepped_json"], {}),
         "flow_id": row["flow_id"],
+        "finding_id": row["finding_id"] if "finding_id" in keys else None,
         "created_at": row["created_at"],
     }
 

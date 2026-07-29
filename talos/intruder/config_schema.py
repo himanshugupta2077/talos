@@ -3,7 +3,7 @@ Module: talos.intruder.config_schema
 
 Purpose:
     Load, default, and validate Intruder session config documents
-    (schema_version 1; Phase 1–4 plugins).
+    (schema_version 1; Phase 1–5 plugins).
 """
 
 from __future__ import annotations
@@ -15,11 +15,16 @@ from typing import Any, Optional
 from talos.intruder.generators import build_generator
 from talos.intruder.grep import validate_grep_rule
 from talos.intruder.models import (
+    CLUSTER_BY_ENDPOINT,
+    CLUSTER_BY_SESSION,
     CONFIG_SCHEMA_VERSION,
     DEFAULT_ADAPTIVE_SLOW_MS,
     DEFAULT_AUTH_FAIL_THRESHOLD,
     DEFAULT_BURST_SIZE,
     DEFAULT_CONFIRM_THRESHOLD,
+    DEFAULT_FINDINGS_MAX,
+    DEFAULT_FINDINGS_ONLY_SUCCESS,
+    DEFAULT_FINDINGS_PROMOTE,
     DEFAULT_JITTER_MS,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_CONCURRENCY,
@@ -33,8 +38,10 @@ from talos.intruder.models import (
     DEFAULT_TIMEOUT_S,
     ERR_BRUTEFORCE_TOO_LARGE,
     ERR_EMPTY_GENERATOR,
+    ERR_FINDINGS_NO_MATCH,
     ERR_INVALID_DATES,
     ERR_INVALID_FILE_GENERATOR,
+    ERR_INVALID_FINDINGS,
     ERR_INVALID_GREP,
     ERR_INVALID_NUMBERS,
     ERR_INVALID_PATTERN,
@@ -52,6 +59,8 @@ from talos.intruder.models import (
     ERR_UNKNOWN_PLUGIN,
     ERR_UNSUPPORTED_CONFIG_VERSION,
     ERR_WORDLIST_TOO_LARGE,
+    FINDINGS_ON_INTERESTING,
+    FINDINGS_ON_MATCHED,
     GEN_BRUTEFORCE,
     GEN_CSV,
     GEN_DATES,
@@ -60,6 +69,8 @@ from talos.intruder.models import (
     GEN_PATTERN,
     GEN_POOL,
     GEN_RANDOM,
+    KNOWN_FINDINGS_CLUSTER_BY,
+    KNOWN_FINDINGS_ON,
     KNOWN_GENERATORS,
     KNOWN_STORAGE_MODES,
     KNOWN_STRATEGIES,
@@ -119,6 +130,14 @@ def default_config() -> dict[str, Any]:
         },
         "match": [],
         "grep": [],
+        # Phase 5: optional findings promote (default off)
+        "findings": {
+            "promote": DEFAULT_FINDINGS_PROMOTE,
+            "on": FINDINGS_ON_INTERESTING,
+            "max_findings": DEFAULT_FINDINGS_MAX,
+            "only_success": DEFAULT_FINDINGS_ONLY_SUCCESS,
+            "cluster_by": CLUSTER_BY_SESSION,
+        },
         "safety": {
             "respect_logout": True,
             "respect_dangerous": True,
@@ -537,6 +556,67 @@ def validate_config(
         opts = strategy.setdefault("options", {})
         if not opts.get("targets"):
             opts["targets"] = [v.name for v in injectable]
+
+    # Phase 5: findings promote config (optional, default off)
+    findings = cfg.get("findings") or {}
+    if not isinstance(findings, dict):
+        raise ValidationError(ERR_INVALID_FINDINGS, "findings must be an object")
+    promote_raw = findings.get("promote", DEFAULT_FINDINGS_PROMOTE)
+    if isinstance(promote_raw, str):
+        promote = promote_raw.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        promote = bool(promote_raw)
+    on = str(findings.get("on") or FINDINGS_ON_INTERESTING).strip().lower()
+    if on == FINDINGS_ON_MATCHED:
+        on = FINDINGS_ON_INTERESTING
+    if on not in KNOWN_FINDINGS_ON and on != FINDINGS_ON_INTERESTING:
+        raise ValidationError(ERR_INVALID_FINDINGS, f"unknown findings.on: {on}")
+    try:
+        max_findings = int(findings.get("max_findings", DEFAULT_FINDINGS_MAX))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(ERR_INVALID_FINDINGS, "max_findings must be int") from exc
+    if max_findings < 0:
+        raise ValidationError(ERR_INVALID_FINDINGS, "max_findings must be >= 0")
+    if max_findings > 1000:
+        # Hardening: refuse absurd promote caps without force
+        if not force:
+            raise ValidationError(
+                ERR_INVALID_FINDINGS,
+                "max_findings > 1000 requires --force (anti-spam hardening)",
+            )
+    only_success_raw = findings.get("only_success", DEFAULT_FINDINGS_ONLY_SUCCESS)
+    if isinstance(only_success_raw, str):
+        only_success = only_success_raw.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        only_success = bool(only_success_raw)
+    cluster_by = str(findings.get("cluster_by") or CLUSTER_BY_SESSION).strip().lower()
+    if cluster_by not in KNOWN_FINDINGS_CLUSTER_BY:
+        raise ValidationError(
+            ERR_INVALID_FINDINGS,
+            f"cluster_by must be one of {sorted(KNOWN_FINDINGS_CLUSTER_BY)}",
+        )
+    # When promote is on, require match and/or tag_interesting grep so we
+    # don't create findings for every attempt with no operator signal.
+    if promote:
+        match_rules = cfg.get("match") or []
+        has_match = isinstance(match_rules, list) and len(match_rules) > 0
+        has_tag_grep = any(
+            isinstance(r, dict) and r.get("tag_interesting")
+            for r in (cfg.get("grep") or [])
+        )
+        if not has_match and not has_tag_grep:
+            raise ValidationError(
+                ERR_FINDINGS_NO_MATCH,
+                "findings.promote requires at least one match rule or "
+                "grep rule with tag_interesting",
+            )
+    cfg["findings"] = {
+        "promote": promote,
+        "on": on if on in KNOWN_FINDINGS_ON else FINDINGS_ON_INTERESTING,
+        "max_findings": max_findings,
+        "only_success": only_success,
+        "cluster_by": cluster_by,
+    }
 
     cfg["strategy"] = strategy
     cfg["strategy"]["type"] = stype

@@ -488,7 +488,8 @@ def build_suggestions(
         "Suggestions are heuristics for operators/AI agents; review before run.",
         "Apply with: talos intruder suggest <id> --apply [--force]",
         "Large bruteforce/cartesian still requires --force at run when estimate > 1000.",
-        "Findings auto-promote remains Phase 5 / opt-in (not applied here).",
+        "Findings promote is opt-in (Phase 5): "
+        "talos intruder findings set <id> --promote on (not applied by suggest).",
     ]
     if not injectable:
         notes.append(

@@ -119,6 +119,9 @@ EVIDENCE_TYPE_SOURCE_OCCURRENCE       = "source_occurrence"
 EVIDENCE_TYPE_PASSIVE_DETECTION       = "passive_detection"
 """Passive scan: passive_detections row (scored secret observation)."""
 
+EVIDENCE_TYPE_INTRUDER_RESULT         = "intruder_result"
+"""Intruder: intruder_results row (matched / interesting attempt)."""
+
 # ------------------------------------------------------------------ #
 # Timeline actor constants                                             #
 # ------------------------------------------------------------------ #
@@ -150,4 +153,5 @@ ATTACK_DISPLAY: dict[str, str] = {
     "auth_test":      "Authentication Bypass",
     "unauth":         "Unauthenticated Execution",
     "passive_secret": "Client-Side Secret Exposure",
+    "intruder":       "Intruder Match",
 }

@@ -2,9 +2,41 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Intruder Phase 5 — hardening, optional findings promote, docs sweep
+
+**Shipped:** 2026-07-29 (project schema **48**; config schema still **1**).
+
+Phase 5 of `docs/design-intruder-cli.md` (PR-15) completes the CLI Intruder plan:
+
+| Surface | Detail |
+|---------|--------|
+| Schema | `intruder_results.finding_id` (v48) for idempotent promote lineage |
+| Config | `findings.promote` **default false**; `max_findings` 25; `on` interesting; `cluster_by` session\|endpoint; `only_success` |
+| Hardening | Promote requires match / `tag_interesting` grep; max_findings>1000 needs `--force`; offline promote confirm >50 |
+| Bridge | `talos/intruder/findings_bridge.py` → Findings PRIMARY/LINKED (`INTRUDER:<session_id>`); attack_type `intruder`, verdict `MATCH` |
+| CLI | `talos intruder findings set\|show\|promote` (`--enable` one-shot when config off) |
+| Engine | Online promote under cap; `progress.findings_promoted`; fail-soft |
+| Export | CSV/JSONL include `finding_id` |
+
+```bash
+talos intruder match add $SID --status 200 --tag ok
+talos intruder findings set $SID --promote on --max 25 --format json
+talos intruder session run $SID --force --format json
+talos intruder findings show $SID --format json
+# Offline (after run with promote off):
+talos intruder findings promote $SID --enable --force --format json
+talos finding list --all
+```
+
+**Still out of scope:** multi-request state_machine, Control Panel UI, Python sandbox generators, mid-run auth refresh.
+
+**Files:** `talos/projects/db.py` (v48), `findings_bridge.py`, `engine.py`, `cli.py`, `findings/model.py`, docs, `tests/test_intruder_phase5.py`.
+
+---
+
 ## Intruder Phase 4 — adaptive timing, advanced generators, AI suggest
 
-**Shipped:** 2026-07-29 (config schema still **1**; project schema remains **47**).
+**Shipped:** 2026-07-29 (config schema still **1**; project schema was **47** at ship).
 
 Phase 4 of `docs/design-intruder-cli.md` (PR-13) on top of Phase 1–3.
 
@@ -40,8 +72,7 @@ Schema `intruder_suggest/v1`: strategy, timing, per-var payloads (from semantic
 type / name / pools / param intel), match + grep sketches, copy-paste commands.
 No external LLM — deterministic heuristics for operators and agents.
 
-**Still out of scope (Phase 5):** findings auto-promote, multi-request
-state_machine sequences, Control Panel UI.
+**Phase 5 shipped separately** (optional findings promote, schema 48).
 
 **Files:** `timing.py`, `suggest.py`, `generators/{dates,bruteforce,random_gen,pattern}.py`,
 `cli.py`, docs, `tests/test_intruder_phase4.py`.
@@ -111,8 +142,8 @@ Cartesian / large estimates still use the Phase 1 confirm threshold (>1000).
 Interesting/sample/all flow inserts remain `source=intruder` with no
 error_intel/passive hooks.
 
-**Still out of scope (later):** findings auto-promote, Control Panel UI.
-(Phase 3–4 shipped grep/pools/param-intel and adaptive timing.)
+**Later phases shipped:** Phase 3–5 (grep/pools, adaptive/suggest, findings promote).
+Control Panel UI remains out of scope for Intruder CLI.
 
 ### Operator surface
 
@@ -165,9 +196,9 @@ single + sniper; fixed RPS (default 2), concurrency default 1; match rules;
 pause/resume/cancel; crash-safe checkpoint; `--right-now`; export JSONL/CSV;
 AI JSON status poll contract.
 
-**Phase 2–4 shipped separately** (multi-set strategies, storage, grep/pools,
-adaptive timing, advanced generators, suggest). Later: findings auto-promote,
-Control Panel UI, auth refresh mid-run.
+**Phase 2–5 shipped separately** (multi-set strategies, storage, grep/pools,
+adaptive timing, advanced generators, suggest, optional findings promote).
+Later: Control Panel UI, auth refresh mid-run, state_machine sequences.
 
 ### Operator surface
 

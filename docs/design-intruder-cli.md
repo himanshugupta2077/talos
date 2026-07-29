@@ -6,7 +6,7 @@
 | **Project** | Talos |
 | **Author** | (design) |
 | **Date** | 2026-07-29 |
-| **Status** | Implemented Phase 1–4 (rev 3 design; schema 47) |
+| **Status** | Implemented Phase 1–5 (rev 3 design; schema 48) |
 | **Scope** | Talos core CLI only; Control Panel / UI deferred |
 | **Audience** | Senior engineers familiar with `talos/` |
 
@@ -632,7 +632,7 @@ Evaluation online for tags `interesting=1`; offline re-filter via `results list`
 | Export JSONL | **1** |
 | Template suggest from parameters | **3** |
 | Adaptive timing / AI generator | **4** (shipped: adaptive/token_bucket + `suggest`) |
-| Findings bridge | **not Phase 1** |
+| Findings bridge | **Phase 5** (optional, default off) |
 
 ### Interaction with HTTP Manipulation Engine
 
@@ -768,6 +768,14 @@ storage:
 match: []
 grep: []
 
+# Phase 5 — optional; default promote false
+findings:
+  promote: false
+  on: interesting          # interesting | matched (alias)
+  max_findings: 25
+  only_success: true
+  cluster_by: session      # session | endpoint → INTRUDER:<id>
+
 safety:
   respect_logout: true
   respect_dangerous: true
@@ -844,7 +852,7 @@ All DDL in `talos/projects/db.py` (migration to `SCHEMA_VERSION` 46+).
 | `duration_ms`, `body_length`, `word_count`, `line_count`, `body_hash` | Metrics |
 | `fingerprint_json`, `metrics_json` | Evidence |
 | `interesting`, `match_tags_json`, `grepped_json` | Match/grep |
-| `flow_id`, `created_at` | Optional body lineage |
+| `flow_id`, `finding_id`, `created_at` | Optional body lineage; Phase 5 promote link |
 
 ### Wordlists
 
@@ -1201,9 +1209,27 @@ Adaptive rate control, advanced payload generators, offline AI/operator suggest.
 | Module | `talos/intruder/suggest.py`; generators under `generators/{dates,bruteforce,random_gen,pattern}.py` |
 | Tests | `tests/test_intruder_phase4.py` |
 
-**Out of scope (Phase 5 / later):** findings auto-promote, state_machine multi-request sequences, Control Panel UI, Python sandbox generators.
+**Out of scope (later):** state_machine multi-request sequences, Control Panel UI, Python sandbox generators.
 
-### Phase 5 — Hardening, optional findings promote, docs sweep
+### Phase 5 — Hardening, optional findings promote, docs sweep — **IMPLEMENTED**
+
+Optional findings bridge (off by default), anti-spam caps, docs/Helper sweep.
+
+**Shipped:**
+
+| Item | Detail |
+|------|--------|
+| Schema | **48** — `intruder_results.finding_id` for promote lineage + idempotency |
+| Config | `findings.promote` default **false**; `on` interesting/matched; `max_findings` default **25**; `only_success`; `cluster_by` session\|endpoint |
+| Hardening | Promote requires match rule or `tag_interesting` grep; `max_findings > 1000` needs `--force`; offline promote confirms when >50 candidates |
+| Bridge | `talos/intruder/findings_bridge.py` — PRIMARY/LINKED under `INTRUDER:<session_id>` (or endpoint); fail-soft in engine |
+| CLI | `findings set\|show\|promote`; `promote --enable` one-shot when config off |
+| Engine | Online promote of interesting results under cap; `progress_json.findings_promoted` |
+| Findings model | `ATTACK_DISPLAY["intruder"]`, `EVIDENCE_TYPE_INTRUDER_RESULT` |
+| Export | JSONL/CSV include `finding_id` |
+| Tests | `tests/test_intruder_phase5.py` |
+
+**Still out of scope:** multi-request state_machine, Control Panel UI, Python sandbox generators, mid-run auth refresh.
 
 ---
 
@@ -1492,10 +1518,10 @@ Ordered, independently reviewable. **CLI only.**
 
 - **Former time-slice PR** — **absorbed into PR-6**. If further fairness work is needed (priority aging, dual lanes), open a new PR after Phase 1 ship metrics.
 
-### PR-15: Docs sweep + optional findings promote
+### PR-15: Docs sweep + optional findings promote — **DONE (Phase 5)**
 
 - **Dependencies:** Phase 1 shipped (PR-8+)
-- **Description:** Still no Control Panel. Findings promote optional and off by default.
+- **Description:** Shipped Phase 5: optional findings promote (default off), schema 48 `finding_id`, hardening caps, docs/Helper sweep. Still no Control Panel.
 
 ---
 

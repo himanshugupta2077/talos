@@ -1131,12 +1131,13 @@ Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** 
 
 ---
 
-## Intruder (Phase 1–4)
+## Intruder (Phase 1–5)
 
 High-volume mutation attack engine. **Not** Send multi-send and **not** IV.
 Scheduler-backed time-sliced jobs (`intruder_session`); micro RPS inside a
 segment. Default storage is metrics-only; interesting matches can store
-`source=intruder` flows without error_intel/passive hooks.
+`source=intruder` flows without error_intel/passive hooks. Optional findings
+promote is **off by default** (Phase 5).
 
 ```bash
 # Create from a baseline flow (capture or send execution)
@@ -1193,6 +1194,12 @@ talos intruder pool export token --out ./tokens.txt
 talos intruder suggest <sid> --format json
 talos intruder suggest <sid> --apply --replace-payloads --format json
 
+# Phase 5: optional findings promote (default off; needs match or tag_interesting grep)
+talos intruder findings set <sid> --promote on --max 25 --format json
+talos intruder findings show <sid> --format json
+talos intruder findings promote <sid> --enable --force --format json  # offline one-shot
+talos finding list --all   # triage Intruder Match findings (attack_type=intruder)
+
 # Storage (Phase 2): metrics_only (default) | sample_flows | all_flows
 talos intruder storage set <sid> --mode metrics_only
 talos intruder storage set <sid> --mode sample_flows --sample-rate 0.1
@@ -1209,7 +1216,7 @@ talos intruder session resume <sid>                      # new job prio 100
 talos intruder session stop <sid>
 talos intruder session clone <sid> --name copy           # Phase 2: new draft, no results
 talos intruder results list <sid> --interesting --format json
-talos intruder results export <sid> --out ./out --jsonl --csv
+talos intruder results export <sid> --out ./out --jsonl --csv   # includes finding_id when promoted
 talos intruder generators list --format json
 
 # Aliases
@@ -1221,7 +1228,8 @@ talos intruder status <sid> --format json
 slice 100 attempts / 60s, confirm estimate >1000 (or `--force`) — including
 cartesian products and large bruteforce, wordlist 1e6 lines / 64 MiB,
 `all_flows` confirm. Path inject needs `normalized_path` with `{name}` braces
-or fails `path_inject_unavailable`.
+or fails `path_inject_unavailable`. Findings promote: off by default;
+`max_findings` 25; promote requires match/tag_interesting; >1000 needs `--force`.
 
 **Scheduler note:** continuation segments use priority **10** so auto BAC/IV
 can run between slices. Global `scheduler resume` does **not** resume Intruder —
