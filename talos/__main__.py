@@ -41,6 +41,7 @@ from talos.projects.access_cli import run_role_cli, run_module_cli, run_access_c
 from talos.projects.endpoint_cli import run_endpoint_cli
 from talos.proxy.cli import run_proxy_cli
 from talos.replay.cli import run_replay_cli
+from talos.send.cli import run_send_cli
 from talos.projects.auth_cli import run_auth_cli
 from talos.projects.auth_config_cli import run_auth_config_cli
 from talos.projects.attack_cli import run_attack_cli
@@ -165,6 +166,8 @@ def main(argv: list[str] | None = None) -> None:
         run_access_cli(manager, rest)
     elif subcommand == "replay":
         run_replay_cli(manager, rest)
+    elif subcommand == "send":
+        run_send_cli(manager, rest)
     elif subcommand == "auth":
         run_auth_cli(manager, rest)
     elif subcommand == "auth-config":
@@ -344,8 +347,22 @@ def _print_usage() -> None:
         "    rule add|update|delete|list|show|preview   Path policy-rule resource\n"
         "    rules                          List path rules (alias for rule list)\n\n"
         "  replay\n"
-        "    flow            Replay a specific captured flow\n"
+        "    flow            Replay a specific captured flow (exact, bit-identical)\n"
         "    endpoint        Replay the best flow for an endpoint\n\n"
+        "  send              Repeater: edit → send once → review (mutable)\n"
+        "    from <flow_id>  Materialize raw HTTP draft (no send, no DB write)\n"
+        "                    [--raw-out PATH] [--format table|json]\n"
+        "    once <flow_id>  Apply edits, send once, store new flow + lineage\n"
+        "                    [--method] [--url] [--header] [--remove-header]\n"
+        "                    [--query] [--body|--body-file|--body-stdin]\n"
+        "                    [--raw-file] [--no-update-content-length]\n"
+        "                    [--source manual_send|ai_send] [--reason TEXT]\n"
+        "                    [--format table|json]\n"
+        "    show <flow_id>  Request/response summary [--format table|json]\n"
+        "    history         List sends under a baseline/root\n"
+        "                    --from <flow_id> [--limit N] [--format table|json]\n"
+        "    diff <a> <b>    Response verdict (SAME|DIFFERENT|ERROR)\n"
+        "                    [--format table|json]\n\n"
         "  flow\n"
         "    list                       List flows (UUID, endpoint, method, status,\n"
         "                               role, source, created)\n"

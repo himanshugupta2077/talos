@@ -2,6 +2,45 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Repeater Phase 1 (MVP) — `talos send`
+
+### Problem
+
+Exact replay (`talos replay`) re-sends captured requests bit-identically. Operators
+and AI agents needed a Burp-style **edit → send once → review** path that mutates
+the request freely without ever updating the capture, and without overloading Mode 1
+replay used by BAC / unauth / IV.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `talos send` | New top-level CLI (distinct from `replay`) |
+| Draft | In-memory / file only until send; `send from` materializes raw HTTP |
+| `send once` | Structured patches and/or `--raw-file`; immediate HTTP (no scheduler) |
+| Sources | `manual_send` \| `ai_send` only — never `auto_replay` / `manual_replay` |
+| Lineage | `original_flow_id` = root capture; `flow_meta.parent_flow_id` = fork parent |
+| Content-Length | Auto-fix ON by default; `--no-update-content-length` for edge tests |
+| Diff / history | Reuse `compute_diff`; `history --from <root>` lists send executions |
+| Baseline safety | `get_best_flow_for_endpoint` still filters `source = proxy_capture` only |
+
+**Out of scope (Phase 1):** control panel UI, send N×/parallel/sequence, Intruder,
+token refresh, redirect following.
+
+### Operator surface
+
+```bash
+talos send from <flow_id> [--raw-out PATH]
+talos send once <flow_id> [--header …] [--body …] [--raw-file …] [--format json]
+talos send show <flow_id>
+talos send history --from <baseline_or_root>
+talos send diff <a> <b>
+```
+
+Slogan: **Replay = identity-preserving re-execution. Send = free mutation with full lineage.**
+
+---
+
 ## Secret Detection Control Panel (Phase 13)
 
 ### Problem

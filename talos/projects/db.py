@@ -58,10 +58,10 @@ CREATE TABLE IF NOT EXISTS flows (
     role_id                  TEXT    NOT NULL REFERENCES roles(id),   -- resolved at capture-time
     module_id                TEXT    NOT NULL REFERENCES modules(id), -- resolved at capture-time
     tags                     TEXT    NOT NULL DEFAULT '[]',   -- JSON array
-    source                   TEXT    NOT NULL DEFAULT 'proxy_capture', -- proxy_capture | manual_replay | auto_replay | iv_scan
+    source                   TEXT    NOT NULL DEFAULT 'proxy_capture', -- proxy_capture | manual_replay | auto_replay | iv_scan | manual_send | ai_send
     original_flow_id         TEXT,                                      -- FK to flows.id; NULL for proxy_capture flows
     replay_error             TEXT,                                      -- NULL on success; error label on network/HTTP failure
-    replay_reason            TEXT,                                      -- NULL for proxy_capture; e.g. testing | bac_test | input_validation
+    replay_reason            TEXT,                                      -- NULL for proxy_capture; e.g. testing | bac_test | input_validation | manual_probe
     flow_meta                TEXT    NOT NULL DEFAULT '{}'               -- JSON: structured metadata describing why this flow was generated
 );
 

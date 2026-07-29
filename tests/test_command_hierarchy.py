@@ -81,6 +81,19 @@ def test_talos_helper_documents_layered_config() -> None:
     assert "HTTP Manipulation Engine" in text or "http" in text
 
 
+def test_talos_helper_documents_send_repeater() -> None:
+    """Root help must advertise Repeater Phase 1 (talos send) verbs."""
+    text = _root_help_text()
+    assert re.search(r"^\s+send\s+", text, re.M)
+    assert "from <flow_id>" in text or "from" in text
+    assert "once" in text
+    assert "history" in text
+    assert "diff" in text
+    # Distinct from exact replay.
+    assert "replay" in text
+    assert "Repeater" in text or "mutable" in text.lower()
+
+
 # ------------------------------------------------------------------ #
 # Live endpoint rules parser                                           #
 # ------------------------------------------------------------------ #

@@ -1091,6 +1091,9 @@ Copy a UUID from `list`, then use `show`, `export`, `replay endpoint`, `auth tes
 
 ## Replay
 
+Exact re-send of a stored request (Mode 1 — no mutation). Attack modules and
+automation depend on bit-identical behaviour.
+
 ```bash
 talos replay flow <flow_id>
 talos replay flow <flow_id> --right-now
@@ -1099,6 +1102,58 @@ talos replay endpoint <endpoint_id> --right-now
 ```
 
 Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** range (see architecture for details).
+
+---
+
+## Send (Repeater)
+
+Mutable edit → send once → review (Mode 2). **Never updates the captured
+flow** — every send inserts a new row with `source=manual_send|ai_send`,
+`original_flow_id` = root capture, and `flow_meta.parent_flow_id` = fork
+parent. Uses the same HTTP stack / upstream proxy as replay. Phase 1 sends
+**immediately** (no scheduler). Fully non-interactive for AI agents.
+
+```bash
+# Materialize an editable raw HTTP draft (no send, no DB write)
+talos send from <flow_id>
+talos send from <flow_id> --raw-out /tmp/req.http
+talos send from <flow_id> --format json
+
+# Edit + send once (structured patches and/or raw file)
+talos send once <flow_id> --header 'X-Test: 1' --body '{"a":1}'
+talos send once <flow_id> --method PUT --url 'https://ex.test/v2' --query id=9
+talos send once <flow_id> --remove-header Cookie --body-file body.bin
+talos send once <flow_id> --raw-file /tmp/req.http
+talos send once <flow_id> --no-update-content-length   # edge / CL smuggling tests
+talos send once <flow_id> --source ai_send --reason ai_probe --format json
+
+# Inspect / history / diff
+talos send show <flow_id>
+talos send show <flow_id> --format json
+talos send history --from <baseline_or_root_flow_id>
+talos send history --from <id> --format json
+talos send diff <flow_a> <flow_b>
+talos send diff <root> <execution> --format json
+```
+
+| Flag / concept | Behaviour |
+|----------------|-----------|
+| Auto Content-Length | **ON by default** — strip stale CL, set length to body bytes (stored as-sent) |
+| `--no-update-content-length` | Send headers/body exactly as the draft specifies |
+| Structured vs raw | Structured may URL-encode query values; raw mode is minimal magic |
+| Logout annotation | Blocks send (same as replay) |
+| Dangerous annotation | Allowed for `manual_send` / `ai_send` (not auto) |
+| History | `WHERE original_flow_id = ? AND source IN (manual_send, ai_send)` |
+
+AI loop example:
+
+```bash
+talos send from <capture> --raw-out req.http --format json
+# edit req.http …
+talos send once <capture> --raw-file req.http --source ai_send --format json
+talos send diff <capture> <execution_flow_id> --format json
+talos send history --from <capture> --format json
+```
 
 ---
 
@@ -1132,7 +1187,7 @@ talos flow export --flows <flow_id> <flow_id>
 | `--endpoint ENDPOINT_ID` | Exact endpoint UUID |
 | `--status-code CODE` | Exact HTTP status |
 | `--role NAME\|UUID` | Capture-time role |
-| `--source SOURCE` | `proxy_capture` \| `manual_replay` \| `auto_replay` \| `iv_scan` |
+| `--source SOURCE` | `proxy_capture` \| `manual_replay` \| `auto_replay` \| `iv_scan` \| `manual_send` \| `ai_send` |
 | `--limit N` | At most N rows (most recent first) |
 
 Copy a UUID from `list`, then use `show`, `export`, `replay flow`, or `auth-config add-flow`.

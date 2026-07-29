@@ -51,6 +51,10 @@ CLI (talos.__main__)
     ├── talos replay | flow
     │       exact replay; flow inspection/export
     │
+    ├── talos send
+    │       Repeater Phase 1: draft → edit → send once → history/diff
+    │       (mutable; new flow per send; never mutates captures)
+    │
     ├── talos scheduler
     │       status/config/enqueue/clear/pause/resume (daemon runs with proxy)
     │
@@ -96,6 +100,7 @@ talos
 ├─ endpoint  list / mark / unmark / show / policy / export / notes / tags /
 │            priority / exclude / include / rule (CRUD+preview) / rules
 ├─ replay    flow / endpoint
+├─ send      from / once / show / history / diff   (Repeater — mutable send)
 ├─ flow      show / export
 ├─ scheduler status / config / enqueue / jobs list|show / cancel /
 │            prune / clear / pause / resume
@@ -123,7 +128,7 @@ talos
     ▼
 [CLI LAYER]
     talos project / config / proxy / role / module / access / auth / auth-config /
-    endpoint / replay / flow / scheduler / mutation / attack /
+    endpoint / replay / send / flow / scheduler / mutation / attack /
     input-validation / finding
     │
     ▼
@@ -1375,6 +1380,12 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.replay.engine` | Async exact (Type 1) replay via httpx; uses `get_upstream_url` for optional outbound proxy; reconstruct request; store result linked to original | Mutation, auth stripping |
 | `talos.replay.auth_strip` | Type 2 replay: strip auth fields, send via same upstream resolution, compute auth-bypass verdict (SECURE/BYPASS/UNKNOWN) | Auth config management, endpoint selection |
 | `talos.replay.cli` | Argument parsing; active-project gate; dispatch `replay flow` / `replay endpoint`; default path enqueues scheduler job; `--right-now` executes immediately; print outcome or job ID | HTTP I/O, DB writes |
+| `talos.send.draft` | Build request draft from any flow; structured patches (method/url/header/query/body) and raw-message apply | HTTP I/O, DB writes |
+| `talos.send.raw_http` | Parse/serialize HTTP/1.1 request messages for file-based editing | Network, DB |
+| `talos.send.normalize` | Content-Length policy (default ON; `--no-update-content-length` disables) | Network, DB |
+| `talos.send.engine` | Async send-once via same httpx/proxy/timeout stack as replay; INSERT new flow (`manual_send`/`ai_send`); lineage in `original_flow_id` + `flow_meta`; diff vs root capture | Exact-replay semantics, capture mutation |
+| `talos.send.db` | History query by root `original_flow_id`; flow load with lineage fields | Schema migration beyond flows |
+| `talos.send.cli` | `send from\|once\|show\|history\|diff`; immediate send (no scheduler in Phase 1); `--format json` for AI | Control panel UI |
 | `talos.scheduler.scheduler.ReplayScheduler` | Daemon thread: consume pending jobs from scheduler_jobs; annotation pre-check (logout/dangerous); per-cycle config reload; configurable jitter; mark job done/failed/skipped (`endpoint_excluded` / `endpoint_not_qualified` → skipped); trigger `create_finding_from_verdict` after BAC and auth outcomes | Direct execution (delegates to replay/auth engines), CLI parsing |
 | `talos.projects.bac.candidates` | BAC candidate generation from access matrix × testable endpoints (2xx flows); mutually exclusive endpoint/module scope + attacker role filter | Write path, attack execution |
 | `talos.projects.bac.engine` | BAC attack execution; re-checks Endpoint Policy before HTTP; outbound httpx uses project upstream via `get_upstream_url` | Candidate generation, CLI |
@@ -1760,7 +1771,7 @@ Priorities: `PRIORITY_MANUAL=100`, `PRIORITY_AUTO=10`.
 
 ### Flows: source and identity
 
-- `source`: `proxy_capture` | `manual_replay` | `auto_replay` | `iv_scan`
+- `source`: `proxy_capture` | `manual_replay` | `auto_replay` | `iv_scan` | `manual_send` | `ai_send`
 - `original_flow_id`: parent capture for replays
 - `replay_reason`: examples include `testing`, `auth_test`, `unauth_attack`, `input_validation`, BAC attack type strings, `session_validation`, `session_refresh`, `scheduler`
 - `flow_meta` (JSON): module-specific metadata (e.g. `generated_by`)
