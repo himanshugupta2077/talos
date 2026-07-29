@@ -30,12 +30,19 @@ class HeuristicPlanner:
 
     def __init__(self, registry: Optional[ToolRegistry] = None) -> None:
         self._registry = registry
+        # Match LLMPlanner observability fields for WorkflowEngine budgets/audit.
+        self.last_usage: dict[str, Any] = {}
+        self.last_error: Optional[str] = None
+        self.last_source: str = "heuristic"
 
     @property
     def registry(self) -> ToolRegistry:
         return self._registry if self._registry is not None else default_registry()
 
     def plan(self, request: PlanRequest) -> list[ActionSuggestion]:
+        self.last_usage = {}
+        self.last_error = None
+        self.last_source = "heuristic"
         max_n = max(1, min(int(request.max_suggestions or 5), 10))
         available = {s.name for s in request.tool_descriptors}
         if not available:

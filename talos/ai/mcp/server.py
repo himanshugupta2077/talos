@@ -102,10 +102,23 @@ class McpServer:
             return _result_response(msg_id, {"tools": tools})
 
         if method == "tools/call":
-            name = str(params.get("name") or "").strip()
-            arguments = params.get("arguments") or {}
-            if not isinstance(arguments, dict):
-                arguments = {}
+            raw_name = params.get("name")
+            name = str(raw_name).strip() if raw_name is not None else ""
+            arguments, args_error = _normalize_mcp_arguments(params.get("arguments"))
+            if args_error is not None:
+                return _result_response(
+                    msg_id,
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(args_error, sort_keys=True),
+                            }
+                        ],
+                        "isError": True,
+                        "structuredContent": args_error,
+                    },
+                )
             if not name:
                 return _result_response(
                     msg_id,
@@ -246,3 +259,53 @@ def _error_response(msg_id: Any, code: int, message: str) -> dict[str, Any]:
         "id": msg_id,
         "error": {"code": code, "message": message},
     }
+
+
+def _normalize_mcp_arguments(
+    raw: Any,
+) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    """
+    Purpose:
+        Coerce MCP tools/call arguments to a dict.
+        - None / missing → {}
+        - dict → as-is
+        - JSON object string → parsed dict
+        - anything else → error payload (do not silently drop client args)
+    """
+    if raw is None:
+        return {}, None
+    if isinstance(raw, dict):
+        return dict(raw), None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return {}, None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            err = {
+                "status": "error",
+                "code": "invalid_arguments",
+                "message": f"arguments JSON string is not valid JSON: {exc}",
+            }
+            return {}, err
+        if not isinstance(parsed, dict):
+            err = {
+                "status": "error",
+                "code": "invalid_arguments",
+                "message": (
+                    "arguments JSON string must decode to an object "
+                    f"(got {type(parsed).__name__})"
+                ),
+            }
+            return {}, err
+        return dict(parsed), None
+    err = {
+        "status": "error",
+        "code": "invalid_arguments",
+        "message": (
+            "arguments must be a JSON object "
+            f"(got {type(raw).__name__})"
+        ),
+    }
+    return {}, err

@@ -790,6 +790,9 @@ class WorkflowEngine:
         suggestion_store.record_suggestions(project.db_path, suggestions)
 
         planner_source = getattr(planner, "last_source", None)
+        if not planner_source:
+            # Defensive default for custom planners without last_source.
+            planner_source = type(planner).__name__
         planner_error = getattr(planner, "last_error", None)
 
         if suggestions:
@@ -1030,13 +1033,37 @@ class WorkflowEngine:
                 "session_id": session.session_id,
             }
 
-        tool_name = (tool_name or "").strip()
-        if not tool_name:
+        # Coerce tool name safely (MCP/JSON clients may send non-strings).
+        if tool_name is None:
+            tool_name_s = ""
+        elif isinstance(tool_name, str):
+            tool_name_s = tool_name.strip()
+        else:
+            tool_name_s = str(tool_name).strip()
+        if not tool_name_s:
             return {
                 "status": "error",
                 "code": "missing_tool_name",
                 "message": "tool_name is required",
                 "session_id": session.session_id,
+            }
+        tool_name = tool_name_s
+
+        # Arguments must be a JSON object — never silently drop client args.
+        if arguments is None:
+            args_dict: dict[str, Any] = {}
+        elif isinstance(arguments, dict):
+            args_dict = dict(arguments)
+        else:
+            return {
+                "status": "error",
+                "code": "invalid_arguments",
+                "message": (
+                    "arguments must be a JSON object "
+                    f"(got {type(arguments).__name__})"
+                ),
+                "session_id": session.session_id,
+                "tool_name": tool_name,
             }
 
         display_risk = "read"
@@ -1050,9 +1077,9 @@ class WorkflowEngine:
             suggestion_id=str(uuid.uuid4()),
             session_id=session.session_id,
             tool_name=tool_name,
-            arguments=dict(arguments or {}),
+            arguments=args_dict,
             reason=reason,
-            cli_preview=f"# {tool_name} {arguments!r}"[:500],
+            cli_preview=f"# {tool_name} {args_dict!r}"[:500],
             created_at=_now_iso(),
             display_risk=display_risk,
         )

@@ -151,7 +151,10 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
     # suggest
     p_suggest = sub.add_parser(
         "suggest",
-        help="One offline planner turn → immutable suggestions (+ plans in step)",
+        help=(
+            "One planner turn (heuristic or configured LLM) → "
+            "immutable suggestions (+ plans in step)"
+        ),
     )
     p_suggest.add_argument(
         "--auto-reads",

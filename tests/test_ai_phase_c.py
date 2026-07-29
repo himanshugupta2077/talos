@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock
@@ -489,3 +490,128 @@ class TestSuggestUsesConfiguredPlanner:
         # Budget usage persisted
         status = engine.status(session.session_id)
         assert status["usage"]["llm_tokens"] >= 50
+
+    def test_heuristic_planner_source_reported(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        engine.start("heuristic source", mode=AutonomyMode.SUGGEST_ONLY)
+        out = engine.suggest(max_suggestions=2)
+        assert out["planner_source"] == "heuristic"
+        assert out["suggestion_count"] >= 1
+
+
+class TestPhaseCQARegressions:
+    """Bugs found during Phase C QA."""
+
+    def test_external_tool_call_rejects_non_dict_arguments(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        engine.start("args type", mode=AutonomyMode.STEP)
+        out = engine.external_tool_call("endpoint.list", [1, 2, 3])  # type: ignore[arg-type]
+        assert out["status"] == "error"
+        assert out["code"] == "invalid_arguments"
+
+    def test_external_tool_call_coerces_non_string_tool_name(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        engine.start("name type", mode=AutonomyMode.STEP)
+        # Must not AttributeError on .strip()
+        out = engine.external_tool_call(12345, {})  # type: ignore[arg-type]
+        assert out["status"] == "rejected"
+        assert out["code"] == "unknown_tool"
+
+    def test_mcp_json_string_arguments_parsed(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("mcp args str", mode=AutonomyMode.STEP)
+        server = McpServer(engine, session_id=session.session_id)
+        resp = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "endpoint.list",
+                    "arguments": '{"limit": 7}',
+                },
+            }
+        )
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["status"] == "needs_approval"
+        assert payload["arguments"]["limit"] == 7
+
+    def test_mcp_list_arguments_rejected(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("mcp args list", mode=AutonomyMode.STEP)
+        server = McpServer(engine, session_id=session.session_id)
+        resp = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "endpoint.list",
+                    "arguments": [1, 2, 3],
+                },
+            }
+        )
+        assert resp["result"]["isError"] is True
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["status"] == "error"
+        assert payload["code"] == "invalid_arguments"
+
+    def test_auto_low_mcp_executes_read(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("auto-low mcp", mode=AutonomyMode.AUTO_LOW)
+        out = engine.external_tool_call(
+            "endpoint.list", {"limit": 3}, session_id=session.session_id
+        )
+        assert out["status"] == "executed"
+        assert out["observation"]["success"] is True
+
+    def test_llm_token_budget_halts_session(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        import sqlite3
+
+        session = engine.start("token halt", mode=AutonomyMode.STEP)
+        budgets = session.budgets.to_dict()
+        budgets["max_llm_tokens"] = 100
+        with sqlite3.connect(str(project.db_path)) as conn:
+            conn.execute(
+                "UPDATE ai_sessions SET budgets_json = ? WHERE id = ?",
+                (json.dumps(budgets), session.session_id),
+            )
+            conn.commit()
+
+        class BigTokenPlanner:
+            last_usage = {"total_tokens": 150}
+            last_source = "llm"
+            last_error = None
+
+            def plan(self, request):
+                from datetime import datetime, timezone
+
+                from talos.ai.models import ActionSuggestion
+
+                return [
+                    ActionSuggestion(
+                        suggestion_id=str(uuid.uuid4()),
+                        session_id=request.session_id,
+                        tool_name="endpoint.list",
+                        arguments={"limit": 5},
+                        reason="test",
+                        created_at=datetime.now(timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat(),
+                    )
+                ]
+
+        engine.set_planner(BigTokenPlanner())  # type: ignore[arg-type]
+        out = engine.suggest(session_id=session.session_id)
+        status = engine.status(session.session_id)
+        assert status["usage"]["llm_tokens"] >= 150
+        assert status["status"] == "halted_budget"
+        assert out["llm_tokens_added"] == 150
