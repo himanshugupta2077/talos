@@ -3,10 +3,11 @@ Module: talos.ai.workflow.engine
 
 Purpose:
     WorkflowEngine façade — the only surface CLI / MCP / CP should call for
-    AI session orchestration. Phase A–D: sessions, tools, notes, suggest →
+    AI session orchestration. Phase A–E: sessions, tools, notes, suggest →
     immutable suggestions → ExecutionPlan approve/deny, PTT, observations,
     external MCP tool path, LLM or heuristic planner, HTTP send/replay +
-    engine enqueue with live scope and annotation matrix.
+    engine enqueue with live scope and annotation matrix, markdown KB,
+    draft findings promote, session export.
 
 Dependencies: talos.ai.* , talos.projects.manager
 Data flow:
@@ -1621,4 +1622,192 @@ class WorkflowEngine:
             {"revision": snap.revision, "updated_by": updated_by},
         )
         return snap.to_dict()
+
+    # ---- Phase E: markdown KB (operator files; no AI writes) ----
+
+    def kb_list(self, *, limit: int = 100) -> dict[str, Any]:
+        from talos.ai.kb import store as kb_store
+
+        docs = kb_store.list_docs(limit=limit)
+        return {
+            "kb_dir": str(kb_store.kb_dir()),
+            "count": len(docs),
+            "docs": [d.to_dict(include_body=False) for d in docs],
+        }
+
+    def kb_show(self, doc_id: str) -> dict[str, Any]:
+        from talos.ai.kb import store as kb_store
+
+        doc = kb_store.get_doc(doc_id)
+        if doc is None:
+            raise WorkflowEngineError(f"KB doc not found: {doc_id}", exit_code=1)
+        return {"kb_dir": str(kb_store.kb_dir()), "doc": doc.to_dict()}
+
+    def kb_search(self, query: str = "", *, limit: int = 10) -> dict[str, Any]:
+        from talos.ai.kb import store as kb_store
+
+        hits = kb_store.search_docs(query, limit=limit)
+        return {
+            "kb_dir": str(kb_store.kb_dir()),
+            "query": query,
+            "count": len(hits),
+            "hits": hits,
+        }
+
+    # ---- Phase E: draft findings (promote = operator only) ----
+
+    def draft_list(
+        self, *, status: Optional[str] = None, limit: int = 50
+    ) -> dict[str, Any]:
+        from talos.ai.drafts import store as drafts_store
+
+        project = self._require_project()
+        items = drafts_store.list_drafts(
+            project.db_path, project.id, status=status, limit=limit
+        )
+        return {
+            "project_id": project.id,
+            "count": len(items),
+            "drafts": [d.to_dict() for d in items],
+        }
+
+    def draft_show(self, draft_id: str) -> dict[str, Any]:
+        from talos.ai.drafts import store as drafts_store
+
+        project = self._require_project()
+        draft = drafts_store.get_draft(project.db_path, project.id, draft_id)
+        if draft is None:
+            raise WorkflowEngineError(f"draft not found: {draft_id}", exit_code=1)
+        return {"draft": draft.to_dict()}
+
+    def draft_promote(
+        self,
+        draft_id: str,
+        *,
+        attack_type: Optional[str] = None,
+    ) -> dict[str, Any]:
+        from talos.ai.drafts import store as drafts_store
+
+        project = self._require_project()
+        try:
+            result = drafts_store.promote_draft(
+                project.db_path,
+                project.id,
+                draft_id,
+                attack_type=attack_type,
+            )
+        except drafts_store.DraftsError as exc:
+            raise WorkflowEngineError(str(exc), exit_code=1) from exc
+        audit.record_event(
+            project.db_path,
+            project.id,
+            "draft.promote",
+            {
+                "draft_id": draft_id,
+                "finding_id": result.get("finding_id"),
+                "attack_type": (result.get("draft") or {}).get("attack_type"),
+            },
+        )
+        return result
+
+    def draft_reject(self, draft_id: str) -> dict[str, Any]:
+        from talos.ai.drafts import store as drafts_store
+
+        project = self._require_project()
+        try:
+            draft = drafts_store.reject_draft(
+                project.db_path, project.id, draft_id
+            )
+        except drafts_store.DraftsError as exc:
+            raise WorkflowEngineError(str(exc), exit_code=1) from exc
+        audit.record_event(
+            project.db_path,
+            project.id,
+            "draft.reject",
+            {"draft_id": draft_id},
+        )
+        return {"draft": draft.to_dict()}
+
+    # ---- Phase E: session export bundle ----
+
+    def export_session(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        limit_suggestions: int = 100,
+        limit_observations: int = 50,
+        limit_audit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        JSON bundle for bug reports: session, suggestions, observation
+        summaries, audit, notes revision pointer, usage. No secret-redaction
+        pass (operator owns engagement data).
+        """
+        project = self._require_project()
+        try:
+            session = session_store.resolve_session_id(
+                project.db_path,
+                project.id,
+                session_id,
+                allow_halted=True,
+            )
+        except session_store.SessionNotFound as exc:
+            raise WorkflowEngineError(str(exc), exit_code=1) from exc
+
+        suggestions = suggestion_store.list_suggestions(
+            project.db_path, session.session_id, limit=limit_suggestions
+        )
+        observations = obs_store.list_observations(
+            project.db_path, session.session_id, limit=limit_observations
+        )
+        plan_rows = plan_store.list_plans(
+            project.db_path, session.session_id, limit=limit_suggestions
+        )
+        events = audit.list_events(
+            project.db_path,
+            project.id,
+            session_id=session.session_id,
+            limit=limit_audit,
+        )
+        notes = notes_store.get_notes(project.db_path, project.id)
+        return {
+            "export_version": 1,
+            "exported_at": _now_iso(),
+            "session": {
+                "session_id": session.session_id,
+                "project_id": session.project_id,
+                "pinned_project_id": session.pinned_project_id,
+                "goal": session.goal,
+                "mode": session.mode.value,
+                "status": session.status.value,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "budgets": session.budgets.to_dict(),
+                "usage": session.usage.to_dict(),
+            },
+            "notes": {
+                "revision": notes.revision,
+                "updated_at": notes.updated_at,
+                "updated_by": notes.updated_by,
+                # Full doc pointer only — operator can notes export separately
+                "doc_schema_version": (notes.doc or {}).get("schema_version"),
+                "tainted": bool((notes.doc or {}).get("tainted")),
+            },
+            "suggestions": [
+                {
+                    "suggestion_id": s.suggestion_id,
+                    "session_id": s.session_id,
+                    "tool_name": s.tool_name,
+                    "arguments": s.arguments,
+                    "reason": s.reason,
+                    "cli_preview": s.cli_preview,
+                    "created_at": s.created_at,
+                    "display_risk": s.display_risk,
+                }
+                for s in suggestions
+            ],
+            "plans": [plan_store.plan_row_to_public(r) for r in plan_rows],
+            "observations": observations,
+            "audit": events,
+        }
 

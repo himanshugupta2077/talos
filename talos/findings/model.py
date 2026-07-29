@@ -154,4 +154,5 @@ ATTACK_DISPLAY: dict[str, str] = {
     "unauth":         "Unauthenticated Execution",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
+    "ai_draft":       "AI Draft (promoted)",
 }

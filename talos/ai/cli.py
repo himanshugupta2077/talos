@@ -3,14 +3,15 @@ Module: talos.ai.cli
 
 Purpose:
     Thin CLI for the AI layer. All orchestration goes through WorkflowEngine.
-    Phase A–D: sessions, tools, audit, suggest/approve/deny/pending/plans,
-    notes, mcp serve (stdio), config show|set|unset|edit.
+    Phase A–E: sessions, tools, audit, suggest/approve/deny/pending/plans,
+    notes, markdown KB (read-only dir), draft finding promote, session export,
+    mcp serve (stdio), config show|set|unset|edit.
 
 Dependencies: argparse, talos.cli_output, talos.ai.workflow.engine
 Data flow:
     argv → argparse → WorkflowEngine / config / MCP → stdout / stderr
 Side effects:
-    Session, plans, notes, audit DB writes; AI config YAML; confirmation prompts.
+    Session, plans, notes, drafts, audit DB writes; AI config YAML; prompts.
 """
 
 from __future__ import annotations
@@ -68,7 +69,8 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
         prog="talos ai",
         description=(
             "Talos AI layer — policy-gated agent (suggest-first). "
-            "Sessions, suggest/approve, notes, READ tools, stdio MCP, LLM config."
+            "Sessions, suggest/approve, notes, markdown KB, draft findings, "
+            "READ tools, stdio MCP, LLM config."
         ),
     )
     sub = parser.add_subparsers(dest="ai_cmd", metavar="<command>")
@@ -254,6 +256,78 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
     )
     add_force_argument(p_cfg_edit)
 
+    # kb — operator markdown files under ~/.talos/ai/kb (read-only via CLI)
+    p_kb = sub.add_parser(
+        "kb",
+        help="Markdown knowledge base (~/.talos/ai/kb/*.md; add files manually)",
+    )
+    kb_sub = p_kb.add_subparsers(dest="kb_cmd", metavar="<kb-command>")
+    p_kb_list = kb_sub.add_parser("list", help="List markdown docs in the KB dir")
+    p_kb_list.add_argument("--limit", type=int, default=100)
+    add_format_argument(p_kb_list)
+    p_kb_show = kb_sub.add_parser("show", help="Show one markdown doc by id")
+    p_kb_show.add_argument("doc_id", help="Relative path without .md (e.g. idor/notes)")
+    add_format_argument(p_kb_show)
+    p_kb_search = kb_sub.add_parser("search", help="Keyword search over KB markdown")
+    p_kb_search.add_argument("query", nargs="?", default="", help="Search terms")
+    p_kb_search.add_argument("--limit", type=int, default=10)
+    add_format_argument(p_kb_search)
+
+    # finding — draft promote (never confirm)
+    p_finding = sub.add_parser(
+        "finding",
+        help="AI draft findings: list/show/promote/reject (promote → TRIAGING)",
+    )
+    finding_sub = p_finding.add_subparsers(
+        dest="finding_cmd", metavar="<finding-command>"
+    )
+    p_fd_list = finding_sub.add_parser(
+        "list-drafts", help="List AI draft findings for the project"
+    )
+    p_fd_list.add_argument(
+        "--status",
+        default=None,
+        choices=["draft", "promoted", "rejected"],
+    )
+    p_fd_list.add_argument("--limit", type=int, default=50)
+    add_format_argument(p_fd_list)
+    p_fd_show = finding_sub.add_parser("show-draft", help="Show one draft finding")
+    p_fd_show.add_argument("draft_id")
+    add_format_argument(p_fd_show)
+    p_fd_promote = finding_sub.add_parser(
+        "promote",
+        help="Promote draft → create_finding (TRIAGING; never confirm)",
+    )
+    p_fd_promote.add_argument("draft_id")
+    p_fd_promote.add_argument(
+        "--attack-type",
+        default=None,
+        help="Override attack_type (default: draft value or ai_draft)",
+    )
+    add_force_argument(p_fd_promote)
+    add_format_argument(p_fd_promote)
+    p_fd_reject = finding_sub.add_parser("reject-draft", help="Reject a draft finding")
+    p_fd_reject.add_argument("draft_id")
+    add_force_argument(p_fd_reject)
+    add_format_argument(p_fd_reject)
+
+    # session export
+    p_session = sub.add_parser("session", help="Session utilities")
+    session_sub = p_session.add_subparsers(
+        dest="session_cmd", metavar="<session-command>"
+    )
+    p_export = session_sub.add_parser(
+        "export",
+        help="Export session JSON bundle (suggestions/plans/obs/audit/notes pointer)",
+    )
+    p_export.add_argument(
+        "session_id",
+        nargs="?",
+        default=None,
+        help="Session id (default: active)",
+    )
+    add_format_argument(p_export)
+
     if not argv or argv[0] in ("-h", "--help"):
         parser.print_help()
         return
@@ -290,6 +364,12 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
             _cmd_plans(engine, args)
         elif args.ai_cmd == "notes":
             _cmd_notes(engine, args)
+        elif args.ai_cmd == "kb":
+            _cmd_kb(engine, args)
+        elif args.ai_cmd == "finding":
+            _cmd_finding(engine, args)
+        elif args.ai_cmd == "session":
+            _cmd_session(engine, args)
         elif args.ai_cmd == "mcp":
             _cmd_mcp(engine, args)
         elif args.ai_cmd == "config":
@@ -712,6 +792,128 @@ def _cmd_notes(engine: WorkflowEngine, args: argparse.Namespace) -> None:
         return
 
     cli_usage_error("Usage: talos ai notes show|edit|export")
+
+
+def _cmd_kb(engine: WorkflowEngine, args: argparse.Namespace) -> None:
+    if args.kb_cmd in (None,):
+        cli_usage_error("Usage: talos ai kb list|show|search")
+    if args.kb_cmd == "list":
+        payload = engine.kb_list(limit=int(args.limit))
+        if wants_json(args):
+            cli_json(payload)
+            return
+        print(f"KB dir: {payload.get('kb_dir')}")
+        print(f"Docs:   {payload.get('count')}")
+        for doc in payload.get("docs") or []:
+            print(f"  {doc.get('doc_id')}: {doc.get('title')} ({doc.get('size')} B)")
+        return
+    if args.kb_cmd == "show":
+        payload = engine.kb_show(args.doc_id)
+        if wants_json(args):
+            cli_json(payload)
+            return
+        doc = payload.get("doc") or {}
+        print(f"ID:    {doc.get('doc_id')}")
+        print(f"Title: {doc.get('title')}")
+        print(f"Path:  {doc.get('path')}")
+        print()
+        print(doc.get("body") or "")
+        return
+    if args.kb_cmd == "search":
+        payload = engine.kb_search(args.query or "", limit=int(args.limit))
+        if wants_json(args):
+            cli_json(payload)
+            return
+        print(f"KB dir: {payload.get('kb_dir')}")
+        print(f"Query:  {payload.get('query')!r}")
+        print(f"Hits:   {payload.get('count')}")
+        for hit in payload.get("hits") or []:
+            print(
+                f"  [{hit.get('score')}] {hit.get('doc_id')}: "
+                f"{hit.get('title')}"
+            )
+            snip = hit.get("snippet") or ""
+            if snip:
+                print(f"      {snip[:160]}")
+        return
+    cli_usage_error("Usage: talos ai kb list|show|search")
+
+
+def _cmd_finding(engine: WorkflowEngine, args: argparse.Namespace) -> None:
+    if args.finding_cmd in (None,):
+        cli_usage_error(
+            "Usage: talos ai finding list-drafts|show-draft|promote|reject-draft"
+        )
+    if args.finding_cmd == "list-drafts":
+        payload = engine.draft_list(status=args.status, limit=int(args.limit))
+        if wants_json(args):
+            cli_json(payload)
+            return
+        print(f"Drafts: {payload.get('count')}")
+        for d in payload.get("drafts") or []:
+            print(
+                f"  {d.get('id')[:8]}…  {d.get('status'):8}  "
+                f"{d.get('attack_type')}: {d.get('title')}"
+            )
+        return
+    if args.finding_cmd == "show-draft":
+        payload = engine.draft_show(args.draft_id)
+        if wants_json(args):
+            cli_json(payload)
+            return
+        d = payload.get("draft") or {}
+        print(f"ID:          {d.get('id')}")
+        print(f"Status:      {d.get('status')}")
+        print(f"Title:       {d.get('title')}")
+        print(f"Attack type: {d.get('attack_type')}")
+        print(f"Endpoint:    {d.get('endpoint_id')}")
+        print(f"Confidence:  {d.get('confidence')}")
+        print(f"Promoted:    {d.get('promoted_finding_id') or '-'}")
+        print()
+        print(d.get("description") or "")
+        return
+    if args.finding_cmd == "promote":
+        force = bool(getattr(args, "force", False))
+        confirm_or_exit(
+            f"Promote AI draft {args.draft_id} to a TRIAGING finding?",
+            force=force,
+        )
+        result = engine.draft_promote(
+            args.draft_id, attack_type=getattr(args, "attack_type", None)
+        )
+        if wants_json(args):
+            cli_json(result)
+            return
+        cli_success(
+            f"Promoted draft → finding {result.get('finding_id')} (TRIAGING)"
+        )
+        return
+    if args.finding_cmd == "reject-draft":
+        force = bool(getattr(args, "force", False))
+        confirm_or_exit(
+            f"Reject AI draft {args.draft_id}?",
+            force=force,
+        )
+        result = engine.draft_reject(args.draft_id)
+        if wants_json(args):
+            cli_json(result)
+            return
+        cli_success(f"Draft rejected: {args.draft_id}")
+        return
+    cli_usage_error(
+        "Usage: talos ai finding list-drafts|show-draft|promote|reject-draft"
+    )
+
+
+def _cmd_session(engine: WorkflowEngine, args: argparse.Namespace) -> None:
+    if args.session_cmd != "export":
+        cli_usage_error("Usage: talos ai session export [SESSION_ID]")
+    payload = engine.export_session(getattr(args, "session_id", None))
+    # export always JSON body
+    if wants_json(args):
+        cli_json(payload)
+        return
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
 def _cmd_mcp(engine: WorkflowEngine, args: argparse.Namespace) -> None:

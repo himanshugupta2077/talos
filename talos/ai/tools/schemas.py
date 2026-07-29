@@ -2,7 +2,7 @@
 Module: talos.ai.tools.schemas
 
 Purpose:
-    JSON Schema bodies for Phase A–D tools + TOOL_PROTOCOL_VERSION.
+    JSON Schema bodies for Phase A–E tools + TOOL_PROTOCOL_VERSION.
     Lightweight validator for the schema subset used by TTP (no jsonschema dep).
 
 Dependencies: copy, typing
@@ -428,6 +428,97 @@ SCHEMA_INTRUDER_SESSION_RUN: dict[str, Any] = {
     },
 }
 
+# ------------------------------------------------------------------ #
+# Phase E: minimal markdown KB + draft findings                        #
+# ------------------------------------------------------------------ #
+
+SCHEMA_KB_SEARCH: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string", "maxLength": 500, "default": ""},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+    },
+}
+
+SCHEMA_DRAFT_FINDING_LIST: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["draft", "promoted", "rejected"],
+        },
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+    },
+}
+
+SCHEMA_DRAFT_FINDING_SHOW: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["draft_id"],
+    "properties": {
+        "draft_id": {"type": "string", "minLength": 8, "maxLength": 64},
+    },
+}
+
+SCHEMA_DRAFT_FINDING_CREATE: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "description", "endpoint_id"],
+    "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "description": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "endpoint_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "attack_type": {
+            "type": "string",
+            "enum": [
+                "ai_draft",
+                "bac",
+                "auth_test",
+                "unauth",
+                "passive_secret",
+                "intruder",
+            ],
+            "default": "ai_draft",
+        },
+        "vulnerability_class": {"type": "string", "maxLength": 128, "default": ""},
+        "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.5,
+        },
+        "cluster_key": {"type": "string", "maxLength": 256},
+        "evidence_refs": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "endpoint_ids": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {"type": "string", "maxLength": 64},
+                },
+                "flow_ids": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {"type": "string", "maxLength": 64},
+                },
+                "finding_ids": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {"type": "string", "maxLength": 64},
+                },
+                "param_uuids": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {"type": "string", "maxLength": 128},
+                },
+            },
+        },
+    },
+}
+
 # Keys that must never appear in tool args (project switch / override).
 FORBIDDEN_ARG_KEYS: frozenset[str] = frozenset(
     {
@@ -528,6 +619,14 @@ def _validate_value(
         if "minimum" in schema and value < int(schema["minimum"]):
             return False, f"{path}: below minimum"
         if "maximum" in schema and value > int(schema["maximum"]):
+            return False, f"{path}: above maximum"
+    elif expected == "number":
+        # JSON number: int or float (not bool).
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False, f"{path}: expected number"
+        if "minimum" in schema and float(value) < float(schema["minimum"]):
+            return False, f"{path}: below minimum"
+        if "maximum" in schema and float(value) > float(schema["maximum"]):
             return False, f"{path}: above maximum"
     elif expected == "boolean":
         if not isinstance(value, bool):

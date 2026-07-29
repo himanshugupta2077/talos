@@ -83,8 +83,8 @@ def _intruder_policy() -> ToolPolicy:
 def register_all_tools(registry: ToolRegistry) -> None:
     """
     Purpose:
-        Register Phase A–D tools (READ + notes/PTT + HTTP send/replay +
-        engine enqueue).
+        Register Phase A–E tools (READ + notes/PTT + HTTP/engines +
+        markdown KB search + draft findings).
     Input:
         registry — empty or partially filled ToolRegistry.
     Side effects:
@@ -488,4 +488,58 @@ def register_all_tools(registry: ToolRegistry) -> None:
         ),
         _intruder_policy(),
         CallableHandler(engine_handlers.handle_intruder_session_run),
+    )
+
+    # ---- Phase E: minimal markdown KB (operator files under ~/.talos/ai/kb) ----
+    registry.register(
+        ToolSpec(
+            name="kb.search",
+            version=1,
+            description=(
+                "Search operator Markdown knowledge base (~/.talos/ai/kb/*.md). "
+                "Read-only; add files manually outside Talos."
+            ),
+            input_schema=S.SCHEMA_KB_SEARCH,
+            tags=("kb", "read"),
+        ),
+        _read_policy(Capability.READ_KB),
+        CallableHandler(notes_kb_handlers.handle_kb_search),
+    )
+
+    # ---- Phase E: draft findings (promote is operator CLI only) ----
+    registry.register(
+        ToolSpec(
+            name="draft_finding.list",
+            version=1,
+            description="List AI draft findings for the pinned project.",
+            input_schema=S.SCHEMA_DRAFT_FINDING_LIST,
+            tags=("findings", "draft", "read"),
+        ),
+        _read_policy(Capability.READ_FINDINGS),
+        CallableHandler(notes_kb_handlers.handle_draft_finding_list),
+    )
+    registry.register(
+        ToolSpec(
+            name="draft_finding.show",
+            version=1,
+            description="Show one AI draft finding by id.",
+            input_schema=S.SCHEMA_DRAFT_FINDING_SHOW,
+            tags=("findings", "draft", "read"),
+        ),
+        _read_policy(Capability.READ_FINDINGS),
+        CallableHandler(notes_kb_handlers.handle_draft_finding_show),
+    )
+    registry.register(
+        ToolSpec(
+            name="draft_finding.create",
+            version=1,
+            description=(
+                "Create an AI draft finding (ai_draft_findings only). "
+                "Promote via operator CLI: talos ai finding promote."
+            ),
+            input_schema=S.SCHEMA_DRAFT_FINDING_CREATE,
+            tags=("findings", "draft", "write"),
+        ),
+        _write_policy(Capability.DRAFT_FINDING),
+        CallableHandler(notes_kb_handlers.handle_draft_finding_create),
     )

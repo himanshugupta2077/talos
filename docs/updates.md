@@ -2,6 +2,43 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## AI Layer Phase E — markdown KB + draft findings + session export (core CLI)
+
+**Shipped:** 2026-07-29 · schema **v51 → v52** (`ai_draft_findings`).
+
+Core CLI only (no Control Panel AI page in this ship). Design: Phase E / PR9+PR11
+subset of `docs/design-talos-ai-layer.md`.
+
+| Surface | Detail |
+|---------|--------|
+| Markdown KB | Operator files under `~/.talos/ai/kb/**/*.md` (or `$TALOS_DATA_DIR/ai/kb`). **Read-only** — add/edit files yourself. CLI: `talos ai kb list\|show\|search`. Tool: `kb.search` (`READ_KB`). |
+| Draft findings | Table `ai_draft_findings`. Tools: `draft_finding.list\|show\|create`. Operator promote: `talos ai finding promote <id>` → `create_finding(..., attack_type, verdict=AI_DRAFT_PROMOTED)` + notes + evidence; stays **TRIAGING** (never confirm). `ATTACK_DISPLAY["ai_draft"]`. |
+| Session export | `talos ai session export [SESSION]` — JSON bundle: session, suggestions, plans (no capability tokens), observations, audit, notes revision pointer. |
+| Schema | v52: `ai_draft_findings` only. KB is **not** SQLite. |
+
+```bash
+talos project open my-app
+mkdir -p ~/.talos/ai/kb
+# write ~/.talos/ai/kb/idor-checklist.md then:
+talos ai kb search idor
+
+talos ai start --goal "Document findings" --mode step --force
+# agent may draft_finding.create via suggest/approve, or use tools after approve
+talos ai finding list-drafts
+talos ai finding promote <draft_id> --force
+talos ai session export --format json
+talos ai stop
+```
+
+**Explicitly out of this ship:** Control Panel `/api/ai` page, network MCP,
+structured project/global KB cards + HMAC promote pipeline (use markdown files).
+
+**Files:** `talos/ai/kb/store.py`, `talos/ai/drafts/store.py`,
+`talos/ai/tools/handlers/notes_kb.py`, `talos/ai/cli.py`, schema v52,
+`tests/test_ai_phase_e.py`, docs.
+
+---
+
 ## AI Layer Phase D — send/replay + engine orchestration
 
 **Shipped:** 2026-07-29 (no schema bump; reuses v51 tables).

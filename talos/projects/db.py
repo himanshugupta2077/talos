@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 52
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1403,6 +1403,30 @@ CREATE TABLE IF NOT EXISTS ai_task_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_task_nodes_session
     ON ai_task_nodes (session_id, priority DESC, updated_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- AI Layer (v52): draft findings (Phase E).                           --
+-- KB is filesystem markdown under ~/.talos/ai/kb/ (not SQLite).       --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS ai_draft_findings (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    session_id          TEXT,
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    vulnerability_class TEXT NOT NULL DEFAULT '',
+    attack_type         TEXT NOT NULL,
+    endpoint_id         TEXT NOT NULL,
+    evidence_refs_json  TEXT NOT NULL,
+    confidence          REAL NOT NULL,
+    cluster_key         TEXT,
+    status              TEXT NOT NULL,
+    promoted_finding_id TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_draft_findings_project
+    ON ai_draft_findings (project_id, status, updated_at DESC);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -1535,6 +1559,30 @@ CREATE TABLE IF NOT EXISTS ai_task_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_task_nodes_session
     ON ai_task_nodes (session_id, priority DESC, updated_at DESC);
+"""
+
+# Shared CREATE statements for AI draft findings (schema v52).
+# Knowledge base notes are operator markdown files under ~/.talos/ai/kb/.
+_AI_SCHEMA_V52_DDL = """
+CREATE TABLE IF NOT EXISTS ai_draft_findings (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    session_id          TEXT,
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    vulnerability_class TEXT NOT NULL DEFAULT '',
+    attack_type         TEXT NOT NULL,
+    endpoint_id         TEXT NOT NULL,
+    evidence_refs_json  TEXT NOT NULL,
+    confidence          REAL NOT NULL,
+    cluster_key         TEXT,
+    status              TEXT NOT NULL,
+    promoted_finding_id TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_draft_findings_project
+    ON ai_draft_findings (project_id, status, updated_at DESC);
 """
 
 # Shared CREATE statements for cross-flow reflection tables (schema v42).
@@ -2424,6 +2472,7 @@ def migrate_project_db(db_path: Path) -> None:
         v49 → v50: AI Layer Phase B — ai_app_notes, ai_app_note_revisions.
         v50 → v51: AI Layer Phase B — ai_suggestions, ai_execution_plans,
                    ai_observations, ai_task_nodes.
+        v51 → v52: AI Layer Phase E — ai_draft_findings (KB = markdown dir).
     """
     if not db_path.exists():
         return
@@ -3756,6 +3805,12 @@ def migrate_project_db(db_path: Path) -> None:
             # AI Layer Phase B (PR4): immutable suggestions, plans, obs, PTT.
             conn.executescript(_AI_SCHEMA_V51_DDL)
             conn.execute("UPDATE schema_version SET version = 51")
+            conn.commit()
+
+        if current < 52:
+            # AI Layer Phase E (PR9): draft findings (KB is filesystem markdown).
+            conn.executescript(_AI_SCHEMA_V52_DDL)
+            conn.execute("UPDATE schema_version SET version = 52")
             conn.commit()
 
 

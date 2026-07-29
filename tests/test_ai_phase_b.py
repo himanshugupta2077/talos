@@ -74,11 +74,12 @@ def engine(manager: ProjectManager, project) -> WorkflowEngine:
 
 
 class TestSchemaPhaseB:
-    def test_schema_version_is_51(self) -> None:
-        assert SCHEMA_VERSION == 51
+    def test_schema_version_is_at_least_51(self) -> None:
+        # Phase E bumped to v52; Phase B tables remain present.
+        assert SCHEMA_VERSION >= 51
 
     def test_fresh_db_has_phase_b_tables(self, project) -> None:
-        assert get_schema_version(project.db_path) == 51
+        assert get_schema_version(project.db_path) == SCHEMA_VERSION
         with sqlite3.connect(str(project.db_path)) as conn:
             tables = {
                 r[0]

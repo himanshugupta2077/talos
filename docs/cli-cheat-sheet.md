@@ -355,7 +355,7 @@ talos [--project ID] [-h|--help]
 │  ├─ group create|add|remove|list
 │  └─ report <uuid> | --group <group>
 │
-└─ ai                        # policy-gated agent (Phase A–D)
+└─ ai                        # policy-gated agent (Phase A–E)
    ├─ start [--goal TEXT] [--mode MODE] [--force-stop-existing] [--force]
    ├─ stop [SESSION]
    ├─ resume SESSION
@@ -369,6 +369,9 @@ talos [--project ID] [-h|--help]
    ├─ pending [--session ID] [--format]
    ├─ plans show <plan_id> [--session ID] [--format]
    ├─ notes show|export|edit [--force] [--format]
+   ├─ kb list|show|search                    # Markdown under ~/.talos/ai/kb
+   ├─ finding list-drafts|show-draft|promote|reject-draft
+   ├─ session export [SESSION]
    ├─ tools list [--format]
    ├─ mcp serve [--session SESSION]          # stdio MCP only
    ├─ config show|set|unset|edit             # LLM config (never a tool)
@@ -1906,7 +1909,7 @@ talos finding report --group "Critical Findings"
 
 ---
 
-## AI (policy-gated agent — Phase A–D)
+## AI (policy-gated agent — Phase A–E)
 
 Suggest-first control model for **authorized bug bounty / client pentest**.
 Sessions pin to the effective project. Default mode is `suggest-only`
@@ -1921,6 +1924,11 @@ after validate/approve (CLI or MCP). **No AI client-data redaction module.**
 annotations always reject; `dangerous` never silent auto — operator must
 `approve` (then jobs use `PRIORITY_AI_MANUAL` + `ai_force_dangerous`).
 Engines are **enqueue-only** — poll with `scheduler.jobs.*` (or CLI).
+
+**Phase E (core CLI):** markdown KB at `~/.talos/ai/kb/*.md` (add files
+manually; read-only tools/CLI); AI draft findings + operator promote to
+`TRIAGING` findings (`attack_type=ai_draft` default; never confirm);
+`session export` JSON bundle for bug reports.
 
 ```bash
 # Start (one active session per project)
@@ -1948,7 +1956,24 @@ talos ai notes show
 talos ai notes export
 talos ai notes edit --force
 
-# Allowlisted tools (ToolSpec descriptors) — includes Phase D HTTP/engines
+# Markdown knowledge base (operator-authored files under ~/.talos/ai/kb)
+mkdir -p ~/.talos/ai/kb
+# drop idor-checklist.md, techniques/*.md, etc. — then:
+talos ai kb list
+talos ai kb search idor
+talos ai kb show idor-checklist
+
+# Draft findings (agent tool draft_finding.create; promote is operator-only)
+talos ai finding list-drafts
+talos ai finding show-draft <draft_id>
+talos ai finding promote <draft_id> --force
+talos ai finding reject-draft <draft_id> --force
+
+# Session export (bug-report JSON bundle)
+talos ai session export
+talos ai session export <session_id> --format json
+
+# Allowlisted tools (ToolSpec descriptors)
 talos ai tools list
 talos ai tools list --format json
 
@@ -1984,13 +2009,15 @@ talos ai audit list --session <session_id> --format json
   `iv.candidates`, `finding.list|show`, `passive.detections.list`,
   `error_intel.list`, `access.coverage`, `scheduler.jobs.list|show`,
   `intruder.suggest`, `role.*`, `module.*`, `notes.app.get`, `task_tree.list`,
-  `iv.synthesize`
+  `iv.synthesize`, `kb.search`, `draft_finding.list|show`
 - **WRITE / context:** `notes.app.patch`, `task_tree.upsert`,
-  `role.set_active`, `module.set_active` (exists-only — never creates)
+  `role.set_active`, `module.set_active` (exists-only — never creates),
+  `draft_finding.create` (draft table only — promote is CLI)
 - **HTTP (Phase D):** `send.once`, `replay.flow` (enqueue)
 - **Engines (Phase D, enqueue-only):** `iv.run`, `passive.rescan`,
   `attack.unauth.run`, `attack.bac.run`, `intruder.session.run`
   (pre-created intruder `session_id` required)
 
-**Later phases (E):** project/global KB, draft findings + promote,
-Control Panel AI page, eval harness.
+**Not in this ship:** Control Panel AI page, network MCP, `finding.confirm`,
+role/module create, rich structured KB promote pipeline (add markdown
+manually under `~/.talos/ai/kb` instead).

@@ -2142,11 +2142,13 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 51` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 52` (`talos.projects.db`). WAL mode and foreign keys are enabled.
 Intruder tables: `intruder_sessions`, `intruder_results` (v46; `finding_id` v48); `intruder_pools` (v47).
 AI Layer Phase A (v49): `ai_sessions`, `ai_audit_events`, `ai_project_prefs`.
 AI Layer Phase B (v50–v51): `ai_app_notes`, `ai_app_note_revisions`; immutable
 `ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes`.
+AI Layer Phase E (v52): `ai_draft_findings`. Markdown KB is filesystem-only
+(`~/.talos/ai/kb/*.md` — not SQLite).
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2157,7 +2159,7 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 
 | Table | Purpose |
 |-------|---------|
-| `schema_version` | Single version integer (51) |
+| `schema_version` | Single version integer (52) |
 | `flows` | Captured and replayed HTTP exchanges |
 | `endpoints` | Deduplicated method + **canonical origin** (`host` column) + normalized_path |
 | `parameters` | Endpoint Intelligence parameter inventory (v42: `cross_flow_*` flags) |
@@ -2178,6 +2180,9 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 | `ai_sessions` | AI agent sessions (pin, mode, budgets, usage) — schema v49 |
 | `ai_audit_events` | Append-only AI audit log — schema v49 |
 | `ai_project_prefs` | Per-project AI prefs (auto-aggressive ack) — schema v49 |
+| `ai_app_notes` / `ai_app_note_revisions` | Structured AI app notes — v50 |
+| `ai_suggestions` / `ai_execution_plans` / `ai_observations` / `ai_task_nodes` | Suggest/approve loop + PTT — v51 |
+| `ai_draft_findings` | AI draft findings before operator promote — v52 |
 
 | `attack_config` | Key/value attack settings (e.g. `unauth_auto_run`) |
 | `attack_host_exclusions` | **Legacy** — not used by current exclusion path |
@@ -2269,6 +2274,7 @@ Notable milestones:
 | v49 | AI Layer Phase A: `ai_sessions`, `ai_audit_events`, `ai_project_prefs` |
 | v50 | AI Layer Phase B: `ai_app_notes`, `ai_app_note_revisions` |
 | v51 | AI Layer Phase B: `ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes` |
+| v52 | AI Layer Phase E: `ai_draft_findings` (markdown KB is filesystem `~/.talos/ai/kb`) |
 
 ---
 
@@ -2439,7 +2445,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] **AI Layer Phase A** — policy-gated agent foundation (`talos.ai`): Workflow Engine (session lifecycle, frozen project pin, one-active-per-project, BudgetCounters, audit); capability-based mode grants (`suggest-only` default / `step` GA / experimental `auto-*`); Talos Tool Protocol (`ToolSpec` / `ToolPolicy` / `ToolHandler`, registry list/get only — **no** `call()`); `PolicyValidator` → sealed `ExecutionPlan` + single-use capability token; `Executor` sole invoke path; READ inventory/intel/context tools + `role.set_active` / `module.set_active` (exists-only); schema v49 (`ai_sessions`, `ai_audit_events`, `ai_project_prefs`); CLI `talos ai start|stop|resume|reset-budget|status|mode|tools list|audit list`. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_a.py`.
 - [x] **AI Layer Phase B** — offline agent loop: structured app notes (v50) with optimistic revision concurrency; immutable `ActionSuggestion` + `ExecutionPlan` + observations + PTT (v51); `HeuristicPlanner` (`provider=none`); CLI `suggest [--auto-reads]`, `approve`, `deny`, `pending`, `plans show`, `notes show|edit|export`; tools `notes.app.get|patch`, `task_tree.list|upsert`; suggest-only hard-rejects execute/approve. **No AI client-data redaction** (authorized BB/pentest product). Tests: `tests/test_ai_phase_b.py`.
 - [x] **AI Layer Phase C** — stdio MCP (`talos ai mcp serve`) over WorkflowEngine → PolicyValidator → Executor; LLM providers `none` / `ollama` / `openai-compatible` / `anthropic` + `LLMPlanner` with heuristic fallback; operator config `~/.talos/ai/config.yaml` + `TALOS_AI_API_KEY` via `talos ai config show|set|unset|edit` (never a tool); `llm_tokens` budget accounting. **Still no** `talos/ai/redaction.py` (Key Decision 9). Tests: `tests/test_ai_phase_c.py`.
-- [x] **AI Layer Phase D** — active pentest tools: `send.once` (`ai_send`, ≤20 edits) + `replay.flow` (enqueue-only); live Basic Scope + outscope + snapshot fail-closed shrink; annotation matrix (`logout` always reject; `dangerous` human-approve → `PRIORITY_AI_MANUAL` + `ai_force_dangerous`); engine enqueue `iv.run` / `iv.synthesize` / `passive.rescan` / `attack.unauth.run` / `attack.bac.run` / `intruder.session.run` (pre-created session); `PRIORITY_AI_AUTO=15` / `PRIORITY_AI_MANUAL=100`. Tests: `tests/test_ai_phase_d.py`. **Not yet:** KB/draft findings, Control Panel AI page, network MCP, eval harness (Phase E).
+- [x] **AI Layer Phase D** — active pentest tools: `send.once` (`ai_send`, ≤20 edits) + `replay.flow` (enqueue-only); live Basic Scope + outscope + snapshot fail-closed shrink; annotation matrix (`logout` always reject; `dangerous` human-approve → `PRIORITY_AI_MANUAL` + `ai_force_dangerous`); engine enqueue `iv.run` / `iv.synthesize` / `passive.rescan` / `attack.unauth.run` / `attack.bac.run` / `intruder.session.run` (pre-created session); `PRIORITY_AI_AUTO=15` / `PRIORITY_AI_MANUAL=100`. Tests: `tests/test_ai_phase_d.py`.
+- [x] **AI Layer Phase E (core CLI)** — minimal markdown KB (`~/.talos/ai/kb/*.md`, tool `kb.search`, CLI `talos ai kb list|show|search`); draft findings (`ai_draft_findings` v52) + tools `draft_finding.*` + operator `talos ai finding promote` → `create_finding` with `verdict=AI_DRAFT_PROMOTED`, `attack_type=ai_draft` (never confirm); `talos ai session export` JSON bundle. **Not in this ship:** Control Panel AI page, network MCP, structured dual-scope KB promote pipeline. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_e.py`.
 
 ---
 

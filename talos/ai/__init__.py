@@ -15,7 +15,10 @@ Purpose:
     anthropic) + operator config. No client-data redaction module
     (Key Decision 9 — authorized BB/pentest product).
 
-    Later: HTTP send/replay, engines, KB, Control Panel (see design doc).
+    Phase D: send/replay + engine enqueue tools with live scope/annotations.
+
+    Phase E (core CLI): markdown KB (~/.talos/ai/kb), draft findings + promote,
+    session export. Control Panel AI page is separate / deferred.
 
 Dependencies: talos.ai.models, talos.ai.workflow, talos.ai.tools
 Data flow:
