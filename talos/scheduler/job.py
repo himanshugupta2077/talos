@@ -129,7 +129,22 @@ IV_JOB_TYPES: tuple[str, ...] = (
     IV_PARSER,
 )
 
-JOB_TYPES: tuple[str, ...] = (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST) + BAC_JOB_TYPES + UNAUTH_JOB_TYPES + IV_JOB_TYPES
+# ------------------------------------------------------------------ #
+# Intruder job type constants                                          #
+# ------------------------------------------------------------------ #
+
+INTRUDER_SESSION = "intruder_session"
+"""Time-sliced Intruder attack session segment (meta.session_id shared)."""
+
+INTRUDER_JOB_TYPES: tuple[str, ...] = (INTRUDER_SESSION,)
+
+JOB_TYPES: tuple[str, ...] = (
+    (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST)
+    + BAC_JOB_TYPES
+    + UNAUTH_JOB_TYPES
+    + IV_JOB_TYPES
+    + INTRUDER_JOB_TYPES
+)
 
 
 # ------------------------------------------------------------------ #

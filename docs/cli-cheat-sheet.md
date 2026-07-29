@@ -1131,6 +1131,62 @@ Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** 
 
 ---
 
+## Intruder (Phase 1)
+
+High-volume mutation attack engine. **Not** Send multi-send and **not** IV.
+Scheduler-backed time-sliced jobs (`intruder_session`); micro RPS inside a
+segment. Default storage is metrics-only; interesting matches can store
+`source=intruder` flows without error_intel/passive hooks.
+
+```bash
+# Create from a baseline flow (capture or send execution)
+talos intruder session create --from <flow_id> --name enum-users --format json
+# → session_id
+
+# Template variables ({{name}} / inject locations)
+talos intruder template set-var <sid> --name user_id --location path
+talos intruder template set-var <sid> --name token --location header --path Authorization --fixed-value 'Bearer …'
+talos intruder template show <sid> --format json
+
+# Payload sets
+talos intruder payload set <sid> --var user_id --generator numbers --start 1 --end 500
+talos intruder payload set <sid> --var user_id --generator wordlist --file ./ids.txt
+talos intruder payload set <sid> --var q --generator static --value a --value b --processor url_encode
+talos intruder payload list <sid>
+
+# Strategy + timing + match
+talos intruder strategy set <sid> --type single          # or sniper
+talos intruder timing set <sid> --mode fixed --rps 2 --concurrency 1
+talos intruder match add <sid> --status 200 --length-delta-gt 50 --tag big
+
+# Validate / run
+talos intruder session validate <sid> --format json
+talos intruder session run <sid> --format json           # enqueue first segment (prio 100)
+talos intruder session run <sid> --right-now --force     # foreground (no job)
+talos intruder session status <sid> --format json        # poll every ~2s
+talos intruder session pause <sid>
+talos intruder session resume <sid>                      # new job prio 100
+talos intruder session stop <sid>
+talos intruder results list <sid> --interesting --format json
+talos intruder results export <sid> --out ./out --jsonl --csv
+talos intruder generators list --format json
+
+# Aliases
+talos intruder run <sid> --format json
+talos intruder status <sid> --format json
+```
+
+**Caps (defaults):** max_attempts 10k, max_duration_s 3600 **active** time,
+slice 100 attempts / 60s, confirm estimate >1000 (or `--force`), wordlist
+1e6 lines / 64 MiB. Path inject needs `normalized_path` with `{name}` braces
+or fails `path_inject_unavailable`.
+
+**Scheduler note:** continuation segments use priority **10** so auto BAC/IV
+can run between slices. Global `scheduler resume` does **not** resume Intruder —
+use `intruder session resume`.
+
+---
+
 ## Send (Repeater)
 
 Mutable edit → send → review (Mode 2). **Never updates the captured
@@ -1138,7 +1194,8 @@ flow** — every send inserts a new row with `source=manual_send|ai_send`,
 `original_flow_id` = root capture, and `flow_meta.parent_flow_id` = fork
 parent. Uses the same HTTP stack / upstream proxy as replay. Sends
 **immediately** (no scheduler). Fully non-interactive for AI agents
-(`--format json`, no TTY required).
+(`--format json`, no TTY required). For high-volume wordlist attacks use
+**`talos intruder`**, not `--repeat`.
 
 ```bash
 # Materialize an editable raw HTTP draft (no send, no DB write)
@@ -1183,6 +1240,18 @@ talos send tree --from <baseline_or_root_flow_id>
 talos send diff <flow_a> <flow_b>
 talos send diff <root> <execution> --side both --format json
 talos send diff <a> <b> --side request --format json
+
+# Persistent Repeater tab archive (project DB; metadata only)
+# Draft request bodies are NOT stored — re-materialize with send from <parent>
+talos send tab open <flow_id> --format json          # create or reuse same parent
+talos send tab open <flow_id> --title 'probe /me' --force-new
+talos send tab list --format json                    # global archive for project
+talos send tab show <tab_id> --format json
+talos send tab rename <tab_id> --title 'auth probe'
+talos send tab touch <tab_id> --last-execution <exec_id>   # after once
+talos send tab touch <tab_id> --parent <exec_id>           # after Fork
+talos send tab close <tab_id>
+talos send tab clear                                 # wipe archive (flows kept)
 ```
 
 | Flag / concept | Behaviour |
@@ -1202,7 +1271,11 @@ talos send diff <a> <b> --side request --format json
 | History | `WHERE original_flow_id = ? AND source IN (manual_send, ai_send)` + session/parent/source filters |
 | Diff | Request + response (`--side request\|response\|both`); verdict SAME/DIFFERENT/ERROR |
 | Export | `request.http` + `response.http` (or `.bin`) under `--out DIR` |
-| DB growth | Each attempt = full flow row (bodies stored); multi-send multiplies rows |
+| Tab archive | `repeater_tabs` table: sticky workspace slots (parent/root/session/last_execution/title). Soft cap 100. Closing a tab does **not** delete send flows. |
+| `tab open` | Create tab for a flow; reuses existing tab with same `parent_flow_id` unless `--force-new` |
+| `tab touch` | Update metadata after send/fork (`--last-execution`, `--parent`, `--session`) |
+| Draft bodies | Still **not** stored server-side until Send; re-open uses `send from <parent_flow_id>` / draft API |
+| DB growth | Each attempt = full flow row (bodies stored); multi-send multiplies rows; tabs are tiny metadata rows |
 
 **Control-panel / API contract:** call `talos.send.engine` + `talos.send.db`
 (not shell). Repeater branch id is **`flow_meta.session_id`** — do **not** use

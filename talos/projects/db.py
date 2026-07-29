@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 46
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1180,6 +1180,78 @@ CREATE TABLE IF NOT EXISTS error_intel_config (
     evidence_snippet_max         INTEGER NOT NULL DEFAULT 4096,
     error_header_names_json      TEXT    NOT NULL DEFAULT '[]'
 );
+
+-- ------------------------------------------------------------------ --
+-- repeater_tabs: persistent Repeater workspace archive (Mode 2)       --
+-- Metadata only — draft request bodies stay client/CLI-local until    --
+-- Send. Re-open re-materializes from parent_flow_id.                  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS repeater_tabs (
+    id                  TEXT    PRIMARY KEY,              -- UUID
+    project_id          TEXT    NOT NULL,
+    title               TEXT    NOT NULL DEFAULT '',
+    parent_flow_id      TEXT    NOT NULL,                 -- materialize / once parent
+    original_flow_id    TEXT    NOT NULL,                 -- lineage root
+    session_id          TEXT,                             -- optional branch marker
+    last_execution_id   TEXT,                             -- last send from this tab
+    sort_order          INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT    NOT NULL,                 -- UTC ISO-8601
+    updated_at          TEXT    NOT NULL                  -- UTC ISO-8601
+);
+CREATE INDEX IF NOT EXISTS idx_repeater_tabs_project_sort
+    ON repeater_tabs (project_id, sort_order ASC, updated_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- Intruder (Phase 1): high-volume mutation attack engine sessions     --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS intruder_sessions (
+    id               TEXT    PRIMARY KEY,              -- UUID
+    project_id       TEXT    NOT NULL,
+    name             TEXT    NOT NULL DEFAULT '',
+    status           TEXT    NOT NULL DEFAULT 'draft', -- draft|configured|queued|running|paused|completed|failed|cancelled
+    base_flow_id     TEXT,                             -- baseline capture/send flow
+    endpoint_id      TEXT,
+    config_json      TEXT    NOT NULL DEFAULT '{}',    -- full session config document
+    checkpoint_json  TEXT    NOT NULL DEFAULT '{}',    -- strategy/generator cursors + attempt_index
+    progress_json    TEXT    NOT NULL DEFAULT '{}',    -- sent, matched, active_duration_s, ...
+    job_id           TEXT,                             -- current segment scheduler job
+    control_flag     TEXT,                             -- null | pause | cancel
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
+    started_at       TEXT,
+    finished_at      TEXT,
+    failure_reason   TEXT,
+    schema_version   INTEGER NOT NULL DEFAULT 1        -- config schema version
+);
+CREATE INDEX IF NOT EXISTS idx_intruder_sessions_project
+    ON intruder_sessions (project_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS intruder_results (
+    id               TEXT    PRIMARY KEY,              -- UUID
+    session_id       TEXT    NOT NULL REFERENCES intruder_sessions(id) ON DELETE CASCADE,
+    attempt_index    INTEGER NOT NULL,
+    variables_json   TEXT    NOT NULL DEFAULT '{}',
+    status_code      INTEGER,
+    success          INTEGER NOT NULL DEFAULT 0,
+    failure_reason   TEXT,
+    duration_ms      REAL,
+    body_length      INTEGER,
+    word_count       INTEGER,
+    line_count       INTEGER,
+    body_hash        TEXT,
+    fingerprint_json TEXT    NOT NULL DEFAULT '{}',
+    metrics_json     TEXT    NOT NULL DEFAULT '{}',
+    interesting      INTEGER NOT NULL DEFAULT 0,
+    match_tags_json  TEXT    NOT NULL DEFAULT '[]',
+    grepped_json     TEXT    NOT NULL DEFAULT '{}',
+    flow_id          TEXT,
+    created_at       TEXT    NOT NULL,
+    UNIQUE (session_id, attempt_index)
+);
+CREATE INDEX IF NOT EXISTS idx_intruder_results_session
+    ON intruder_results (session_id, attempt_index);
+CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
+    ON intruder_results (session_id, interesting) WHERE interesting = 1;
 """
 
 # Shared CREATE statements for cross-flow reflection tables (schema v42).
@@ -1840,6 +1912,59 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
             "INSERT OR IGNORE INTO error_intel_config (id) VALUES ('default')"
         )
 
+    if from_version < 46:
+        # Intruder sessions + results (Phase 1 CLI engine).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS intruder_sessions (
+                id               TEXT    PRIMARY KEY,
+                project_id       TEXT    NOT NULL,
+                name             TEXT    NOT NULL DEFAULT '',
+                status           TEXT    NOT NULL DEFAULT 'draft',
+                base_flow_id     TEXT,
+                endpoint_id      TEXT,
+                config_json      TEXT    NOT NULL DEFAULT '{}',
+                checkpoint_json  TEXT    NOT NULL DEFAULT '{}',
+                progress_json    TEXT    NOT NULL DEFAULT '{}',
+                job_id           TEXT,
+                control_flag     TEXT,
+                created_at       TEXT    NOT NULL,
+                updated_at       TEXT    NOT NULL,
+                started_at       TEXT,
+                finished_at      TEXT,
+                failure_reason   TEXT,
+                schema_version   INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_intruder_sessions_project
+                ON intruder_sessions (project_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS intruder_results (
+                id               TEXT    PRIMARY KEY,
+                session_id       TEXT    NOT NULL REFERENCES intruder_sessions(id) ON DELETE CASCADE,
+                attempt_index    INTEGER NOT NULL,
+                variables_json   TEXT    NOT NULL DEFAULT '{}',
+                status_code      INTEGER,
+                success          INTEGER NOT NULL DEFAULT 0,
+                failure_reason   TEXT,
+                duration_ms      REAL,
+                body_length      INTEGER,
+                word_count       INTEGER,
+                line_count       INTEGER,
+                body_hash        TEXT,
+                fingerprint_json TEXT    NOT NULL DEFAULT '{}',
+                metrics_json     TEXT    NOT NULL DEFAULT '{}',
+                interesting      INTEGER NOT NULL DEFAULT 0,
+                match_tags_json  TEXT    NOT NULL DEFAULT '[]',
+                grepped_json     TEXT    NOT NULL DEFAULT '{}',
+                flow_id          TEXT,
+                created_at       TEXT    NOT NULL,
+                UNIQUE (session_id, attempt_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_intruder_results_session
+                ON intruder_results (session_id, attempt_index);
+            CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
+                ON intruder_results (session_id, interesting) WHERE interesting = 1;
+        """)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -1964,6 +2089,9 @@ def migrate_project_db(db_path: Path) -> None:
                    error_intel_config (intelligence only; no Findings).
         v43 → v44: error_observations unique index on flow_id (non-null) so
                    concurrent stores cannot double-count the same flow.
+        v44 → v45: repeater_tabs table — persistent Repeater workspace archive
+                   (tab metadata only; drafts re-materialize from parent flow).
+        v45 → v46: intruder_sessions + intruder_results — Intruder Phase 1 engine.
     """
     if not db_path.exists():
         return
@@ -3147,6 +3275,88 @@ def migrate_project_db(db_path: Path) -> None:
                     """
                 )
             conn.execute("UPDATE schema_version SET version = 44")
+            conn.commit()
+
+        if current < 45:
+            # Persistent Repeater tab archive (metadata only; no draft body).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repeater_tabs (
+                    id                  TEXT    PRIMARY KEY,
+                    project_id          TEXT    NOT NULL,
+                    title               TEXT    NOT NULL DEFAULT '',
+                    parent_flow_id      TEXT    NOT NULL,
+                    original_flow_id    TEXT    NOT NULL,
+                    session_id          TEXT,
+                    last_execution_id   TEXT,
+                    sort_order          INTEGER NOT NULL DEFAULT 0,
+                    created_at          TEXT    NOT NULL,
+                    updated_at          TEXT    NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_repeater_tabs_project_sort
+                    ON repeater_tabs (project_id, sort_order ASC, updated_at DESC)
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 45")
+            conn.commit()
+
+        if current < 46:
+            # Intruder Phase 1: sessions + attempt results.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS intruder_sessions (
+                    id               TEXT    PRIMARY KEY,
+                    project_id       TEXT    NOT NULL,
+                    name             TEXT    NOT NULL DEFAULT '',
+                    status           TEXT    NOT NULL DEFAULT 'draft',
+                    base_flow_id     TEXT,
+                    endpoint_id      TEXT,
+                    config_json      TEXT    NOT NULL DEFAULT '{}',
+                    checkpoint_json  TEXT    NOT NULL DEFAULT '{}',
+                    progress_json    TEXT    NOT NULL DEFAULT '{}',
+                    job_id           TEXT,
+                    control_flag     TEXT,
+                    created_at       TEXT    NOT NULL,
+                    updated_at       TEXT    NOT NULL,
+                    started_at       TEXT,
+                    finished_at      TEXT,
+                    failure_reason   TEXT,
+                    schema_version   INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_intruder_sessions_project
+                    ON intruder_sessions (project_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS intruder_results (
+                    id               TEXT    PRIMARY KEY,
+                    session_id       TEXT    NOT NULL REFERENCES intruder_sessions(id) ON DELETE CASCADE,
+                    attempt_index    INTEGER NOT NULL,
+                    variables_json   TEXT    NOT NULL DEFAULT '{}',
+                    status_code      INTEGER,
+                    success          INTEGER NOT NULL DEFAULT 0,
+                    failure_reason   TEXT,
+                    duration_ms      REAL,
+                    body_length      INTEGER,
+                    word_count       INTEGER,
+                    line_count       INTEGER,
+                    body_hash        TEXT,
+                    fingerprint_json TEXT    NOT NULL DEFAULT '{}',
+                    metrics_json     TEXT    NOT NULL DEFAULT '{}',
+                    interesting      INTEGER NOT NULL DEFAULT 0,
+                    match_tags_json  TEXT    NOT NULL DEFAULT '[]',
+                    grepped_json     TEXT    NOT NULL DEFAULT '{}',
+                    flow_id          TEXT,
+                    created_at       TEXT    NOT NULL,
+                    UNIQUE (session_id, attempt_index)
+                );
+                CREATE INDEX IF NOT EXISTS idx_intruder_results_session
+                    ON intruder_results (session_id, attempt_index);
+                CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
+                    ON intruder_results (session_id, interesting) WHERE interesting = 1;
+            """)
+            conn.execute("UPDATE schema_version SET version = 46")
             conn.commit()
 
 

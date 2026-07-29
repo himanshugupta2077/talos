@@ -42,6 +42,7 @@ from talos.projects.endpoint_cli import run_endpoint_cli
 from talos.proxy.cli import run_proxy_cli
 from talos.replay.cli import run_replay_cli
 from talos.send.cli import run_send_cli
+from talos.intruder.cli import run_intruder_cli
 from talos.projects.auth_cli import run_auth_cli
 from talos.projects.auth_config_cli import run_auth_config_cli
 from talos.projects.attack_cli import run_attack_cli
@@ -169,6 +170,8 @@ def main(argv: list[str] | None = None) -> None:
         run_replay_cli(manager, rest)
     elif subcommand == "send":
         run_send_cli(manager, rest)
+    elif subcommand == "intruder":
+        run_intruder_cli(manager, rest)
     elif subcommand == "auth":
         run_auth_cli(manager, rest)
     elif subcommand == "auth-config":
@@ -377,7 +380,28 @@ def _print_usage() -> None:
         "                    [--limit N] [--format table|json]\n"
         "    tree            ASCII parent→child tree --from <flow_id>\n"
         "    diff <a> <b>    Request + response diff [--side request|response|both]\n"
-        "    note <flow_id>  Set flow_meta.note on send rows only --text …\n\n"
+        "    note <flow_id>  Set flow_meta.note on send rows only --text …\n"
+        "    tab open|list|show|close|rename|touch|clear\n"
+        "                    Persistent Repeater tab archive (project DB;\n"
+        "                    metadata only — drafts re-materialize from parent)\n\n"
+        "  intruder          High-volume mutation engine (Phase 1 CLI)\n"
+        "    session create|list|show|configure|validate|run|pause|resume|stop|status|delete\n"
+        "                    Session lifecycle; run enqueues time-sliced jobs\n"
+        "                    (or --right-now for foreground). Pause option A:\n"
+        "                    job done+verdict=paused; resume = new PRIORITY_MANUAL job\n"
+        "    template show|set-var|clear-var\n"
+        "                    {{variables}} on baseline (path|query|body|header|cookie|raw)\n"
+        "    payload set|list|clear\n"
+        "                    Generators: wordlist, numbers, static; processors:\n"
+        "                    url_encode, base64_encode\n"
+        "    strategy set    single | sniper\n"
+        "    timing set      fixed RPS (default 2), concurrency (default 1)\n"
+        "    match add|list|clear\n"
+        "                    status, body_contains, regex, length_delta_gt, time_gt_ms\n"
+        "    results list|show|export\n"
+        "                    Metrics + interesting tags; export JSONL/CSV\n"
+        "    generators list Phase 1 plugins inventory\n"
+        "    run|status      Aliases for session run|status\n\n"
         "  flow\n"
         "    list                       List flows (UUID, endpoint, method, status,\n"
         "                               role, source, created)\n"

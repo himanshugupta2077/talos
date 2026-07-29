@@ -96,6 +96,18 @@ def test_talos_helper_documents_send_repeater() -> None:
     assert "note" in text
     assert "edit" in text
     assert "tree" in text
+    # Persistent tab archive
+    assert "tab open" in text or "tab" in text
+
+
+def test_talos_helper_documents_intruder() -> None:
+    """Root help must advertise Intruder Phase 1 (talos intruder) verbs."""
+    text = _root_help_text()
+    assert re.search(r"^\s+intruder\s+", text, re.M)
+    assert "session create" in text
+    assert "payload set" in text or "payload" in text
+    assert "sniper" in text
+    assert "results" in text
     # Distinct from exact replay.
     assert "replay" in text
     assert "Repeater" in text or "mutable" in text.lower()

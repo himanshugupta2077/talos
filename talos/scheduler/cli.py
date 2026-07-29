@@ -685,6 +685,31 @@ def cmd_cancel(project: object, args: argparse.Namespace) -> None:
 
     if job.status not in CANCELLABLE_STATUSES:
         if job.status == STATUS_RUNNING:
+            # Intruder: request cooperative cancel via session control_flag.
+            if job.job_type == "intruder_session":
+                import json as _json
+                from talos.intruder import db as intruder_db
+
+                meta = {}
+                if job.meta:
+                    try:
+                        meta = _json.loads(job.meta) if isinstance(job.meta, str) else dict(job.meta)
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                session_id = meta.get("session_id")
+                if session_id:
+                    intruder_db.set_control_flag(db_path, session_id, "cancel")
+                    cli_success(
+                        "Cancel requested for running Intruder session "
+                        "(cooperative; job will finish current attempt).",
+                        {
+                            "Job": job.job_id,
+                            "Session": session_id,
+                            "Type": job.job_type,
+                            "Control flag": "cancel",
+                        },
+                    )
+                    return
             cli_error(
                 f"Job '{job.job_id}' is running and cannot be cancelled mid-execution. "
                 "Pause the scheduler if you need to stop the queue, or wait for "
@@ -860,6 +885,7 @@ def cmd_resume(project: object) -> None:
             "The scheduler process executes jobs when running "
             "(`talos scheduler start` / `talos scheduler status`)."
         )
+        _warn_paused_intruder_sessions(db_path, project_id)
         return
 
     # Only load role names for the roles that actually need validation.
@@ -909,6 +935,8 @@ def cmd_resume(project: object) -> None:
         "(`talos scheduler start` / `talos scheduler status`)."
     )
 
+
+    _warn_paused_intruder_sessions(db_path, project_id)
 
 def cmd_process_start(project: object) -> None:
     """

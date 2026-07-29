@@ -1815,6 +1815,7 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.send.db` | History filters (root/session/parent/source); note UPDATE on send rows only; export HTTP files; tree lines | Schema migration beyond flows |
 | `talos.send.cli` | Full Repeater CLI (from/edit/once/redo/dup/show/export/history/tree/diff/note); immediate send (no scheduler); `--format json` for AI | — |
 | Control Panel Repeater | `/repeater` + `/api/send/*` workbench; mutations call `talos.send.engine` in-process (CLI exception); drafts in browser localStorage | Redesign of send semantics |
+| `talos.intruder` | Phase 1 high-volume mutation engine: template + generators + single/sniper + fixed RPS; time-sliced `intruder_session` jobs; metrics table; no findings bridge | Pitchfork/ClusterBomb, grep, UI (later) |
 | `talos.scheduler.scheduler.ReplayScheduler` | Daemon thread: consume pending jobs from scheduler_jobs; annotation pre-check (logout/dangerous); per-cycle config reload; configurable jitter; mark job done/failed/skipped (`endpoint_excluded` / `endpoint_not_qualified` → skipped); trigger `create_finding_from_verdict` after BAC and auth outcomes | Direct execution (delegates to replay/auth engines), CLI parsing |
 | `talos.projects.bac.candidates` | BAC candidate generation from access matrix × testable endpoints (2xx flows); mutually exclusive endpoint/module scope + attacker role filter | Write path, attack execution |
 | `talos.projects.bac.engine` | BAC attack execution; re-checks Endpoint Policy before HTTP; outbound httpx uses project upstream via `get_upstream_url` | Candidate generation, CLI |
@@ -2050,7 +2051,7 @@ Shutdown:
   registry.json                   index of all projects + active state + constraints
   projects/
     <id>/
-      talos.db                    structured data (SCHEMA_VERSION 43)
+      talos.db                    structured data (SCHEMA_VERSION 46)
       archive/
         flows-YYYY-MM-DD.jsonl    raw capture archive
       headers_drop.txt            capture header filter template copy
@@ -2129,7 +2130,8 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 43` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 46` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+Intruder tables: `intruder_sessions`, `intruder_results` (v46).
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2230,7 +2232,7 @@ source, and limit). Ordered by `captured_at` DESC for chronological discovery.
 
 ### Migrations
 
-`migrate_project_db(db_path)` upgrades older databases in place up to `SCHEMA_VERSION` (43). Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
+`migrate_project_db(db_path)` upgrades older databases in place up to `SCHEMA_VERSION` (46). Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
 
 Notable milestones:
 

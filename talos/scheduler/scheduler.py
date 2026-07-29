@@ -94,6 +94,8 @@ from talos.scheduler.job import (
     UNAUTH_ATTACK,
     UNAUTH_JOB_TYPES,
     IV_JOB_TYPES,
+    INTRUDER_JOB_TYPES,
+    INTRUDER_SESSION,
     PRIORITY_AUTO,
     REPLAY_ENDPOINT,
     REPLAY_FLOW,
@@ -449,6 +451,9 @@ class ReplayScheduler:
 
             elif job.job_type in IV_JOB_TYPES:
                 self._execute_iv_job(job)
+
+            elif job.job_type in INTRUDER_JOB_TYPES:
+                self._execute_intruder_job(job)
 
             else:
                 _log.error(
@@ -1538,3 +1543,142 @@ class ReplayScheduler:
                 job, meta, db_path, self._project.id
             )
 
+
+    # ------------------------------------------------------------------ #
+    # Intruder session job execution                                       #
+    # ------------------------------------------------------------------ #
+
+    def _execute_intruder_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Run one time-sliced Intruder session segment inside the scheduler
+            worker thread. Maps SegmentOutcome to mark_done/mark_failed and
+            enqueues PRIORITY_AUTO continuation when verdict=continue.
+        Side effects:
+            HTTP via Intruder engine; updates intruder_sessions; scheduler_jobs.
+        """
+        import json as _json
+        from datetime import datetime, timezone
+
+        from talos.intruder.engine import run_session_segment
+        from talos.intruder.session import continue_segment_job
+        from talos.intruder import db as intruder_db
+        from talos.projects.annotations import get_annotations
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta) if isinstance(job.meta, str) else dict(job.meta)
+            except (_json.JSONDecodeError, TypeError, ValueError):
+                meta = {}
+
+        session_id = meta.get("session_id")
+        segment = int(meta.get("segment") or 1)
+        if not session_id:
+            sched_db.mark_failed(db_path, job.job_id, "missing_session_id")
+            _log.error("[intruder] Job %s missing meta.session_id", job.job_id[:8])
+            return
+
+        session = intruder_db.get_session(db_path, session_id)
+        if session is None:
+            sched_db.mark_failed(db_path, job.job_id, "session_not_found")
+            return
+
+        endpoint_id = session.get("endpoint_id") or job.endpoint_id
+        if endpoint_id:
+            try:
+                ann = get_annotations(db_path, endpoint_id)
+                if "logout" in ann:
+                    sched_db.mark_skipped(db_path, job.job_id, "endpoint_annotated_logout")
+                    intruder_db.update_session(
+                        db_path,
+                        session_id,
+                        status="failed",
+                        failure_reason="endpoint_annotated_logout",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        job_id=None,
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("[intruder] annotation check skipped: %s", exc)
+
+        should_stop = self._stop_event.is_set
+
+        try:
+            outcome = asyncio.run(
+                run_session_segment(
+                    session_id,
+                    db_path,
+                    project_id,
+                    job_id=job.job_id,
+                    should_stop=should_stop,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error("[intruder] Segment failed job=%s: %s", job.job_id[:8], exc)
+            sched_db.mark_failed(db_path, job.job_id, f"intruder_error: {exc}")
+            intruder_db.update_session(
+                db_path,
+                session_id,
+                status="failed",
+                failure_reason=str(exc),
+                job_id=None,
+            )
+            return
+
+        reason = outcome.reason
+        _log.info(
+            "[intruder] Segment done job=%s session=%s reason=%s attempts=%d",
+            job.job_id[:8],
+            session_id[:8],
+            reason,
+            outcome.attempts_this_segment,
+        )
+
+        if reason == "continue":
+            sched_db.mark_done(db_path, job.job_id, None, "continue")
+            sess = intruder_db.get_session(db_path, session_id)
+            prog = dict((sess or {}).get("progress") or {})
+            next_seg = int(prog.get("segment") or segment) + 1
+            try:
+                continue_segment_job(
+                    db_path,
+                    project_id,
+                    session_id,
+                    segment=next_seg,
+                    endpoint_id=endpoint_id,
+                    base_flow_id=(sess or {}).get("base_flow_id"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.error("[intruder] Failed to enqueue continuation: %s", exc)
+                intruder_db.update_session(
+                    db_path,
+                    session_id,
+                    status="failed",
+                    failure_reason=f"continue_enqueue_failed:{exc}",
+                    job_id=None,
+                )
+            return
+
+        if reason in ("paused", "process_stop"):
+            sched_db.mark_done(db_path, job.job_id, None, "paused")
+            return
+
+        if reason == "cancelled":
+            sched_db.mark_done(db_path, job.job_id, None, "cancelled")
+            return
+
+        if reason == "completed":
+            sched_db.mark_done(db_path, job.job_id, None, "completed")
+            return
+
+        if reason == "failed":
+            sched_db.mark_failed(
+                db_path, job.job_id, outcome.error or "intruder_failed"
+            )
+            return
+
+        sched_db.mark_done(db_path, job.job_id, None, reason)

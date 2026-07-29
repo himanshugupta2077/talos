@@ -2,6 +2,110 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Intruder Phase 1 — high-volume mutation engine (`talos intruder`)
+
+### Problem
+
+Send multi-send (`--repeat` / `--parallel`) is capped (N≤50) and has no
+wordlists, strategies, match rules, or resume. Input Validation is parameter
+intelligence with a fixed probe taxonomy, not operator-defined payload
+campaigns. Operators needed a Burp-like Intruder that still uses the project
+scheduler for fairness and does not starve BAC/IV.
+
+### Decision
+
+Ship **CLI-first Intruder** as a first-class engine peer of send/replay/IV:
+
+| Piece | Role |
+|-------|------|
+| `intruder_sessions` / `intruder_results` | Schema v46 durable session + metrics |
+| `talos/intruder/*` | Template render, generators, strategies, timing, engine |
+| Job type `intruder_session` | Time-sliced segments (default 100 attempts / 60s) |
+| Continuation priority **10** | After first segment (100), auto BAC/IV can interleave |
+| Pause option A | Job `done`+`verdict=paused`; resume = new PRIORITY_MANUAL job |
+| Cancel | `control_flag=cancel` while running; settle with `verdict=cancelled` |
+| Storage default | metrics_only + optional interesting bodies (`source=intruder`, no error_intel/passive) |
+
+**Phase 1 includes:** wordlist/numbers/static generators; url_encode/base64_encode;
+single + sniper; fixed RPS (default 2), concurrency default 1; match rules;
+pause/resume/cancel; crash-safe checkpoint; `--right-now`; export JSONL/CSV;
+AI JSON status poll contract.
+
+**Still out of scope (later phases):** Pitchfork/ClusterBomb, grep pools,
+adaptive timing, findings auto-promote, Control Panel UI, auth refresh mid-run.
+
+### Operator surface
+
+```bash
+talos --project demo intruder session create --from <flow_id> --name enum-users
+talos --project demo intruder template set-var $SID --name user_id --location path
+talos --project demo intruder payload set $SID --var user_id --generator numbers --start 1 --end 200
+talos --project demo intruder strategy set $SID --type single
+talos --project demo intruder timing set $SID --mode fixed --rps 2 --concurrency 1
+talos --project demo intruder match add $SID --status 200 --length-delta-gt 50
+talos --project demo intruder session run $SID --format json
+talos --project demo intruder session status $SID --format json
+talos --project demo intruder results export $SID --out ./enum --jsonl --csv
+```
+
+After global `talos scheduler pause` / process stop, Intruder sessions stay
+**paused** and are **not** auto-resumed by `talos scheduler resume` — run
+`talos intruder session resume <id>` per session.
+
+Design: `docs/design-intruder-cli.md`.
+
+### Files
+
+- Schema: `talos/projects/db.py` (v46)
+- Engine: `talos/intruder/`
+- Scheduler: `job.py` `INTRUDER_SESSION`, `scheduler.py` `_execute_intruder_job`, cancel/resume CLI hooks
+- CLI: `talos/intruder/cli.py`; root help
+- Tests: `tests/test_intruder_phase1.py`
+
+---
+
+## Repeater tab archive — persistent workspace slots (`talos send tab`)
+
+### Problem
+
+Repeater tabs lived only in Control Panel `localStorage`. A browser refresh
+dropped the tab strip; operators had no CLI-visible global archive of “what’s
+open in Repeater,” even though send executions already lived in `flows`.
+
+### Decision
+
+Project-scoped **`repeater_tabs`** table (schema v45) + CLI:
+
+| Piece | Role |
+|-------|------|
+| `send tab open <flow_id>` | Create (or reuse same parent) sticky tab — **Send to Repeater** |
+| `send tab list` / `show` | Global archive for the active project |
+| `send tab close` / `clear` | Remove tab slots only (flows/history kept) |
+| `send tab rename` / `touch` | Title + post-send metadata (`last_execution`, parent, session) |
+
+**Draft bodies stay client/CLI-local until Send.** Tabs store metadata only
+(`parent_flow_id`, `original_flow_id`, `session_id`, `last_execution_id`,
+`title`, `sort_order`). Re-open re-materializes via `send from <parent>` /
+draft API. Soft cap **100** tabs per project.
+
+### Operator surface
+
+```bash
+talos send tab open <flow_id> --format json
+talos send tab list --format json
+talos send once <parent> …   # then:
+talos send tab touch <tab_id> --last-execution <exec_id>
+talos send tab close <tab_id>
+```
+
+### Files
+
+- Schema: `talos/projects/db.py` (v45 `repeater_tabs`)
+- Data: `talos/send/db.py` tab helpers
+- CLI: `talos/send/cli.py` `tab` subcommands; root help + cheat sheet
+
+---
+
 ## Control Panel Repeater UI (`/repeater`)
 
 ### Problem
@@ -19,11 +123,12 @@ Ship a first-class **Capture → Repeater** workspace:
 | Route `/repeater` | Multi-tab request/response workbench + history |
 | `GET/POST /api/send/*` | Draft, once/repeat/parallel, redo, dup, note, export, history, tree, show, diff |
 | In-process engine | Mutations call `talos.send.engine` (documented CLI exception); raw-only edit payload |
-| Client drafts | `localStorage` per project; parent stays after Send; Fork advances parent |
+| Tab archive | Project DB `repeater_tabs` + `GET/POST/DELETE /api/send/tabs` (CLI `send tab`) |
+| Client drafts | Draft **bodies** stay local until Send; re-open re-materializes from parent |
 | Entry points | Flow Actions, Endpoint header + row, Finding `original_flow`/`replay_flow` |
 
 **Still out of scope:** Intruder, schedule/continuous send, token refresh, redirects,
-server draft table, Monaco editor, parent-less compose.
+server-side draft body storage, Monaco editor, parent-less compose.
 
 ### Operator surface
 
