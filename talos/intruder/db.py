@@ -2,8 +2,8 @@
 Module: talos.intruder.db
 
 Purpose:
-    CRUD for intruder_sessions and intruder_results. No DDL — schema lives
-    exclusively in talos.projects.db.
+    CRUD for intruder_sessions, intruder_results, and intruder_pools.
+    No DDL — schema lives exclusively in talos.projects.db.
 
 Dependencies: json, sqlite3, uuid, datetime, pathlib
 Data flow:
@@ -542,3 +542,232 @@ def _result_row(row: sqlite3.Row) -> dict[str, Any]:
         "flow_id": row["flow_id"],
         "created_at": row["created_at"],
     }
+
+
+# ------------------------------------------------------------------ #
+# Phase 3: extracted value pools                                       #
+# ------------------------------------------------------------------ #
+
+
+def _pool_row(row: sqlite3.Row) -> dict[str, Any]:
+    values = _json_loads(row["values_json"], [])
+    if not isinstance(values, list):
+        values = []
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "name": row["name"],
+        "session_id": row["session_id"],
+        "values": [str(v) for v in values],
+        "source_rule": row["source_rule"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "count": len(values),
+    }
+
+
+def get_pool(db_path: Path, project_id: str, name: str) -> Optional[dict[str, Any]]:
+    """Load a pool by project + name."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM intruder_pools
+            WHERE project_id = ? AND name = ?
+            """,
+            (project_id, name),
+        ).fetchone()
+    return _pool_row(row) if row else None
+
+
+def list_pools(db_path: Path, project_id: str) -> list[dict[str, Any]]:
+    """List all pools for a project (values included)."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM intruder_pools
+            WHERE project_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (project_id,),
+        ).fetchall()
+    return [_pool_row(r) for r in rows]
+
+
+def upsert_pool_values(
+    db_path: Path,
+    project_id: str,
+    name: str,
+    values: list[str],
+    *,
+    session_id: Optional[str] = None,
+    source_rule: Optional[str] = None,
+    max_values: int = 50_000,
+) -> dict[str, Any]:
+    """
+    Merge new unique values into a named pool (order preserved: old then new).
+
+    Caps at max_values (drops oldest when over). Returns updated pool dict.
+    """
+    _ensure_migrated(db_path)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("pool_name_required")
+    now = _now_iso()
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM intruder_pools
+            WHERE project_id = ? AND name = ?
+            """,
+            (project_id, name),
+        ).fetchone()
+        if row is None:
+            existing: list[str] = []
+            pool_id = str(uuid.uuid4())
+            created_at = now
+        else:
+            existing = _json_loads(row["values_json"], [])
+            if not isinstance(existing, list):
+                existing = []
+            existing = [str(v) for v in existing]
+            pool_id = row["id"]
+            created_at = row["created_at"]
+
+        seen = set(existing)
+        merged = list(existing)
+        for v in values:
+            s = str(v)
+            if s in seen:
+                continue
+            seen.add(s)
+            merged.append(s)
+        if len(merged) > max_values:
+            merged = merged[-max_values:]
+
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO intruder_pools (
+                    id, project_id, name, session_id, values_json,
+                    source_rule, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pool_id,
+                    project_id,
+                    name,
+                    session_id,
+                    _json_dumps(merged),
+                    source_rule or name,
+                    created_at,
+                    now,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE intruder_pools SET
+                    values_json = ?,
+                    session_id = COALESCE(?, session_id),
+                    source_rule = COALESCE(?, source_rule),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _json_dumps(merged),
+                    session_id,
+                    source_rule or name,
+                    now,
+                    pool_id,
+                ),
+            )
+        conn.commit()
+        out = conn.execute(
+            "SELECT * FROM intruder_pools WHERE id = ?",
+            (pool_id,),
+        ).fetchone()
+    return _pool_row(out)
+
+
+def clear_pool(db_path: Path, project_id: str, name: str) -> bool:
+    """Empty pool values but keep the row. Returns False if not found."""
+    _ensure_migrated(db_path)
+    now = _now_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE intruder_pools
+            SET values_json = '[]', updated_at = ?
+            WHERE project_id = ? AND name = ?
+            """,
+            (now, project_id, name),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_pool(db_path: Path, project_id: str, name: str) -> bool:
+    """Delete a pool row. Returns False if not found."""
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM intruder_pools WHERE project_id = ? AND name = ?",
+            (project_id, name),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_endpoint_parameters(
+    db_path: Path,
+    endpoint_id: str,
+    *,
+    locations: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    """
+    List Parameter Intelligence rows for an endpoint (template assist).
+    """
+    _ensure_migrated(db_path)
+    with _connect(db_path) as conn:
+        if locations:
+            placeholders = ",".join("?" for _ in locations)
+            rows = conn.execute(
+                f"""
+                SELECT id, endpoint_id, name, location, param_type,
+                       semantic_type, example_values, seen_count
+                FROM parameters
+                WHERE endpoint_id = ? AND location IN ({placeholders})
+                ORDER BY location, name
+                """,
+                (endpoint_id, *locations),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, endpoint_id, name, location, param_type,
+                       semantic_type, example_values, seen_count
+                FROM parameters
+                WHERE endpoint_id = ?
+                ORDER BY location, name
+                """,
+                (endpoint_id,),
+            ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        examples = _json_loads(r["example_values"], [])
+        if not isinstance(examples, list):
+            examples = []
+        out.append({
+            "id": r["id"],
+            "endpoint_id": r["endpoint_id"],
+            "name": r["name"],
+            "location": r["location"],
+            "param_type": r["param_type"],
+            "semantic_type": r["semantic_type"],
+            "example_values": [str(v) for v in examples if v is not None],
+            "seen_count": r["seen_count"],
+        })
+    return out
+

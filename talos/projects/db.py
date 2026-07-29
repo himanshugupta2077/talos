@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1252,6 +1252,23 @@ CREATE INDEX IF NOT EXISTS idx_intruder_results_session
     ON intruder_results (session_id, attempt_index);
 CREATE INDEX IF NOT EXISTS idx_intruder_results_interesting
     ON intruder_results (session_id, interesting) WHERE interesting = 1;
+
+-- ------------------------------------------------------------------ --
+-- Intruder (Phase 3): extracted value pools for chaining              --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS intruder_pools (
+    id               TEXT    PRIMARY KEY,              -- UUID
+    project_id       TEXT    NOT NULL,
+    name             TEXT    NOT NULL,                 -- pool name (often matches grep rule)
+    session_id       TEXT,                             -- last contributing session
+    values_json      TEXT    NOT NULL DEFAULT '[]',    -- unique string values
+    source_rule      TEXT,                             -- originating grep rule name
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
+    UNIQUE (project_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_intruder_pools_project
+    ON intruder_pools (project_id, updated_at DESC);
 """
 
 # Shared CREATE statements for cross-flow reflection tables (schema v42).
@@ -1965,6 +1982,24 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
                 ON intruder_results (session_id, interesting) WHERE interesting = 1;
         """)
 
+    if from_version < 47:
+        # Intruder Phase 3 extracted value pools.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS intruder_pools (
+                id               TEXT    PRIMARY KEY,
+                project_id       TEXT    NOT NULL,
+                name             TEXT    NOT NULL,
+                session_id       TEXT,
+                values_json      TEXT    NOT NULL DEFAULT '[]',
+                source_rule      TEXT,
+                created_at       TEXT    NOT NULL,
+                updated_at       TEXT    NOT NULL,
+                UNIQUE (project_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_intruder_pools_project
+                ON intruder_pools (project_id, updated_at DESC);
+        """)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2092,6 +2127,7 @@ def migrate_project_db(db_path: Path) -> None:
         v44 → v45: repeater_tabs table — persistent Repeater workspace archive
                    (tab metadata only; drafts re-materialize from parent flow).
         v45 → v46: intruder_sessions + intruder_results — Intruder Phase 1 engine.
+        v46 → v47: intruder_pools — Intruder Phase 3 extracted value pools.
     """
     if not db_path.exists():
         return
@@ -3357,6 +3393,26 @@ def migrate_project_db(db_path: Path) -> None:
                     ON intruder_results (session_id, interesting) WHERE interesting = 1;
             """)
             conn.execute("UPDATE schema_version SET version = 46")
+            conn.commit()
+
+        if current < 47:
+            # Intruder Phase 3: project-scoped extracted value pools.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS intruder_pools (
+                    id               TEXT    PRIMARY KEY,
+                    project_id       TEXT    NOT NULL,
+                    name             TEXT    NOT NULL,
+                    session_id       TEXT,
+                    values_json      TEXT    NOT NULL DEFAULT '[]',
+                    source_rule      TEXT,
+                    created_at       TEXT    NOT NULL,
+                    updated_at       TEXT    NOT NULL,
+                    UNIQUE (project_id, name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_intruder_pools_project
+                    ON intruder_pools (project_id, updated_at DESC);
+            """)
+            conn.execute("UPDATE schema_version SET version = 47")
             conn.commit()
 
 

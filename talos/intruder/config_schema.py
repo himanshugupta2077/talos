@@ -3,15 +3,17 @@ Module: talos.intruder.config_schema
 
 Purpose:
     Load, default, and validate Intruder session config documents
-    (schema_version 1; Phase 1 + Phase 2 plugins).
+    (schema_version 1; Phase 1–3 plugins).
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Optional
 
 from talos.intruder.generators import build_generator
+from talos.intruder.grep import validate_grep_rule
 from talos.intruder.models import (
     CONFIG_SCHEMA_VERSION,
     DEFAULT_AUTH_FAIL_THRESHOLD,
@@ -26,17 +28,25 @@ from talos.intruder.models import (
     DEFAULT_SLICE_MAX_WALL_S,
     DEFAULT_TIMEOUT_S,
     ERR_EMPTY_GENERATOR,
+    ERR_INVALID_FILE_GENERATOR,
+    ERR_INVALID_GREP,
     ERR_INVALID_NUMBERS,
     ERR_INVALID_STORAGE_MODE,
     ERR_MISSING_BASELINE,
     ERR_MULTISET_UNBOUND,
     ERR_NO_VARIABLES,
+    ERR_PARAM_NOT_FOUND,
     ERR_PATH_INJECT_UNAVAILABLE,
+    ERR_POOL_NOT_FOUND,
     ERR_SNIPER_NO_TARGETS,
     ERR_UNBOUND_VARIABLE,
     ERR_UNKNOWN_PLUGIN,
     ERR_UNSUPPORTED_CONFIG_VERSION,
     ERR_WORDLIST_TOO_LARGE,
+    GEN_CSV,
+    GEN_EXAMPLE_VALUES,
+    GEN_JSON,
+    GEN_POOL,
     KNOWN_GENERATORS,
     KNOWN_STORAGE_MODES,
     KNOWN_STRATEGIES,
@@ -130,8 +140,30 @@ def _normalize_strategy_type(stype: str) -> str:
     return key
 
 
-def _open_generator(gen_name: str, opts: dict[str, Any], *, force: bool) -> Any:
+def _inject_runtime_opts(
+    opts: dict[str, Any],
+    *,
+    db_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Attach db_path / project_id for generators that need project data."""
     open_opts = dict(opts)
+    if db_path is not None:
+        open_opts.setdefault("db_path", str(db_path))
+    if project_id is not None:
+        open_opts.setdefault("project_id", project_id)
+    return open_opts
+
+
+def _open_generator(
+    gen_name: str,
+    opts: dict[str, Any],
+    *,
+    force: bool,
+    db_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
+) -> Any:
+    open_opts = _inject_runtime_opts(opts, db_path=db_path, project_id=project_id)
     if force:
         open_opts["force"] = True
     try:
@@ -144,6 +176,12 @@ def _open_generator(gen_name: str, opts: dict[str, Any], *, force: bool) -> Any:
             raise ValidationError(ERR_EMPTY_GENERATOR, msg) from exc
         if msg.startswith(ERR_INVALID_NUMBERS) or "invalid_numbers" in msg:
             raise ValidationError(ERR_INVALID_NUMBERS, msg) from exc
+        if msg.startswith(ERR_POOL_NOT_FOUND):
+            raise ValidationError(ERR_POOL_NOT_FOUND, msg) from exc
+        if msg.startswith(ERR_PARAM_NOT_FOUND):
+            raise ValidationError(ERR_PARAM_NOT_FOUND, msg) from exc
+        if msg.startswith(ERR_INVALID_FILE_GENERATOR):
+            raise ValidationError(ERR_INVALID_FILE_GENERATOR, msg) from exc
         raise ValidationError(ERR_UNKNOWN_PLUGIN, msg) from exc
 
 
@@ -153,11 +191,19 @@ def _estimate_multiset(
     payload_sets: dict[str, Any],
     *,
     force: bool,
+    db_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
 ) -> Optional[int]:
     counts: list[int] = []
     for name in set_names:
         pset = payload_sets[name]
-        gen = _open_generator(str(pset.get("generator")), dict(pset.get("options") or {}), force=force)
+        gen = _open_generator(
+            str(pset.get("generator")),
+            dict(pset.get("options") or {}),
+            force=force,
+            db_path=db_path,
+            project_id=project_id,
+        )
         c = gen.estimate_count()
         if c is None:
             return None
@@ -180,11 +226,15 @@ def validate_config(
     *,
     open_generators: bool = True,
     force: bool = False,
+    db_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
 ) -> tuple[dict[str, Any], Optional[int]]:
     """
     Validate and normalize config.
     Returns (normalized_config, estimate_attempts).
     Raises ValidationError with stable code.
+
+    db_path / project_id are required when opening pool or example_values generators.
     """
     cfg = merge_defaults(config)
     ver = cfg.get("schema_version")
@@ -261,6 +311,11 @@ def validate_config(
         if stype in (STRATEGY_SINGLE, STRATEGY_SNIPER) or stype in MULTI_SET_STRATEGIES:
             raise ValidationError(ERR_UNBOUND_VARIABLE, "payload_sets required")
 
+    # Resolve project_id from session block when not passed
+    sess_block = cfg.get("session") or {}
+    if project_id is None:
+        project_id = sess_block.get("project_id")
+
     # Validate generators / processors
     for set_name, pset in payload_sets.items():
         if not isinstance(pset, dict):
@@ -268,6 +323,31 @@ def validate_config(
         gen_name = str(pset.get("generator") or "").lower()
         if gen_name not in KNOWN_GENERATORS:
             raise ValidationError(ERR_UNKNOWN_PLUGIN, f"unknown generator: {gen_name}")
+        # Structural checks for Phase 3 generators that need runtime context
+        opts = dict(pset.get("options") or {})
+        if gen_name in (GEN_POOL, GEN_EXAMPLE_VALUES) and open_generators:
+            if db_path is None:
+                raise ValidationError(
+                    ERR_UNKNOWN_PLUGIN,
+                    f"{gen_name} generator requires db_path at validate/run",
+                )
+        if gen_name == GEN_POOL and not (
+            opts.get("name") or opts.get("pool") or opts.get("pool_name")
+        ):
+            raise ValidationError(ERR_POOL_NOT_FOUND, f"pool set {set_name}: missing pool name")
+        if gen_name == GEN_EXAMPLE_VALUES:
+            if not opts.get("param_id") and not (
+                opts.get("endpoint_id") and opts.get("name") and opts.get("location")
+            ):
+                raise ValidationError(
+                    ERR_PARAM_NOT_FOUND,
+                    f"example_values set {set_name}: need param_id or endpoint_id+name+location",
+                )
+        if gen_name in (GEN_CSV, GEN_JSON) and not (opts.get("path") or opts.get("file")):
+            raise ValidationError(
+                ERR_INVALID_FILE_GENERATOR,
+                f"{gen_name} set {set_name}: missing path/file",
+            )
         for proc in pset.get("processors") or []:
             pname = str(proc)
             if not is_known_processor(pname):
@@ -275,10 +355,27 @@ def validate_config(
             build_processor(pname)
 
         if open_generators:
-            gen = _open_generator(gen_name, dict(pset.get("options") or {}), force=force)
+            gen = _open_generator(
+                gen_name,
+                opts,
+                force=force,
+                db_path=db_path,
+                project_id=project_id,
+            )
             count = gen.estimate_count()
             if count is not None and count == 0:
                 raise ValidationError(ERR_EMPTY_GENERATOR, f"payload set {set_name} empty")
+
+    # Grep rules
+    grep_rules = cfg.get("grep") or []
+    if not isinstance(grep_rules, list):
+        raise ValidationError(ERR_INVALID_GREP, "grep must be a list")
+    for rule in grep_rules:
+        try:
+            validate_grep_rule(rule)
+        except ValueError as exc:
+            raise ValidationError(ERR_INVALID_GREP, str(exc)) from exc
+    cfg["grep"] = grep_rules
 
     estimate: Optional[int] = None
 
@@ -305,7 +402,14 @@ def validate_config(
                 )
         opts["sets"] = set_names
         if open_generators:
-            estimate = _estimate_multiset(stype, set_names, payload_sets, force=force)
+            estimate = _estimate_multiset(
+                stype,
+                set_names,
+                payload_sets,
+                force=force,
+                db_path=db_path,
+                project_id=project_id,
+            )
 
     # Estimate for sniper
     if open_generators and stype == STRATEGY_SNIPER:
@@ -314,7 +418,11 @@ def validate_config(
         first = next(iter(payload_sets.values()), None)
         if first:
             gen = _open_generator(
-                str(first.get("generator")), dict(first.get("options") or {}), force=force
+                str(first.get("generator")),
+                dict(first.get("options") or {}),
+                force=force,
+                db_path=db_path,
+                project_id=project_id,
             )
             pc = gen.estimate_count() or 0
             estimate = pc * max(1, n_targets)
@@ -329,7 +437,11 @@ def validate_config(
         if first_name:
             pset = payload_sets[first_name]
             gen = _open_generator(
-                str(pset.get("generator")), dict(pset.get("options") or {}), force=force
+                str(pset.get("generator")),
+                dict(pset.get("options") or {}),
+                force=force,
+                db_path=db_path,
+                project_id=project_id,
             )
             estimate = gen.estimate_count()
 

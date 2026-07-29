@@ -33,6 +33,7 @@ import httpx
 from talos.intruder import db as intruder_db
 from talos.intruder.config_schema import merge_defaults
 from talos.intruder.generators import build_generator
+from talos.intruder.grep import evaluate_grep_rules, rules_to_pool
 from talos.intruder.match import evaluate_match_rules
 from talos.intruder.models import (
     CONTROL_CANCEL,
@@ -42,6 +43,7 @@ from talos.intruder.models import (
     DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MAX_DURATION_S,
     DEFAULT_MAX_RESULTS,
+    DEFAULT_POOL_MAX_VALUES,
     DEFAULT_RPS,
     DEFAULT_SLICE_MAX_ATTEMPTS,
     DEFAULT_SLICE_MAX_WALL_S,
@@ -78,14 +80,26 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _build_strategy_from_config(cfg: dict[str, Any], *, force: bool = False):
+def _build_strategy_from_config(
+    cfg: dict[str, Any],
+    *,
+    force: bool = False,
+    db_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
+):
     payload_sets_cfg = cfg.get("payload_sets") or {}
     generators = {}
     processors_map: dict[str, list[str]] = {}
+    sess_block = cfg.get("session") or {}
+    pid = project_id or sess_block.get("project_id")
     for name, pset in payload_sets_cfg.items():
         opts = dict(pset.get("options") or {})
         if force:
             opts["force"] = True
+        if db_path is not None:
+            opts.setdefault("db_path", str(db_path))
+        if pid is not None:
+            opts.setdefault("project_id", pid)
         generators[name] = build_generator(str(pset.get("generator")), opts)
         processors_map[name] = list(pset.get("processors") or [])
 
@@ -137,6 +151,7 @@ async def run_session_segment(
     slice_cfg = cfg.get("slice") or {}
     storage = cfg.get("storage") or {}
     match_rules = list(cfg.get("match") or [])
+    grep_rules = list(cfg.get("grep") or [])
 
     max_attempts = int(safety.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
     max_duration_s = float(safety.get("max_duration_s", DEFAULT_MAX_DURATION_S))
@@ -166,10 +181,14 @@ async def run_session_segment(
     matched = int(progress.get("matched") or 0)
     errors = int(progress.get("errors") or 0)
     consecutive_auth_fail = int(progress.get("consecutive_auth_fail") or 0)
+    # Phase 3: batch pool writes per segment flush
+    pool_buffer: dict[str, list[str]] = {}
 
     # Restore strategy from checkpoint
     try:
-        strategy = _build_strategy_from_config(cfg, force=force)
+        strategy = _build_strategy_from_config(
+            cfg, force=force, db_path=db_path, project_id=project_id
+        )
     except Exception as exc:  # noqa: BLE001
         _log.error("Intruder strategy build failed: %s", exc)
         intruder_db.update_session(
@@ -280,6 +299,24 @@ async def run_session_segment(
         rows = list(buffer)
         buffer = []
         last_flush = time.monotonic()
+        # Flush extracted pools before/with results batch
+        if pool_buffer:
+            for pool_name, vals in pool_buffer.items():
+                if not vals:
+                    continue
+                try:
+                    intruder_db.upsert_pool_values(
+                        db_path,
+                        project_id,
+                        pool_name,
+                        vals,
+                        session_id=session_id,
+                        source_rule=pool_name,
+                        max_values=DEFAULT_POOL_MAX_VALUES,
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.exception("Failed to upsert pool %s", pool_name)
+            pool_buffer.clear()
         intruder_db.insert_results_batch(
             db_path,
             session_id,
@@ -519,9 +556,25 @@ async def run_session_segment(
                     match_rules,
                     baseline={"body_length": baseline_fp.get("body_length"), "fingerprint": baseline_fp},
                 )
+                grepped: dict[str, list[str]] = {}
+                grep_tags: list[str] = []
+                if grep_rules and success:
+                    grepped, grep_tags = evaluate_grep_rules(
+                        metrics,
+                        grep_rules,
+                        response_headers=resp_headers,
+                    )
+                    for pool_name, vals in rules_to_pool(grepped, grep_rules).items():
+                        bucket = pool_buffer.setdefault(pool_name, [])
+                        for v in vals:
+                            if v not in bucket:
+                                bucket.append(v)
+                all_tags = list(tags) + [f"grep:{t}" for t in grep_tags]
                 interesting = bool(tags) if match_rules else False
+                if grep_tags:
+                    interesting = True
                 # Without match rules, never mark interesting for body storage
-                # unless store_interesting and operator added rules.
+                # unless store_interesting and operator added rules (or grep tag_interesting).
 
                 result = AttemptResult(
                     attempt_index=attempt_index,
@@ -531,7 +584,8 @@ async def run_session_segment(
                     failure_reason=failure_reason,
                     duration_ms=duration_ms,
                     metrics={k: v for k, v in metrics.items() if k != "body_text"},
-                    match_tags=tags,
+                    match_tags=all_tags,
+                    grepped=grepped,
                     interesting=interesting,
                     body_length=metrics.get("body_length"),
                     word_count=metrics.get("word_count"),

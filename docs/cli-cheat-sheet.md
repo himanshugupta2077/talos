@@ -1131,7 +1131,7 @@ Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** 
 
 ---
 
-## Intruder (Phase 1 + 2)
+## Intruder (Phase 1–3)
 
 High-volume mutation attack engine. **Not** Send multi-send and **not** IV.
 Scheduler-backed time-sliced jobs (`intruder_session`); micro RPS inside a
@@ -1146,12 +1146,19 @@ talos intruder session create --from <flow_id> --name enum-users --format json
 # Template variables ({{name}} / inject locations)
 talos intruder template set-var <sid> --name user_id --location path
 talos intruder template set-var <sid> --name token --location header --path Authorization --fixed-value 'Bearer …'
+talos intruder template from-params <sid> --set-payloads   # Phase 3: Parameter Intelligence
 talos intruder template show <sid> --format json
 
 # Payload sets
 talos intruder payload set <sid> --var user_id --generator numbers --start 1 --end 500
 talos intruder payload set <sid> --var user_id --generator wordlist --file ./ids.txt
 talos intruder payload set <sid> --var q --generator static --value a --value b --processor url_encode
+# Phase 3 generators:
+talos intruder payload set <sid> --var id --generator uuid --count 100
+talos intruder payload set <sid> --var id --generator csv --file ./ids.csv --column id
+talos intruder payload set <sid> --var id --generator json --file ./ids.json --json-path users[].id
+talos intruder payload set <sid> --var id --generator example_values --param-id <param_uuid>
+talos intruder payload set <sid> --var tok --generator pool --pool tokens
 # Phase 2 processors: url_decode, base64_decode, to_lower/upper, html_encode/decode,
 # md5/sha1/sha256, strip, prefix:<text>, suffix:<text>
 talos intruder payload set <sid> --var q --generator static --value Ab --processor strip --processor to_lower --processor 'prefix:p:'
@@ -1166,6 +1173,13 @@ talos intruder strategy set <sid> --type cluster_bomb --set user_id --set role  
 talos intruder timing set <sid> --mode fixed --rps 2 --concurrency 1
 talos intruder timing set <sid> --concurrency 4 --concurrency-per-host 2   # Phase 2 host cap
 talos intruder match add <sid> --status 200 --length-delta-gt 50 --tag big
+
+# Phase 3 grep extract → grepped_json + optional project pools
+talos intruder grep add <sid> --name token --regex '"token"\s*:\s*"([^"]+)"' --tag-interesting
+talos intruder grep list <sid> --format json
+talos intruder pool list --format json
+talos intruder pool show token --format json
+talos intruder pool export token --out ./tokens.txt
 
 # Storage (Phase 2): metrics_only (default) | sample_flows | all_flows
 talos intruder storage set <sid> --mode metrics_only

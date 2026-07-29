@@ -120,6 +120,7 @@ def export_results_csv(rows: list[dict[str, Any]], path: Path) -> int:
         "body_hash",
         "interesting",
         "match_tags",
+        "grepped",
         "variables",
         "flow_id",
     ]
@@ -137,6 +138,7 @@ def export_results_csv(rows: list[dict[str, Any]], path: Path) -> int:
                 "body_hash": row.get("body_hash"),
                 "interesting": row.get("interesting"),
                 "match_tags": json.dumps(row.get("match_tags") or []),
+                "grepped": json.dumps(row.get("grepped") or {}),
                 "variables": json.dumps(row.get("variables") or {}),
                 "flow_id": row.get("flow_id"),
             }

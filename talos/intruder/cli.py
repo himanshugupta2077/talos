@@ -2,16 +2,18 @@
 Module: talos.intruder.cli
 
 Purpose:
-    CLI for Talos Intruder (Phase 1 + Phase 2):
+    CLI for Talos Intruder (Phase 1–3):
 
         talos intruder session create|list|show|configure|validate|run|
                                pause|resume|stop|status|delete|clone
-        talos intruder template show|set-var|clear-var
+        talos intruder template show|set-var|clear-var|from-params
         talos intruder payload set|list|clear
         talos intruder strategy set
         talos intruder timing set
         talos intruder storage set|show
         talos intruder match add|list|clear
+        talos intruder grep add|list|clear
+        talos intruder pool list|show|export|clear|delete
         talos intruder results list|show|export
         talos intruder generators list
 
@@ -21,7 +23,8 @@ Dependencies: argparse, asyncio, json, sys
 Data flow:
     argv → project gate → handlers → session/engine/db → stdout
 Side effects:
-    Session CRUD, scheduler enqueue, HTTP on --right-now / engine path.
+    Session CRUD, scheduler enqueue, HTTP on --right-now / engine path,
+    pool writes from grep extract.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ from talos.intruder.config_schema import (
     storage_requires_confirm,
     validate_config,
 )
+from talos.intruder.grep import validate_grep_rule
 from talos.intruder.models import (
     ERR_CONFIRM_REQUIRED,
     ERR_ENDPOINT_ANNOTATED_DANGEROUS,
@@ -98,9 +102,10 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="talos intruder",
         description=(
-            "Intruder: high-volume mutation attack engine (Phase 1+2). "
+            "Intruder: high-volume mutation attack engine (Phase 1–3). "
             "Template + payload sets + single/sniper/pitchfork/zip/cluster_bomb; "
-            "storage modes; scheduler time-slices. "
+            "grep extract pools; csv/json/uuid/example_values generators; "
+            "param-intel template assist; storage modes; scheduler time-slices. "
             "Distinct from 'talos send' (Repeater) and 'talos input-validation'."
         ),
     )
@@ -204,6 +209,28 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_tclear.add_argument("--name", required=True)
     add_format_argument(p_tclear)
 
+    p_tfrom = tmpl_sub.add_parser(
+        "from-params",
+        help="Phase 3: auto-add template variables from Parameter Intelligence.",
+    )
+    p_tfrom.add_argument("session_id")
+    p_tfrom.add_argument(
+        "--locations",
+        default="",
+        help="Comma-separated locations filter (path,query,body,header,cookie).",
+    )
+    p_tfrom.add_argument(
+        "--set-payloads",
+        action="store_true",
+        help="Also wire example_values generators for each parameter.",
+    )
+    p_tfrom.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace existing variables instead of merging by name.",
+    )
+    add_format_argument(p_tfrom)
+
     # ---- payload ----
     p_pay = sub.add_parser("payload", help="Payload sets.")
     pay_sub = p_pay.add_subparsers(dest="payload_cmd", metavar="<action>")
@@ -217,7 +244,11 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         required=True,
         choices=sorted(KNOWN_GENERATORS),
     )
-    p_pset.add_argument("--file", dest="wordlist", help="Wordlist path (wordlist gen).")
+    p_pset.add_argument(
+        "--file",
+        dest="wordlist",
+        help="File path (wordlist / csv / json generators).",
+    )
     p_pset.add_argument("--start", type=int, help="Numbers start.")
     p_pset.add_argument("--end", type=int, help="Numbers end.")
     p_pset.add_argument("--step", type=int, default=1, help="Numbers step.")
@@ -226,6 +257,27 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         action="append",
         dest="values",
         help="Static value (repeatable).",
+    )
+    p_pset.add_argument("--count", type=int, help="UUID count (uuid generator).")
+    p_pset.add_argument(
+        "--column",
+        help="CSV column name or 0-based index (csv generator).",
+    )
+    p_pset.add_argument(
+        "--delimiter",
+        default=",",
+        help="CSV delimiter (default ',').",
+    )
+    p_pset.add_argument(
+        "--json-path",
+        dest="json_path",
+        help="JSON path (json generator), e.g. ids or users[].id",
+    )
+    p_pset.add_argument("--param-id", dest="param_id", help="parameters.id (example_values).")
+    p_pset.add_argument(
+        "--pool",
+        dest="pool_name",
+        help="Pool name (pool generator).",
     )
     p_pset.add_argument(
         "--processor",
@@ -348,6 +400,87 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_mclear.add_argument("session_id")
     add_format_argument(p_mclear)
 
+    # ---- grep (Phase 3) ----
+    p_gr = sub.add_parser("grep", help="Extract / grep rules (Phase 3).")
+    gr_sub = p_gr.add_subparsers(dest="grep_cmd", metavar="<action>")
+    gr_sub.required = True
+
+    p_gradd = gr_sub.add_parser("add", help="Add a grep extract rule.")
+    p_gradd.add_argument("session_id")
+    p_gradd.add_argument("--name", required=True, help="Extract name / pool name.")
+    p_gradd.add_argument("--regex", required=True, help="Regex with capture group.")
+    p_gradd.add_argument(
+        "--group",
+        type=int,
+        default=1,
+        help="Capture group (0=full match, default 1).",
+    )
+    p_gradd.add_argument(
+        "--source",
+        default="body",
+        help="body | headers | header:<Name> (default body).",
+    )
+    p_gradd.add_argument("--ignore-case", action="store_true", dest="ignore_case")
+    p_gradd.add_argument(
+        "--max-matches",
+        type=int,
+        default=50,
+        dest="max_matches",
+        help="Max unique captures per response (default 50).",
+    )
+    p_gradd.add_argument(
+        "--no-pool",
+        action="store_true",
+        help="Do not accumulate captures into project pool.",
+    )
+    p_gradd.add_argument(
+        "--tag-interesting",
+        action="store_true",
+        dest="tag_interesting",
+        help="Mark attempt interesting when this rule matches.",
+    )
+    add_format_argument(p_gradd)
+
+    p_grlist = gr_sub.add_parser("list", help="List grep rules.")
+    p_grlist.add_argument("session_id")
+    add_format_argument(p_grlist)
+
+    p_grclear = gr_sub.add_parser("clear", help="Clear all grep rules.")
+    p_grclear.add_argument("session_id")
+    add_format_argument(p_grclear)
+
+    # ---- pool (Phase 3) ----
+    p_pool = sub.add_parser("pool", help="Extracted value pools (Phase 3).")
+    pool_sub = p_pool.add_subparsers(dest="pool_cmd", metavar="<action>")
+    pool_sub.required = True
+
+    p_pllist = pool_sub.add_parser("list", help="List project pools.")
+    add_format_argument(p_pllist)
+
+    p_plshow = pool_sub.add_parser("show", help="Show one pool (values).")
+    p_plshow.add_argument("name")
+    p_plshow.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Max values to display (default 100).",
+    )
+    add_format_argument(p_plshow)
+
+    p_plexport = pool_sub.add_parser("export", help="Export pool values to a text file.")
+    p_plexport.add_argument("name")
+    p_plexport.add_argument("--out", required=True, help="Output file path.")
+    add_format_argument(p_plexport)
+
+    p_plclear = pool_sub.add_parser("clear", help="Empty pool values (keep row).")
+    p_plclear.add_argument("name")
+    add_format_argument(p_plclear)
+
+    p_pldel = pool_sub.add_parser("delete", help="Delete a pool.")
+    p_pldel.add_argument("name")
+    add_force_argument(p_pldel)
+    add_format_argument(p_pldel)
+
     # ---- results ----
     p_r = sub.add_parser("results", help="Session results.")
     r_sub = p_r.add_subparsers(dest="results_cmd", metavar="<action>")
@@ -399,6 +532,10 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         _dispatch_storage(project, args)
     elif cmd == "match":
         _dispatch_match(project, args)
+    elif cmd == "grep":
+        _dispatch_grep(project, args)
+    elif cmd == "pool":
+        _dispatch_pool(project, args)
     elif cmd == "results":
         _dispatch_results(project, args)
     elif cmd == "generators":
@@ -556,7 +693,13 @@ def _dispatch_session(project, args: argparse.Namespace) -> None:
             "project_id": project_id,
         }
         try:
-            cfg, estimate = validate_config(merged, open_generators=True, force=args.force)
+            cfg, estimate = validate_config(
+                merged,
+                open_generators=True,
+                force=args.force,
+                db_path=db_path,
+                project_id=project_id,
+            )
         except ValidationError as exc:
             _validation_error(exc, args)
         _save_config(db_path, sess["id"], cfg, status="configured")
@@ -570,7 +713,11 @@ def _dispatch_session(project, args: argparse.Namespace) -> None:
         sess = _get_session_or_exit(db_path, args.session_id)
         try:
             cfg, estimate = validate_config(
-                sess.get("config") or {}, open_generators=True, force=args.force
+                sess.get("config") or {},
+                open_generators=True,
+                force=args.force,
+                db_path=db_path,
+                project_id=project_id,
             )
         except ValidationError as exc:
             _validation_error(exc, args)
@@ -593,7 +740,11 @@ def _dispatch_session(project, args: argparse.Namespace) -> None:
         sess = _get_session_or_exit(db_path, args.session_id)
         try:
             cfg, estimate = validate_config(
-                sess.get("config") or {}, open_generators=True, force=args.force
+                sess.get("config") or {},
+                open_generators=True,
+                force=args.force,
+                db_path=db_path,
+                project_id=project_id,
             )
         except ValidationError as exc:
             _validation_error(exc, args)
@@ -958,6 +1109,70 @@ def _dispatch_template(project, args: argparse.Namespace) -> None:
         _emit(payload, args, human)
         return
 
+    if action == "from-params":
+        endpoint_id = sess.get("endpoint_id") or (cfg.get("session") or {}).get("endpoint_id")
+        if not endpoint_id:
+            cli_precondition_error(
+                "Session has no endpoint_id; Parameter Intelligence requires a linked endpoint."
+            )
+        loc_filter: list[str] | None = None
+        if args.locations:
+            loc_filter = [x.strip() for x in str(args.locations).split(",") if x.strip()]
+        params = intruder_db.list_endpoint_parameters(
+            db_path, str(endpoint_id), locations=loc_filter
+        )
+        if not params:
+            cli_precondition_error(
+                f"No parameters found for endpoint {endpoint_id}."
+            )
+        existing = list((cfg.get("template") or {}).get("variables") or [])
+        by_name = {} if args.replace else {v.get("name"): v for v in existing if v.get("name")}
+        added: list[dict[str, Any]] = []
+        for p in params:
+            name = str(p["name"])
+            examples = p.get("example_values") or []
+            original = str(examples[0]) if examples else None
+            new_var = {
+                "name": name,
+                "location": p["location"],
+                "path": name,
+                "original_value": original,
+                "semantic_type": p.get("semantic_type") or "",
+                "param_id": p["id"],
+                "fixed_value": None,
+            }
+            by_name[name] = new_var
+            added.append(new_var)
+            if args.set_payloads and examples:
+                cfg.setdefault("payload_sets", {})[name] = {
+                    "generator": "example_values",
+                    "options": {"param_id": p["id"]},
+                    "processors": [],
+                }
+        cfg.setdefault("template", {})["variables"] = list(by_name.values())
+        _save_config(
+            db_path,
+            sess["id"],
+            cfg,
+            status=STATUS_DRAFT if sess["status"] == "configured" else sess["status"],
+        )
+        payload = {
+            "session_id": sess["id"],
+            "endpoint_id": endpoint_id,
+            "added": len(added),
+            "variables": added,
+            "payloads_set": bool(args.set_payloads),
+        }
+        def human(p):
+            cli_success(
+                f"Template updated from {p['added']} parameter(s).",
+                {"Endpoint": p["endpoint_id"], "Payloads": p["payloads_set"]},
+            )
+        _emit(payload, args, human)
+        return
+
+    cli_usage_error(f"Unknown template action: {action}")
+
 
 def _dispatch_payload(project, args: argparse.Namespace) -> None:
     db_path = project.db_path
@@ -982,6 +1197,33 @@ def _dispatch_payload(project, args: argparse.Namespace) -> None:
             if not args.values:
                 cli_usage_error("--value is required for static generator (repeatable).")
             options["values"] = list(args.values)
+        elif gen == "uuid":
+            if args.count is not None:
+                options["count"] = args.count
+        elif gen == "csv":
+            if not args.wordlist:
+                cli_usage_error("--file is required for csv generator.")
+            options["path"] = args.wordlist
+            if args.column is not None:
+                # numeric index vs header name
+                col = args.column
+                options["column"] = int(col) if str(col).isdigit() else col
+            if args.delimiter:
+                options["delimiter"] = args.delimiter
+        elif gen == "json":
+            if not args.wordlist:
+                cli_usage_error("--file is required for json generator.")
+            options["path"] = args.wordlist
+            if args.json_path is not None:
+                options["json_path"] = args.json_path
+        elif gen == "example_values":
+            if not args.param_id:
+                cli_usage_error("--param-id is required for example_values generator.")
+            options["param_id"] = args.param_id
+        elif gen == "pool":
+            if not args.pool_name:
+                cli_usage_error("--pool is required for pool generator.")
+            options["name"] = args.pool_name
 
         processors = list(args.processors or [])
         for pname in processors:
@@ -1160,6 +1402,151 @@ def _dispatch_match(project, args: argparse.Namespace) -> None:
         return
 
 
+def _dispatch_grep(project, args: argparse.Namespace) -> None:
+    db_path = project.db_path
+    sess = _get_session_or_exit(db_path, args.session_id)
+    cfg = merge_defaults(sess.get("config") or {})
+    action = args.grep_cmd
+
+    if action == "add":
+        rule: dict[str, Any] = {
+            "name": args.name,
+            "regex": args.regex,
+            "group": int(args.group),
+            "source": args.source or "body",
+            "max_matches": int(args.max_matches),
+            "to_pool": not bool(args.no_pool),
+            "tag_interesting": bool(args.tag_interesting),
+        }
+        if args.ignore_case:
+            rule["ignore_case"] = True
+        try:
+            validate_grep_rule(rule)
+        except ValueError as exc:
+            cli_usage_error(str(exc))
+        rules = list(cfg.get("grep") or [])
+        rules.append(rule)
+        cfg["grep"] = rules
+        _save_config(db_path, sess["id"], cfg)
+        payload = {"session_id": sess["id"], "rule": rule, "count": len(rules)}
+        def human(p):
+            cli_success("Grep rule added.", {"Name": args.name, "Rules": p["count"]})
+        _emit(payload, args, human)
+        return
+
+    if action == "list":
+        rules = cfg.get("grep") or []
+        payload = {"session_id": sess["id"], "grep": rules}
+        def human(p):
+            if not p["grep"]:
+                print("No grep rules.")
+                return
+            for i, r in enumerate(p["grep"]):
+                print(f"  [{i}] {r.get('name')}: {r.get('regex')!r} source={r.get('source')}")
+        _emit(payload, args, human)
+        return
+
+    if action == "clear":
+        cfg["grep"] = []
+        _save_config(db_path, sess["id"], cfg)
+        payload = {"session_id": sess["id"], "grep": []}
+        def human(p):
+            cli_success("Grep rules cleared.", {})
+        _emit(payload, args, human)
+        return
+
+    cli_usage_error(f"Unknown grep action: {action}")
+
+
+def _dispatch_pool(project, args: argparse.Namespace) -> None:
+    db_path = project.db_path
+    project_id = project.id
+    action = args.pool_cmd
+
+    if action == "list":
+        pools = intruder_db.list_pools(db_path, project_id)
+        payload = [
+            {
+                "name": p["name"],
+                "count": p["count"],
+                "session_id": p.get("session_id"),
+                "source_rule": p.get("source_rule"),
+                "updated_at": p.get("updated_at"),
+            }
+            for p in pools
+        ]
+        def human(items):
+            if not items:
+                print("No pools.")
+                return
+            print(f"{'NAME':<24} {'COUNT':>6}  UPDATED")
+            for it in items:
+                print(f"{it['name']:<24} {it['count']:>6}  {it.get('updated_at') or '—'}")
+        _emit(payload, args, human)
+        return
+
+    if action == "show":
+        pool = intruder_db.get_pool(db_path, project_id, args.name)
+        if pool is None:
+            cli_error(f"Pool not found: {args.name}")
+        values = pool["values"]
+        limit = max(0, int(args.limit))
+        shown = values[:limit] if limit else values
+        payload = {
+            "name": pool["name"],
+            "count": pool["count"],
+            "session_id": pool.get("session_id"),
+            "source_rule": pool.get("source_rule"),
+            "values": shown,
+            "truncated": len(values) > len(shown),
+        }
+        def human(p):
+            print(f"Pool {p['name']} ({p['count']} values)")
+            for v in p["values"]:
+                print(f"  {v}")
+            if p["truncated"]:
+                print(f"  … truncated to {len(p['values'])}")
+        _emit(payload, args, human)
+        return
+
+    if action == "export":
+        pool = intruder_db.get_pool(db_path, project_id, args.name)
+        if pool is None:
+            cli_error(f"Pool not found: {args.name}")
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(pool["values"]) + ("\n" if pool["values"] else ""), encoding="utf-8")
+        payload = {"name": pool["name"], "count": pool["count"], "out": str(out)}
+        def human(p):
+            cli_success(f"Exported {p['count']} value(s).", {"Out": p["out"]})
+        _emit(payload, args, human)
+        return
+
+    if action == "clear":
+        ok = intruder_db.clear_pool(db_path, project_id, args.name)
+        if not ok:
+            cli_error(f"Pool not found: {args.name}")
+        payload = {"name": args.name, "cleared": True}
+        def human(p):
+            cli_success("Pool cleared.", {"Name": args.name})
+        _emit(payload, args, human)
+        return
+
+    if action == "delete":
+        if not getattr(args, "force", False):
+            confirm_or_exit(f"Delete pool '{args.name}'?", force=False)
+        ok = intruder_db.delete_pool(db_path, project_id, args.name)
+        if not ok:
+            cli_error(f"Pool not found: {args.name}")
+        payload = {"name": args.name, "deleted": True}
+        def human(p):
+            cli_success("Pool deleted.", {"Name": args.name})
+        _emit(payload, args, human)
+        return
+
+    cli_usage_error(f"Unknown pool action: {action}")
+
+
 def _dispatch_results(project, args: argparse.Namespace) -> None:
     db_path = project.db_path
     sess = _get_session_or_exit(db_path, args.session_id)
@@ -1188,6 +1575,7 @@ def _dispatch_results(project, args: argparse.Namespace) -> None:
                 "body_hash": r["body_hash"],
                 "interesting": r["interesting"],
                 "match_tags": r["match_tags"],
+                "grepped": r.get("grepped") or {},
                 "flow_id": r["flow_id"],
                 "created_at": r["created_at"],
             }
@@ -1263,6 +1651,12 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
         "processor_parameterized": ["prefix:<text>", "suffix:<text>"],
         "strategies": sorted(s for s in KNOWN_STRATEGIES if s != "cartesian"),
         "storage_modes": sorted(KNOWN_STORAGE_MODES),
+        "phase3": {
+            "generators": ["uuid", "csv", "json", "example_values", "pool"],
+            "grep": True,
+            "pools": True,
+            "template_from_params": True,
+        },
     }
     def human(p):
         print("Generators:", ", ".join(p["generators"]))
@@ -1270,4 +1664,5 @@ def _dispatch_generators(args: argparse.Namespace) -> None:
         print("Parameterized:", ", ".join(p["processor_parameterized"]))
         print("Strategies:", ", ".join(p["strategies"]))
         print("Storage:", ", ".join(p["storage_modes"]))
+        print("Phase 3:", ", ".join(p["phase3"]["generators"]), "+ grep/pools/from-params")
     _emit(payload, args, human)

@@ -6,7 +6,7 @@
 | **Project** | Talos |
 | **Author** | (design) |
 | **Date** | 2026-07-29 |
-| **Status** | Implemented Phase 1 + Phase 2 (rev 3 design; schema 46) |
+| **Status** | Implemented Phase 1–3 (rev 3 design; schema 47) |
 | **Scope** | Talos core CLI only; Control Panel / UI deferred |
 | **Audience** | Senior engineers familiar with `talos/` |
 
@@ -620,7 +620,7 @@ Extend in `metrics_json`: words, lines, cookies set, reflection (payload substri
 
 **Phase 1 match (online):** `status`, `body_contains`, `regex`, `length_delta_gt` (vs baseline fingerprint), `time_gt_ms`.
 
-**Grep / extract pools:** Phase 3.
+**Grep / extract pools (Phase 3 — shipped):** online regex capture → `grepped_json` + optional project `intruder_pools`; generator `pool` for chaining.
 
 Evaluation online for tags `interesting=1`; offline re-filter via `results list` filters without re-send.
 
@@ -863,12 +863,14 @@ Top-level **`talos intruder`** (not under `attack`) — first-class engine peer 
 ```text
 talos intruder
 ├─ session  create|list|show|configure|validate|run|pause|resume|stop|status|delete|clone
-├─ template show|set-var|clear-var
+├─ template show|set-var|clear-var|from-params   # from-params: Phase 3
 ├─ payload  set|list|clear
 ├─ strategy set
 ├─ timing   set
 ├─ storage  set|show          # Phase 2
 ├─ match    add|list|clear
+├─ grep     add|list|clear    # Phase 3
+├─ pool     list|show|export|clear|delete  # Phase 3
 ├─ results  list|show|export
 └─ generators list
 ```
@@ -1166,7 +1168,21 @@ Pitchfork, cluster_bomb, zip; sample/all flows; session clone; host caps; more p
 | CLI | `storage set\|show`; strategy `--set` multi; timing `--concurrency-per-host` |
 | Tests | `tests/test_intruder_phase2.py` |
 
-### Phase 3 — Grep, pools, param-intel
+### Phase 3 — Grep, pools, param-intel — **IMPLEMENTED**
+
+Grep extract rules, project pools, file generators (csv/json/uuid), example_values, param-intel template assist.
+
+**Shipped:**
+
+| Item | Detail |
+|------|--------|
+| Schema | `intruder_pools` (v47); `grepped_json` already on results |
+| Grep | `talos/intruder/grep.py`; CLI `grep add\|list\|clear`; online extract; optional `tag_interesting` + `to_pool` |
+| Pools | Project-scoped unique values; engine upsert on flush; CLI `pool list\|show\|export\|clear\|delete`; generator `pool` |
+| Generators | `uuid` (count), `csv` (column), `json` (json_path / `users[].id`), `example_values` (param_id), `pool` |
+| Param-intel | `template from-params` (+ `--set-payloads` wires example_values) |
+| CLI | payload flags: `--count`, `--column`, `--json-path`, `--param-id`, `--pool` |
+| Tests | `tests/test_intruder_phase3.py` |
 
 ### Phase 4 — Adaptive timing, advanced generators, AI suggest
 
@@ -1437,17 +1453,17 @@ Ordered, independently reviewable. **CLI only.**
 
 - **Dependencies:** PR-9
 
-### PR-11: Grep rules + extracted pools + file generators
+### PR-11: Grep rules + extracted pools + file generators — **DONE (Phase 3)**
 
 - **Title:** `intruder: grep pools and csv/json/uuid generators (Phase 3)`
 - **Dependencies:** **PR-5 + PR-1 schema** (grep needs engine+results; may land after PR-8 for CLI). Prefer depend on **PR-8** for CLI glue; core extract table can migrate in this PR.
-- **Description:** Chaining foundations.
+- **Description:** Chaining foundations. Shipped: `intruder_pools`, grep rules, uuid/csv/json/pool generators.
 
-### PR-12: Parameter intelligence template assist
+### PR-12: Parameter intelligence template assist — **DONE (Phase 3)**
 
 - **Title:** `intruder: template auto from parameters + example_values generator`
 - **Dependencies:** **PR-8** (stable CLI) — unambiguous.
-- **Description:** Connect Parameter Intelligence to setup.
+- **Description:** Connect Parameter Intelligence to setup. Shipped: `template from-params` + `example_values` generator.
 
 ### PR-13: Adaptive timing + advanced generators
 

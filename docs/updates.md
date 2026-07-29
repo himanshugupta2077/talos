@@ -2,6 +2,43 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Intruder Phase 3 — grep pools, param-intel, file generators
+
+**Shipped:** 2026-07-29 (schema **47**).
+
+Grep extract + project pools for chaining, Parameter Intelligence template
+assist, and file/intel generators on top of Phase 1–2.
+
+| Surface | Detail |
+|---------|--------|
+| `intruder_pools` | Project-scoped unique extracted values (`UNIQUE(project_id, name)`) |
+| `grep add\|list\|clear` | Online regex extract → `grepped_json`; optional `tag_interesting` / `to_pool` |
+| `pool list\|show\|export\|clear\|delete` | Inspect and reuse extracted pools |
+| Generators | `uuid`, `csv`, `json`, `example_values`, `pool` |
+| `template from-params` | Auto-add variables from `parameters` for session endpoint; `--set-payloads` |
+
+```bash
+talos intruder grep add $SID --name token --regex '"token"\s*:\s*"([^"]+)"' --tag-interesting
+talos intruder session run $SID --force
+talos intruder pool show token --format json
+talos intruder payload set $SID2 --var tok --generator pool --pool token
+talos intruder template from-params $SID --set-payloads
+talos intruder payload set $SID --var id --generator uuid --count 50
+talos intruder payload set $SID --var id --generator csv --file ./ids.csv --column id
+talos intruder payload set $SID --var id --generator json --file ./data.json --json-path users[].id
+```
+
+Design: `docs/design-intruder-cli.md` Phase 3 / PR-11–12.
+
+**Files:**
+- Schema: `talos/projects/db.py` (v47 `intruder_pools`)
+- Grep/pools: `talos/intruder/grep.py`, `db.py` pool CRUD, engine flush
+- Generators: `generators/{uuid_gen,csv_gen,json_gen,example_values,pool}.py`
+- CLI/docs/helper: `cli.py`, `__main__.py`, architecture / cheat-sheet / updates
+- Tests: `tests/test_intruder_phase3.py`
+
+---
+
 ## Intruder Phase 2 — multi-set strategies, storage modes, processors
 
 ### Problem

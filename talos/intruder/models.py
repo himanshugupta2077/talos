@@ -3,7 +3,7 @@ Module: talos.intruder.models
 
 Purpose:
     Dataclasses and constants for Intruder (sessions, templates, attempts,
-    segment outcomes, hard-cap defaults). Phase 1 + Phase 2 plugins.
+    segment outcomes, hard-cap defaults). Phase 1–3 plugins.
 
 Dependencies: dataclasses, typing
 Data flow:
@@ -123,12 +123,29 @@ MULTI_SET_STRATEGIES: frozenset[str] = frozenset({
     STRATEGY_ZIP,
 })
 
-# Generators (Phase 1)
+# Generators (Phase 1 + Phase 3)
 GEN_WORDLIST = "wordlist"
 GEN_NUMBERS = "numbers"
 GEN_STATIC = "static"
+GEN_UUID = "uuid"
+GEN_CSV = "csv"
+GEN_JSON = "json"
+GEN_EXAMPLE_VALUES = "example_values"
+GEN_POOL = "pool"
 PHASE1_GENERATORS: frozenset[str] = frozenset({GEN_WORDLIST, GEN_NUMBERS, GEN_STATIC})
-KNOWN_GENERATORS: frozenset[str] = PHASE1_GENERATORS
+PHASE3_GENERATORS: frozenset[str] = frozenset({
+    GEN_UUID,
+    GEN_CSV,
+    GEN_JSON,
+    GEN_EXAMPLE_VALUES,
+    GEN_POOL,
+})
+KNOWN_GENERATORS: frozenset[str] = PHASE1_GENERATORS | PHASE3_GENERATORS
+
+# Pool / grep defaults (Phase 3)
+DEFAULT_POOL_MAX_VALUES = 50_000
+DEFAULT_GREP_MAX_MATCHES = 50
+DEFAULT_UUID_COUNT = 10
 
 # Processors (Phase 1 + Phase 2)
 PROC_URL_ENCODE = "url_encode"
@@ -282,3 +299,7 @@ ERR_INVALID_STATUS = "invalid_status"
 ERR_INVALID_STORAGE_MODE = "invalid_storage_mode"
 ERR_MULTISET_UNBOUND = "multiset_unbound"
 ERR_CLUSTER_BOMB_EMPTY = "cluster_bomb_empty"
+ERR_INVALID_GREP = "invalid_grep"
+ERR_POOL_NOT_FOUND = "pool_not_found"
+ERR_PARAM_NOT_FOUND = "param_not_found"
+ERR_INVALID_FILE_GENERATOR = "invalid_file_generator"

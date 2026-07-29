@@ -27,6 +27,11 @@ Purpose:
         Processors: url_decode, base64_decode, case, html, hashes, strip,
                     prefix:<text>, suffix:<text>
 
+    Phase 3:
+        Grep extract rules → grepped_json + project pools (intruder_pools)
+        Generators: uuid, csv, json, example_values, pool
+        template from-params (Parameter Intelligence assist)
+
 Public surface:
     engine.run_session_segment, models, CLI entry (cli.run_intruder_cli).
 """

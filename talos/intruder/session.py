@@ -129,7 +129,10 @@ def create_session_from_flow(
 
 
 def mark_configured(db_path: Path, session_id: str, config: dict[str, Any]) -> dict[str, Any]:
-    validated, _ = validate_config(config, open_generators=True)
+    project_id = (config.get("session") or {}).get("project_id")
+    validated, _ = validate_config(
+        config, open_generators=True, db_path=db_path, project_id=project_id
+    )
     sess = intruder_db.update_session(
         db_path,
         session_id,
@@ -272,7 +275,13 @@ def run_session(
     ):
         raise RuntimeError("session_busy")
 
-    cfg, estimate = validate_config(session["config"], open_generators=True, force=force)
+    cfg, estimate = validate_config(
+        session["config"],
+        open_generators=True,
+        force=force,
+        db_path=db_path,
+        project_id=project_id,
+    )
     intruder_db.update_session(db_path, session_id, config=cfg, status=STATUS_CONFIGURED)
 
     progress = dict(session.get("progress") or {})
