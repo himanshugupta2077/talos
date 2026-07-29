@@ -138,6 +138,26 @@ def handle_replay_flow(
             error=f"Flow not found: {flow_id}",
         )
 
+    # Re-check annotations at execute time (policy race / mid-session tag).
+    tags = sp.annotations_for_endpoint(ctx.db_path, flow.get("endpoint_id"))
+    if "logout" in tags:
+        return HandlerResult(
+            success=False,
+            summary="logout annotation",
+            error="Endpoint annotated logout — refusing enqueue",
+            data={"annotations": sorted(tags)},
+        )
+    if "dangerous" in tags and not force_dangerous:
+        return HandlerResult(
+            success=False,
+            summary="dangerous requires approval",
+            error=(
+                "Endpoint annotated dangerous — requires human-approved plan "
+                "(ai_force_dangerous)."
+            ),
+            data={"annotations": sorted(tags)},
+        )
+
     job_id = str(uuid.uuid4())
     try:
         job = sched_db.enqueue_job(

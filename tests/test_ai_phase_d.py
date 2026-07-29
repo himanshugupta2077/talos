@@ -678,3 +678,127 @@ class TestDangerousAutoMatrix:
         assert not isinstance(plan, PolicyReject)
         assert plan.requires_approval is True
         assert "dangerous" in (plan.policy_meta.get("annotations") or [])
+
+
+# ================================================================== #
+# QA regressions (scope bypass, empty URL, mode grants)                #
+# ================================================================== #
+
+
+class TestPhaseDQA:
+    def test_url_edit_out_of_scope_rejected(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        """Full URL rewrite must be in effective_url scope check (no bypass)."""
+        session = engine.start("probe", mode=AutonomyMode.STEP)
+        fid, _ = _insert_flow(project.db_path, project.id)
+        plan = engine.validate_suggestion(
+            _suggestion(
+                "send.once",
+                {
+                    "parent_flow_id": fid,
+                    "edits": [
+                        {
+                            "op": "set",
+                            "target": "url",
+                            "value": "https://evil.com/pwn",
+                        }
+                    ],
+                },
+                session.session_id,
+            )
+        )
+        assert isinstance(plan, PolicyReject)
+        assert plan.code == "scope_denied"
+
+    def test_apply_send_edits_includes_url_target(self) -> None:
+        out = sp.apply_send_edits_to_url(
+            "https://example.com/api",
+            [{"op": "set", "target": "url", "value": "https://evil.com/x"}],
+        )
+        assert out.startswith("https://evil.com")
+
+    def test_empty_url_fail_closed(self, engine: WorkflowEngine, project) -> None:
+        session = engine.start("probe", mode=AutonomyMode.STEP)
+        fid, _ = _insert_flow(project.db_path, project.id)
+        with sqlite3.connect(str(project.db_path)) as conn:
+            conn.execute("UPDATE flows SET url = '' WHERE id = ?", (fid,))
+            conn.commit()
+        plan = engine.validate_suggestion(
+            _suggestion("send.once", {"parent_flow_id": fid}, session.session_id)
+        )
+        assert isinstance(plan, PolicyReject)
+        assert plan.code == "scope_denied"
+
+    def test_auto_aggressive_dangerous_mcp_needs_approval(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        from talos.ai.workflow import session as session_store
+
+        session = engine.start("probe", mode=AutonomyMode.STEP)
+        engine.set_mode(
+            AutonomyMode.AUTO_AGGRESSIVE,
+            session_id=session.session_id,
+            aggressive_ack_phrase=f"I_ACCEPT_AUTO_AGGRESSIVE={project.id}",
+        )
+        session = session_store.get_session(
+            project.db_path, project.id, session.session_id
+        )
+        fid, eid = _insert_flow(project.db_path, project.id)
+        add_annotation(project.db_path, eid, "dangerous")
+        out = engine.external_tool_call(
+            "send.once",
+            {"parent_flow_id": fid},
+            session_id=session.session_id,
+        )
+        assert out["status"] == "needs_approval"
+        assert out.get("plan_id")
+
+    def test_auto_budget_auto_replay_denies_send(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("probe", mode=AutonomyMode.AUTO_BUDGET)
+        fid, _ = _insert_flow(project.db_path, project.id)
+        plan_r = engine.validate_suggestion(
+            _suggestion("replay.flow", {"flow_id": fid}, session.session_id)
+        )
+        plan_s = engine.validate_suggestion(
+            _suggestion("send.once", {"parent_flow_id": fid}, session.session_id)
+        )
+        assert not isinstance(plan_r, PolicyReject)
+        assert plan_r.requires_approval is False
+        assert isinstance(plan_s, PolicyReject)
+        assert plan_s.code == "capability_denied"
+
+        out = engine.external_tool_call(
+            "replay.flow",
+            {"flow_id": fid},
+            session_id=session.session_id,
+        )
+        assert out["status"] == "executed"
+
+    def test_auto_low_denies_send(self, engine: WorkflowEngine, project) -> None:
+        session = engine.start("probe", mode=AutonomyMode.AUTO_LOW)
+        fid, _ = _insert_flow(project.db_path, project.id)
+        plan = engine.validate_suggestion(
+            _suggestion("send.once", {"parent_flow_id": fid}, session.session_id)
+        )
+        assert isinstance(plan, PolicyReject)
+        assert plan.code == "capability_denied"
+
+    def test_logout_blocks_unauth_and_iv(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        session = engine.start("probe", mode=AutonomyMode.STEP)
+        fid, eid = _insert_flow(project.db_path, project.id)
+        add_annotation(project.db_path, eid, "logout")
+        for tool, args in (
+            ("attack.unauth.run", {"flow_id": fid}),
+            ("iv.run", {"scope": "endpoint", "endpoint_id": eid}),
+            ("replay.flow", {"flow_id": fid}),
+        ):
+            plan = engine.validate_suggestion(
+                _suggestion(tool, args, session.session_id)
+            )
+            assert isinstance(plan, PolicyReject), tool
+            assert plan.code == "annotation_logout", tool

@@ -162,13 +162,31 @@ def annotations_for_endpoint(
 def apply_send_edits_to_url(base_url: str, edits: list[dict[str, Any]] | None) -> str:
     """
     Purpose:
-        Compute effective_url after send.once edit ops (query/path/host only).
-        Header/cookie/body edits do not change the request URL.
-    """
-    if not edits:
-        return base_url
+        Compute effective_url after send.once edit ops that affect the URL.
 
-    parsed = urlparse(base_url or "")
+        Mirrors send draft apply order for URL-affecting fields:
+        full ``url`` replace → path → host → query set/remove.
+
+        Header/cookie/body edits do not change the request URL.
+        **Must** include ``target=url`` so scope cannot be bypassed by a full
+        URL rewrite that send_once would still apply.
+    """
+    current = base_url or ""
+    if not edits:
+        return current
+
+    # First pass: last full-url replace wins (send applies a single url kwarg
+    # from edits_to_send_kwargs — last set wins there too).
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        op = str(edit.get("op") or "").strip()
+        target = str(edit.get("target") or "").strip()
+        value = edit.get("value")
+        if target == "url" and op == "set" and value is not None:
+            current = str(value)
+
+    parsed = urlparse(current)
     scheme, netloc, path, params, query, fragment = (
         parsed.scheme,
         parsed.netloc,
@@ -187,10 +205,12 @@ def apply_send_edits_to_url(base_url: str, edits: list[dict[str, Any]] | None) -
         key = edit.get("key")
         value = edit.get("value")
 
+        if target == "url":
+            # Already applied above.
+            continue
         if target == "query":
             k = str(key or "")
             if op == "set" and k:
-                # Replace first occurrence of key; append if missing.
                 found = False
                 for i, (qk, qv) in enumerate(q):
                     if qk == k:

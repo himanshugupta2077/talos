@@ -398,6 +398,34 @@ def handle_attack_unauth_run(
             error="No testable flows/endpoints for unauth attack",
         )
 
+    # Defense in depth: never enqueue logout; skip dangerous unless forced.
+    filtered: list[dict[str, Any]] = []
+    skipped_logout = 0
+    skipped_dangerous = 0
+    for t in targets:
+        tags = sp.annotations_for_endpoint(ctx.db_path, t.get("endpoint_id"))
+        if "logout" in tags:
+            skipped_logout += 1
+            continue
+        if "dangerous" in tags and not force_dangerous:
+            skipped_dangerous += 1
+            continue
+        filtered.append(t)
+    targets = filtered
+    if not targets:
+        return HandlerResult(
+            success=False,
+            summary="no safe targets",
+            error=(
+                "All unauth targets blocked by annotations "
+                f"(logout={skipped_logout}, dangerous={skipped_dangerous})"
+            ),
+            data={
+                "skipped_logout": skipped_logout,
+                "skipped_dangerous": skipped_dangerous,
+            },
+        )
+
     job_ids: list[str] = []
     for t in targets:
         if len(job_ids) >= limit:
@@ -539,6 +567,35 @@ def handle_attack_bac_run(
             success=False,
             summary="no targets",
             error="No flows to attack for BAC module",
+        )
+
+    # Defense in depth: never enqueue logout; skip dangerous unless forced.
+    safe_flows: list[dict[str, Any]] = []
+    skipped_logout = 0
+    skipped_dangerous = 0
+    for flow in flows:
+        eid = flow.get("endpoint_id") or endpoint_id
+        tags = sp.annotations_for_endpoint(ctx.db_path, eid)
+        if "logout" in tags:
+            skipped_logout += 1
+            continue
+        if "dangerous" in tags and not force_dangerous:
+            skipped_dangerous += 1
+            continue
+        safe_flows.append(flow)
+    flows = safe_flows
+    if not flows:
+        return HandlerResult(
+            success=False,
+            summary="no safe targets",
+            error=(
+                "All BAC targets blocked by annotations "
+                f"(logout={skipped_logout}, dangerous={skipped_dangerous})"
+            ),
+            data={
+                "skipped_logout": skipped_logout,
+                "skipped_dangerous": skipped_dangerous,
+            },
         )
 
     job_ids: list[str] = []

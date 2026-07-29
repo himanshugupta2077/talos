@@ -246,7 +246,6 @@ class PolicyValidator:
                 return scope_ann
             policy_meta.update(scope_ann)
 
-        force_dangerous = bool(policy_meta.get("ai_force_dangerous"))
         annotations = set(policy_meta.get("annotations") or [])
         is_dangerous = "dangerous" in annotations
 
@@ -260,7 +259,7 @@ class PolicyValidator:
 
         plan_id = str(uuid.uuid4())
         token = issue_capability_token(plan_id)
-        plan = ExecutionPlan(
+        return ExecutionPlan(
             plan_id=plan_id,
             suggestion_id=suggestion.suggestion_id,
             session_id=session.session_id,
@@ -274,9 +273,6 @@ class PolicyValidator:
             created_at=_now_iso(),
             requires_approval=requires_approval,
         )
-        # Silence unused when live=False path already filled meta.
-        del force_dangerous
-        return plan
 
     def _check_scope_and_annotations(
         self,
@@ -419,22 +415,37 @@ class PolicyValidator:
                 meta["ai_force_dangerous"] = False
                 meta["dangerous_requires_approval"] = True
 
-        # Live (+ snapshot) scope for HTTP-producing tools
-        if needs_scope and effective_url:
+        # Live (+ snapshot) scope for HTTP-producing tools — fail closed.
+        if needs_scope:
+            url_text = (effective_url or "").strip()
+            if not url_text:
+                return PolicyReject(
+                    code="scope_denied",
+                    message=(
+                        "HTTP tool has no resolvable effective URL; "
+                        "refusing (fail closed)."
+                    ),
+                    tool_name=tool_name,
+                    details={
+                        "effective_url": effective_url,
+                        "decision": "missing_url",
+                    },
+                )
             live_in, live_out = self._load_live_scope(session)
             snap = sp.parse_scope_snapshot(session.scope_snapshot_json)
             allowed, code, scope_meta = sp.check_url_allowed(
-                effective_url,
+                url_text,
                 live_in_scope=live_in,
                 live_outscope=live_out,
                 scope_snapshot=snap,
             )
             meta["scope"] = scope_meta
+            meta["effective_url"] = url_text
             if not allowed:
                 return PolicyReject(
                     code=code or "scope_denied",
                     message=(
-                        f"Effective URL not in project scope: {effective_url}"
+                        f"Effective URL not in project scope: {url_text}"
                     ),
                     tool_name=tool_name,
                     details=scope_meta,
