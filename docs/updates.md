@@ -2,9 +2,43 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## AI Layer Phase B — Notes + offline suggest/approve loop
+
+**Shipped:** 2026-07-29 (project schema **51**).
+
+Offline agent loop for authorized bug bounty / client pentest (`docs/design-talos-ai-layer.md` Phase B / PR3+PR4).
+
+| Surface | Detail |
+|---------|--------|
+| Schema v50 | `ai_app_notes`, `ai_app_note_revisions` (optimistic concurrency) |
+| Schema v51 | Immutable `ai_suggestions`; `ai_execution_plans` state machine; `ai_observations`; `ai_task_nodes` (PTT) |
+| Planner | `HeuristicPlanner` (`provider=none`) — inventory/notes/PTT-driven READ/recon suggestions |
+| Control loop | `suggest` → record immutable suggestions → validate → pending plans → `approve`/`deny` → observation |
+| Modes | `suggest-only`: suggest OK, approve/execute hard-reject (exit 3); `step`: human approve; `--auto-reads` bulk-executes READ only |
+| Tools | `notes.app.get` / `notes.app.patch`; `task_tree.list` / `task_tree.upsert` |
+| CLI | `suggest`, `approve`, `deny`, `pending`, `plans show`, `notes show\|edit\|export` |
+| Redaction | **Not implemented** for AI (product decision: authorized BB/pentest; operator owns target data) |
+
+```bash
+talos project open my-app
+talos ai start --goal "Map endpoints" --mode step --force
+talos ai notes edit --force
+talos ai suggest
+talos ai pending
+talos ai approve <plan_id>
+talos ai suggest --auto-reads
+talos ai stop
+```
+
+**Not in Phase B:** MCP, LLM providers, HTTP send/replay, engine enqueue, KB, Control Panel AI page.
+
+**Files:** `talos/ai/notes/**`, `talos/ai/planner/**`, `talos/ai/workflow/{suggestions,plans,task_tree,observations,engine}.py`, `talos/ai/cli.py`, `talos/projects/db.py` (v50–v51), `tests/test_ai_phase_b.py`, docs.
+
+---
+
 ## AI Layer Phase A — Workflow Engine + Tool Protocol + READ tools
 
-**Shipped:** 2026-07-29 (project schema **49**).
+**Shipped:** 2026-07-29 (project schema **49**; now superseded by **51** with Phase B tables).
 
 Foundation for the policy-gated agent (`docs/design-talos-ai-layer.md` Phase A / PR1+PR2).
 
@@ -27,8 +61,6 @@ talos ai mode set step --force
 talos ai tools list
 talos ai stop
 ```
-
-**Not in Phase A:** planner suggest/approve loop, app notes, MCP, LLM providers, HTTP send/replay, engine enqueue.
 
 **Files:** `talos/ai/**`, `talos/projects/db.py` (v49), `talos/__main__.py`, `tests/test_ai_phase_a.py`, docs.
 

@@ -220,6 +220,75 @@ SCHEMA_INTRUDER_SUGGEST: dict[str, Any] = {
     },
 }
 
+# ------------------------------------------------------------------ #
+# Phase B: notes + task tree                                           #
+# ------------------------------------------------------------------ #
+
+SCHEMA_NOTES_APP_GET: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {},
+}
+
+SCHEMA_NOTES_APP_PATCH: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["if_revision", "ops"],
+    "properties": {
+        "if_revision": {"type": "integer", "minimum": 0},
+        "ops": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+                "type": "object",
+                "additionalProperties": True,
+                "required": ["op", "path"],
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["add", "replace", "remove"],
+                    },
+                    "path": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "value": {},  # any JSON — validated by notes store allowlist
+                },
+            },
+        },
+    },
+}
+
+SCHEMA_TASK_TREE_LIST: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {"type": "string", "maxLength": 32},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+    },
+}
+
+SCHEMA_TASK_TREE_UPSERT: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title"],
+    "properties": {
+        "node_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "parent_id": {"type": "string", "minLength": 8, "maxLength": 64},
+        "title": {"type": "string", "minLength": 1, "maxLength": 500},
+        "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "blocked", "done", "cancelled"],
+            "default": "pending",
+        },
+        "hypothesis": {"type": "string", "maxLength": 4000},
+        "priority": {"type": "integer", "minimum": 0, "maximum": 1000, "default": 0},
+        "suggested_tools": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"type": "string", "maxLength": 128},
+        },
+        "evidence_refs": {"type": "object"},
+    },
+}
+
 # Keys that must never appear in tool args (project switch / override).
 FORBIDDEN_ARG_KEYS: frozenset[str] = frozenset(
     {
@@ -338,4 +407,24 @@ def _validate_value(
     elif expected == "object":
         if not isinstance(value, dict):
             return False, f"{path}: expected object"
+        # Nested object properties when declared.
+        props = schema.get("properties") or {}
+        additional = schema.get("additionalProperties", True)
+        if additional is False and props:
+            unknown = [k for k in value if k not in props]
+            if unknown:
+                return False, f"{path}: unknown properties: {', '.join(sorted(unknown))}"
+        required = list(schema.get("required") or [])
+        for key in required:
+            if key not in value:
+                return False, f"{path}: missing required property: {key}"
+        for key, child in value.items():
+            if key not in props:
+                continue
+            ok, err = _validate_value(child, props[key], path=f"{path}.{key}")
+            if not ok:
+                return False, err
+    elif expected is None:
+        # Schema property with no type (any JSON) — accept.
+        return True, None
     return True, None

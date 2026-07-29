@@ -75,7 +75,8 @@ CLI (talos.__main__)
     │
     └── talos ai
             WorkflowEngine: sessions, pin, budgets, audit;
-            Tool Protocol (READ + role/module set-active);
+            offline heuristic suggest/approve/deny; app notes; PTT;
+            Tool Protocol (READ + notes + task_tree + role/module set-active);
             PolicyValidator → sealed ExecutionPlan → Executor
 ```
 
@@ -2137,9 +2138,11 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 49` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 51` (`talos.projects.db`). WAL mode and foreign keys are enabled.
 Intruder tables: `intruder_sessions`, `intruder_results` (v46; `finding_id` v48); `intruder_pools` (v47).
 AI Layer Phase A (v49): `ai_sessions`, `ai_audit_events`, `ai_project_prefs`.
+AI Layer Phase B (v50–v51): `ai_app_notes`, `ai_app_note_revisions`; immutable
+`ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes`.
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2150,7 +2153,7 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 
 | Table | Purpose |
 |-------|---------|
-| `schema_version` | Single version integer (49) |
+| `schema_version` | Single version integer (51) |
 | `flows` | Captured and replayed HTTP exchanges |
 | `endpoints` | Deduplicated method + **canonical origin** (`host` column) + normalized_path |
 | `parameters` | Endpoint Intelligence parameter inventory (v42: `cross_flow_*` flags) |
@@ -2260,6 +2263,8 @@ Notable milestones:
 | v43 | Error Intelligence: `error_clusters`, `error_observations`, `error_intel_config` |
 | v44–v48 | Repeater tabs; Intruder sessions/results/pools; findings promote lineage |
 | v49 | AI Layer Phase A: `ai_sessions`, `ai_audit_events`, `ai_project_prefs` |
+| v50 | AI Layer Phase B: `ai_app_notes`, `ai_app_note_revisions` |
+| v51 | AI Layer Phase B: `ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes` |
 
 ---
 
@@ -2427,7 +2432,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Input Validation flag consistency (CLI-019) — phase shortcuts use `--ignore-cache` (not `--force`) to re-run completed analyses; `--force` on phase cmds kept only as a deprecated alias for `--ignore-cache`; `--force` reserved for confirmation bypass elsewhere (e.g. `clear-cache`); `run` already used `--ignore-cache` only (`talos.input_validation.cli`).
 - [x] Session recovery commands (CLI-021) — operators recover stuck sessions and degraded health confidence without SQLite edits: `talos auth-config clear-session <role>` wires `clear_manual_session_config()` (prints `Session cleared.`); `talos auth-config reset-health <role>` wires `reset_suspicion()` (prints `Health suspicion reset.`); role name or UUID (`talos.projects.auth_config_cli`, `talos.projects.auth_provider`, `talos.projects.auth`).
 - [x] Layered configuration system (CLI-022) — single `EffectiveConfig` from defaults → global `config.yaml` → legacy project stores → `project.yaml` → CLI; `talos config show|effective|get|set|unset|edit|schema` and section resources (`proxy`/`capture`/`scheduler`/`attack`/`http`); HTTP Manipulation Engine for declarative `http.rules`; dual-write keeps legacy SQLite CLIs working; proxy addon and proxy/scheduler/attack helpers consume the manager (`talos.configuration`); Control Panel `/talos-config` + `/mutations` (HTTP Rules) + `/api/configuration` for effective values, sources, global/project scope.
-- [x] **AI Layer Phase A** — policy-gated agent foundation (`talos.ai`): Workflow Engine (session lifecycle, frozen project pin, one-active-per-project, BudgetCounters, audit); capability-based mode grants (`suggest-only` default / `step` GA / experimental `auto-*`); Talos Tool Protocol (`ToolSpec` / `ToolPolicy` / `ToolHandler`, registry list/get only — **no** `call()`); `PolicyValidator` → sealed `ExecutionPlan` + single-use capability token; `Executor` sole invoke path; READ inventory/intel/context tools + `role.set_active` / `module.set_active` (exists-only); schema v49 (`ai_sessions`, `ai_audit_events`, `ai_project_prefs`); CLI `talos ai start|stop|resume|reset-budget|status|mode|tools list|audit list`. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_a.py`. **Not yet:** planner suggest/approve loop, notes/KB, MCP, LLM, HTTP send/replay tools.
+- [x] **AI Layer Phase A** — policy-gated agent foundation (`talos.ai`): Workflow Engine (session lifecycle, frozen project pin, one-active-per-project, BudgetCounters, audit); capability-based mode grants (`suggest-only` default / `step` GA / experimental `auto-*`); Talos Tool Protocol (`ToolSpec` / `ToolPolicy` / `ToolHandler`, registry list/get only — **no** `call()`); `PolicyValidator` → sealed `ExecutionPlan` + single-use capability token; `Executor` sole invoke path; READ inventory/intel/context tools + `role.set_active` / `module.set_active` (exists-only); schema v49 (`ai_sessions`, `ai_audit_events`, `ai_project_prefs`); CLI `talos ai start|stop|resume|reset-budget|status|mode|tools list|audit list`. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_a.py`.
+- [x] **AI Layer Phase B** — offline agent loop: structured app notes (v50) with optimistic revision concurrency; immutable `ActionSuggestion` + `ExecutionPlan` + observations + PTT (v51); `HeuristicPlanner` (`provider=none`); CLI `suggest [--auto-reads]`, `approve`, `deny`, `pending`, `plans show`, `notes show|edit|export`; tools `notes.app.get|patch`, `task_tree.list|upsert`; suggest-only hard-rejects execute/approve. **No AI client-data redaction** (authorized BB/pentest product). Tests: `tests/test_ai_phase_b.py`. **Not yet:** MCP, LLM providers, HTTP send/replay, engine enqueue, KB/draft findings, Control Panel AI page.
 
 ---
 

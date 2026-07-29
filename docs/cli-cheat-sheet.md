@@ -355,7 +355,7 @@ talos [--project ID] [-h|--help]
 │  ├─ group create|add|remove|list
 │  └─ report <uuid> | --group <group>
 │
-└─ ai                        # policy-gated agent (Phase A foundation)
+└─ ai                        # policy-gated agent (Phase A+B offline loop)
    ├─ start [--goal TEXT] [--mode MODE] [--force-stop-existing] [--force]
    ├─ stop [SESSION]
    ├─ resume SESSION
@@ -363,6 +363,12 @@ talos [--project ID] [-h|--help]
    ├─ status [SESSION] [--format]
    ├─ mode set <mode> [--ack PHRASE] [--session ID] [--force]
    ├─ mode clear-aggressive-ack [--force]
+   ├─ suggest [--auto-reads] [-n N] [--session ID] [--format]
+   ├─ approve <plan_id|suggestion_id> [--session ID] [--format]
+   ├─ deny <plan_id|suggestion_id> [--reason] [--session ID] [--format]
+   ├─ pending [--session ID] [--format]
+   ├─ plans show <plan_id> [--session ID] [--format]
+   ├─ notes show|export|edit [--force] [--format]
    ├─ tools list [--format]
    └─ audit list [--session] [--limit N] [--format]
 ```
@@ -1898,17 +1904,19 @@ talos finding report --group "Critical Findings"
 
 ---
 
-## AI (policy-gated agent — Phase A)
+## AI (policy-gated agent — Phase A+B)
 
-Suggest-first control model. Sessions pin to the effective project. Default mode
-is `suggest-only` (planner may propose later; **execution disabled**). Use
-`mode set step` for human-approved tool execution. Registry has no public
-`call()` — execute only via sealed `ExecutionPlan` (tests / later `approve`).
+Suggest-first control model for **authorized bug bounty / client pentest**.
+Sessions pin to the effective project. Default mode is `suggest-only`
+(planner records suggestions; **approve/execute hard-disabled**). Use
+`mode set step` for human-approved tool execution. Offline heuristic planner
+(`provider=none`) — no cloud required. Registry has no public `call()` —
+execute only via sealed `ExecutionPlan` after validate/approve.
 
 ```bash
 # Start (one active session per project)
 talos ai start --goal "Recon inventory" --mode suggest-only
-talos ai start --goal "…" --mode step --force-stop-existing --force
+talos ai start --goal "Map endpoints" --mode step --force
 
 talos ai status
 talos ai status --format json
@@ -1917,6 +1925,19 @@ talos ai status --format json
 talos ai mode set step --force
 talos ai mode set auto-aggressive --ack "I_ACCEPT_AUTO_AGGRESSIVE=<project_id>" --force
 talos ai mode clear-aggressive-ack --force
+
+# Offline suggest → approve → observe loop
+talos ai suggest
+talos ai suggest --auto-reads -n 5          # step only: auto-run READ tools
+talos ai pending
+talos ai approve <plan_id>
+talos ai deny <plan_id|suggestion_id> --reason "not now"
+talos ai plans show <plan_id>
+
+# App notes (AI-only store; never writes endpoint_policy.notes)
+talos ai notes show
+talos ai notes export
+talos ai notes edit --force
 
 # Allowlisted tools (ToolSpec descriptors)
 talos ai tools list
@@ -1932,10 +1953,11 @@ talos ai audit list
 talos ai audit list --session <session_id> --format json
 ```
 
-**Phase A tools (selected):** `endpoint.list|show`, `flow.show|diff`,
+**Tools (selected):** `endpoint.list|show`, `flow.show|diff`,
 `param.intelligence`, `iv.candidates`, `finding.list|show`,
 `passive.detections.list`, `error_intel.list`, `access.coverage`,
-`scheduler.jobs.list|show`, `intruder.suggest`, `role.*`, `module.*`
+`scheduler.jobs.list|show`, `intruder.suggest`, `role.*`, `module.*`,
+`notes.app.get|patch`, `task_tree.list|upsert`
 (set-active requires existing name — never creates).
 
-**Later phases:** `suggest` / `approve` / notes / KB / MCP / LLM / `send.once`.
+**Later phases:** KB / draft findings / MCP / LLM / `send.once` / engine enqueue.

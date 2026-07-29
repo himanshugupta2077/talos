@@ -17,6 +17,7 @@ from talos.ai.models import BudgetClass, Capability
 from talos.ai.tools.handler import CallableHandler
 from talos.ai.tools.handlers import context as context_handlers
 from talos.ai.tools.handlers import inventory as inventory_handlers
+from talos.ai.tools.handlers import notes_kb as notes_kb_handlers
 from talos.ai.tools.policy_def import ToolPolicy
 from talos.ai.tools.registry import ToolRegistry
 from talos.ai.tools import schemas as S
@@ -41,10 +42,20 @@ def _context_write_policy() -> ToolPolicy:
     )
 
 
+def _write_policy(*caps: Capability) -> ToolPolicy:
+    return ToolPolicy(
+        capabilities=frozenset(caps),
+        requires_approval=True,
+        idempotent=True,
+        budget_class=BudgetClass.WRITE,
+    )
+
+
 def register_all_tools(registry: ToolRegistry) -> None:
     """
     Purpose:
-        Register Phase A tools (READ inventory/intel/context + set-active).
+        Register Phase A+B tools (READ inventory/intel/context + set-active
+        + notes + PTT).
     Input:
         registry — empty or partially filled ToolRegistry.
     Side effects:
@@ -284,4 +295,52 @@ def register_all_tools(registry: ToolRegistry) -> None:
         ),
         _context_write_policy(),
         CallableHandler(context_handlers.handle_module_set_active),
+    )
+
+    # ---- App notes (Phase B) ----
+    registry.register(
+        ToolSpec(
+            name="notes.app.get",
+            version=1,
+            description="Get structured AI app notes for the pinned project.",
+            input_schema=S.SCHEMA_NOTES_APP_GET,
+            tags=("notes", "read"),
+        ),
+        _read_policy(Capability.READ_NOTES),
+        CallableHandler(notes_kb_handlers.handle_notes_app_get),
+    )
+    registry.register(
+        ToolSpec(
+            name="notes.app.patch",
+            version=1,
+            description="Patch AI app notes via allowlisted JSON-patch paths.",
+            input_schema=S.SCHEMA_NOTES_APP_PATCH,
+            tags=("notes", "write"),
+        ),
+        _write_policy(Capability.MODIFY_NOTES),
+        CallableHandler(notes_kb_handlers.handle_notes_app_patch),
+    )
+
+    # ---- PTT (Phase B) ----
+    registry.register(
+        ToolSpec(
+            name="task_tree.list",
+            version=1,
+            description="List Pentesting Task Tree nodes for this AI session.",
+            input_schema=S.SCHEMA_TASK_TREE_LIST,
+            tags=("ptt", "read"),
+        ),
+        _read_policy(Capability.READ_NOTES),
+        CallableHandler(notes_kb_handlers.handle_task_tree_list),
+    )
+    registry.register(
+        ToolSpec(
+            name="task_tree.upsert",
+            version=1,
+            description="Create or update a PTT node for this AI session.",
+            input_schema=S.SCHEMA_TASK_TREE_UPSERT,
+            tags=("ptt", "write"),
+        ),
+        _write_policy(Capability.MODIFY_TASK_TREE),
+        CallableHandler(notes_kb_handlers.handle_task_tree_upsert),
     )

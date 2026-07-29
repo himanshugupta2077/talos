@@ -2,17 +2,20 @@
 Module: talos.ai
 
 Purpose:
-    Policy-gated AI agent layer for Talos. Phase A ships the Workflow Engine
-    foundation (sessions, project pin, budgets, audit), the Talos Tool Protocol
-    (ToolSpec / ToolPolicy / ToolHandler), PolicyValidator → sealed
-    ExecutionPlan, Executor, and READ + role/module context tools.
+    Policy-gated AI agent layer for Talos (authorized BB / client pentest).
 
-    Planner loop, notes store, MCP, LLM providers, and active HTTP tools
-    land in later phases (see docs/design-talos-ai-layer.md).
+    Phase A: Workflow Engine (sessions, pin, budgets, audit), TTP
+    (ToolSpec / ToolPolicy / ToolHandler), PolicyValidator → sealed
+    ExecutionPlan, Executor, READ + role/module context tools.
+
+    Phase B: structured app notes, immutable suggestions + ExecutionPlans,
+    PTT, observations, offline heuristic planner, suggest/approve/deny.
+
+    Later: MCP, LLM providers, HTTP send/replay, engines, KB (see design doc).
 
 Dependencies: talos.ai.models, talos.ai.workflow, talos.ai.tools
 Data flow:
-    CLI / tests → WorkflowEngine → PolicyValidator → Executor → ToolHandler
+    CLI / tests → WorkflowEngine → Planner / PolicyValidator → Executor
 Side effects: None at import time (tool bindings register on first registry use).
 """
 

@@ -5,7 +5,7 @@
 | **Title** | Talos AI Layer — Policy-Gated Agent with Custom Tool Framework, Guardrails, App Understanding Notes, and Self-Improving Knowledge Base |
 | **Author** | _(TBD)_ |
 | **Date** | 2026-07-29 |
-| **Status** | Draft (rev 5 — Workflow Engine, ToolSpec/Policy split, immutable suggestions, capabilities). **Phase A implemented** (2026-07-29): sessions/pin/budgets/audit + TTP + PolicyValidator/Executor + READ/context tools + schema v49. |
+| **Status** | Draft (rev 5b — Workflow Engine, ToolSpec/Policy split, immutable suggestions, capabilities; **AI client-data redaction out of scope** for authorized BB/pentest use). **Phase A implemented** (2026-07-29): sessions/pin/budgets/audit + TTP + PolicyValidator/Executor + READ/context tools + schema v49. **Phase B implemented** (2026-07-29): app notes v50 + immutable suggestions/plans/obs/PTT v51 + heuristic planner + suggest/approve/deny offline loop. |
 | **Audience** | Senior engineers familiar with `talos/` and `talos-control-panel/` |
 | **Related** | `docs/architecture.md`, `docs/about-talos.md` §21 (non-authoritative MPC vision), `talos/send` (`ai_send`), `talos/intruder/suggest.py` |
 
@@ -50,7 +50,7 @@ Policy + Executor     — capability check → ExecutionPlan → ToolHandler
 | Annotations | `logout` / `dangerous` on `endpoint_policy` via `talos/projects/annotations.py`. **Engine matrix:** logout blocks all modes; dangerous blocks `auto_replay` and scheduler jobs with `priority < PRIORITY_MANUAL` (100); send allows dangerous for manual/AI. |
 | Findings | Always enter `TRIAGING`; timeline actors are only `system` \| `analyst` (`TIMELINE_ACTOR_*`). Engines use `create_finding_from_verdict`. |
 | Scope | Basic Scope + outscope (`talos/proxy/scope.py`); `is_url_in_scope` / `evaluate_scope`; empty in-scope → nothing allowed. **Send/replay engines do not re-check Basic Scope** — AI policy must be the gate for active tools. |
-| Redaction prior art | `talos/passive/redaction.py` (secret fingerprint/mask for detectors); `talos/error_intel/redact.py` (error snippet KV/URL/PEM). **Neither is a general LLM egress pipeline** — inspiration only. |
+| Redaction prior art | `talos/passive/redaction.py` / `talos/error_intel/redact.py` exist for **detectors**, not AI. **AI layer does not implement client-data redaction** (product use: authorized public bug bounty / pentesting; operator owns target data handling). |
 | Control Panel | Writes **only** via `cli.run` / `run_scoped` subprocess. Localhost-trusted like the rest of the panel. |
 | Scheduler | Rate-limited single-threaded drain; `min_delay`/`max_delay`; annotation pre-checks (`talos/scheduler/scheduler.py`). |
 | Migrations | `migrate_project_db` version ladder + init DDL for fresh DBs (`SCHEMA_VERSION`); not merely ad-hoc `IF NOT EXISTS`. |
@@ -89,6 +89,7 @@ PentestGPT (task tree), ReAct-style loops with hard tool boundaries, Burp-style 
 - **Network-exposed MCP** (SSE/HTTP remote MCP) — first MCP PR is **stdio / localhost only**.
 - Fully autonomous pentest that confirms findings or ignores scope.
 - Freeform shell, `eval`, `subprocess` of model or preview strings.
+- **AI client-data / LLM-egress redaction** (`talos/ai/redaction.py`) — product is authorized public bug bounty / client pentest; operator owns target data handling.
 - Multi-project agents; multiple **active** AI sessions per project.
 - AI **create / delete / rename** of roles or modules (set-active only — see Key Decision 25).
 - Replacing BAC/IV/passive with LLM classification as primary path.
@@ -118,7 +119,6 @@ flowchart TB
     Heuristic[none / heuristic]
     Cloud[OpenAI / Anthropic]
     Local[Ollama / compat]
-    Redact[talos.ai.redaction]
   end
 
   subgraph WF["Workflow Engine — owns orchestration state"]
@@ -163,9 +163,8 @@ flowchart TB
   GlobKB --> Planner
   PTT --> Planner
   Reg -.->|ToolSpec descriptors only| Planner
-  Planner --> Redact
-  Redact --> Cloud
-  Redact --> Local
+  Planner --> Cloud
+  Planner --> Local
   Heuristic --> Planner
   Planner -->|immutable ActionSuggestion| SuggStore
   SuggStore --> Pol
@@ -205,7 +204,7 @@ talos/ai/
   cli.py                     # thin: calls WorkflowEngine methods
   models.py                  # ActionSuggestion, ExecutionPlan, Capability, BudgetCounters, …
   audit.py
-  redaction.py               # LLM/log egress only
+  # NO redaction.py — client-data redaction is out of scope for AI (public BB / pentest)
   workflow/                  # WORKFLOW ENGINE
     engine.py                # start/stop/suggest/approve/deny/status — orchestration façade
     session.py               # AgentSession, frozen ProjectContext, one-active-per-project
@@ -216,7 +215,7 @@ talos/ai/
   planner/                   # PLANNER LAYER (no session writes except via engine callbacks)
     base.py                  # Planner protocol: plan(PlanRequest) -> list[ActionSuggestion]
     heuristic.py             # provider=none
-    llm_planner.py           # wraps llm/* + redaction
+    llm_planner.py           # wraps llm/* (no mandatory redaction gate)
   policy.py                  # PolicyValidator → ExecutionPlan (sealed)
   executor.py                # sole ToolHandler invocation path
   notes/
@@ -396,7 +395,7 @@ class Planner(Protocol):
         ...
 ```
 
-Implementations: `HeuristicPlanner`, `LLMPlanner` (redaction + provider). WorkflowEngine calls `planner.plan` then `record_suggestions` — planners never touch `ai_execution_plans`.
+Implementations: `HeuristicPlanner`, `LLMPlanner` (provider wrappers). WorkflowEngine calls `planner.plan` then `record_suggestions` — planners never touch `ai_execution_plans`. **No AI client-data redaction pipeline** (operator use case: authorized public bug bounty / pentesting).
 
 ### Concurrency
 
@@ -452,7 +451,7 @@ Tool messages to the LLM:
     "tool": "flow.show",
     "summary": "...",
     "citations": {"flow_id": "..."},
-    "excerpt": "<redacted truncated>"
+    "excerpt": "<truncated body excerpt — not secret-redacted>"
   }
 }
 ```
@@ -944,7 +943,7 @@ Document shape (schema_version 1): tech_stack[], app_class, auth_model, interest
 
 **Planner packing:** only **sanitized** summary fields; optional `raw_ref` not sent to LLM.
 
-**Sanitization on write:** strip control chars; run `talos.ai.redaction.redact_text`; reject if after-redact empty and source was huge; store injection-flag if high-signal patterns (`ignore previous instructions`, `system:`, tool names like `project.delete`) — still store but mark `tainted=true` and exclude from planner pack unless operator clears.
+**Sanitization on write (structure only — no client-data secret redaction):** strip control chars; enforce size limits; store injection-flag if high-signal patterns (`ignore previous instructions`, `system:`, tool names like `project.delete`) — still store but mark `tainted=true` and exclude from planner pack unless operator clears. **Credential/body redaction is intentionally not implemented** (product use: authorized public bug bounty / client pentest; operator owns target data handling).
 
 ---
 
@@ -1021,29 +1020,19 @@ Same sanitization as notes; global promote rejects `tainted` candidates; no raw 
 `~/.talos/ai/config.yaml` + env `TALOS_AI_API_KEY`. Never registered as tools.  
 CLI: `talos ai config show|set|unset|edit`.
 
-### Dedicated redaction (`talos/ai/redaction.py`)
+### Client-data redaction — **out of scope**
 
-**Not** a drop-in of passive/error_intel. New module with explicit pipeline:
+**Decision (operator, 2026-07-29):** Talos AI does **not** implement a dedicated client-data / LLM-egress redaction module (`talos/ai/redaction.py` is not part of the product).
 
-| Layer | Rules |
-|-------|-------|
-| Headers | Redact values for names matching (case-insensitive): Authorization, Cookie, Set-Cookie, Proxy-Authorization, X-API-Key, X-Auth-Token, X-CSRF-Token (optional keep name) |
-| Auth schemes | `Bearer <token>`, `Basic <b64>` → placeholders |
-| Cookies | name preserved, value → `[REDACTED_COOKIE]` |
-| JWT-shaped | three base64url segments → `[REDACTED_JWT]` |
-| Body JSON | keys matching password/secret/token/api_key/private_key → redact values (inspired by error_intel KV patterns) |
-| Body text | PEM blocks, AWS AKIA… (inspired by error_intel); password= KV |
-| URLs | userinfo `user:pass@` redacted |
+**Rationale:** Talos is built for **authorized public bug bounty and client-approved penetration testing**. Target HTTP traffic, cookies, tokens, and bodies are in-scope engagement data under operator authorization. Forcing a redaction pipeline would fight the product use case and is not required for offline heuristic / lab flows.
 
-**Local vs cloud:**
+**What remains (non-redaction):**
 
-- `provider in {openai, anthropic, openai-compatible non-loopback}` → redaction **mandatory**; refuse complete() if redaction disabled.
-- `ollama` / `openai-compatible` with base_url host in `{127.0.0.1, localhost, ::1}` → redaction default **on**; `redaction: false` allowed with stderr banner.
-- `provider=none` → no egress; still redact audit excerpts by default.
+- Untrusted observation wrappers for planner context (injection hygiene, not secret masking).
+- Notes size limits, control-char strip, optional `tainted` flag for prompt-injection phrases.
+- Passive / error_intel modules may still mask findings for **their** detectors — that is unrelated to AI egress.
 
-### PR gate
-
-Any planner path that sends tool excerpts to a non-`none` provider **requires** redaction module available. Cloud without redaction hard-fails.
+**Phase C / PR6:** ship LLM providers + config only. **No** mandatory redaction gate for cloud/local providers.
 
 ---
 
@@ -1058,7 +1047,7 @@ Any planner path that sends tool excerpts to a non-`none` provider **requires** 
 | Live scope | `is_url_in_scope` every HTTP tool on effective URL |
 | Annotations | Matrix + re-check at execute |
 | Budgets | BudgetCounters atomic |
-| Untrusted I/O + sanitized memory | wrappers + notes/KB sanitize |
+| Untrusted I/O + structured memory | untrusted wrappers + notes/KB size/injection hygiene (no secret redaction) |
 | Findings | drafts only; promote is operator |
 | Config lockdown | no tools |
 | Audit | all transitions |
@@ -1093,7 +1082,7 @@ talos ai
   tools list
   mcp serve [--session SESSION]   # stdio MCP (after PR5); binds frozen project session
   audit list [--session]
-  session export <id>      # redacted JSON bundle for bug reports
+  session export <id>      # JSON bundle for bug reports (no secret-redaction pass)
 ```
 
 Exit codes: `talos/cli_output.py` conventions. CLI-015 confirmations for promote, reset-budget, auto-aggressive.
@@ -1189,7 +1178,7 @@ CREATE TABLE IF NOT EXISTS ai_audit_events (
     session_id   TEXT,                 -- nullable for project-level events
     project_id   TEXT NOT NULL,
     event_type   TEXT NOT NULL,
-    payload_json TEXT NOT NULL,  -- pre-redacted for sensitive fields
+    payload_json TEXT NOT NULL,  -- audit payload (no AI secret-redaction pipeline)
     created_at   TEXT NOT NULL
 );
 
@@ -1405,7 +1394,7 @@ Rejected; local/none first-class.
 | Scope freeze staleness | Critical | Live scope + fail-closed shrink |
 | Endpoint note wipe | Critical | No v1 tool on `set_notes` |
 | Shell/RCE via model | Critical | No subprocess; no preview exec |
-| Credential leak to cloud | High | Dedicated redaction; PR5 gate |
+| Credential leak to cloud LLM | Accepted residual risk for BB/pentest product | Operator chooses provider; **no** AI redaction module (Key Decision: redaction out of scope) |
 | Dual CP write path | Medium | cli.run only |
 | Dangerous enqueue bypass | High | PRIORITY_AI_AUTO + matrix |
 | DoW auto-aggressive | Medium | Low defaults; phrase ack; budgets |
@@ -1416,9 +1405,9 @@ Rejected; local/none first-class.
 
 ## Observability
 
-- `ai_audit_events` for all transitions (payloads redacted).
+- `ai_audit_events` for all transitions (payloads as recorded; no secret-redaction pass).
 - `usage_json` on session = v1 metrics.
-- `talos ai session export` redacted bundle (suggestions, obs summaries, audit, notes revision pointer).
+- `talos ai session export` bundle (suggestions, obs summaries, audit, notes revision pointer) — no secret-redaction pass.
 - `stop` does **not** cancel scheduler jobs; document in status output (`jobs_enqueued_still_running`).
 - `kb demote/delete` for bad global cards.
 
@@ -1429,7 +1418,7 @@ Rejected; local/none first-class.
 1. Soft enable package; default mode `suggest-only`; provider `none`.
 2. Dogfood READ + notes offline.
 3. After PR4 loop: ship **stdio MCP (PR5)** for external clients.
-4. **Active HTTP (PR7) only with provider=none OR redaction-enforced providers (PR6 hard gate).** Cloud LLM + HTTP excerpts without redaction is a release blocker.
+4. **Active HTTP (PR7)** may land with provider=none first; cloud LLM (PR6) has **no** redaction hard gate (redaction out of scope).
 5. Engine enqueue tools experimental.
 6. Global promote human-only.
 7. CP after CLI stable; writes via CLI.
@@ -1451,7 +1440,7 @@ Rejected; local/none first-class.
 | Prompt injection → allowlisted spam | High | Budgets, step default, scope |
 | Operator enables auto-aggressive casually | High | Phrase ack; install suggest-only |
 | Implementer uses set_notes | Critical | Tool removed; docs warn |
-| PR order skips redaction | High | PR6 hard dep for cloud (LLM redaction) before HTTP observations |
+| Cloud LLM receives full target excerpts | Accepted for BB/pentest product | Document residual risk; operator chooses provider; no AI redaction module |
 | Dual write CP | Medium | cli.run only |
 | Large PR7 bag | Medium | Split PR7a/7b |
 | Schema multi-bump churn | Low | Staged v49–52 documented |
@@ -1489,7 +1478,7 @@ Rejected; local/none first-class.
 | 6 | **Orchestrate engines; don’t replace** | Talos philosophy |
 | 7 | **Structured AI notes + contextual global KB + human promote** | Memory without textbook pollution |
 | 8 | **Install default `suggest-only`. In `step`, all tools (including READ) stay pending until `approve`; optional `suggest --auto-reads` bulk-executes READ only** | Single consistent rule; no silent READ auto in step |
-| 9 | **Dedicated talos/ai/redaction.py; mandatory for non-local LLM** | Prior-art modules insufficient |
+| 9 | **No talos/ai client-data redaction module (out of scope)** | Product is authorized public BB / client pentest; operator owns target data; redaction would fight the use case |
 | 10 | **Findings: ai_draft_findings + promote → create_finding(attack_type, verdict=AI_DRAFT_PROMOTED, endpoint_id, title); description→notes; never confirm** | Maps real API; default attack_type `ai_draft` in ATTACK_DISPLAY |
 | 11 | **CLI first; CP mutations only via cli.run** | Matches CP architecture |
 | 12 | **provider=none heuristic planner** | Offline labs |
@@ -1560,7 +1549,7 @@ MCP tools/call  → WorkflowEngine.record_external_suggestion(...)  # immutable 
 - `talos/findings/model.py` / `db.py` / `creator.py`
 - `talos/intruder/suggest.py`, `talos/input_validation/candidates.py`
 - `talos/projects/access.py` — `set_active_role` / `set_active_module` / `get_active_*`
-- `talos/passive/redaction.py`, `talos/error_intel/redact.py` (inspiration only)
+- `talos/passive/redaction.py`, `talos/error_intel/redact.py` (detector modules only — **not** reused for AI egress; AI redaction out of scope)
 - `talos-control-panel/backend/talos_ui/cli.py` (sole CP write path)
 - PentestGPT; OWASP AI Agent Security Cheat Sheet
 
@@ -1570,7 +1559,7 @@ MCP tools/call  → WorkflowEngine.record_external_suggestion(...)  # immutable 
 
 Canonical early slice: **PR1 → PR2 → PR3 → PR4** (never skip PR3 before PR4).  
 Then **PR5 — stdio MCP** (product priority for external clients).  
-Cloud LLM + tool excerpts requires **PR6 (redaction)** before any non-none provider use of HTTP observations (**PR7 hard-depends on PR6 for cloud; PR7 may land with provider=none only if gated**).
+Cloud LLM is **PR6 (providers only; no redaction gate)**. PR7 HTTP tools may land with provider=none first; cloud path does not require a redaction module (out of scope for BB/pentest product).
 
 ### PR1 — Workflow Engine skeleton: session, pin, budgets, audit
 
@@ -1607,19 +1596,19 @@ Cloud LLM + tool excerpts requires **PR6 (redaction)** before any non-none provi
 - **Deps:** **PR4** (needs working validate/execute loop + registry)
 - **Description:** Expose TTP to Cursor/Claude Desktop via **stdio only**. No network MCP. No handler shortcuts. Document operator must start with bound project/session.
 
-### PR6 — LLM providers + dedicated redaction (hard gate)
+### PR6 — LLM providers (no redaction module)
 
-- **Title:** `ai: providers + talos.ai.redaction mandatory for non-local egress`
-- **Files:** llm/*, redaction.py, config CLI; fixtures with Cookie/Authorization/JWT; refuse cloud if redaction off
+- **Title:** `ai: LLM providers + operator config (no client-data redaction)`
+- **Files:** llm/*, config CLI; provider=none / ollama / openai-compatible / anthropic adapters
 - **Deps:** PR4 (MCP PR5 independent parallel OK after PR4)
-- **Description:** Hard dependency for any cloud planner path.
+- **Description:** Swappable planners. **No** `talos/ai/redaction.py` and **no** refuse-cloud-without-redaction gate (Key Decision 9).
 
 ### PR7 — replay/send tools, live scope + annotation matrix
 
 - **Title:** `ai: send/replay tools with live scope and annotation matrix`
 - **Files:** handlers/replay_send.py; PRIORITY_AI_*; scope tests (shrink mid-session); logout/dangerous matrix; send.once edit caps; **provider=none or PR6 required if packing bodies to LLM**
-- **Deps:** PR4; **PR6 required before enabling non-none provider with these observations**
-- **Description:** First HTTP tools; document gate in rollout.
+- **Deps:** PR4; PR6 optional (cloud planner can land separately)
+- **Description:** First HTTP tools; no redaction hard gate.
 
 ### PR8a — IV + passive engine enqueue tools
 
@@ -1660,8 +1649,8 @@ Cloud LLM + tool excerpts requires **PR6 (redaction)** before any non-none provi
 
 ```text
 PR1 → PR2 → PR3 → PR4 → PR5 (stdio MCP)
-                     ↘ PR6 (LLM + redaction)
-                          ↘ PR7 (HTTP tools; cloud needs PR6)
+                     ↘ PR6 (LLM providers; no redaction)
+                          ↘ PR7 (HTTP tools)
                                → PR8a → PR8b
          PR2+PR3+PR4 → PR9
               PR4+PR7 → PR10
@@ -1725,7 +1714,7 @@ priority = PRIORITY_AI_MANUAL if human_approved_dangerous else PRIORITY_AI_AUTO 
 
 | Op | Behavior |
 |----|----------|
-| `session export` | JSON: session row, suggestions, observation summaries, audit (redacted), notes revision, usage |
+| `session export` | JSON: session row, suggestions, observation summaries, audit, notes revision, usage (no secret-redaction pass) |
 | `stop` | status=stopped; pending suggestions expire; **no** scheduler cancel |
 | Cancel AI jobs | operator uses existing `talos scheduler cancel` |
 | Bad global card | `kb demote` / `delete` |

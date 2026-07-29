@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 51
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1312,6 +1312,97 @@ CREATE INDEX IF NOT EXISTS idx_ai_audit_project_created
     ON ai_audit_events (project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_audit_session_created
     ON ai_audit_events (session_id, created_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- AI Layer (v50): structured app notes + revision history (Phase B)  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS ai_app_notes (
+    project_id     TEXT PRIMARY KEY,
+    revision       INTEGER NOT NULL DEFAULT 1,
+    doc_json       TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    updated_by     TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_app_note_revisions (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL,
+    revision       INTEGER NOT NULL,
+    doc_json       TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    updated_by     TEXT NOT NULL,
+    UNIQUE(project_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_app_note_revisions_project
+    ON ai_app_note_revisions (project_id, revision DESC);
+
+-- ------------------------------------------------------------------ --
+-- AI Layer (v51): immutable suggestions, plans, observations, PTT     --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+    id               TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    tool_name        TEXT NOT NULL,
+    arguments_json   TEXT NOT NULL,
+    rationale        TEXT,
+    cli_preview      TEXT,
+    display_risk     TEXT,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_session
+    ON ai_suggestions (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_execution_plans (
+    id                    TEXT PRIMARY KEY,
+    suggestion_id         TEXT NOT NULL,
+    session_id            TEXT NOT NULL,
+    tool_name             TEXT NOT NULL,
+    arguments_json        TEXT NOT NULL,
+    capabilities_json     TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    policy_meta_json      TEXT NOT NULL DEFAULT '{}',
+    capability_token_hash TEXT,
+    failure_reason        TEXT,
+    created_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    FOREIGN KEY (suggestion_id) REFERENCES ai_suggestions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_execution_plans_session
+    ON ai_execution_plans (session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_execution_plans_suggestion
+    ON ai_execution_plans (suggestion_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_observations (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    suggestion_id   TEXT NOT NULL,
+    plan_id         TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    result_summary  TEXT NOT NULL,
+    citations_json  TEXT NOT NULL,
+    raw_ref         TEXT,
+    untrusted       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_observations_session
+    ON ai_observations (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_task_nodes (
+    node_id              TEXT PRIMARY KEY,
+    session_id           TEXT NOT NULL,
+    project_id           TEXT NOT NULL,
+    parent_id            TEXT,
+    title                TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    hypothesis           TEXT,
+    evidence_refs_json   TEXT NOT NULL DEFAULT '{}',
+    suggested_tools_json TEXT NOT NULL DEFAULT '[]',
+    priority             INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_task_nodes_session
+    ON ai_task_nodes (session_id, priority DESC, updated_at DESC);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -1353,6 +1444,97 @@ CREATE INDEX IF NOT EXISTS idx_ai_audit_project_created
     ON ai_audit_events (project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_audit_session_created
     ON ai_audit_events (session_id, created_at DESC);
+"""
+
+# Shared CREATE statements for AI app notes (schema v50).
+_AI_SCHEMA_V50_DDL = """
+CREATE TABLE IF NOT EXISTS ai_app_notes (
+    project_id     TEXT PRIMARY KEY,
+    revision       INTEGER NOT NULL DEFAULT 1,
+    doc_json       TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    updated_by     TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_app_note_revisions (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL,
+    revision       INTEGER NOT NULL,
+    doc_json       TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    updated_by     TEXT NOT NULL,
+    UNIQUE(project_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_app_note_revisions_project
+    ON ai_app_note_revisions (project_id, revision DESC);
+"""
+
+# Shared CREATE statements for AI suggest/approve loop tables (schema v51).
+_AI_SCHEMA_V51_DDL = """
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+    id               TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    tool_name        TEXT NOT NULL,
+    arguments_json   TEXT NOT NULL,
+    rationale        TEXT,
+    cli_preview      TEXT,
+    display_risk     TEXT,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_session
+    ON ai_suggestions (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_execution_plans (
+    id                    TEXT PRIMARY KEY,
+    suggestion_id         TEXT NOT NULL,
+    session_id            TEXT NOT NULL,
+    tool_name             TEXT NOT NULL,
+    arguments_json        TEXT NOT NULL,
+    capabilities_json     TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    policy_meta_json      TEXT NOT NULL DEFAULT '{}',
+    capability_token_hash TEXT,
+    failure_reason        TEXT,
+    created_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    FOREIGN KEY (suggestion_id) REFERENCES ai_suggestions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_execution_plans_session
+    ON ai_execution_plans (session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_execution_plans_suggestion
+    ON ai_execution_plans (suggestion_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_observations (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    suggestion_id   TEXT NOT NULL,
+    plan_id         TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    result_summary  TEXT NOT NULL,
+    citations_json  TEXT NOT NULL,
+    raw_ref         TEXT,
+    untrusted       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_observations_session
+    ON ai_observations (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_task_nodes (
+    node_id              TEXT PRIMARY KEY,
+    session_id           TEXT NOT NULL,
+    project_id           TEXT NOT NULL,
+    parent_id            TEXT,
+    title                TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    hypothesis           TEXT,
+    evidence_refs_json   TEXT NOT NULL DEFAULT '{}',
+    suggested_tools_json TEXT NOT NULL DEFAULT '[]',
+    priority             INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_task_nodes_session
+    ON ai_task_nodes (session_id, priority DESC, updated_at DESC);
 """
 
 # Shared CREATE statements for cross-flow reflection tables (schema v42).
@@ -2239,6 +2421,9 @@ def migrate_project_db(db_path: Path) -> None:
         v46 → v47: intruder_pools — Intruder Phase 3 extracted value pools.
         v47 → v48: intruder_results.finding_id — Phase 5 optional findings promote.
         v48 → v49: AI Layer Phase A — ai_sessions, ai_audit_events, ai_project_prefs.
+        v49 → v50: AI Layer Phase B — ai_app_notes, ai_app_note_revisions.
+        v50 → v51: AI Layer Phase B — ai_suggestions, ai_execution_plans,
+                   ai_observations, ai_task_nodes.
     """
     if not db_path.exists():
         return
@@ -3559,6 +3744,18 @@ def migrate_project_db(db_path: Path) -> None:
             # AI Layer Phase A: sessions, audit events, project prefs.
             conn.executescript(_AI_SCHEMA_V49_DDL)
             conn.execute("UPDATE schema_version SET version = 49")
+            conn.commit()
+
+        if current < 50:
+            # AI Layer Phase B (PR3): structured app notes + revisions.
+            conn.executescript(_AI_SCHEMA_V50_DDL)
+            conn.execute("UPDATE schema_version SET version = 50")
+            conn.commit()
+
+        if current < 51:
+            # AI Layer Phase B (PR4): immutable suggestions, plans, obs, PTT.
+            conn.executescript(_AI_SCHEMA_V51_DDL)
+            conn.execute("UPDATE schema_version SET version = 51")
             conn.commit()
 
 
