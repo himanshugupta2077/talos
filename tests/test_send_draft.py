@@ -15,15 +15,21 @@ import pytest
 
 from talos.send.draft import (
     apply_body,
+    apply_cookie,
     apply_header,
+    apply_host,
+    apply_json_set,
     apply_method,
+    apply_path,
     apply_query_param,
     apply_raw_message,
     apply_structured_patches,
     apply_url,
     draft_from_flow,
     draft_to_raw_bytes,
+    remove_cookie,
     remove_header,
+    remove_query_param,
 )
 from talos.send.raw_http import parse_request, serialize_request
 
@@ -117,6 +123,75 @@ class TestStructuredPatches:
         } or "Content-Type" not in d["request_headers"]
         assert "page=2" in d["query"]
         assert d["request_body"] is None
+
+
+class TestPhase2StructuredHelpers:
+    def test_cookie_set_and_remove(self) -> None:
+        d = draft_from_flow(_parent_flow())
+        d = apply_cookie(d, "sid", "newval")
+        assert d["request_cookies"]["sid"] == "newval"
+        assert "sid=newval" in d["request_headers"]["Cookie"]
+        d = apply_cookie(d, "role", "admin")
+        assert "role=admin" in d["request_headers"]["Cookie"]
+        assert d["request_cookies"]["role"] == "admin"
+        d = remove_cookie(d, "sid")
+        assert "sid" not in d["request_cookies"]
+        assert "sid=" not in d["request_headers"].get("Cookie", "")
+        assert "role=admin" in d["request_headers"]["Cookie"]
+
+    def test_remove_query_path_host(self) -> None:
+        d = draft_from_flow(_parent_flow())
+        d = apply_query_param(d, "page", "2")
+        d = remove_query_param(d, "x")
+        assert "x=" not in d["query"]
+        assert "page=2" in d["query"]
+        d = apply_path(d, "/v2/orders")
+        assert d["path"] == "/v2/orders"
+        assert d["url"].startswith("https://api.example.com/v2/orders")
+        assert "page=2" in d["url"]
+        d = apply_host(d, "other.example.com")
+        assert d["host"] == "other.example.com"
+        assert "other.example.com" in d["url"]
+        assert d["request_headers"]["Host"] == "other.example.com"
+        d = apply_host(d, "nosync.test", sync_host_header=False)
+        assert d["host"] == "nosync.test"
+        # Host header left as previous value when no-sync
+        assert d["request_headers"]["Host"] == "other.example.com"
+
+    def test_json_set_ok_and_errors(self) -> None:
+        d = draft_from_flow(_parent_flow(request_body=b'{"qty":1,"name":"a"}'))
+        d = apply_json_set(d, "qty", "99")
+        parsed = json.loads(d["request_body"])
+        assert parsed["qty"] == "99"
+        assert parsed["name"] == "a"
+
+        d_bad = draft_from_flow(_parent_flow(request_body=b"not-json"))
+        with pytest.raises(ValueError, match="not valid JSON"):
+            apply_json_set(d_bad, "a", "1")
+
+        d_arr = draft_from_flow(_parent_flow(request_body=b"[1,2]"))
+        with pytest.raises(ValueError, match="not an object"):
+            apply_json_set(d_arr, "a", "1")
+
+        d_empty = draft_from_flow(_parent_flow(request_body=None))
+        with pytest.raises(ValueError, match="empty"):
+            apply_json_set(d_empty, "a", "1")
+
+    def test_batch_phase2_patches(self) -> None:
+        d = draft_from_flow(_parent_flow())
+        d = apply_structured_patches(
+            d,
+            path="/v9",
+            host="h.test",
+            cookies=[("token", "t1")],
+            remove_query=["x"],
+            json_sets=[("qty", "7")],
+        )
+        assert d["path"] == "/v9"
+        assert d["host"] == "h.test"
+        assert "token=t1" in d["request_headers"]["Cookie"]
+        assert "x=" not in (d.get("query") or "")
+        assert json.loads(d["request_body"])["qty"] == "7"
 
 
 class TestRawHttp:

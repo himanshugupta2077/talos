@@ -6,11 +6,12 @@ Purpose:
     Drafts are not DB rows — only send_once persists a new flow.
 
     Edit surfaces:
-        • Structured patches (AI-friendly): method, url, header, query, body
+        • Structured patches (AI-friendly): method, url, header, query, body,
+          cookie, path, host, json-set (Phase 2)
         • Raw HTTP file (human-friendly): full message replace via raw_http
 
-    Encoding duality (Phase 1):
-        • Structured query edits URL-encode values when setting params.
+    Encoding duality:
+        • Structured query/cookie helpers may encode for you.
         • Raw mode applies no encoding magic (what you typed is what you send,
           except Content-Length when the normalizer is on).
 
@@ -203,6 +204,177 @@ def apply_body(
     return draft
 
 
+def apply_cookie(draft: dict, name: str, value: str) -> dict:
+    """
+    Purpose:
+        Set/replace a cookie in both the Cookie header and request_cookies map.
+    Input:
+        name  — cookie name (exact match on Cookie header pairs).
+        value — cookie value (stored as-is; no quoting magic).
+    """
+    draft = dict(draft)
+    name = name.strip()
+    if not name:
+        raise ValueError("cookie name must be non-empty")
+    cookies = _merged_cookies(draft)
+    cookies[name] = value
+    draft["request_cookies"] = cookies
+    draft["request_headers"] = _set_header(
+        dict(draft.get("request_headers") or {}),
+        "Cookie",
+        _cookies_to_header(cookies),
+    )
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
+def remove_cookie(draft: dict, name: str) -> dict:
+    """Remove a cookie from Cookie header + request_cookies map."""
+    draft = dict(draft)
+    name = name.strip()
+    cookies = _merged_cookies(draft)
+    cookies.pop(name, None)
+    draft["request_cookies"] = cookies
+    headers = dict(draft.get("request_headers") or {})
+    if cookies:
+        draft["request_headers"] = _set_header(
+            headers, "Cookie", _cookies_to_header(cookies)
+        )
+    else:
+        draft["request_headers"] = {
+            k: v for k, v in headers.items() if k.lower() != "cookie"
+        }
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
+def remove_query_param(draft: dict, key: str) -> dict:
+    """Drop a query parameter by key (all occurrences of that key)."""
+    draft = dict(draft)
+    parsed = urlparse(draft["url"])
+    pairs = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != key]
+    new_query = urlencode(pairs, doseq=True)
+    new_url = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path or "/",
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        )
+    )
+    draft["url"] = new_url
+    draft["query"] = new_query
+    draft["path"] = parsed.path or "/"
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
+def apply_path(draft: dict, path: str) -> dict:
+    """
+    Purpose:
+        Override path only; keep scheme/host/query; rebuild absolute URL.
+    """
+    draft = dict(draft)
+    if not path.startswith("/"):
+        path = "/" + path
+    parsed = urlparse(draft["url"])
+    new_url = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    draft["url"] = new_url
+    draft["path"] = path
+    draft["query"] = parsed.query or ""
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
+def apply_host(
+    draft: dict,
+    host: str,
+    *,
+    sync_host_header: bool = True,
+) -> dict:
+    """
+    Purpose:
+        Override host in the absolute URL. By default also update Host header.
+    Input:
+        host             — hostname or host:port authority.
+        sync_host_header — when True (default), set Host header to match.
+    """
+    draft = dict(draft)
+    host = host.strip()
+    if not host:
+        raise ValueError("host must be non-empty")
+    parsed = urlparse(draft["url"])
+    new_url = urlunparse(
+        (
+            parsed.scheme,
+            host,
+            parsed.path or "/",
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    draft["url"] = new_url
+    # host column stores hostname only (no port) when possible — match raw_http.
+    hostname = host.split("@")[-1]
+    if hostname.startswith("["):
+        host_only = hostname
+    else:
+        host_only = hostname.rsplit(":", 1)[0] if ":" in hostname else hostname
+    draft["host"] = host_only
+    if sync_host_header:
+        draft["request_headers"] = _set_header(
+            dict(draft.get("request_headers") or {}),
+            "Host",
+            host,
+        )
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
+def apply_json_set(draft: dict, key: str, value: str) -> dict:
+    """
+    Purpose:
+        If body is a JSON object, set a top-level key to a string value.
+    Raises:
+        ValueError when body is missing, not valid JSON, or not a JSON object.
+    """
+    draft = dict(draft)
+    key = key.strip()
+    if not key:
+        raise ValueError("json-set key must be non-empty")
+    body = draft.get("request_body")
+    if body is None:
+        raise ValueError("request body is empty; cannot --json-set")
+    if isinstance(body, str):
+        body_bytes = body.encode("utf-8", errors="replace")
+    else:
+        body_bytes = bytes(body)
+    try:
+        parsed = json.loads(body_bytes.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"request body is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "request body JSON is not an object; --json-set requires a top-level object"
+        )
+    parsed[key] = value
+    draft["request_body"] = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
+    draft["edit_mode"] = draft.get("edit_mode") or "structured"
+    return draft
+
+
 def apply_raw_message(
     draft: dict,
     raw: bytes,
@@ -251,34 +423,62 @@ def apply_structured_patches(
     headers: Optional[list[tuple[str, str]]] = None,
     remove_headers: Optional[list[str]] = None,
     query_params: Optional[list[tuple[str, str]]] = None,
+    remove_query: Optional[list[str]] = None,
+    cookies: Optional[list[tuple[str, str]]] = None,
+    remove_cookies: Optional[list[str]] = None,
+    path: Optional[str] = None,
+    host: Optional[str] = None,
+    sync_host_header: bool = True,
+    json_sets: Optional[list[tuple[str, str]]] = None,
     body: Optional[bytes] = None,
     body_set: bool = False,
 ) -> dict:
     """
     Purpose:
         Apply a batch of structured patches in a stable order:
-        method → url → remove headers → set headers → query → body.
+        method → url → path → host → remove headers → set headers →
+        remove cookies → set cookies → remove query → set query →
+        body → json-set.
     Input:
         body_set — True when body was explicitly provided (including empty).
+        json_sets applied after body so they can refine an explicit body.
     Output:
         Updated draft.
+    Raises:
+        ValueError from apply_json_set / apply_host / apply_cookie on bad input.
     """
     d = draft
     if method is not None:
         d = apply_method(d, method)
     if url is not None:
         d = apply_url(d, url)
+    if path is not None:
+        d = apply_path(d, path)
+    if host is not None:
+        d = apply_host(d, host, sync_host_header=sync_host_header)
     if remove_headers:
         for name in remove_headers:
             d = remove_header(d, name)
     if headers:
         for name, value in headers:
             d = apply_header(d, name, value)
+    if remove_cookies:
+        for name in remove_cookies:
+            d = remove_cookie(d, name)
+    if cookies:
+        for name, value in cookies:
+            d = apply_cookie(d, name, value)
+    if remove_query:
+        for key in remove_query:
+            d = remove_query_param(d, key)
     if query_params:
         for key, value in query_params:
             d = apply_query_param(d, key, value)
     if body_set:
         d = apply_body(d, body)
+    if json_sets:
+        for key, value in json_sets:
+            d = apply_json_set(d, key, value)
     return d
 
 
@@ -317,3 +517,42 @@ def _set_header(headers: dict[str, str], name: str, value: str) -> dict[str, str
     if not replaced:
         out[name] = value
     return out
+
+
+def _header_value(headers: dict[str, str], name: str) -> Optional[str]:
+    lower = name.lower()
+    for k, v in headers.items():
+        if k.lower() == lower:
+            return v
+    return None
+
+
+def _parse_cookie_header(header: str) -> dict[str, str]:
+    """Parse Cookie header into name→value map (last wins on duplicates)."""
+    out: dict[str, str] = {}
+    if not header:
+        return out
+    for part in header.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+        else:
+            out[part] = ""
+    return out
+
+
+def _merged_cookies(draft: dict) -> dict[str, str]:
+    """Merge Cookie header + request_cookies (map wins on key clash)."""
+    header_cookies = _parse_cookie_header(
+        _header_value(draft.get("request_headers") or {}, "Cookie") or ""
+    )
+    map_cookies = dict(draft.get("request_cookies") or {})
+    return {**header_cookies, **map_cookies}
+
+
+def _cookies_to_header(cookies: dict[str, str]) -> str:
+    """Serialize cookies map to a Cookie header value."""
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())

@@ -2,7 +2,7 @@
 Module: talos.send.engine
 
 Purpose:
-    Repeater send-once execution (Mode 2 — mutable).
+    Repeater send execution (Mode 2 — mutable).
 
     Load parent flow → build draft → apply edits → normalize → send via
     the same HTTP stack as exact replay (httpx, 30s timeout, no redirects,
@@ -11,28 +11,35 @@ Purpose:
 
     Sources: manual_send | ai_send only. Never auto_replay / manual_replay.
 
+    Phase 2:
+        - flow_meta: session_id, note, profile, profile_index/count, verdict
+        - send_repeat / send_parallel wrappers around send_once
+        - redo_send: re-fire as-sent request without re-edits
+
 Design constraints:
     - Captured flows stay immutable.
     - Store request as actually prepared for send (headers after normalizers).
     - Failed network sends still insert a flow with replay_error.
     - Logout annotation blocks send; dangerous is allowed for manual/AI.
+    - Hard caps: repeat/parallel N ≤ 50; parallel concurrency ≤ 10.
 
-Dependencies: asyncio patterns via httpx, uuid, datetime, json
+Dependencies: asyncio, httpx, uuid, datetime, json
               talos.replay.db, talos.replay.diff, talos.projects.proxy_config,
               talos.projects.annotations, talos.send.*
 Data flow:
-    CLI → send_once(parent_id, patches…) → SendOutcome
+    CLI → send_once / send_multi / redo_send → SendOutcome(s)
 Side effects:
-    - Outbound HTTP request.
-    - One new flows row + optional replay_diffs row.
+    - Outbound HTTP request(s).
+    - One new flows row per attempt + optional replay_diffs row.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -54,6 +61,10 @@ _SEND_TIMEOUT = httpx.Timeout(30.0)
 
 VALID_SOURCES: frozenset[str] = frozenset({"manual_send", "ai_send"})
 
+# Phase 2 hard caps (documented in CLI help / cheat sheet).
+MAX_PROFILE_N = 50
+MAX_PARALLEL_CONCURRENCY = 10
+
 
 @dataclass
 class SendOutcome:
@@ -72,6 +83,11 @@ class SendOutcome:
         request_body_len  — bytes of body as sent.
         response_body_len — bytes of response body (0 when absent).
         source            — manual_send | ai_send.
+        session_id        — optional investigation branch id.
+        profile           — once | repeat | parallel.
+        profile_index     — 0-based index within a multi-send profile.
+        profile_count     — total attempts in the profile.
+        note              — optional operator note stored in flow_meta.
     """
 
     execution_flow_id: Optional[str]
@@ -84,6 +100,35 @@ class SendOutcome:
     request_body_len: int = 0
     response_body_len: int = 0
     source: str = "manual_send"
+    session_id: Optional[str] = None
+    profile: str = "once"
+    profile_index: int = 0
+    profile_count: int = 1
+    note: Optional[str] = None
+
+
+@dataclass
+class MultiSendOutcome:
+    """Aggregate result for --repeat / --parallel profiles."""
+
+    parent_flow_id: str
+    original_flow_id: str
+    profile: str
+    profile_count: int
+    session_id: Optional[str]
+    outcomes: list[SendOutcome] = field(default_factory=list)
+
+    @property
+    def execution_flow_ids(self) -> list[str]:
+        return [o.execution_flow_id for o in self.outcomes if o.execution_flow_id]
+
+    @property
+    def any_stored(self) -> bool:
+        return bool(self.execution_flow_ids)
+
+    @property
+    def all_success(self) -> bool:
+        return bool(self.outcomes) and all(o.success for o in self.outcomes)
 
 
 async def send_once(
@@ -93,15 +138,30 @@ async def send_once(
     *,
     source: str = "manual_send",
     reason: Optional[str] = None,
+    note: Optional[str] = None,
+    session_id: Optional[str] = None,
     update_content_length: bool = True,
     method: Optional[str] = None,
     url: Optional[str] = None,
     headers: Optional[list[tuple[str, str]]] = None,
     remove_headers: Optional[list[str]] = None,
     query_params: Optional[list[tuple[str, str]]] = None,
+    remove_query: Optional[list[str]] = None,
+    cookies: Optional[list[tuple[str, str]]] = None,
+    remove_cookies: Optional[list[str]] = None,
+    path: Optional[str] = None,
+    host: Optional[str] = None,
+    sync_host_header: bool = True,
+    json_sets: Optional[list[tuple[str, str]]] = None,
     body: Optional[bytes] = None,
     body_set: bool = False,
     raw_message: Optional[bytes] = None,
+    profile: str = "once",
+    profile_index: int = 0,
+    profile_count: int = 1,
+    # When True (redo path): draft from parent as-is; skip structured/raw patches
+    # and force update_content_length=False so as-sent bytes are re-fired.
+    exact_as_sent: bool = False,
 ) -> SendOutcome:
     """
     Purpose:
@@ -112,8 +172,12 @@ async def send_once(
         project_id     — stamped on the new flow.
         source         — manual_send | ai_send.
         reason         — optional label stored as replay_reason.
+        note           — optional note stored in flow_meta.note.
+        session_id     — optional branch id stored in flow_meta.session_id.
         update_content_length — default True (Burp-like CL fix).
         Structured / raw edit kwargs — see draft.apply_*.
+        profile / profile_index / profile_count — multi-send metadata.
+        exact_as_sent  — redo mode: no re-edit, no CL re-normalize.
     Output:
         SendOutcome.
     Side effects:
@@ -129,6 +193,11 @@ async def send_once(
             failure_reason=f"invalid_source:{source}",
             verdict=None,
             source=source,
+            session_id=session_id,
+            profile=profile,
+            profile_index=profile_index,
+            profile_count=profile_count,
+            note=note,
         )
 
     parent = send_db.get_flow_for_send(db_path, parent_flow_id)
@@ -142,6 +211,11 @@ async def send_once(
             failure_reason="flow_not_found",
             verdict=None,
             source=source,
+            session_id=session_id,
+            profile=profile,
+            profile_index=profile_index,
+            profile_count=profile_count,
+            note=note,
         )
 
     root_id = send_db.resolve_root_flow_id(parent)
@@ -160,15 +234,62 @@ async def send_once(
                 failure_reason="endpoint_annotated_logout",
                 verdict=None,
                 source=source,
+                session_id=session_id,
+                profile=profile,
+                profile_index=profile_index,
+                profile_count=profile_count,
+                note=note,
             )
 
     # Build draft and apply edits.
     draft = draft_mod.draft_from_flow(parent)
     edit_mode = "structured"
-    if raw_message is not None:
+    cl_enabled = update_content_length
+
+    if exact_as_sent:
+        # Re-fire stored request as-is (redo). Do not re-normalize CL.
+        edit_mode = "raw"
+        cl_enabled = False
+    else:
+        if raw_message is not None:
+            try:
+                draft = draft_mod.apply_raw_message(draft, raw_message)
+                edit_mode = "raw"
+            except ValueError as exc:
+                return SendOutcome(
+                    execution_flow_id=None,
+                    parent_flow_id=parent_flow_id,
+                    original_flow_id=root_id,
+                    status_code=None,
+                    success=False,
+                    failure_reason=f"raw_parse_error: {exc}",
+                    verdict=None,
+                    source=source,
+                    session_id=session_id,
+                    profile=profile,
+                    profile_index=profile_index,
+                    profile_count=profile_count,
+                    note=note,
+                )
+
         try:
-            draft = draft_mod.apply_raw_message(draft, raw_message)
-            edit_mode = "raw"
+            draft = draft_mod.apply_structured_patches(
+                draft,
+                method=method,
+                url=url,
+                headers=headers,
+                remove_headers=remove_headers,
+                query_params=query_params,
+                remove_query=remove_query,
+                cookies=cookies,
+                remove_cookies=remove_cookies,
+                path=path,
+                host=host,
+                sync_host_header=sync_host_header,
+                json_sets=json_sets,
+                body=body,
+                body_set=body_set,
+            )
         except ValueError as exc:
             return SendOutcome(
                 execution_flow_id=None,
@@ -176,31 +297,37 @@ async def send_once(
                 original_flow_id=root_id,
                 status_code=None,
                 success=False,
-                failure_reason=f"raw_parse_error: {exc}",
+                failure_reason=f"edit_error: {exc}",
                 verdict=None,
                 source=source,
+                session_id=session_id,
+                profile=profile,
+                profile_index=profile_index,
+                profile_count=profile_count,
+                note=note,
             )
 
-    draft = draft_mod.apply_structured_patches(
-        draft,
-        method=method,
-        url=url,
-        headers=headers,
-        remove_headers=remove_headers,
-        query_params=query_params,
-        body=body,
-        body_set=body_set,
-    )
-    if any(
-        x is not None
-        for x in (method, url, headers, remove_headers, query_params)
-    ) or body_set:
-        # Structured patches after raw still count as hybrid; prefer structured
-        # only when no raw was used, else keep raw if that was primary.
-        if raw_message is None:
-            edit_mode = "structured"
-        else:
-            edit_mode = "raw"
+        structured_used = any(
+            x is not None
+            for x in (
+                method,
+                url,
+                headers,
+                remove_headers,
+                query_params,
+                remove_query,
+                cookies,
+                remove_cookies,
+                path,
+                host,
+                json_sets,
+            )
+        ) or body_set
+        if structured_used:
+            if raw_message is None:
+                edit_mode = "structured"
+            else:
+                edit_mode = "hybrid"
 
     # Normalize Content-Length policy.
     headers_out = dict(draft.get("request_headers") or {})
@@ -208,27 +335,29 @@ async def send_once(
     normalizers = apply_content_length(
         headers_out,
         body_out,
-        enabled=update_content_length,
+        enabled=cl_enabled,
     )
 
-    # When CL update is off, send headers/body exactly as draft specifies.
-    # When on, headers_out already has correct CL (or no CL for empty body).
-    # For the on path we still strip CL from the wire request and let httpx
-    # set it only if we did not set it — we set it explicitly so stored
-    # headers match. Pass headers_out as-is either way.
     send_headers = dict(headers_out)
 
     execution_id = str(uuid.uuid4())
     send_time = datetime.now(timezone.utc).isoformat()
     req_len = len(body_out) if body_out else 0
 
-    flow_meta = {
+    flow_meta: dict = {
         "kind": "send",
         "parent_flow_id": parent_flow_id,
-        "update_content_length": bool(update_content_length),
+        "update_content_length": bool(cl_enabled),
         "edit_mode": edit_mode,
         "normalizers": list(normalizers),
+        "profile": profile,
+        "profile_index": int(profile_index),
+        "profile_count": int(profile_count),
     }
+    if session_id:
+        flow_meta["session_id"] = session_id
+    if note:
+        flow_meta["note"] = note
 
     stored: dict = {
         "id": execution_id,
@@ -300,12 +429,16 @@ async def send_once(
         failure_reason = f"unexpected_error: {exc}"
         stored["replay_error"] = "unexpected_error"
 
+    # Diff vs root capture when available, else vs parent — compute before
+    # insert so we can store verdict on flow_meta for history lists.
+    baseline = _load_diff_baseline(db_path, root_id, parent)
+    diff: DiffResult = compute_diff(baseline, stored)
+    flow_meta["verdict"] = diff.verdict
+    stored["flow_meta"] = flow_meta
+
     # Always persist — success or failure (same contract as exact replay).
     replay_db.insert_replayed_flow(db_path, stored)
 
-    # Diff vs root capture when available, else vs parent.
-    baseline = _load_diff_baseline(db_path, root_id, parent)
-    diff: DiffResult = compute_diff(baseline, stored)
     try:
         replay_db.insert_replay_diff(
             db_path,
@@ -336,7 +469,142 @@ async def send_once(
         request_body_len=req_len,
         response_body_len=resp_len,
         source=source,
+        session_id=session_id,
+        profile=profile,
+        profile_index=profile_index,
+        profile_count=profile_count,
+        note=note,
     )
+
+
+async def send_repeat(
+    parent_flow_id: str,
+    db_path: Path,
+    project_id: str,
+    n: int,
+    *,
+    delay_ms: int = 0,
+    **kwargs,
+) -> MultiSendOutcome:
+    """
+    Purpose:
+        Sequential N× send of the same draft (after edits). Hard cap N ≤ 50.
+    """
+    n = _validate_profile_n(n)
+    session_id = kwargs.get("session_id")
+    outcomes: list[SendOutcome] = []
+    root_id = parent_flow_id
+    for i in range(n):
+        outcome = await send_once(
+            parent_flow_id,
+            db_path,
+            project_id,
+            profile="repeat",
+            profile_index=i,
+            profile_count=n,
+            **kwargs,
+        )
+        outcomes.append(outcome)
+        if outcome.original_flow_id:
+            root_id = outcome.original_flow_id
+        if delay_ms > 0 and i < n - 1:
+            await asyncio.sleep(delay_ms / 1000.0)
+    return MultiSendOutcome(
+        parent_flow_id=parent_flow_id,
+        original_flow_id=root_id,
+        profile="repeat",
+        profile_count=n,
+        session_id=session_id,
+        outcomes=outcomes,
+    )
+
+
+async def send_parallel(
+    parent_flow_id: str,
+    db_path: Path,
+    project_id: str,
+    n: int,
+    *,
+    concurrency: Optional[int] = None,
+    **kwargs,
+) -> MultiSendOutcome:
+    """
+    Purpose:
+        Concurrent N× send of the same draft. Concurrency ≤ min(N, 10). Cap N ≤ 50.
+    """
+    n = _validate_profile_n(n)
+    conc = concurrency if concurrency is not None else min(n, MAX_PARALLEL_CONCURRENCY)
+    conc = max(1, min(conc, MAX_PARALLEL_CONCURRENCY, n))
+    session_id = kwargs.get("session_id")
+    sem = asyncio.Semaphore(conc)
+
+    async def _one(i: int) -> SendOutcome:
+        async with sem:
+            return await send_once(
+                parent_flow_id,
+                db_path,
+                project_id,
+                profile="parallel",
+                profile_index=i,
+                profile_count=n,
+                **kwargs,
+            )
+
+    outcomes = list(await asyncio.gather(*[_one(i) for i in range(n)]))
+    # Preserve index order (gather already does).
+    root_id = parent_flow_id
+    for o in outcomes:
+        if o.original_flow_id:
+            root_id = o.original_flow_id
+            break
+    return MultiSendOutcome(
+        parent_flow_id=parent_flow_id,
+        original_flow_id=root_id,
+        profile="parallel",
+        profile_count=n,
+        session_id=session_id,
+        outcomes=outcomes,
+    )
+
+
+async def redo_send(
+    execution_flow_id: str,
+    db_path: Path,
+    project_id: str,
+    *,
+    source: str = "manual_send",
+    reason: Optional[str] = None,
+    note: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> SendOutcome:
+    """
+    Purpose:
+        Re-send the exact as-sent request of a previous send (or any flow).
+        New child row; parent = that execution; no re-edits / no CL re-fix.
+    """
+    return await send_once(
+        execution_flow_id,
+        db_path,
+        project_id,
+        source=source,
+        reason=reason,
+        note=note,
+        session_id=session_id,
+        exact_as_sent=True,
+        profile="once",
+        profile_index=0,
+        profile_count=1,
+    )
+
+
+def _validate_profile_n(n: int) -> int:
+    if not isinstance(n, int) or n < 1:
+        raise ValueError(f"--repeat/--parallel N must be >= 1 (got {n!r})")
+    if n > MAX_PROFILE_N:
+        raise ValueError(
+            f"--repeat/--parallel N must be <= {MAX_PROFILE_N} (got {n})"
+        )
+    return n
 
 
 def _load_diff_baseline(

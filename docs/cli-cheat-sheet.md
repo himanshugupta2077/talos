@@ -1107,11 +1107,12 @@ Best qualifying flow selection uses recent `proxy_capture` flows in the **2xx** 
 
 ## Send (Repeater)
 
-Mutable edit → send once → review (Mode 2). **Never updates the captured
+Mutable edit → send → review (Mode 2). **Never updates the captured
 flow** — every send inserts a new row with `source=manual_send|ai_send`,
 `original_flow_id` = root capture, and `flow_meta.parent_flow_id` = fork
-parent. Uses the same HTTP stack / upstream proxy as replay. Phase 1 sends
-**immediately** (no scheduler). Fully non-interactive for AI agents.
+parent. Uses the same HTTP stack / upstream proxy as replay. Sends
+**immediately** (no scheduler). Fully non-interactive for AI agents
+(`--format json`, no TTY required).
 
 ```bash
 # Materialize an editable raw HTTP draft (no send, no DB write)
@@ -1119,40 +1120,74 @@ talos send from <flow_id>
 talos send from <flow_id> --raw-out /tmp/req.http
 talos send from <flow_id> --format json
 
+# Human editor path (optional --send after save)
+talos send edit <flow_id>
+talos send edit <flow_id> --editor vim --send --format json
+# AI / non-interactive: use from + once --raw-file (edit requires TTY or --editor)
+
 # Edit + send once (structured patches and/or raw file)
 talos send once <flow_id> --header 'X-Test: 1' --body '{"a":1}'
 talos send once <flow_id> --method PUT --url 'https://ex.test/v2' --query id=9
+talos send once <flow_id> --cookie 'sid=new' --remove-cookie old --remove-query debug
+talos send once <flow_id> --path /v2/item --host other.example.com
+talos send once <flow_id> --json-set qty=99 --note 'idor probe' --reason manual_probe
 talos send once <flow_id> --remove-header Cookie --body-file body.bin
 talos send once <flow_id> --raw-file /tmp/req.http
 talos send once <flow_id> --no-update-content-length   # edge / CL smuggling tests
 talos send once <flow_id> --source ai_send --reason ai_probe --format json
 
-# Inspect / history / diff
+# Multi-send profiles (same draft; N new flows; hard cap N ≤ 50)
+talos send once <flow_id> --repeat 10 --delay-ms 50 --format json
+talos send once <flow_id> --parallel 5 --format json   # concurrency ≤ 10
+
+# Branch / redo / label
+talos send dup <flow_id> --format json                 # prints new session_id (no HTTP)
+talos send once <flow_id> --session <session_id> --header 'X-A: 1'
+talos send redo <execution_flow_id> --format json      # re-fire as-sent request
+talos send note <execution_flow_id> --text 'interesting'  # send rows only
+
+# Inspect / history / export / diff
 talos send show <flow_id>
-talos send show <flow_id> --format json
+talos send show <flow_id> --body both --full --format json
+talos send export <flow_id> --out /tmp/send-export
 talos send history --from <baseline_or_root_flow_id>
+talos send history --from <id> --session <uuid> --parent <id> --source ai_send --limit 50
 talos send history --from <id> --format json
+talos send tree --from <baseline_or_root_flow_id>
 talos send diff <flow_a> <flow_b>
-talos send diff <root> <execution> --format json
+talos send diff <root> <execution> --side both --format json
+talos send diff <a> <b> --side request --format json
 ```
 
 | Flag / concept | Behaviour |
 |----------------|-----------|
 | Auto Content-Length | **ON by default** — strip stale CL, set length to body bytes (stored as-sent) |
 | `--no-update-content-length` | Send headers/body exactly as the draft specifies |
-| Structured vs raw | Structured may URL-encode query values; raw mode is minimal magic |
+| Structured vs raw | Structured may URL-encode query values / rebuild cookies; raw mode is minimal magic |
+| `--cookie` / `--remove-cookie` | Cookie header + `request_cookies` map |
+| `--path` / `--host` | Rebuild URL; Host header synced unless `--no-sync-host` |
+| `--json-set KEY=VALUE` | Top-level JSON object key (string value); clear error if body not a JSON object |
+| `--session UUID` | Branch id in `flow_meta.session_id`; filterable in history |
+| `--note` / `send note` | `flow_meta.note` at send time, or UPDATE meta on send sources only |
+| `--repeat N` / `--parallel N` | Sequential / concurrent multi-send; N ∈ 1..50; parallel concurrency ≤ 10 |
+| `--delay-ms M` | Delay between sequential `--repeat` only |
 | Logout annotation | Blocks send (same as replay) |
 | Dangerous annotation | Allowed for `manual_send` / `ai_send` (not auto) |
-| History | `WHERE original_flow_id = ? AND source IN (manual_send, ai_send)` |
+| History | `WHERE original_flow_id = ? AND source IN (manual_send, ai_send)` + session/parent/source filters |
+| Diff | Request + response (`--side request\|response\|both`); verdict SAME/DIFFERENT/ERROR |
+| Export | `request.http` + `response.http` (or `.bin`) under `--out DIR` |
+| DB growth | Each attempt = full flow row (bodies stored); multi-send multiplies rows |
 
 AI loop example:
 
 ```bash
 talos send from <capture> --raw-out req.http --format json
 # edit req.http …
-talos send once <capture> --raw-file req.http --source ai_send --format json
-talos send diff <capture> <execution_flow_id> --format json
+talos send once <capture> --raw-file req.http --source ai_send --note probe1 --format json
+talos send diff <capture> <execution_flow_id> --side both --format json
+talos send show <execution_flow_id> --body both --full --format json
 talos send history --from <capture> --format json
+talos send redo <execution_flow_id> --format json
 ```
 
 ---

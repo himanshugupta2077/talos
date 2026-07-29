@@ -82,13 +82,20 @@ def test_talos_helper_documents_layered_config() -> None:
 
 
 def test_talos_helper_documents_send_repeater() -> None:
-    """Root help must advertise Repeater Phase 1 (talos send) verbs."""
+    """Root help must advertise Repeater Phase 2 (talos send) verbs."""
     text = _root_help_text()
     assert re.search(r"^\s+send\s+", text, re.M)
     assert "from <flow_id>" in text or "from" in text
     assert "once" in text
     assert "history" in text
     assert "diff" in text
+    # Phase 2 surface
+    assert "redo" in text
+    assert "dup" in text
+    assert "export" in text
+    assert "note" in text
+    assert "edit" in text
+    assert "tree" in text
     # Distinct from exact replay.
     assert "replay" in text
     assert "Repeater" in text or "mutable" in text.lower()

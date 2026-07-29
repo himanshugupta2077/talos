@@ -1,5 +1,5 @@
 """
-Light CLI tests for talos send (from / once / history / diff / show).
+Light CLI tests for talos send (Phase 1 + Phase 2 verbs).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import pytest
 
 from talos.projects.db import init_project_db
 from talos.send.cli import run_send_cli
+from talos.send.raw_http import parse_request
 
 
 @pytest.fixture
@@ -64,6 +65,20 @@ def _insert_capture(db_path: Path) -> str:
         )
         conn.commit()
     return fid
+
+
+def _mock_httpx(status: int = 200, body: bytes = b"ok") -> MagicMock:
+    client_cls = MagicMock()
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+    resp = MagicMock()
+    resp.status_code = status
+    resp.content = body
+    resp.headers = {"content-type": "text/plain"}
+    client.request = AsyncMock(return_value=resp)
+    client_cls.return_value = client
+    return client_cls
 
 
 def test_send_from_writes_raw_file(manager: MagicMock, db_path: Path, tmp_path: Path) -> None:
@@ -164,6 +179,9 @@ def test_send_diff_json(manager: MagicMock, db_path: Path) -> None:
     diff = json.loads(buf_d.getvalue())
     assert diff["verdict"] == "DIFFERENT"
     assert diff["status_b"] == 500
+    assert "request" in diff
+    assert "response" in diff
+    assert diff["side"] == "both"
 
 
 def test_send_show(manager: MagicMock, db_path: Path) -> None:
@@ -174,3 +192,183 @@ def test_send_show(manager: MagicMock, db_path: Path) -> None:
     data = json.loads(buf.getvalue())
     assert data["id"] == fid
     assert data["method"] == "GET"
+
+
+def test_send_dup_and_session_history(manager: MagicMock, db_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_send_cli(manager, ["dup", fid, "--format", "json"])
+    dup = json.loads(buf.getvalue())
+    assert dup["session_id"]
+    assert dup["parent_flow_id"] == fid
+    assert dup["original_flow_id"] == fid
+
+    with patch("talos.send.engine.httpx.AsyncClient", _mock_httpx()):
+        # patch returns MagicMock instance but we need class - fix
+        pass
+
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"ok"
+        resp.headers = {"content-type": "text/plain"}
+        client.request = AsyncMock(return_value=resp)
+        client_cls.return_value = client
+
+        buf2 = io.StringIO()
+        with redirect_stdout(buf2):
+            run_send_cli(
+                manager,
+                [
+                    "once",
+                    fid,
+                    "--session",
+                    dup["session_id"],
+                    "--note",
+                    "forked",
+                    "--format",
+                    "json",
+                ],
+            )
+        once = json.loads(buf2.getvalue())
+        assert once["session_id"] == dup["session_id"]
+
+    buf_h = io.StringIO()
+    with redirect_stdout(buf_h):
+        run_send_cli(
+            manager,
+            [
+                "history",
+                "--from",
+                fid,
+                "--session",
+                dup["session_id"],
+                "--format",
+                "json",
+            ],
+        )
+    hist = json.loads(buf_h.getvalue())
+    assert hist["count"] == 1
+    assert hist["executions"][0]["session_id"] == dup["session_id"]
+    assert hist["executions"][0]["note"] == "forked"
+
+
+def test_send_export_cli(manager: MagicMock, db_path: Path, tmp_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    out = tmp_path / "exp"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_send_cli(
+            manager,
+            ["export", fid, "--out", str(out), "--format", "json"],
+        )
+    data = json.loads(buf.getvalue())
+    req = Path(data["request_path"])
+    assert req.is_file()
+    parsed = parse_request(req.read_bytes(), default_scheme="https")
+    assert parsed["method"] == "GET"
+    assert parsed["path"] == "/a"
+
+
+def test_send_repeat_cli(manager: MagicMock, db_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"ok"
+        resp.headers = {"content-type": "text/plain"}
+        client.request = AsyncMock(return_value=resp)
+        client_cls.return_value = client
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_send_cli(
+                manager,
+                ["once", fid, "--repeat", "3", "--format", "json"],
+            )
+        data = json.loads(buf.getvalue())
+    assert data["profile"] == "repeat"
+    assert data["profile_count"] == 3
+    assert len(data["execution_flow_ids"]) == 3
+
+
+def test_send_note_cli(manager: MagicMock, db_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"ok"
+        resp.headers = {"content-type": "text/plain"}
+        client.request = AsyncMock(return_value=resp)
+        client_cls.return_value = client
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_send_cli(manager, ["once", fid, "--format", "json"])
+        once = json.loads(buf.getvalue())
+
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        run_send_cli(
+            manager,
+            ["note", once["execution_flow_id"], "--text", "later", "--format", "json"],
+        )
+    note = json.loads(buf2.getvalue())
+    assert note["note"] == "later"
+    assert note["updated"] is True
+
+    # Reject note on capture
+    with pytest.raises(SystemExit):
+        run_send_cli(manager, ["note", fid, "--text", "nope", "--format", "json"])
+
+
+def test_send_show_full_body(manager: MagicMock, db_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_send_cli(
+            manager,
+            ["show", fid, "--body", "response", "--full", "--format", "json"],
+        )
+    data = json.loads(buf.getvalue())
+    assert data.get("response_body") == "hello"
+
+
+def test_send_redo_cli(manager: MagicMock, db_path: Path) -> None:
+    fid = _insert_capture(db_path)
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"ok"
+        resp.headers = {"content-type": "text/plain"}
+        client.request = AsyncMock(return_value=resp)
+        client_cls.return_value = client
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_send_cli(manager, ["once", fid, "--format", "json"])
+        once = json.loads(buf.getvalue())
+
+        buf2 = io.StringIO()
+        with redirect_stdout(buf2):
+            run_send_cli(
+                manager,
+                ["redo", once["execution_flow_id"], "--format", "json"],
+            )
+        redo = json.loads(buf2.getvalue())
+    assert redo["parent_flow_id"] == once["execution_flow_id"]
+    assert redo["original_flow_id"] == fid
+    assert redo["execution_flow_id"]

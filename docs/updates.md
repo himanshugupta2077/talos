@@ -2,6 +2,50 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Repeater Phase 2 — CLI completeness (`talos send`)
+
+### Problem
+
+Phase 1 proved Mode 2 exists (edit → send once → response diff). Operators and AI
+agents still needed a full Burp-Repeater-style CLI: branch/duplicate, multi-send
+with caps, full request/response inspect and export, request+response diffs, richer
+edit helpers (cookie/path/host/json-set), notes, redo, and history filters — without
+a control panel and without Intruder.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `send dup` | Logical branch marker: prints new `session_id` (no HTTP, no fake flow row) |
+| `session_id` / `note` / `profile*` | Extended `flow_meta` on each execution; verdict stored at send time |
+| Structured edits | `--cookie`, `--remove-cookie`, `--remove-query`, `--path`, `--host`, `--json-set` |
+| Profiles | `--repeat N` sequential, `--parallel N` concurrent; hard cap N ≤ 50; concurrency ≤ 10 |
+| `send redo` | Re-fire exact as-sent request; new child; no re-normalize CL |
+| `send edit` | `$EDITOR` / `--editor` path; optional `--send`; AI uses `from` + `--raw-file` |
+| `send export` | `request.http` + `response.http` under `--out DIR` |
+| `send show --body/--full` | Full bodies for review (large JSON warning in help) |
+| `send diff --side` | Dual-sided request + response diff (`talos.send.request_diff`) |
+| `send note` | UPDATE `flow_meta.note` on **send sources only** (never `proxy_capture`) |
+| History | `--session`, `--parent`, `--source`, `--limit`; columns include verdict/note/parent |
+| `send tree` | ASCII parent→child under a root |
+
+**Still out of scope:** control panel UI, Intruder (payloads/wordlists), schedule/continuous,
+token refresh, redirect following. Mode 1 `talos replay` unchanged.
+
+### Operator surface
+
+```bash
+talos send from|edit|once|redo|dup|show|export|history|tree|diff|note …
+talos send once <id> --cookie sid=x --path /v2 --json-set a=1 --session <uuid>
+talos send once <id> --repeat 10 --delay-ms 50
+talos send once <id> --parallel 5
+talos send diff <a> <b> --side both --format json
+```
+
+Slogan: **Phase 1 proved Mode 2 exists. Phase 2 makes CLI a real Repeater.**
+
+---
+
 ## Repeater Phase 1 (MVP) — `talos send`
 
 ### Problem
@@ -25,7 +69,7 @@ replay used by BAC / unauth / IV.
 | Baseline safety | `get_best_flow_for_endpoint` still filters `source = proxy_capture` only |
 
 **Out of scope (Phase 1):** control panel UI, send N×/parallel/sequence, Intruder,
-token refresh, redirect following.
+token refresh, redirect following. (Phase 2 adds multi-send + richer inspect.)
 
 ### Operator surface
 

@@ -2,19 +2,22 @@
 Module: talos.send.db
 
 Purpose:
-    Data access for Repeater (send) Phase 1.
+    Data access for Repeater (send) Phase 1–2.
     Thin wrappers over flows / replay helpers — no separate sessions table.
 
     History query:
         WHERE original_flow_id = ? AND source IN ('manual_send','ai_send')
-        ORDER BY captured_at
+        optional filters: session_id (flow_meta JSON), parent, source, limit
+
+    Note update (Phase 2 exception):
+        UPDATE flow_meta.note on send sources only — never on proxy_capture.
 
 Dependencies: sqlite3, json, pathlib, talos.projects.db, talos.replay.db
 Data flow:
     engine / CLI → functions here → project SQLite
 Side effects:
     - Reads: get_flow_for_send, resolve_root_flow_id, list_send_history, get_flow_show
-    - Writes: none (inserts go through talos.replay.db.insert_replayed_flow)
+    - Writes: update_send_note (send rows only); export writes files
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ from typing import Optional
 
 from talos.projects.db import migrate_project_db
 from talos.replay import db as replay_db
+from talos.send import draft as draft_mod
+from talos.send.raw_http import serialize_request
 
 SEND_SOURCES: frozenset[str] = frozenset({"manual_send", "ai_send"})
 
@@ -33,6 +38,12 @@ SEND_SOURCES: frozenset[str] = frozenset({"manual_send", "ai_send"})
 def _connect_ro(db_path: Path) -> sqlite3.Connection:
     uri = f"file:{db_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _connect_rw(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -116,14 +127,21 @@ def list_send_history(
     root_flow_id: str,
     *,
     limit: int = 100,
+    session_id: Optional[str] = None,
+    parent_flow_id: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> list[dict]:
     """
     Purpose:
         List send executions whose original_flow_id equals the resolved root.
+        Optional filters: session_id (flow_meta), parent_flow_id, source.
     Input:
         db_path       — project talos.db.
         root_flow_id  — baseline/root UUID (or any flow; resolved to root).
         limit         — max rows (default 100).
+        session_id    — filter flow_meta.session_id when set.
+        parent_flow_id — filter flow_meta.parent_flow_id when set.
+        source        — manual_send | ai_send when set.
     Output:
         List of dicts ordered by captured_at ASC (oldest first).
     Side effects: migrate; read-only.
@@ -139,8 +157,18 @@ def list_send_history(
     else:
         root = root_flow_id
 
-    sources = tuple(sorted(SEND_SOURCES))
+    if source is not None:
+        if source not in SEND_SOURCES:
+            return []
+        sources = (source,)
+    else:
+        sources = tuple(sorted(SEND_SOURCES))
     placeholders = ",".join("?" * len(sources))
+    # Over-fetch when JSON filters need post-filtering (SQLite JSON1 may be absent).
+    fetch_limit = max(1, limit)
+    if session_id or parent_flow_id:
+        fetch_limit = max(fetch_limit * 20, 500)
+
     with _connect_ro(db_path) as conn:
         rows = conn.execute(
             f"""
@@ -154,7 +182,7 @@ def list_send_history(
             ORDER BY captured_at ASC
             LIMIT ?
             """,
-            (root, *sources, max(1, limit)),
+            (root, *sources, fetch_limit),
         ).fetchall()
 
     results: list[dict] = []
@@ -169,9 +197,24 @@ def list_send_history(
             meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
         except (ValueError, TypeError):
             meta = {}
-        d["flow_meta"] = meta if isinstance(meta, dict) else {}
-        d["parent_flow_id"] = d["flow_meta"].get("parent_flow_id")
+        if not isinstance(meta, dict):
+            meta = {}
+        d["flow_meta"] = meta
+        d["parent_flow_id"] = meta.get("parent_flow_id")
+        d["session_id"] = meta.get("session_id")
+        d["note"] = meta.get("note")
+        d["verdict"] = meta.get("verdict")
+        d["profile"] = meta.get("profile")
+        d["profile_index"] = meta.get("profile_index")
+        d["profile_count"] = meta.get("profile_count")
+
+        if session_id is not None and d.get("session_id") != session_id:
+            continue
+        if parent_flow_id is not None and d.get("parent_flow_id") != parent_flow_id:
+            continue
         results.append(d)
+        if len(results) >= max(1, limit):
+            break
     return results
 
 
@@ -213,3 +256,222 @@ def get_flow_show(db_path: Path, flow_id: str) -> Optional[dict]:
     except (ValueError, TypeError):
         d["flow_meta"] = {}
     return d
+
+
+def update_send_note(
+    db_path: Path,
+    flow_id: str,
+    note: str,
+) -> tuple[bool, str]:
+    """
+    Purpose:
+        Update flow_meta.note on a send execution only (never proxy_capture).
+    Output:
+        (ok, error_message). error_message empty on success.
+    Side effects:
+        UPDATE flows.flow_meta for send sources only.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return False, "database not found"
+
+    with _connect_rw(db_path) as conn:
+        row = conn.execute(
+            "SELECT source, flow_meta FROM flows WHERE id = ?",
+            (flow_id,),
+        ).fetchone()
+        if row is None:
+            return False, f"Flow '{flow_id}' not found."
+        source = row["source"] or ""
+        if source not in SEND_SOURCES:
+            return False, (
+                f"Flow '{flow_id}' has source={source!r}; "
+                "note updates are only allowed on manual_send / ai_send rows."
+            )
+        try:
+            meta = json.loads(row["flow_meta"]) if row["flow_meta"] else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["note"] = note
+        conn.execute(
+            "UPDATE flows SET flow_meta = ? WHERE id = ?",
+            (json.dumps(meta), flow_id),
+        )
+        conn.commit()
+    return True, ""
+
+
+def export_flow_http(
+    db_path: Path,
+    flow_id: str,
+    out_dir: Path,
+) -> dict:
+    """
+    Purpose:
+        Write request.http (+ response.http or response.bin) under out_dir.
+    Output:
+        Dict with paths and sizes.
+    Raises:
+        FileNotFoundError if flow missing; OSError on write failure.
+    Side effects: creates out_dir; writes files.
+    """
+    flow = get_flow_for_send(db_path, flow_id)
+    if flow is None:
+        raise FileNotFoundError(f"Flow '{flow_id}' not found.")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = flow.get("request_headers")
+    if isinstance(headers, str):
+        try:
+            headers = json.loads(headers) if headers else {}
+        except (ValueError, TypeError):
+            headers = {}
+    if not isinstance(headers, dict):
+        headers = {}
+
+    body = flow.get("request_body")
+    if isinstance(body, str):
+        body = body.encode("utf-8", errors="replace")
+
+    req_bytes = serialize_request(
+        method=flow.get("method") or "GET",
+        url=flow.get("url") or "",
+        headers=dict(headers),
+        body=body if body else None,
+    )
+    req_path = out_dir / "request.http"
+    req_path.write_bytes(req_bytes)
+
+    resp_body = flow.get("response_body")
+    if isinstance(resp_body, str):
+        resp_body = resp_body.encode("utf-8", errors="replace")
+    resp_headers = flow.get("response_headers")
+    if isinstance(resp_headers, str):
+        try:
+            resp_headers = json.loads(resp_headers) if resp_headers else {}
+        except (ValueError, TypeError):
+            resp_headers = {}
+    if not isinstance(resp_headers, dict):
+        resp_headers = {}
+
+    status = flow.get("status_code")
+    status_line = f"HTTP/1.1 {status if status is not None else 0}\r\n"
+    resp_parts: list[bytes] = [status_line.encode("ascii", errors="replace")]
+    for name, value in resp_headers.items():
+        resp_parts.append(
+            f"{name}: {value}\r\n".encode("utf-8", errors="replace")
+        )
+    resp_parts.append(b"\r\n")
+    if resp_body:
+        resp_parts.append(bytes(resp_body))
+    resp_bytes = b"".join(resp_parts)
+
+    # Prefer .http when body looks like text; else .bin still with headers.
+    resp_path = out_dir / "response.http"
+    try:
+        if resp_body and b"\x00" in bytes(resp_body):
+            resp_path = out_dir / "response.bin"
+    except Exception:  # noqa: BLE001
+        pass
+    resp_path.write_bytes(resp_bytes)
+
+    return {
+        "flow_id": flow_id,
+        "out_dir": str(out_dir),
+        "request_path": str(req_path),
+        "response_path": str(resp_path),
+        "request_bytes": len(req_bytes),
+        "response_bytes": len(resp_bytes),
+        "status_code": status,
+        "method": flow.get("method"),
+        "url": flow.get("url"),
+    }
+
+
+def build_send_tree(
+    db_path: Path,
+    root_flow_id: str,
+    *,
+    limit: int = 200,
+) -> list[str]:
+    """
+    Purpose:
+        Build ASCII parent→child lines for send executions under a root.
+    Output:
+        List of display lines (empty when no executions).
+    """
+    rows = list_send_history(db_path, root_flow_id, limit=limit)
+    if not rows:
+        return []
+
+    parent = get_flow_for_send(db_path, root_flow_id)
+    root = resolve_root_flow_id(parent) if parent else root_flow_id
+
+    by_parent: dict[str, list[dict]] = {}
+    for r in rows:
+        p = r.get("parent_flow_id") or root
+        by_parent.setdefault(str(p), []).append(r)
+
+    lines: list[str] = [f"{root}  (root)"]
+
+    def _walk(node_id: str, prefix: str) -> None:
+        children = by_parent.get(node_id, [])
+        for i, child in enumerate(children):
+            last = i == len(children) - 1
+            branch = "└── " if last else "├── "
+            st = child.get("status_code")
+            st_s = str(st) if st is not None else "—"
+            verd = child.get("verdict") or "—"
+            note = child.get("note") or child.get("replay_reason") or ""
+            note_s = f"  {note}" if note else ""
+            lines.append(
+                f"{prefix}{branch}{child['id']}  "
+                f"[{st_s}/{verd}]{note_s}"
+            )
+            next_prefix = prefix + ("    " if last else "│   ")
+            _walk(child["id"], next_prefix)
+
+    _walk(root, "")
+    # Also walk from intermediate parents that were not under root id key
+    # (e.g. parent is a send id already walked via children).
+    return lines
+
+
+def materialize_draft_path(
+    db_path: Path,
+    flow_id: str,
+    raw_out: Optional[Path] = None,
+) -> tuple[dict, Path, bytes]:
+    """
+    Purpose:
+        Load flow, build draft, write raw HTTP file (shared by from / edit).
+    Output:
+        (draft, path, raw_bytes)
+    Raises:
+        FileNotFoundError when flow missing.
+    """
+    flow = get_flow_for_send(db_path, flow_id)
+    if flow is None:
+        raise FileNotFoundError(f"Flow '{flow_id}' not found.")
+    draft = draft_mod.draft_from_flow(flow)
+    raw = draft_mod.draft_to_raw_bytes(draft)
+    if raw_out is not None:
+        out_path = Path(raw_out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(raw)
+    else:
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(
+            prefix=f"talos-send-{flow_id[:8]}-",
+            suffix=".http",
+            delete=False,
+        )
+        tmp.write(raw)
+        tmp.close()
+        out_path = Path(tmp.name)
+    return draft, out_path, raw
