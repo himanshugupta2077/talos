@@ -355,7 +355,7 @@ talos [--project ID] [-h|--help]
 │  ├─ group create|add|remove|list
 │  └─ report <uuid> | --group <group>
 │
-└─ ai                        # policy-gated agent (Phase A+B offline loop)
+└─ ai                        # policy-gated agent (Phase A–C)
    ├─ start [--goal TEXT] [--mode MODE] [--force-stop-existing] [--force]
    ├─ stop [SESSION]
    ├─ resume SESSION
@@ -370,6 +370,8 @@ talos [--project ID] [-h|--help]
    ├─ plans show <plan_id> [--session ID] [--format]
    ├─ notes show|export|edit [--force] [--format]
    ├─ tools list [--format]
+   ├─ mcp serve [--session SESSION]          # stdio MCP only
+   ├─ config show|set|unset|edit             # LLM config (never a tool)
    └─ audit list [--session] [--limit N] [--format]
 ```
 
@@ -1904,14 +1906,15 @@ talos finding report --group "Critical Findings"
 
 ---
 
-## AI (policy-gated agent — Phase A+B)
+## AI (policy-gated agent — Phase A–C)
 
 Suggest-first control model for **authorized bug bounty / client pentest**.
 Sessions pin to the effective project. Default mode is `suggest-only`
 (planner records suggestions; **approve/execute hard-disabled**). Use
-`mode set step` for human-approved tool execution. Offline heuristic planner
-(`provider=none`) — no cloud required. Registry has no public `call()` —
-execute only via sealed `ExecutionPlan` after validate/approve.
+`mode set step` for human-approved tool execution. Default planner is
+offline heuristic (`provider=none`); configure an LLM via `talos ai config`.
+Registry has no public `call()` — execute only via sealed `ExecutionPlan`
+after validate/approve (CLI or MCP). **No AI client-data redaction module.**
 
 ```bash
 # Start (one active session per project)
@@ -1926,7 +1929,7 @@ talos ai mode set step --force
 talos ai mode set auto-aggressive --ack "I_ACCEPT_AUTO_AGGRESSIVE=<project_id>" --force
 talos ai mode clear-aggressive-ack --force
 
-# Offline suggest → approve → observe loop
+# Suggest → approve → observe (heuristic or configured LLM)
 talos ai suggest
 talos ai suggest --auto-reads -n 5          # step only: auto-run READ tools
 talos ai pending
@@ -1942,6 +1945,23 @@ talos ai notes edit --force
 # Allowlisted tools (ToolSpec descriptors)
 talos ai tools list
 talos ai tools list --format json
+
+# LLM operator config (~/.talos/ai/config.yaml — never registered as a tool)
+talos ai config show
+talos ai config set provider ollama
+talos ai config set model llama3.2
+talos ai config set provider openai-compatible
+talos ai config set model gpt-4o-mini
+# export TALOS_AI_API_KEY=…   # preferred over storing api_key in YAML
+talos ai config set provider anthropic
+talos ai config unset provider model
+talos ai config edit --force
+
+# stdio MCP (Cursor/Claude Desktop style clients; no network MCP)
+talos ai start --goal "External client" --mode step --force
+talos ai mcp serve
+talos ai mcp serve --session <session_id>
+# tools/call in step → needs_approval + plan_id → talos ai approve <plan_id>
 
 # Lifecycle
 talos ai stop
@@ -1960,4 +1980,4 @@ talos ai audit list --session <session_id> --format json
 `notes.app.get|patch`, `task_tree.list|upsert`
 (set-active requires existing name — never creates).
 
-**Later phases:** KB / draft findings / MCP / LLM / `send.once` / engine enqueue.
+**Later phases:** KB / draft findings / `send.once` / engine enqueue / Control Panel AI.

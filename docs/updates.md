@@ -2,6 +2,45 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## AI Layer Phase C — stdio MCP + LLM providers (no redaction)
+
+**Shipped:** 2026-07-29 (no schema bump; reuses v51 tables).
+
+External clients and cloud/local planners for authorized bug bounty / client
+pentest (`docs/design-talos-ai-layer.md` Phase C / PR5+PR6).
+
+| Surface | Detail |
+|---------|--------|
+| MCP | `talos ai mcp serve [--session]` — **stdio only** JSON-RPC; `tools/list` → ToolSpec descriptors; `tools/call` → `WorkflowEngine.external_tool_call` (immutable suggestion → PolicyValidator → needs_approval or Executor) |
+| Providers | `none` (default) / `ollama` / `openai-compatible` / `anthropic` via `talos/ai/llm/*` |
+| Planner | `LLMPlanner` when provider ≠ none; heuristic fallback on error/unreachable (`fallback_to_heuristic`) |
+| Config | `~/.talos/ai/config.yaml` + `TALOS_AI_API_KEY`; CLI `talos ai config show\|set\|unset\|edit` (**never** a tool) |
+| Budgets | `llm_tokens` incremented from provider usage (or chars/4 estimate) on each suggest |
+| Redaction | **Still not implemented** — no `talos/ai/redaction.py`; no refuse-cloud-without-redaction gate (Key Decision 9) |
+
+```bash
+# LLM config (operator only)
+talos ai config show
+talos ai config set provider ollama
+talos ai config set model llama3.2
+# Cloud example:
+# export TALOS_AI_API_KEY=…
+# talos ai config set provider openai-compatible
+# talos ai config set model gpt-4o-mini
+
+# MCP (requires active AI session + project)
+talos project open my-app
+talos ai start --goal "Map endpoints" --mode step --force
+talos ai mcp serve
+# Client: tools/list + tools/call → needs_approval + plan_id → talos ai approve <plan_id>
+```
+
+**Not in Phase C:** network MCP (SSE/HTTP), HTTP send/replay tools, engine enqueue, KB, Control Panel AI page.
+
+**Files:** `talos/ai/mcp/**`, `talos/ai/llm/**`, `talos/ai/planner/{llm_planner,factory}.py`, `talos/ai/workflow/engine.py` (`external_tool_call`), `talos/ai/cli.py`, `tests/test_ai_phase_c.py`, docs.
+
+---
+
 ## AI Layer Phase B — Notes + offline suggest/approve loop
 
 **Shipped:** 2026-07-29 (project schema **51**).
@@ -30,7 +69,7 @@ talos ai suggest --auto-reads
 talos ai stop
 ```
 
-**Not in Phase B:** MCP, LLM providers, HTTP send/replay, engine enqueue, KB, Control Panel AI page.
+**Not in Phase B (landed later / still later):** MCP + LLM (Phase C); HTTP send/replay, engine enqueue, KB, Control Panel AI page (D–E).
 
 **Files:** `talos/ai/notes/**`, `talos/ai/planner/**`, `talos/ai/workflow/{suggestions,plans,task_tree,observations,engine}.py`, `talos/ai/cli.py`, `talos/projects/db.py` (v50–v51), `tests/test_ai_phase_b.py`, docs.
 

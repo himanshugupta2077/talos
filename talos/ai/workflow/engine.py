@@ -2,14 +2,14 @@
 Module: talos.ai.workflow.engine
 
 Purpose:
-    WorkflowEngine façade — the only surface CLI (and later MCP/CP) should
-    call for AI session orchestration. Phase A+B: sessions, tools, notes,
-    heuristic suggest → immutable suggestions → ExecutionPlan approve/deny,
-    PTT, observations.
+    WorkflowEngine façade — the only surface CLI / MCP / CP should call for
+    AI session orchestration. Phase A–C: sessions, tools, notes, suggest →
+    immutable suggestions → ExecutionPlan approve/deny, PTT, observations,
+    external MCP tool path, LLM or heuristic planner.
 
 Dependencies: talos.ai.* , talos.projects.manager
 Data flow:
-    CLI → WorkflowEngine methods → session/audit/policy/executor/planner
+    CLI/MCP → WorkflowEngine methods → session/audit/policy/executor/planner
 Side effects:
     Session rows, audit events, budget updates, notes/plans/obs, handler effects.
 """
@@ -35,11 +35,12 @@ from talos.ai.models import (
     Observation,
     PolicyReject,
     SessionStatus,
+    display_risk_for_capabilities,
     parse_mode,
 )
 from talos.ai.notes import store as notes_store
 from talos.ai.planner.base import PlanRequest, Planner
-from talos.ai.planner.heuristic import HeuristicPlanner
+from talos.ai.planner.factory import build_planner
 from talos.ai.policy import PolicyValidator
 from talos.ai.tools.registry import ToolRegistry, default_registry
 from talos.ai.workflow import budgets as budget_mod
@@ -107,9 +108,17 @@ class WorkflowEngine:
 
     @property
     def planner(self) -> Planner:
+        """
+        Resolve planner from operator AI config (provider=none → heuristic).
+        Explicit constructor inject always wins (tests / MCP hosts).
+        """
         if self._planner is None:
-            self._planner = HeuristicPlanner(self.registry)
+            self._planner = build_planner(registry=self.registry)
         return self._planner
+
+    def set_planner(self, planner: Planner) -> None:
+        """Inject a planner (tests / custom hosts)."""
+        self._planner = planner
 
     def _require_project(self):
         project = self.manager.active()
@@ -742,7 +751,26 @@ class WorkflowEngine:
         request = self._build_plan_request(
             session, max_suggestions=max(1, min(int(max_suggestions or 5), 10))
         )
-        raw_suggestions = list(self.planner.plan(request) or [])
+        planner = self.planner
+        raw_suggestions = list(planner.plan(request) or [])
+
+        # Account LLM tokens when the planner reports usage (LLMPlanner).
+        llm_tokens_added = self._apply_planner_token_usage(session, planner)
+        if llm_tokens_added:
+            budget_mod.refresh_wall_clock(session.usage, session.created_at)
+            halt_tokens = budget_mod.first_exceeded(session.budgets, session.usage)
+            session_store.update_session_usage(
+                project.db_path,
+                project.id,
+                session.session_id,
+                session.usage,
+                status=SessionStatus.HALTED_BUDGET if halt_tokens else None,
+            )
+            if halt_tokens:
+                session = session_store.get_session(
+                    project.db_path, project.id, session.session_id
+                )
+
         # Ensure session_id + created_at on every suggestion.
         suggestions: list[ActionSuggestion] = []
         for s in raw_suggestions:
@@ -760,6 +788,9 @@ class WorkflowEngine:
             )
 
         suggestion_store.record_suggestions(project.db_path, suggestions)
+
+        planner_source = getattr(planner, "last_source", None)
+        planner_error = getattr(planner, "last_error", None)
 
         if suggestions:
             session.usage.steps += 1
@@ -786,6 +817,9 @@ class WorkflowEngine:
                 "tools": [s.tool_name for s in suggestions],
                 "auto_reads": auto_reads,
                 "mode": session.mode.value,
+                "planner_source": planner_source,
+                "planner_error": planner_error,
+                "llm_tokens_added": llm_tokens_added,
             },
             session_id=session.session_id,
         )
@@ -934,6 +968,229 @@ class WorkflowEngine:
             "suggestion_count": len(suggestions),
             "pending_plan_count": len(plans_out),
             "auto_executed_count": len(observations_out),
+            "planner_source": planner_source,
+            "planner_error": planner_error,
+            "llm_tokens_added": llm_tokens_added,
+        }
+
+    def _apply_planner_token_usage(
+        self, session: AgentSession, planner: Planner
+    ) -> int:
+        """
+        Increment session.usage.llm_tokens from planner.last_usage when present.
+        Returns tokens added (0 if none).
+        """
+        usage = getattr(planner, "last_usage", None)
+        if not isinstance(usage, dict) or not usage:
+            return 0
+        total = usage.get("total_tokens")
+        try:
+            tokens = int(total or 0)
+        except (TypeError, ValueError):
+            tokens = 0
+        if tokens <= 0:
+            return 0
+        session.usage.llm_tokens += tokens
+        return tokens
+
+    def external_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        reason: str = "external tools/call",
+    ) -> dict[str, Any]:
+        """
+        Purpose:
+            MCP / external client tool path. Always goes through:
+            record immutable ActionSuggestion → PolicyValidator → optional
+            Executor. Never bypasses approval for step mode tools that need it.
+
+        Output status values:
+            executed | needs_approval | rejected | error
+        """
+        project, session = self._require_active_session(session_id)
+
+        exceeded = budget_mod.first_exceeded(
+            session.budgets, session.usage, started_at_iso=session.created_at
+        )
+        if exceeded:
+            session_store.update_session_usage(
+                project.db_path,
+                project.id,
+                session.session_id,
+                session.usage,
+                status=SessionStatus.HALTED_BUDGET,
+            )
+            return {
+                "status": "rejected",
+                "code": "budget_exceeded",
+                "message": f"Budget exceeded ({exceeded}); session halted.",
+                "session_id": session.session_id,
+            }
+
+        tool_name = (tool_name or "").strip()
+        if not tool_name:
+            return {
+                "status": "error",
+                "code": "missing_tool_name",
+                "message": "tool_name is required",
+                "session_id": session.session_id,
+            }
+
+        display_risk = "read"
+        try:
+            policy = self.registry.get_policy(tool_name)
+            display_risk = display_risk_for_capabilities(policy.capabilities)
+        except KeyError:
+            pass
+
+        suggestion = ActionSuggestion(
+            suggestion_id=str(uuid.uuid4()),
+            session_id=session.session_id,
+            tool_name=tool_name,
+            arguments=dict(arguments or {}),
+            reason=reason,
+            cli_preview=f"# {tool_name} {arguments!r}"[:500],
+            created_at=_now_iso(),
+            display_risk=display_risk,
+        )
+        suggestion_store.record_suggestions(project.db_path, [suggestion])
+        audit.record_event(
+            project.db_path,
+            project.id,
+            "mcp.tool_call",
+            {
+                "suggestion_id": suggestion.suggestion_id,
+                "tool_name": tool_name,
+                "mode": session.mode.value,
+            },
+            session_id=session.session_id,
+        )
+
+        if session.mode == AutonomyMode.SUGGEST_ONLY:
+            return {
+                "status": "needs_approval",
+                "code": "suggest_only",
+                "message": (
+                    "Mode is suggest-only: suggestion recorded but not executable. "
+                    "Run 'talos ai mode set step' then approve after re-suggest, "
+                    "or use step mode for MCP execute path."
+                ),
+                "suggestion_id": suggestion.suggestion_id,
+                "tool_name": tool_name,
+                "arguments": suggestion.arguments,
+                "session_id": session.session_id,
+                "mode": session.mode.value,
+            }
+
+        result = self.validator.validate(
+            suggestion, session, live=True, auto_reads=False
+        )
+        if isinstance(result, PolicyReject):
+            plan_store.insert_rejected_plan(
+                project.db_path,
+                plan_id=str(uuid.uuid4()),
+                suggestion_id=suggestion.suggestion_id,
+                session_id=session.session_id,
+                tool_name=tool_name,
+                arguments=suggestion.arguments,
+                reason=f"{result.code}: {result.message}",
+            )
+            audit.record_event(
+                project.db_path,
+                project.id,
+                "policy.reject",
+                {
+                    "code": result.code,
+                    "message": result.message,
+                    "tool_name": tool_name,
+                    "suggestion_id": suggestion.suggestion_id,
+                    "source": "mcp",
+                },
+                session_id=session.session_id,
+            )
+            return {
+                "status": "rejected",
+                "code": result.code,
+                "message": result.message,
+                "suggestion_id": suggestion.suggestion_id,
+                "tool_name": tool_name,
+                "session_id": session.session_id,
+            }
+
+        # Prefer needs_approval over silent pending queues for step mode.
+        if result.requires_approval:
+            plan_store.insert_plan(
+                project.db_path,
+                result,
+                status=plan_store.PlanStatus.PENDING_APPROVAL.value,
+            )
+            audit.record_event(
+                project.db_path,
+                project.id,
+                "policy.plan",
+                {
+                    "plan_id": result.plan_id,
+                    "suggestion_id": result.suggestion_id,
+                    "tool_name": result.tool_name,
+                    "requires_approval": True,
+                    "source": "mcp",
+                },
+                session_id=session.session_id,
+            )
+            return {
+                "status": "needs_approval",
+                "code": "needs_approval",
+                "message": (
+                    f"Tool '{tool_name}' requires operator approval. "
+                    f"Run: talos ai approve {result.plan_id}"
+                ),
+                "suggestion_id": suggestion.suggestion_id,
+                "plan_id": result.plan_id,
+                "tool_name": tool_name,
+                "arguments": result.arguments,
+                "session_id": session.session_id,
+                "mode": session.mode.value,
+            }
+
+        # Auto-authorize path (experimental auto-* modes when caps allow).
+        plan_store.insert_plan(
+            project.db_path,
+            result,
+            status=plan_store.PlanStatus.AUTHORIZED.value,
+        )
+        try:
+            observation = self._execute_and_record(
+                project, session, result, force=True
+            )
+        except WorkflowEngineError as exc:
+            return {
+                "status": "error",
+                "code": "execute_failed",
+                "message": str(exc),
+                "suggestion_id": suggestion.suggestion_id,
+                "plan_id": result.plan_id,
+                "tool_name": tool_name,
+                "session_id": session.session_id,
+            }
+
+        return {
+            "status": "executed",
+            "suggestion_id": suggestion.suggestion_id,
+            "plan_id": result.plan_id,
+            "tool_name": tool_name,
+            "arguments": result.arguments,
+            "observation": {
+                "observation_id": observation.observation_id,
+                "success": observation.success,
+                "summary": observation.result_summary,
+                "citations": observation.citations,
+                "data": observation.data,
+            },
+            "session_id": session.session_id,
+            "mode": session.mode.value,
         }
 
     def approve(

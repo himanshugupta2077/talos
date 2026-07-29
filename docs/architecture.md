@@ -75,7 +75,8 @@ CLI (talos.__main__)
     │
     └── talos ai
             WorkflowEngine: sessions, pin, budgets, audit;
-            offline heuristic suggest/approve/deny; app notes; PTT;
+            heuristic or LLM suggest/approve/deny; app notes; PTT;
+            stdio MCP (tools/list + tools/call via engine);
             Tool Protocol (READ + notes + task_tree + role/module set-active);
             PolicyValidator → sealed ExecutionPlan → Executor
 ```
@@ -123,7 +124,10 @@ talos
 ├─ finding   list / show / confirm / reject / reopen / duplicate /
 │            note / group / report
 └─ ai        start / stop / resume / reset-budget / status /
-             mode set|clear-aggressive-ack / tools list / audit list
+             mode set|clear-aggressive-ack /
+             suggest / approve / deny / pending / plans show /
+             notes show|edit|export / tools list /
+             mcp serve / config show|set|unset|edit / audit list
 ```
 
 ---
@@ -2433,7 +2437,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Session recovery commands (CLI-021) — operators recover stuck sessions and degraded health confidence without SQLite edits: `talos auth-config clear-session <role>` wires `clear_manual_session_config()` (prints `Session cleared.`); `talos auth-config reset-health <role>` wires `reset_suspicion()` (prints `Health suspicion reset.`); role name or UUID (`talos.projects.auth_config_cli`, `talos.projects.auth_provider`, `talos.projects.auth`).
 - [x] Layered configuration system (CLI-022) — single `EffectiveConfig` from defaults → global `config.yaml` → legacy project stores → `project.yaml` → CLI; `talos config show|effective|get|set|unset|edit|schema` and section resources (`proxy`/`capture`/`scheduler`/`attack`/`http`); HTTP Manipulation Engine for declarative `http.rules`; dual-write keeps legacy SQLite CLIs working; proxy addon and proxy/scheduler/attack helpers consume the manager (`talos.configuration`); Control Panel `/talos-config` + `/mutations` (HTTP Rules) + `/api/configuration` for effective values, sources, global/project scope.
 - [x] **AI Layer Phase A** — policy-gated agent foundation (`talos.ai`): Workflow Engine (session lifecycle, frozen project pin, one-active-per-project, BudgetCounters, audit); capability-based mode grants (`suggest-only` default / `step` GA / experimental `auto-*`); Talos Tool Protocol (`ToolSpec` / `ToolPolicy` / `ToolHandler`, registry list/get only — **no** `call()`); `PolicyValidator` → sealed `ExecutionPlan` + single-use capability token; `Executor` sole invoke path; READ inventory/intel/context tools + `role.set_active` / `module.set_active` (exists-only); schema v49 (`ai_sessions`, `ai_audit_events`, `ai_project_prefs`); CLI `talos ai start|stop|resume|reset-budget|status|mode|tools list|audit list`. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_a.py`.
-- [x] **AI Layer Phase B** — offline agent loop: structured app notes (v50) with optimistic revision concurrency; immutable `ActionSuggestion` + `ExecutionPlan` + observations + PTT (v51); `HeuristicPlanner` (`provider=none`); CLI `suggest [--auto-reads]`, `approve`, `deny`, `pending`, `plans show`, `notes show|edit|export`; tools `notes.app.get|patch`, `task_tree.list|upsert`; suggest-only hard-rejects execute/approve. **No AI client-data redaction** (authorized BB/pentest product). Tests: `tests/test_ai_phase_b.py`. **Not yet:** MCP, LLM providers, HTTP send/replay, engine enqueue, KB/draft findings, Control Panel AI page.
+- [x] **AI Layer Phase B** — offline agent loop: structured app notes (v50) with optimistic revision concurrency; immutable `ActionSuggestion` + `ExecutionPlan` + observations + PTT (v51); `HeuristicPlanner` (`provider=none`); CLI `suggest [--auto-reads]`, `approve`, `deny`, `pending`, `plans show`, `notes show|edit|export`; tools `notes.app.get|patch`, `task_tree.list|upsert`; suggest-only hard-rejects execute/approve. **No AI client-data redaction** (authorized BB/pentest product). Tests: `tests/test_ai_phase_b.py`.
+- [x] **AI Layer Phase C** — stdio MCP (`talos ai mcp serve`) over WorkflowEngine → PolicyValidator → Executor; LLM providers `none` / `ollama` / `openai-compatible` / `anthropic` + `LLMPlanner` with heuristic fallback; operator config `~/.talos/ai/config.yaml` + `TALOS_AI_API_KEY` via `talos ai config show|set|unset|edit` (never a tool); `llm_tokens` budget accounting. **Still no** `talos/ai/redaction.py` (Key Decision 9). Tests: `tests/test_ai_phase_c.py`. **Not yet:** network MCP, HTTP send/replay, engine enqueue, KB/draft findings, Control Panel AI page.
 
 ---
 

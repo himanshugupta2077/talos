@@ -3,14 +3,14 @@ Module: talos.ai.cli
 
 Purpose:
     Thin CLI for the AI layer. All orchestration goes through WorkflowEngine.
-    Phase A+B: sessions, tools, audit, suggest/approve/deny/pending/plans,
-    notes show|edit|export.
+    Phase A–C: sessions, tools, audit, suggest/approve/deny/pending/plans,
+    notes, mcp serve (stdio), config show|set|unset|edit.
 
 Dependencies: argparse, talos.cli_output, talos.ai.workflow.engine
 Data flow:
-    argv → argparse → WorkflowEngine → stdout / stderr
+    argv → argparse → WorkflowEngine / config / MCP → stdout / stderr
 Side effects:
-    Session, plans, notes, audit DB writes; confirmation prompts as needed.
+    Session, plans, notes, audit DB writes; AI config YAML; confirmation prompts.
 """
 
 from __future__ import annotations
@@ -23,6 +23,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+from talos.ai.llm.config import (
+    AiConfigError,
+    ai_config_path,
+    apply_config_set,
+    load_ai_config,
+    save_ai_config,
+    unset_ai_config_keys,
+)
 from talos.ai.models import (
     DEFAULT_AUTONOMY_MODE,
     EXPERIMENTAL_MODES,
@@ -42,6 +50,7 @@ from talos.cli_output import (
     confirm_or_exit,
     wants_json,
 )
+from talos.config import TalosConfig
 from talos.projects.manager import ProjectManager
 
 
@@ -59,7 +68,7 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
         prog="talos ai",
         description=(
             "Talos AI layer — policy-gated agent (suggest-first). "
-            "Sessions, offline heuristic suggest/approve, notes, READ tools."
+            "Sessions, suggest/approve, notes, READ tools, stdio MCP, LLM config."
         ),
     )
     sub = parser.add_subparsers(dest="ai_cmd", metavar="<command>")
@@ -208,6 +217,40 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
     add_force_argument(p_notes_edit)
     add_format_argument(p_notes_edit)
 
+    # mcp (stdio only)
+    p_mcp = sub.add_parser("mcp", help="MCP adapter (stdio only; no network)")
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_cmd", metavar="<mcp-command>")
+    p_mcp_serve = mcp_sub.add_parser(
+        "serve",
+        help="Serve tools/list + tools/call over stdio via WorkflowEngine",
+    )
+    p_mcp_serve.add_argument(
+        "--session",
+        default=None,
+        dest="session_id",
+        help="Bind to this AI session (default: active session for project)",
+    )
+
+    # config (operator LLM settings — never a tool)
+    p_config = sub.add_parser(
+        "config",
+        help="Operator LLM config (~/.talos/ai/config.yaml; never a tool)",
+    )
+    config_sub = p_config.add_subparsers(dest="config_cmd", metavar="<config-command>")
+    p_cfg_show = config_sub.add_parser("show", help="Show AI LLM config")
+    add_format_argument(p_cfg_show)
+    p_cfg_set = config_sub.add_parser("set", help="Set a config key")
+    p_cfg_set.add_argument("key", help="provider|model|base_url|api_key_env|…")
+    p_cfg_set.add_argument("value", help="Value to set")
+    add_format_argument(p_cfg_set)
+    p_cfg_unset = config_sub.add_parser("unset", help="Reset key(s) to defaults")
+    p_cfg_unset.add_argument("keys", nargs="+", help="Keys to unset")
+    add_format_argument(p_cfg_unset)
+    p_cfg_edit = config_sub.add_parser(
+        "edit", help="Edit AI config YAML in $EDITOR"
+    )
+    add_force_argument(p_cfg_edit)
+
     if not argv or argv[0] in ("-h", "--help"):
         parser.print_help()
         return
@@ -244,6 +287,10 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
             _cmd_plans(engine, args)
         elif args.ai_cmd == "notes":
             _cmd_notes(engine, args)
+        elif args.ai_cmd == "mcp":
+            _cmd_mcp(engine, args)
+        elif args.ai_cmd == "config":
+            _cmd_config(args)
         else:
             parser.print_help()
             sys.exit(2)
@@ -253,6 +300,8 @@ def run_ai_cli(manager: ProjectManager, argv: list[str]) -> None:
         if exc.exit_code == 2:
             cli_usage_error(str(exc))
         cli_error(str(exc), exit_code=exc.exit_code)
+    except AiConfigError as exc:
+        cli_error(str(exc), exit_code=1)
 
 
 def _session_payload(session) -> dict:
@@ -660,3 +709,114 @@ def _cmd_notes(engine: WorkflowEngine, args: argparse.Namespace) -> None:
         return
 
     cli_usage_error("Usage: talos ai notes show|edit|export")
+
+
+def _cmd_mcp(engine: WorkflowEngine, args: argparse.Namespace) -> None:
+    if args.mcp_cmd != "serve":
+        cli_usage_error("Usage: talos ai mcp serve [--session SESSION]")
+
+    # Resolve session early so clients get a clear error before stdio loop.
+    session_id = getattr(args, "session_id", None)
+    try:
+        project, session = engine._require_active_session(session_id)  # noqa: SLF001
+    except WorkflowEngineError as exc:
+        if exc.exit_code == 3:
+            cli_precondition_error(str(exc))
+        if exc.exit_code == 2:
+            cli_usage_error(str(exc))
+        cli_error(str(exc), exit_code=exc.exit_code)
+        return
+
+    # Bind env pin for any child consistency (handlers use frozen db_path).
+    os.environ.setdefault("TALOS_PROJECT", project.id)
+
+    # MCP is stdio — no human banners on stdout (that would break JSON-RPC).
+    print(
+        f"talos ai mcp serve: session={session.session_id} "
+        f"project={session.pinned_project_id} mode={session.mode.value} "
+        f"(stdio JSON-RPC; Ctrl-D / EOF to stop)",
+        file=sys.stderr,
+    )
+
+    from talos.ai.mcp.server import run_stdio_server
+
+    rc = run_stdio_server(engine, session_id=session.session_id)
+    sys.exit(rc)
+
+
+def _cmd_config(args: argparse.Namespace) -> None:
+    data_dir = TalosConfig.from_env().data_dir
+    cmd = getattr(args, "config_cmd", None)
+
+    if cmd == "show":
+        cfg = load_ai_config(data_dir)
+        payload = cfg.to_public_dict()
+        payload["path"] = str(ai_config_path(data_dir))
+        if wants_json(args):
+            cli_json(payload)
+            return
+        print(f"Path:     {payload['path']}")
+        print(f"Provider: {payload['provider']}")
+        print(f"Model:    {payload['model'] or '(default for provider)'}")
+        print(f"Base URL: {payload['base_url'] or '(provider default)'}")
+        print(
+            f"API key:  "
+            f"{'configured' if payload['api_key_configured'] else 'not set'}"
+        )
+        print(f"API env:  {payload['api_key_env']}")
+        print(f"Temp:     {payload['temperature']}")
+        print(f"Max tok:  {payload['max_tokens']}")
+        print(f"Timeout:  {payload['timeout_s']}s")
+        print(f"Fallback: {payload['fallback_to_heuristic']}")
+        print()
+        cli_info(
+            "No AI client-data redaction module (authorized BB/pentest product). "
+            "Operator owns target data sent to cloud providers."
+        )
+        return
+
+    if cmd == "set":
+        cfg = load_ai_config(data_dir)
+        updated = apply_config_set(cfg, args.key, args.value)
+        path = save_ai_config(updated, data_dir)
+        payload = updated.to_public_dict()
+        payload["path"] = str(path)
+        if wants_json(args):
+            cli_json(payload)
+            return
+        cli_success(f"Set {args.key} (provider={payload['provider']})")
+        print(f"Path: {path}")
+        return
+
+    if cmd == "unset":
+        cfg = load_ai_config(data_dir)
+        updated = unset_ai_config_keys(cfg, list(args.keys))
+        path = save_ai_config(updated, data_dir)
+        payload = updated.to_public_dict()
+        payload["path"] = str(path)
+        if wants_json(args):
+            cli_json(payload)
+            return
+        cli_success(f"Unset: {', '.join(args.keys)}")
+        print(f"Path: {path}")
+        return
+
+    if cmd == "edit":
+        path = ai_config_path(data_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            save_ai_config(load_ai_config(data_dir), data_dir)
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+        rc = subprocess.call([editor, str(path)])
+        if rc != 0:
+            cli_error(f"Editor exited with code {rc}", exit_code=1)
+        try:
+            cfg = load_ai_config(data_dir)
+        except AiConfigError as exc:
+            cli_error(str(exc), exit_code=1)
+            return
+        cli_success(f"AI config updated ({cfg.normalized_provider()})")
+        print(f"Path: {path}")
+        return
+
+    cli_usage_error("Usage: talos ai config show|set|unset|edit")

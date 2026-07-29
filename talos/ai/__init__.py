@@ -11,11 +11,15 @@ Purpose:
     Phase B: structured app notes, immutable suggestions + ExecutionPlans,
     PTT, observations, offline heuristic planner, suggest/approve/deny.
 
-    Later: MCP, LLM providers, HTTP send/replay, engines, KB (see design doc).
+    Phase C: stdio MCP server + LLM providers (none/ollama/openai-compatible/
+    anthropic) + operator config. No client-data redaction module
+    (Key Decision 9 — authorized BB/pentest product).
+
+    Later: HTTP send/replay, engines, KB, Control Panel (see design doc).
 
 Dependencies: talos.ai.models, talos.ai.workflow, talos.ai.tools
 Data flow:
-    CLI / tests → WorkflowEngine → Planner / PolicyValidator → Executor
+    CLI / MCP / tests → WorkflowEngine → Planner / PolicyValidator → Executor
 Side effects: None at import time (tool bindings register on first registry use).
 """
 
