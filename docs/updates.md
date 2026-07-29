@@ -2,6 +2,38 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## AI Layer Phase A — Workflow Engine + Tool Protocol + READ tools
+
+**Shipped:** 2026-07-29 (project schema **49**).
+
+Foundation for the policy-gated agent (`docs/design-talos-ai-layer.md` Phase A / PR1+PR2).
+
+| Surface | Detail |
+|---------|--------|
+| Schema | `ai_sessions`, `ai_audit_events`, `ai_project_prefs` (v49) |
+| Workflow Engine | start/stop/resume/reset-budget/status; frozen project pin; one active session per project |
+| Budgets | BudgetCounters defaults (steps, tool_calls, HTTP, jobs, intruder, LLM tokens, wall clock) |
+| Capabilities | Mode → grant map; `suggest-only` grants ∅ for execute; `step` GA full AI caps |
+| TTP | `ToolSpec` / `ToolPolicy` / `ToolHandler`; registry list/get only (**no** `call()`) |
+| Policy + Executor | `PolicyValidator` mints sealed `ExecutionPlan` + single-use token; `Executor` sole invoke path |
+| Tools | READ inventory/intel/context + `role.set_active` / `module.set_active` (exists-only) |
+| CLI | `talos ai start\|stop\|resume\|reset-budget\|status\|mode\|tools list\|audit list` |
+
+```bash
+talos project open my-app
+talos ai start --goal "Map endpoints and roles" --mode suggest-only
+talos ai status --format json
+talos ai mode set step --force
+talos ai tools list
+talos ai stop
+```
+
+**Not in Phase A:** planner suggest/approve loop, app notes, MCP, LLM providers, HTTP send/replay, engine enqueue.
+
+**Files:** `talos/ai/**`, `talos/projects/db.py` (v49), `talos/__main__.py`, `tests/test_ai_phase_a.py`, docs.
+
+---
+
 ## Intruder Phase 5 — hardening, optional findings promote, docs sweep
 
 **Shipped:** 2026-07-29 (project schema **48**; config schema still **1**).

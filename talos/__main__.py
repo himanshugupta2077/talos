@@ -53,6 +53,7 @@ from talos.findings.cli import run_finding_cli
 from talos.passive.cli import run_passive_cli
 from talos.error_intel.cli import run_error_intel_cli
 from talos.configuration.cli import run_config_cli
+from talos.ai.cli import run_ai_cli
 
 # Structured logging to stderr; keeps stdout clean for parseable output.
 logging.basicConfig(
@@ -192,6 +193,8 @@ def main(argv: list[str] | None = None) -> None:
         run_passive_cli(manager, rest)
     elif subcommand in ("error-intel", "error_intel", "errors"):
         run_error_intel_cli(manager, rest)
+    elif subcommand == "ai":
+        run_ai_cli(manager, rest)
     else:
         cli_error(f"Unknown command: '{subcommand}'.", exit_code=None)
         _print_usage()
@@ -511,7 +514,21 @@ def _print_usage() -> None:
         "    observations list          Sightings (flow/param/attack filters)\n"
         "    rescan --all|--flow [--force]\n"
         "                               Re-run pipeline on stored bodies\n"
-        "    rollup parameter|endpoint  Parameter / endpoint error rollups\n"
+        "    rollup parameter|endpoint  Parameter / endpoint error rollups\n\n"
+        "  ai   (policy-gated agent — Phase A foundation)\n"
+        "    start           Start AI session pinned to project\n"
+        "                    [--goal TEXT] [--mode suggest-only|step|…]\n"
+        "                    [--force-stop-existing]\n"
+        "    stop [SESSION]  Stop active (or named) session\n"
+        "    resume SESSION  Resume stopped session (same pin; budgets kept)\n"
+        "    reset-budget    Zero usage counters [--force]\n"
+        "    status          Session, mode, budgets, capability grants\n"
+        "                    [--format table|json]\n"
+        "    mode set <mode> Autonomy mode (suggest-only default; step GA)\n"
+        "                    auto-* experimental; auto-aggressive needs --ack\n"
+        "    mode clear-aggressive-ack  Revoke project auto-aggressive ack\n"
+        "    tools list      Allowlisted ToolSpec inventory (no execute path)\n"
+        "    audit list      AI audit events [--session] [--format json]\n"
     )
 
 

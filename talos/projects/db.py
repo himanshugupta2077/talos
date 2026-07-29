@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1272,6 +1272,87 @@ CREATE TABLE IF NOT EXISTS intruder_pools (
 );
 CREATE INDEX IF NOT EXISTS idx_intruder_pools_project
     ON intruder_pools (project_id, updated_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- AI Layer (v49): sessions, audit, project prefs (Phase A foundation) --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS ai_sessions (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    goal                TEXT NOT NULL,
+    mode                TEXT NOT NULL,
+    status              TEXT NOT NULL,  -- active|stopped|halted_budget|completed
+    pinned_project_id   TEXT NOT NULL,
+    data_dir            TEXT NOT NULL,
+    scope_snapshot_json TEXT,           -- audit only; live scope still checked per HTTP tool
+    budgets_json        TEXT NOT NULL,
+    usage_json          TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_project_status
+    ON ai_sessions (project_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_project_prefs (
+    project_id              TEXT PRIMARY KEY,
+    auto_aggressive_ack_at  TEXT,
+    auto_aggressive_ack_by  TEXT,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_audit_events (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT,                 -- nullable for project-level events
+    project_id   TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    payload_json TEXT NOT NULL,        -- pre-redacted for sensitive fields
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_audit_project_created
+    ON ai_audit_events (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_audit_session_created
+    ON ai_audit_events (session_id, created_at DESC);
+"""
+
+# Shared CREATE statements for AI Layer tables (schema v49).
+# Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync.
+_AI_SCHEMA_V49_DDL = """
+CREATE TABLE IF NOT EXISTS ai_sessions (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    goal                TEXT NOT NULL,
+    mode                TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    pinned_project_id   TEXT NOT NULL,
+    data_dir            TEXT NOT NULL,
+    scope_snapshot_json TEXT,
+    budgets_json        TEXT NOT NULL,
+    usage_json          TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_project_status
+    ON ai_sessions (project_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_project_prefs (
+    project_id              TEXT PRIMARY KEY,
+    auto_aggressive_ack_at  TEXT,
+    auto_aggressive_ack_by  TEXT,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_audit_events (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT,
+    project_id   TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_audit_project_created
+    ON ai_audit_events (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_audit_session_created
+    ON ai_audit_events (session_id, created_at DESC);
 """
 
 # Shared CREATE statements for cross-flow reflection tables (schema v42).
@@ -2019,9 +2100,14 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_intruder_results_finding
-                ON intruder_results (finding_id) WHERE finding_id IS NOT NULL
+                ON intruder_results (finding_id)
+                WHERE finding_id IS NOT NULL
             """
         )
+
+    if from_version < 49:
+        # AI Layer Phase A: sessions, audit events, project prefs.
+        conn.executescript(_AI_SCHEMA_V49_DDL)
 
 
 def _seed_default_context(db_path: Path) -> None:
@@ -2152,6 +2238,7 @@ def migrate_project_db(db_path: Path) -> None:
         v45 → v46: intruder_sessions + intruder_results — Intruder Phase 1 engine.
         v46 → v47: intruder_pools — Intruder Phase 3 extracted value pools.
         v47 → v48: intruder_results.finding_id — Phase 5 optional findings promote.
+        v48 → v49: AI Layer Phase A — ai_sessions, ai_audit_events, ai_project_prefs.
     """
     if not db_path.exists():
         return
@@ -3466,6 +3553,12 @@ def migrate_project_db(db_path: Path) -> None:
                     """
                 )
             conn.execute("UPDATE schema_version SET version = 48")
+            conn.commit()
+
+        if current < 49:
+            # AI Layer Phase A: sessions, audit events, project prefs.
+            conn.executescript(_AI_SCHEMA_V49_DDL)
+            conn.execute("UPDATE schema_version SET version = 49")
             conn.commit()
 
 

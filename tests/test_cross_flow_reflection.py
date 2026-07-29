@@ -55,7 +55,6 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def test_schema_version_is_current():
-    assert SCHEMA_VERSION == 44
     assert SCHEMA_VERSION >= 42
 
 

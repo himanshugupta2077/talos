@@ -78,6 +78,15 @@ def test_talos_helper_documents_layered_config() -> None:
     assert "effective" in text
     assert "Layered configuration" in text or "layered configuration" in text.lower()
     assert "proxy|capture|scheduler|attack|http" in text
+
+
+def test_talos_helper_documents_ai_layer() -> None:
+    """Root help must advertise Phase A AI session and tools commands."""
+    text = _root_help_text()
+    assert re.search(r"^\s+ai\s+", text, re.M)
+    assert "tools list" in text
+    assert "suggest-only" in text
+    assert "reset-budget" in text
     assert "HTTP Manipulation Engine" in text or "http" in text
 
 

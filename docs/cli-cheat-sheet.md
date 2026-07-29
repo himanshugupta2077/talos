@@ -346,14 +346,25 @@ talos [--project ID] [-h|--help]
 │  └─ baseline|multiprobe|identifier|…|validation
 │     [--host|--endpoint|--parameter] [--ignore-cache]
 │
-└─ finding
-   ├─ list [--status STATUS] [--linked | --all]
-   ├─ show <uuid>
-   ├─ confirm|reject|reopen <uuid> [--linked] [--force]
-   ├─ duplicate <uuid> --of <uuid>
-   ├─ note set|clear <uuid>   # set reads notes from stdin
-   ├─ group create|add|remove|list
-   └─ report <uuid> | --group <group>
+├─ finding
+│  ├─ list [--status STATUS] [--linked | --all]
+│  ├─ show <uuid>
+│  ├─ confirm|reject|reopen <uuid> [--linked] [--force]
+│  ├─ duplicate <uuid> --of <uuid>
+│  ├─ note set|clear <uuid>   # set reads notes from stdin
+│  ├─ group create|add|remove|list
+│  └─ report <uuid> | --group <group>
+│
+└─ ai                        # policy-gated agent (Phase A foundation)
+   ├─ start [--goal TEXT] [--mode MODE] [--force-stop-existing] [--force]
+   ├─ stop [SESSION]
+   ├─ resume SESSION
+   ├─ reset-budget [SESSION] [--force]
+   ├─ status [SESSION] [--format]
+   ├─ mode set <mode> [--ack PHRASE] [--session ID] [--force]
+   ├─ mode clear-aggressive-ack [--force]
+   ├─ tools list [--format]
+   └─ audit list [--session] [--limit N] [--format]
 ```
 
 **Finding relationships:** Related successful techniques form a PRIMARY + LINKED cluster. Default list shows PRIMARY rows with a linked count. Status changes are independent unless you pass `--linked` on a PRIMARY.
@@ -1884,3 +1895,47 @@ talos finding report <uuid>
 talos finding report <uuid> > report.md
 talos finding report --group "Critical Findings"
 ```
+
+---
+
+## AI (policy-gated agent — Phase A)
+
+Suggest-first control model. Sessions pin to the effective project. Default mode
+is `suggest-only` (planner may propose later; **execution disabled**). Use
+`mode set step` for human-approved tool execution. Registry has no public
+`call()` — execute only via sealed `ExecutionPlan` (tests / later `approve`).
+
+```bash
+# Start (one active session per project)
+talos ai start --goal "Recon inventory" --mode suggest-only
+talos ai start --goal "…" --mode step --force-stop-existing --force
+
+talos ai status
+talos ai status --format json
+
+# Autonomy mode (step is GA; auto-* experimental)
+talos ai mode set step --force
+talos ai mode set auto-aggressive --ack "I_ACCEPT_AUTO_AGGRESSIVE=<project_id>" --force
+talos ai mode clear-aggressive-ack --force
+
+# Allowlisted tools (ToolSpec descriptors)
+talos ai tools list
+talos ai tools list --format json
+
+# Lifecycle
+talos ai stop
+talos ai resume <session_id>
+talos ai reset-budget --force
+
+# Audit
+talos ai audit list
+talos ai audit list --session <session_id> --format json
+```
+
+**Phase A tools (selected):** `endpoint.list|show`, `flow.show|diff`,
+`param.intelligence`, `iv.candidates`, `finding.list|show`,
+`passive.detections.list`, `error_intel.list`, `access.coverage`,
+`scheduler.jobs.list|show`, `intruder.suggest`, `role.*`, `module.*`
+(set-active requires existing name — never creates).
+
+**Later phases:** `suggest` / `approve` / notes / KB / MCP / LLM / `send.once`.
