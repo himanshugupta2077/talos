@@ -356,25 +356,65 @@ def reset_budget(
     )
 
 
+def get_latest_halted_session(
+    db_path: Path, project_id: str
+) -> Optional[AgentSession]:
+    """
+    Purpose:
+        Most recently updated halted_budget session for the project (if any).
+    Side effects: migrate_project_db.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM ai_sessions
+            WHERE project_id = ? AND status = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (project_id, SessionStatus.HALTED_BUDGET.value),
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_session(row, db_path)
+
+
 def resolve_session_id(
     db_path: Path,
     project_id: str,
     session_id: Optional[str],
+    *,
+    allow_halted: bool = False,
 ) -> AgentSession:
     """
     Purpose:
         Resolve explicit session id or fall back to the active session.
+        When allow_halted=True and no active session, fall back to the latest
+        halted_budget session (needed for reset-budget recovery).
     Raises:
         SessionNotFound / SessionError when none is available.
     """
     if session_id:
         return get_session(db_path, project_id, session_id)
     active = get_active_session(db_path, project_id)
-    if active is None:
-        raise SessionNotFound(
-            "No active AI session. Run 'talos ai start' or pass a session id."
+    if active is not None:
+        return active
+    if allow_halted:
+        halted = get_latest_halted_session(db_path, project_id)
+        if halted is not None:
+            return halted
+    raise SessionNotFound(
+        "No active AI session. Run 'talos ai start' or pass a session id."
+        + (
+            " (A halted_budget session can be recovered with "
+            "'talos ai reset-budget <session_id>'.)"
+            if not allow_halted
+            else ""
         )
-    return active
+    )
 
 
 # ------------------------------------------------------------------ #

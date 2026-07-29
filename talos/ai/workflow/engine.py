@@ -237,8 +237,13 @@ class WorkflowEngine:
     def reset_budget(self, session_id: Optional[str] = None) -> AgentSession:
         project = self._require_project()
         try:
+            # Halted sessions are not "active"; still allow operator recovery
+            # without requiring the UUID when it is the only halted session.
             session = session_store.resolve_session_id(
-                project.db_path, project.id, session_id
+                project.db_path,
+                project.id,
+                session_id,
+                allow_halted=True,
             )
         except session_store.SessionNotFound as exc:
             raise WorkflowEngineError(str(exc), exit_code=1) from exc
@@ -262,11 +267,16 @@ class WorkflowEngine:
     def status(self, session_id: Optional[str] = None) -> dict[str, Any]:
         """
         Purpose: Build a status payload for the active or named session.
+        Falls back to the latest halted_budget session when none is active
+        so operators can still inspect budgets after a halt.
         """
         project = self._require_project()
         try:
             session = session_store.resolve_session_id(
-                project.db_path, project.id, session_id
+                project.db_path,
+                project.id,
+                session_id,
+                allow_halted=True,
             )
         except session_store.SessionNotFound as exc:
             raise WorkflowEngineError(str(exc), exit_code=1) from exc
@@ -934,8 +944,11 @@ class WorkflowEngine:
     ) -> dict[str, Any]:
         """
         Purpose:
-            Approve a pending ExecutionPlan (or resolve suggestion_id → latest
+            Approve a *pending* ExecutionPlan (or resolve suggestion_id → latest
             pending plan), re-validate, execute, record observation.
+
+            Terminal plans (executed/denied/failed/…) cannot be re-approved —
+            operator must run a new suggest turn (avoids silent re-execution).
         """
         project, session = self._require_active_session(session_id)
 
@@ -950,6 +963,14 @@ class WorkflowEngine:
             session.budgets, session.usage, started_at_iso=session.created_at
         )
         if exceeded:
+            # Persist halt so status matches budgets.
+            session_store.update_session_usage(
+                project.db_path,
+                project.id,
+                session.session_id,
+                session.usage,
+                status=SessionStatus.HALTED_BUDGET,
+            )
             raise WorkflowEngineError(
                 f"Budget exceeded ({exceeded}); cannot approve. "
                 "Run 'talos ai reset-budget'.",
@@ -962,8 +983,35 @@ class WorkflowEngine:
 
         plan_row = plan_store.get_plan_row(project.db_path, target_id)
         suggestion_id: Optional[str] = None
-        if plan_row is None:
-            # Treat as suggestion_id → latest pending plan.
+        resolved_via_plan = False
+
+        if plan_row is not None:
+            resolved_via_plan = True
+            if plan_row.get("session_id") != session.session_id:
+                raise WorkflowEngineError(
+                    "Plan does not belong to the active session.",
+                    exit_code=1,
+                )
+            status = plan_row.get("status") or ""
+            if status in plan_store.TERMINAL_PLAN_STATUSES:
+                raise WorkflowEngineError(
+                    f"Plan is already terminal (status={status}); "
+                    "run 'talos ai suggest' for a new proposal. "
+                    "Re-approve of executed/denied plans is not allowed.",
+                    exit_code=3,
+                )
+            if status not in (
+                plan_store.PlanStatus.PENDING_APPROVAL.value,
+                plan_store.PlanStatus.AUTHORIZED.value,
+            ):
+                raise WorkflowEngineError(
+                    f"Plan status '{status}' cannot be approved "
+                    f"(need pending_approval).",
+                    exit_code=3,
+                )
+            suggestion_id = plan_row.get("suggestion_id")
+        else:
+            # Treat as suggestion_id → latest pending plan only.
             suggestion = suggestion_store.get_suggestion(
                 project.db_path, target_id, session_id=session.session_id
             )
@@ -977,15 +1025,13 @@ class WorkflowEngine:
                 project.db_path, suggestion_id
             )
             if plan_row is None:
-                # Suggestion exists but no pending plan — re-validate fresh.
-                pass
-        else:
-            if plan_row.get("session_id") != session.session_id:
                 raise WorkflowEngineError(
-                    "Plan does not belong to the active session.",
-                    exit_code=1,
+                    f"No pending plan for suggestion {suggestion_id}. "
+                    "It may already be executed, denied, or never validated "
+                    "(suggest-only records suggestions without plans). "
+                    "Run 'talos ai suggest' again if you need a new plan.",
+                    exit_code=3,
                 )
-            suggestion_id = plan_row.get("suggestion_id")
 
         if suggestion_id is None:
             raise WorkflowEngineError(
@@ -1000,7 +1046,7 @@ class WorkflowEngine:
                 f"Suggestion not found: {suggestion_id}", exit_code=1
             )
 
-        # Re-validate always (live policy).
+        # Re-validate always (live policy) — mints a new sealed plan + token.
         result = self.validator.validate(
             suggestion, session, live=True, auto_reads=False
         )
@@ -1023,6 +1069,7 @@ class WorkflowEngine:
                     "message": result.message,
                     "suggestion_id": suggestion_id,
                     "on": "approve",
+                    "resolved_via_plan": resolved_via_plan,
                 },
                 session_id=session.session_id,
             )
@@ -1031,7 +1078,7 @@ class WorkflowEngine:
                 exit_code=3,
             )
 
-        # Supersede old pending plan if present and different id.
+        # Supersede old pending/authorized plan if revalidation minted a new id.
         if plan_row is not None and plan_row["id"] != result.plan_id:
             if plan_row.get("status") in (
                 plan_store.PlanStatus.PENDING_APPROVAL.value,
@@ -1044,7 +1091,6 @@ class WorkflowEngine:
                     failure_reason="revalidated on approve",
                 )
 
-        # Insert new authorized plan (or update if same — always insert new).
         existing_new = plan_store.get_plan_row(project.db_path, result.plan_id)
         if existing_new is None:
             plan_store.insert_plan(

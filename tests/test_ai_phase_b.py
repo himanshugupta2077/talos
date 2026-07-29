@@ -404,3 +404,105 @@ class TestOfflineReconLoop:
         status = engine.status()
         assert status["usage"]["steps"] >= 2
         assert status["usage"]["tool_calls"] >= 1
+
+
+# ================================================================== #
+# QA regressions                                                       #
+# ================================================================== #
+
+
+class TestPhaseBQARegressions:
+    def test_cannot_reapprove_executed_plan(self, engine: WorkflowEngine) -> None:
+        engine.start("reapprove", mode=AutonomyMode.STEP)
+        result = engine.suggest(max_suggestions=2)
+        plan_id = result["pending_plans"][0]["plan_id"]
+        engine.approve(plan_id)
+        with pytest.raises(WorkflowEngineError) as exc:
+            engine.approve(plan_id)
+        assert exc.value.exit_code == 3
+        assert "terminal" in str(exc.value).lower()
+
+    def test_cannot_approve_denied_plan(self, engine: WorkflowEngine) -> None:
+        engine.start("deny-reapprove", mode=AutonomyMode.STEP)
+        result = engine.suggest(max_suggestions=2)
+        plan_id = result["pending_plans"][0]["plan_id"]
+        engine.deny(plan_id, reason="nope")
+        with pytest.raises(WorkflowEngineError) as exc:
+            engine.approve(plan_id)
+        assert exc.value.exit_code == 3
+
+    def test_approve_suggestion_without_pending_plan_fails(
+        self, engine: WorkflowEngine
+    ) -> None:
+        engine.start("no-pending", mode=AutonomyMode.SUGGEST_ONLY)
+        result = engine.suggest(max_suggestions=1)
+        sid = result["suggestions"][0]["suggestion_id"]
+        engine.set_mode(AutonomyMode.STEP)
+        # Suggestions from suggest-only have no pending plans.
+        with pytest.raises(WorkflowEngineError) as exc:
+            engine.approve(sid)
+        assert exc.value.exit_code == 3
+        assert "no pending plan" in str(exc.value).lower()
+
+    def test_reset_budget_recovers_halted_without_session_id(
+        self, engine: WorkflowEngine, project
+    ) -> None:
+        from talos.ai.workflow import session as session_store
+        from talos.ai.models import BudgetUsage
+
+        session = engine.start("halt-recover", mode=AutonomyMode.STEP)
+        usage = session.usage
+        usage.tool_calls = session.budgets.max_tool_calls
+        session_store.update_session_usage(
+            project.db_path,
+            project.id,
+            session.session_id,
+            usage,
+            status=SessionStatus.HALTED_BUDGET,
+        )
+        # No active session — reset-budget must still find halted session.
+        recovered = engine.reset_budget()
+        assert recovered.status == SessionStatus.ACTIVE
+        assert recovered.usage.tool_calls == 0
+        # Suggest works again.
+        result = engine.suggest(max_suggestions=1)
+        assert result["suggestion_count"] >= 1
+
+    def test_migrate_v49_to_v51(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import shutil
+        import sqlite3
+        from talos.projects.db import migrate_project_db, get_schema_version, SCHEMA_VERSION
+
+        monkeypatch.delenv(TALOS_PROJECT_ENV, raising=False)
+        mgr = ProjectManager(tmp_path / "projects")
+        p = mgr.create(name="Mig", scope=["m.com"])
+        db = mgr.get(p.id).db_path
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+        mig = tmp_path / "v49.db"
+        shutil.copy2(db, mig)
+        with sqlite3.connect(str(mig)) as conn:
+            for t in (
+                "ai_task_nodes",
+                "ai_observations",
+                "ai_execution_plans",
+                "ai_suggestions",
+                "ai_app_note_revisions",
+                "ai_app_notes",
+            ):
+                conn.execute(f"DROP TABLE IF EXISTS {t}")
+            conn.execute("UPDATE schema_version SET version = 49")
+            conn.commit()
+        assert get_schema_version(mig) == 49
+        migrate_project_db(mig)
+        assert get_schema_version(mig) == SCHEMA_VERSION
+        with sqlite3.connect(str(mig)) as conn:
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "ai_app_notes" in tables
+        assert "ai_suggestions" in tables
+        assert "ai_execution_plans" in tables
