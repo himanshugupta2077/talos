@@ -2,14 +2,15 @@
 Module: talos.intruder.cli
 
 Purpose:
-    CLI for Talos Intruder Phase 1:
+    CLI for Talos Intruder (Phase 1 + Phase 2):
 
         talos intruder session create|list|show|configure|validate|run|
-                               pause|resume|stop|status|delete
+                               pause|resume|stop|status|delete|clone
         talos intruder template show|set-var|clear-var
         talos intruder payload set|list|clear
         talos intruder strategy set
         talos intruder timing set
+        talos intruder storage set|show
         talos intruder match add|list|clear
         talos intruder results list|show|export
         talos intruder generators list
@@ -52,6 +53,7 @@ from talos.intruder.config_schema import (
     ValidationError,
     estimate_requires_confirm,
     merge_defaults,
+    storage_requires_confirm,
     validate_config,
 )
 from talos.intruder.models import (
@@ -60,13 +62,16 @@ from talos.intruder.models import (
     ERR_ENDPOINT_ANNOTATED_LOGOUT,
     ERR_OUT_OF_SCOPE,
     ERR_SESSION_BUSY,
-    PHASE1_GENERATORS,
-    PHASE1_PROCESSORS,
-    PHASE1_STRATEGIES,
+    KNOWN_GENERATORS,
+    KNOWN_PROCESSORS,
+    KNOWN_STORAGE_MODES,
+    KNOWN_STRATEGIES,
     STATUS_DRAFT,
 )
+from talos.intruder.processors import is_known_processor
 from talos.intruder.results import export_results_csv, export_results_jsonl
 from talos.intruder.session import (
+    clone_session,
     create_session_from_flow,
     pause_session,
     resume_session,
@@ -93,8 +98,9 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="talos intruder",
         description=(
-            "Intruder: high-volume mutation attack engine (Phase 1). "
-            "Template + payload sets + single/sniper strategy; scheduler time-slices. "
+            "Intruder: high-volume mutation attack engine (Phase 1+2). "
+            "Template + payload sets + single/sniper/pitchfork/zip/cluster_bomb; "
+            "storage modes; scheduler time-slices. "
             "Distinct from 'talos send' (Repeater) and 'talos input-validation'."
         ),
     )
@@ -162,6 +168,14 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     add_force_argument(p_del)
     add_format_argument(p_del)
 
+    p_clone = sess_sub.add_parser(
+        "clone",
+        help="Clone session config into a new draft (no results/checkpoint).",
+    )
+    p_clone.add_argument("session_id")
+    p_clone.add_argument("--name", default="", help="Name for the cloned session.")
+    add_format_argument(p_clone)
+
     # ---- template ----
     p_tmpl = sub.add_parser("template", help="Template variables.")
     tmpl_sub = p_tmpl.add_subparsers(dest="template_cmd", metavar="<action>")
@@ -201,7 +215,7 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_pset.add_argument(
         "--generator",
         required=True,
-        choices=sorted(PHASE1_GENERATORS),
+        choices=sorted(KNOWN_GENERATORS),
     )
     p_pset.add_argument("--file", dest="wordlist", help="Wordlist path (wordlist gen).")
     p_pset.add_argument("--start", type=int, help="Numbers start.")
@@ -217,8 +231,11 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         "--processor",
         action="append",
         dest="processors",
-        choices=sorted(PHASE1_PROCESSORS),
-        help="Processor chain (repeatable).",
+        help=(
+            "Processor chain (repeatable). Built-ins: "
+            + ", ".join(sorted(KNOWN_PROCESSORS))
+            + "; parameterized: prefix:<text>, suffix:<text>."
+        ),
     )
     add_format_argument(p_pset)
 
@@ -237,8 +254,20 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     st_sub.required = True
     p_stset = st_sub.add_parser("set", help="Set strategy type.")
     p_stset.add_argument("session_id")
-    p_stset.add_argument("--type", dest="stype", required=True, choices=sorted(PHASE1_STRATEGIES))
+    p_stset.add_argument(
+        "--type",
+        dest="stype",
+        required=True,
+        choices=sorted(KNOWN_STRATEGIES - {"cartesian"}),  # cartesian alias via cluster_bomb
+        help="single|sniper|pitchfork|zip|cluster_bomb (cartesian accepted as alias of cluster_bomb in config).",
+    )
     p_stset.add_argument("--primary", help="Primary variable for single strategy.")
+    p_stset.add_argument(
+        "--set",
+        action="append",
+        dest="sets",
+        help="Ordered payload-set / variable names for multi-set strategies (repeatable).",
+    )
     add_format_argument(p_stset)
 
     # ---- timing ----
@@ -250,9 +279,51 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_tmset.add_argument("--mode", default="fixed", choices=["fixed", "unlimited"])
     p_tmset.add_argument("--rps", type=float)
     p_tmset.add_argument("--concurrency", type=int, dest="max_concurrency")
+    p_tmset.add_argument(
+        "--concurrency-per-host",
+        type=int,
+        dest="max_concurrency_per_host",
+        help="Phase 2: max in-flight attempts per host (optional host cap).",
+    )
     p_tmset.add_argument("--jitter-ms", type=float, dest="jitter_ms")
     p_tmset.add_argument("--timeout-s", type=float, dest="timeout_s")
     add_format_argument(p_tmset)
+
+    # ---- storage ----
+    p_stor = sub.add_parser("storage", help="Result / flow storage policy.")
+    stor_sub = p_stor.add_subparsers(dest="storage_cmd", metavar="<action>")
+    stor_sub.required = True
+    p_storset = stor_sub.add_parser("set", help="Set storage mode.")
+    p_storset.add_argument("session_id")
+    p_storset.add_argument(
+        "--mode",
+        required=True,
+        choices=sorted(KNOWN_STORAGE_MODES),
+        help="metrics_only (default), sample_flows, or all_flows (confirm on run).",
+    )
+    p_storset.add_argument(
+        "--sample-rate",
+        type=float,
+        dest="sample_rate",
+        help="Bernoulli sample rate for sample_flows (0.0–1.0).",
+    )
+    p_storset.add_argument(
+        "--store-interesting",
+        dest="store_interesting",
+        default=None,
+        action=argparse.BooleanOptionalAction,
+        help="Store flow bodies for match-tagged attempts (default true).",
+    )
+    p_storset.add_argument(
+        "--max-body-bytes",
+        type=int,
+        dest="max_body_bytes",
+        help="Cap stored response body size.",
+    )
+    add_format_argument(p_storset)
+    p_storshow = stor_sub.add_parser("show", help="Show storage config.")
+    p_storshow.add_argument("session_id")
+    add_format_argument(p_storshow)
 
     # ---- match ----
     p_m = sub.add_parser("match", help="Match rules.")
@@ -304,10 +375,10 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
     add_format_argument(p_rexp)
 
     # ---- generators ----
-    p_g = sub.add_parser("generators", help="List built-in generators.")
+    p_g = sub.add_parser("generators", help="List built-in generators/processors/strategies.")
     g_sub = p_g.add_subparsers(dest="generators_cmd", metavar="<action>")
     g_sub.required = True
-    p_glist = g_sub.add_parser("list", help="List Phase 1 generators.")
+    p_glist = g_sub.add_parser("list", help="List generators, processors, strategies.")
     add_format_argument(p_glist)
 
     args = parser.parse_args(argv)
@@ -324,6 +395,8 @@ def run_intruder_cli(manager: ProjectManager, argv: list[str]) -> None:
         _dispatch_strategy(project, args)
     elif cmd == "timing":
         _dispatch_timing(project, args)
+    elif cmd == "storage":
+        _dispatch_storage(project, args)
     elif cmd == "match":
         _dispatch_match(project, args)
     elif cmd == "results":
@@ -533,6 +606,11 @@ def _dispatch_session(project, args: argparse.Namespace) -> None:
                 f"Estimated {estimate} attempts exceeds 1000. Continue?",
                 force=False,
             )
+        if storage_requires_confirm(cfg) and not args.force:
+            confirm_or_exit(
+                "Storage mode all_flows will write a full flow row per attempt. Continue?",
+                force=False,
+            )
 
         try:
             ack = run_session(
@@ -728,6 +806,33 @@ def _dispatch_session(project, args: argparse.Namespace) -> None:
         _emit(payload, args, human)
         return
 
+    if action == "clone":
+        try:
+            cloned = clone_session(
+                db_path, project_id, args.session_id, name=args.name or ""
+            )
+        except LookupError:
+            cli_error("Session not found.")
+        payload = {
+            "session_id": cloned["id"],
+            "name": cloned.get("name"),
+            "status": cloned["status"],
+            "cloned_from": args.session_id,
+            "base_flow_id": cloned.get("base_flow_id"),
+        }
+        def human(p):
+            cli_success(
+                "Session cloned.",
+                {
+                    "Session": p["session_id"],
+                    "Name": p.get("name") or "—",
+                    "From": p["cloned_from"],
+                    "Status": p["status"],
+                },
+            )
+        _emit(payload, args, human)
+        return
+
     cli_usage_error(f"Unknown session action: {action}")
 
 
@@ -878,10 +983,19 @@ def _dispatch_payload(project, args: argparse.Namespace) -> None:
                 cli_usage_error("--value is required for static generator (repeatable).")
             options["values"] = list(args.values)
 
+        processors = list(args.processors or [])
+        for pname in processors:
+            if not is_known_processor(pname):
+                cli_usage_error(
+                    f"Unknown processor: {pname}. "
+                    f"Built-ins: {', '.join(sorted(KNOWN_PROCESSORS))}; "
+                    "or prefix:<text> / suffix:<text>."
+                )
+
         pset = {
             "generator": gen,
             "options": options,
-            "processors": list(args.processors or []),
+            "processors": processors,
         }
         cfg.setdefault("payload_sets", {})[args.var] = pset
         _save_config(db_path, sess["id"], cfg)
@@ -923,6 +1037,8 @@ def _dispatch_strategy(project, args: argparse.Namespace) -> None:
     opts = dict((cfg.get("strategy") or {}).get("options") or {})
     if args.primary:
         opts["primary"] = args.primary
+    if getattr(args, "sets", None):
+        opts["sets"] = list(args.sets)
     cfg["strategy"] = {"type": args.stype, "options": opts}
     _save_config(db_path, sess["id"], cfg)
     payload = {"session_id": sess["id"], "strategy": cfg["strategy"]}
@@ -941,6 +1057,8 @@ def _dispatch_timing(project, args: argparse.Namespace) -> None:
         timing["rps"] = args.rps
     if args.max_concurrency is not None:
         timing["max_concurrency"] = args.max_concurrency
+    if getattr(args, "max_concurrency_per_host", None) is not None:
+        timing["max_concurrency_per_host"] = args.max_concurrency_per_host
     if args.jitter_ms is not None:
         timing["jitter_ms"] = args.jitter_ms
     if args.timeout_s is not None:
@@ -951,6 +1069,41 @@ def _dispatch_timing(project, args: argparse.Namespace) -> None:
     def human(p):
         cli_success("Timing updated.", timing)
     _emit(payload, args, human)
+
+
+def _dispatch_storage(project, args: argparse.Namespace) -> None:
+    db_path = project.db_path
+    sess = _get_session_or_exit(db_path, args.session_id)
+    cfg = merge_defaults(sess.get("config") or {})
+    action = args.storage_cmd
+    storage = dict(cfg.get("storage") or {})
+
+    if action == "set":
+        storage["mode"] = args.mode
+        if args.sample_rate is not None:
+            if args.sample_rate < 0.0 or args.sample_rate > 1.0:
+                cli_usage_error("--sample-rate must be between 0.0 and 1.0.")
+            storage["sample_rate"] = args.sample_rate
+        if args.store_interesting is not None:
+            storage["store_interesting_bodies"] = bool(args.store_interesting)
+        if args.max_body_bytes is not None:
+            storage["max_body_bytes"] = int(args.max_body_bytes)
+        cfg["storage"] = storage
+        _save_config(db_path, sess["id"], cfg)
+        payload = {"session_id": sess["id"], "storage": storage}
+        def human(p):
+            cli_success("Storage updated.", storage)
+        _emit(payload, args, human)
+        return
+
+    if action == "show":
+        payload = {"session_id": sess["id"], "storage": storage}
+        def human(p):
+            print(json.dumps(p["storage"], indent=2))
+        _emit(payload, args, human)
+        return
+
+    cli_usage_error(f"Unknown storage action: {action}")
 
 
 def _dispatch_match(project, args: argparse.Namespace) -> None:
@@ -1105,12 +1258,16 @@ def _dispatch_results(project, args: argparse.Namespace) -> None:
 
 def _dispatch_generators(args: argparse.Namespace) -> None:
     payload = {
-        "generators": sorted(PHASE1_GENERATORS),
-        "processors": sorted(PHASE1_PROCESSORS),
-        "strategies": sorted(PHASE1_STRATEGIES),
+        "generators": sorted(KNOWN_GENERATORS),
+        "processors": sorted(KNOWN_PROCESSORS),
+        "processor_parameterized": ["prefix:<text>", "suffix:<text>"],
+        "strategies": sorted(s for s in KNOWN_STRATEGIES if s != "cartesian"),
+        "storage_modes": sorted(KNOWN_STORAGE_MODES),
     }
     def human(p):
         print("Generators:", ", ".join(p["generators"]))
         print("Processors:", ", ".join(p["processors"]))
+        print("Parameterized:", ", ".join(p["processor_parameterized"]))
         print("Strategies:", ", ".join(p["strategies"]))
+        print("Storage:", ", ".join(p["storage_modes"]))
     _emit(payload, args, human)

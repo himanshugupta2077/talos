@@ -2,6 +2,57 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Intruder Phase 2 — multi-set strategies, storage modes, processors
+
+### Problem
+
+Phase 1 shipped single + sniper only. Operators need Burp-style multi-position
+payload pairing (pitchfork/zip) and full cartesian products (cluster bomb),
+opt-in flow row retention beyond interesting matches, session cloning for
+variant attacks, and richer payload processors — without changing the
+scheduler slice / pause model.
+
+### Decision
+
+Extend `talos/intruder` in place (config schema_version still **1**; no DDL):
+
+| Piece | Role |
+|-------|------|
+| Strategies | `pitchfork`, `zip` (lockstep, length=min), `cluster_bomb` (+ `cartesian` alias) |
+| Storage modes | `metrics_only` (default), `sample_flows` + `sample_rate`, `all_flows` (confirm/`--force`) |
+| Processors | url/base64 decode, case, html encode/decode, md5/sha1/sha256, strip, `prefix:`/`suffix:` |
+| Timing | `max_concurrency_per_host` host cap alongside global concurrency |
+| Session | `session clone` → new draft; config only (no results/checkpoint) |
+
+Cartesian / large estimates still use the Phase 1 confirm threshold (>1000).
+Interesting/sample/all flow inserts remain `source=intruder` with no
+error_intel/passive hooks.
+
+**Still out of scope (later):** grep pools, param-intel template assist,
+adaptive timing, findings auto-promote, Control Panel UI.
+
+### Operator surface
+
+```bash
+talos intruder strategy set $SID --type pitchfork --set user_id --set role
+talos intruder strategy set $SID --type cluster_bomb --set user_id --set role
+talos intruder storage set $SID --mode sample_flows --sample-rate 0.1
+talos intruder timing set $SID --concurrency 4 --concurrency-per-host 2
+talos intruder session clone $SID --name variant-b
+talos intruder payload set $SID --var q --generator static --value x --processor 'prefix:p:' --processor md5
+```
+
+Design: `docs/design-intruder-cli.md` Phase 2 / PR-9–10.
+
+### Files
+
+- Strategies: `talos/intruder/strategies/pitchfork.py`, `cluster_bomb.py`
+- Processors / timing / engine storage / session clone
+- CLI: `storage set|show`, `session clone`, strategy multi-set flags
+- Tests: `tests/test_intruder_phase2.py`
+
+---
+
 ## Intruder Phase 1 — high-volume mutation engine (`talos intruder`)
 
 ### Problem
@@ -31,8 +82,9 @@ single + sniper; fixed RPS (default 2), concurrency default 1; match rules;
 pause/resume/cancel; crash-safe checkpoint; `--right-now`; export JSONL/CSV;
 AI JSON status poll contract.
 
-**Still out of scope (later phases):** Pitchfork/ClusterBomb, grep pools,
-adaptive timing, findings auto-promote, Control Panel UI, auth refresh mid-run.
+**Phase 2 shipped separately** (pitchfork/cluster_bomb/zip, storage modes,
+processors, clone, host caps). Later: grep pools, adaptive timing, findings
+auto-promote, Control Panel UI, auth refresh mid-run.
 
 ### Operator surface
 

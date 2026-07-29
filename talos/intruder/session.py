@@ -140,6 +140,50 @@ def mark_configured(db_path: Path, session_id: str, config: dict[str, Any]) -> d
     return sess
 
 
+def clone_session(
+    db_path: Path,
+    project_id: str,
+    session_id: str,
+    *,
+    name: str = "",
+) -> dict[str, Any]:
+    """
+    Clone an existing session into a new draft.
+
+    Copies template, payload sets, strategy, timing, match, storage, safety.
+    Does NOT copy results, checkpoint, progress, job_id, or control_flag.
+    """
+    source = intruder_db.get_session(db_path, session_id)
+    if source is None:
+        raise LookupError("session_not_found")
+    if (source.get("project_id") or "") != project_id and project_id:
+        # Soft check: still allow if same project DB; prefer matching project_id
+        pass
+
+    cfg = merge_defaults(source.get("config") or {})
+    # Drop runtime identity; keep baseline linkage
+    sess_meta = dict(cfg.get("session") or {})
+    new_name = name or (f"{source.get('name') or 'session'}-clone")
+    sess_meta["name"] = new_name
+    sess_meta["cloned_from"] = source["id"]
+    sess_meta["base_flow_id"] = source.get("base_flow_id") or sess_meta.get("base_flow_id")
+    sess_meta["endpoint_id"] = source.get("endpoint_id") or sess_meta.get("endpoint_id")
+    sess_meta["project_id"] = project_id or source.get("project_id")
+    cfg["session"] = sess_meta
+
+    cloned = intruder_db.create_session(
+        db_path,
+        project_id or source.get("project_id") or "",
+        name=new_name,
+        base_flow_id=source.get("base_flow_id"),
+        endpoint_id=source.get("endpoint_id"),
+        config=cfg,
+        status=STATUS_DRAFT,
+        schema_version=CONFIG_SCHEMA_VERSION,
+    )
+    return cloned
+
+
 def enqueue_segment(
     db_path: Path,
     project_id: str,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +49,9 @@ from talos.intruder.models import (
     RESULT_BATCH_FLUSH_S,
     RESULT_BATCH_SIZE,
     CONTROL_FLAG_CACHE_S,
+    STORAGE_ALL_FLOWS,
+    STORAGE_METRICS_ONLY,
+    STORAGE_SAMPLE_FLOWS,
     AttemptResult,
     SegmentOutcome,
     STATUS_CANCELLED,
@@ -86,7 +90,9 @@ def _build_strategy_from_config(cfg: dict[str, Any], *, force: bool = False):
         processors_map[name] = list(pset.get("processors") or [])
 
     strategy_cfg = cfg.get("strategy") or {}
-    stype = str(strategy_cfg.get("type") or "single")
+    stype = str(strategy_cfg.get("type") or "single").lower()
+    if stype == "cartesian":
+        stype = "cluster_bomb"
     opts = dict(strategy_cfg.get("options") or {})
     opts["processors"] = processors_map
     variables = variables_from_config(cfg)
@@ -94,6 +100,10 @@ def _build_strategy_from_config(cfg: dict[str, Any], *, force: bool = False):
     # Sniper targets default to injectable
     if stype == "sniper" and not opts.get("targets"):
         opts["targets"] = injectable
+    # Multi-set default ordered sets
+    if stype in ("pitchfork", "zip", "cluster_bomb") and not opts.get("sets"):
+        matched = [v for v in injectable if v in generators]
+        opts["sets"] = matched if matched else list(generators.keys())
     return build_strategy(stype, injectable or [v.name for v in variables], generators, options=opts)
 
 
@@ -135,9 +145,19 @@ async def run_session_segment(
     slice_max_attempts = int(slice_cfg.get("max_attempts", DEFAULT_SLICE_MAX_ATTEMPTS))
     slice_max_wall_s = float(slice_cfg.get("max_wall_s", DEFAULT_SLICE_MAX_WALL_S))
     timeout_s = float(timing_cfg.get("timeout_s", DEFAULT_TIMEOUT_S))
+    storage_mode = str(storage.get("mode") or STORAGE_METRICS_ONLY).lower()
+    sample_rate = float(storage.get("sample_rate") or 0.0)
     store_interesting = bool(storage.get("store_interesting_bodies", True))
     max_body_bytes = int(storage.get("max_body_bytes", 65536))
     skip_auth = bool(safety.get("skip_auth_artifacts", False))
+    per_host_cap = timing_cfg.get("max_concurrency_per_host")
+    if per_host_cap is not None and per_host_cap != "":
+        try:
+            per_host_cap = int(per_host_cap)
+        except (TypeError, ValueError):
+            per_host_cap = None
+    else:
+        per_host_cap = None
 
     progress = dict(session.get("progress") or {})
     checkpoint = dict(session.get("checkpoint") or {})
@@ -189,6 +209,7 @@ async def run_session_segment(
         mode=str(timing_cfg.get("mode") or "fixed"),
         rps=float(timing_cfg.get("rps", DEFAULT_RPS)),
         max_concurrency=int(timing_cfg.get("max_concurrency", DEFAULT_MAX_CONCURRENCY)),
+        max_concurrency_per_host=per_host_cap,
         jitter_ms=float(timing_cfg.get("jitter_ms") or 0),
     )
 
@@ -268,10 +289,30 @@ async def run_session_segment(
             status=final_status,
         )
 
-    async def _maybe_store_flow(result: AttemptResult, spec) -> Optional[str]:
-        if not store_interesting or not result.interesting:
-            return None
+    def _should_store_flow(result: AttemptResult) -> bool:
+        """
+        Decide whether to write a flows row for this attempt.
+
+        modes:
+          metrics_only  — only interesting (match-tagged) when store_interesting_bodies
+          sample_flows  — interesting OR Bernoulli(sample_rate)
+          all_flows     — every successful attempt
+        """
         if not result.success:
+            return False
+        if storage_mode == STORAGE_ALL_FLOWS:
+            return True
+        if storage_mode == STORAGE_SAMPLE_FLOWS:
+            if result.interesting and store_interesting:
+                return True
+            if sample_rate > 0.0 and random.random() < sample_rate:
+                return True
+            return False
+        # metrics_only (default)
+        return bool(store_interesting and result.interesting)
+
+    async def _maybe_store_flow(result: AttemptResult, spec) -> Optional[str]:
+        if not _should_store_flow(result):
             return None
         body = result.response_body or b""
         if len(body) > max_body_bytes:
@@ -325,13 +366,14 @@ async def run_session_segment(
                 "session_id": session_id,
                 "attempt_index": result.attempt_index,
                 "variables": result.variables,
+                "storage_mode": storage_mode,
             },
         }
         try:
             intruder_db.insert_intruder_flow(db_path, flow)
             return flow_id
         except Exception as exc:  # noqa: BLE001
-            _log.debug("Interesting flow insert failed: %s", exc)
+            _log.debug("Intruder flow insert failed: %s", exc)
             return None
 
     try:
@@ -436,7 +478,8 @@ async def run_session_segment(
                     buffer.append(attempt_result_to_row(result))
                     continue
 
-                await timing.acquire()
+                request_host = urlparse(spec.url).netloc or urlparse(spec.url).hostname or ""
+                await timing.acquire(host=request_host)
                 t0 = time.monotonic()
                 status_code = None
                 success = False
@@ -461,7 +504,7 @@ async def run_session_segment(
                 except Exception as exc:  # noqa: BLE001
                     failure_reason = f"error:{exc}"
                 finally:
-                    timing.release()
+                    timing.release(host=request_host)
 
                 duration_ms = (time.monotonic() - t0) * 1000.0
                 metrics = build_metrics_from_response(
@@ -509,9 +552,10 @@ async def run_session_segment(
                     errors += 1
                 if interesting:
                     matched += 1
-                    fid = await _maybe_store_flow(result, spec)
-                    if fid:
-                        result.flow_id = fid
+                # Storage modes may store non-interesting rows (sample/all)
+                fid = await _maybe_store_flow(result, spec)
+                if fid:
+                    result.flow_id = fid
 
                 sent += 1
                 buffer.append(attempt_result_to_row(result))

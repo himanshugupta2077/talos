@@ -2,8 +2,8 @@
 Module: talos.intruder.models
 
 Purpose:
-    Dataclasses and constants for Intruder Phase 1 (sessions, templates,
-    attempts, segment outcomes, hard-cap defaults).
+    Dataclasses and constants for Intruder (sessions, templates, attempts,
+    segment outcomes, hard-cap defaults). Phase 1 + Phase 2 plugins.
 
 Dependencies: dataclasses, typing
 Data flow:
@@ -66,6 +66,8 @@ DEFAULT_RPS = 2.0
 DEFAULT_MAX_CONCURRENCY = 1
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_JITTER_MS = 0
+# Phase 2: per-host in-flight cap (None = no extra host limit beyond max_concurrency)
+DEFAULT_MAX_CONCURRENCY_PER_HOST: int | None = None
 
 RESULT_BATCH_SIZE = 50
 RESULT_BATCH_FLUSH_S = 0.5
@@ -75,6 +77,11 @@ CONTROL_FLAG_CACHE_S = 0.2
 STORAGE_METRICS_ONLY = "metrics_only"
 STORAGE_SAMPLE_FLOWS = "sample_flows"
 STORAGE_ALL_FLOWS = "all_flows"
+KNOWN_STORAGE_MODES: frozenset[str] = frozenset({
+    STORAGE_METRICS_ONLY,
+    STORAGE_SAMPLE_FLOWS,
+    STORAGE_ALL_FLOWS,
+})
 
 # Variable locations
 LOCATION_PATH = "path"
@@ -93,21 +100,64 @@ KNOWN_LOCATIONS: frozenset[str] = frozenset({
     LOCATION_RAW,
 })
 
-# Strategies Phase 1
+# Strategies (Phase 1 + Phase 2 multi-set)
 STRATEGY_SINGLE = "single"
 STRATEGY_SNIPER = "sniper"
+STRATEGY_PITCHFORK = "pitchfork"
+STRATEGY_CLUSTER_BOMB = "cluster_bomb"
+STRATEGY_CARTESIAN = "cartesian"  # alias of cluster_bomb
+STRATEGY_ZIP = "zip"
 PHASE1_STRATEGIES: frozenset[str] = frozenset({STRATEGY_SINGLE, STRATEGY_SNIPER})
+PHASE2_STRATEGIES: frozenset[str] = frozenset({
+    STRATEGY_PITCHFORK,
+    STRATEGY_CLUSTER_BOMB,
+    STRATEGY_CARTESIAN,
+    STRATEGY_ZIP,
+})
+KNOWN_STRATEGIES: frozenset[str] = PHASE1_STRATEGIES | PHASE2_STRATEGIES
+# Multi-set strategies that bind each payload set to a variable in lockstep or product
+MULTI_SET_STRATEGIES: frozenset[str] = frozenset({
+    STRATEGY_PITCHFORK,
+    STRATEGY_CLUSTER_BOMB,
+    STRATEGY_CARTESIAN,
+    STRATEGY_ZIP,
+})
 
-# Generators Phase 1
+# Generators (Phase 1)
 GEN_WORDLIST = "wordlist"
 GEN_NUMBERS = "numbers"
 GEN_STATIC = "static"
 PHASE1_GENERATORS: frozenset[str] = frozenset({GEN_WORDLIST, GEN_NUMBERS, GEN_STATIC})
+KNOWN_GENERATORS: frozenset[str] = PHASE1_GENERATORS
 
-# Processors Phase 1
+# Processors (Phase 1 + Phase 2)
 PROC_URL_ENCODE = "url_encode"
+PROC_URL_DECODE = "url_decode"
 PROC_BASE64_ENCODE = "base64_encode"
+PROC_BASE64_DECODE = "base64_decode"
+PROC_TO_LOWER = "to_lower"
+PROC_TO_UPPER = "to_upper"
+PROC_HTML_ENCODE = "html_encode"
+PROC_HTML_DECODE = "html_decode"
+PROC_MD5 = "md5"
+PROC_SHA1 = "sha1"
+PROC_SHA256 = "sha256"
+PROC_STRIP = "strip"
+# Parameterized forms: prefix:<text>, suffix:<text> (see processors.build_processor)
 PHASE1_PROCESSORS: frozenset[str] = frozenset({PROC_URL_ENCODE, PROC_BASE64_ENCODE})
+PHASE2_PROCESSORS: frozenset[str] = frozenset({
+    PROC_URL_DECODE,
+    PROC_BASE64_DECODE,
+    PROC_TO_LOWER,
+    PROC_TO_UPPER,
+    PROC_HTML_ENCODE,
+    PROC_HTML_DECODE,
+    PROC_MD5,
+    PROC_SHA1,
+    PROC_SHA256,
+    PROC_STRIP,
+})
+KNOWN_PROCESSORS: frozenset[str] = PHASE1_PROCESSORS | PHASE2_PROCESSORS
 
 
 # ------------------------------------------------------------------ #
@@ -229,3 +279,6 @@ ERR_SESSION_BUSY = "session_busy"
 ERR_PATH_INJECT_UNAVAILABLE = "path_inject_unavailable"
 ERR_SESSION_NOT_FOUND = "session_not_found"
 ERR_INVALID_STATUS = "invalid_status"
+ERR_INVALID_STORAGE_MODE = "invalid_storage_mode"
+ERR_MULTISET_UNBOUND = "multiset_unbound"
+ERR_CLUSTER_BOMB_EMPTY = "cluster_bomb_empty"

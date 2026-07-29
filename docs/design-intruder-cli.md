@@ -6,7 +6,7 @@
 | **Project** | Talos |
 | **Author** | (design) |
 | **Date** | 2026-07-29 |
-| **Status** | Implemented Phase 1 (rev 3 design; schema 46) |
+| **Status** | Implemented Phase 1 + Phase 2 (rev 3 design; schema 46) |
 | **Scope** | Talos core CLI only; Control Panel / UI deferred |
 | **Audience** | Senior engineers familiar with `talos/` |
 
@@ -862,11 +862,12 @@ Top-level **`talos intruder`** (not under `attack`) — first-class engine peer 
 
 ```text
 talos intruder
-├─ session  create|list|show|configure|validate|run|pause|resume|stop|status|delete
+├─ session  create|list|show|configure|validate|run|pause|resume|stop|status|delete|clone
 ├─ template show|set-var|clear-var
 ├─ payload  set|list|clear
 ├─ strategy set
 ├─ timing   set
+├─ storage  set|show          # Phase 2
 ├─ match    add|list|clear
 ├─ results  list|show|export
 └─ generators list
@@ -1148,9 +1149,22 @@ Schema + package skeleton + CLI help / empty list.
 - Time-slice re-enqueues at **priority 10** so a pending auto BAC/IV/`auth_test` job runs between segments (PR-6 test mandatory).
 - Caps enforced with **active** duration; JSON status pollable every 2s; status stays `running` across slices.
 
-### Phase 2 — Multi-set strategies & storage modes
+### Phase 2 — Multi-set strategies & storage modes — **IMPLEMENTED**
 
 Pitchfork, cluster_bomb, zip; sample/all flows; session clone; host caps; more processors.
+
+**Shipped:**
+
+| Item | Detail |
+|------|--------|
+| Strategies | `pitchfork` / `zip` (lockstep, length=min); `cluster_bomb` (+ config alias `cartesian`) |
+| Estimates | pitchfork/zip = min(set lengths); cluster_bomb = product; confirm >1000 |
+| Storage | `metrics_only` \| `sample_flows` (+ `sample_rate`) \| `all_flows` (confirm/`--force`) |
+| Processors | url/base64 decode, to_lower/upper, html encode/decode, md5/sha1/sha256, strip, `prefix:`/`suffix:` |
+| Host caps | `timing.max_concurrency_per_host` |
+| Clone | `talos intruder session clone` → new draft, config only |
+| CLI | `storage set\|show`; strategy `--set` multi; timing `--concurrency-per-host` |
+| Tests | `tests/test_intruder_phase2.py` |
 
 ### Phase 3 — Grep, pools, param-intel
 
@@ -1413,13 +1427,13 @@ Ordered, independently reviewable. **CLI only.**
 - **Dependencies:** PR-7
 - **Description:** AI-friendly export. Caps already in PR-5 — this PR does not introduce safety.
 
-### PR-9: Pitchfork / ClusterBomb / zip + flow storage modes
+### PR-9: Pitchfork / ClusterBomb / zip + flow storage modes — **DONE (Phase 2)**
 
 - **Title:** `intruder: multi-set strategies and flow storage modes (Phase 2)`
 - **Dependencies:** PR-8
 - **Description:** Cartesian with confirm >1000; sample/all flows.
 
-### PR-10: Processor expansion + host concurrency caps
+### PR-10: Processor expansion + host concurrency caps — **DONE (Phase 2)**
 
 - **Dependencies:** PR-9
 

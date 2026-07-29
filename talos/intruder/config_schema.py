@@ -3,7 +3,7 @@ Module: talos.intruder.config_schema
 
 Purpose:
     Load, default, and validate Intruder session config documents
-    (schema_version 1 only in Phase 1).
+    (schema_version 1; Phase 1 + Phase 2 plugins).
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ from talos.intruder.models import (
     DEFAULT_TIMEOUT_S,
     ERR_EMPTY_GENERATOR,
     ERR_INVALID_NUMBERS,
+    ERR_INVALID_STORAGE_MODE,
     ERR_MISSING_BASELINE,
+    ERR_MULTISET_UNBOUND,
     ERR_NO_VARIABLES,
     ERR_PATH_INJECT_UNAVAILABLE,
     ERR_SNIPER_NO_TARGETS,
@@ -35,14 +37,20 @@ from talos.intruder.models import (
     ERR_UNKNOWN_PLUGIN,
     ERR_UNSUPPORTED_CONFIG_VERSION,
     ERR_WORDLIST_TOO_LARGE,
+    KNOWN_GENERATORS,
+    KNOWN_STORAGE_MODES,
+    KNOWN_STRATEGIES,
     LOCATION_PATH,
-    PHASE1_GENERATORS,
-    PHASE1_PROCESSORS,
-    PHASE1_STRATEGIES,
+    MULTI_SET_STRATEGIES,
+    STORAGE_METRICS_ONLY,
+    STRATEGY_CARTESIAN,
+    STRATEGY_CLUSTER_BOMB,
+    STRATEGY_PITCHFORK,
     STRATEGY_SINGLE,
     STRATEGY_SNIPER,
+    STRATEGY_ZIP,
 )
-from talos.intruder.processors import build_processor
+from talos.intruder.processors import build_processor, is_known_processor
 from talos.intruder.template import path_has_brace, variables_from_config
 
 
@@ -64,6 +72,7 @@ def default_config() -> dict[str, Any]:
             "mode": "fixed",
             "rps": DEFAULT_RPS,
             "max_concurrency": DEFAULT_MAX_CONCURRENCY,
+            "max_concurrency_per_host": None,
             "jitter_ms": DEFAULT_JITTER_MS,
             "timeout_s": DEFAULT_TIMEOUT_S,
         },
@@ -72,7 +81,7 @@ def default_config() -> dict[str, Any]:
             "max_wall_s": DEFAULT_SLICE_MAX_WALL_S,
         },
         "storage": {
-            "mode": "metrics_only",
+            "mode": STORAGE_METRICS_ONLY,
             "sample_rate": 0.0,
             "store_interesting_bodies": True,
             "max_body_bytes": 65536,
@@ -114,6 +123,58 @@ class ValidationError(Exception):
         super().__init__(self.message)
 
 
+def _normalize_strategy_type(stype: str) -> str:
+    key = (stype or "").strip().lower()
+    if key == STRATEGY_CARTESIAN:
+        return STRATEGY_CLUSTER_BOMB
+    return key
+
+
+def _open_generator(gen_name: str, opts: dict[str, Any], *, force: bool) -> Any:
+    open_opts = dict(opts)
+    if force:
+        open_opts["force"] = True
+    try:
+        return build_generator(gen_name, open_opts)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith(ERR_WORDLIST_TOO_LARGE):
+            raise ValidationError(ERR_WORDLIST_TOO_LARGE, msg) from exc
+        if msg.startswith(ERR_EMPTY_GENERATOR) or "empty" in msg:
+            raise ValidationError(ERR_EMPTY_GENERATOR, msg) from exc
+        if msg.startswith(ERR_INVALID_NUMBERS) or "invalid_numbers" in msg:
+            raise ValidationError(ERR_INVALID_NUMBERS, msg) from exc
+        raise ValidationError(ERR_UNKNOWN_PLUGIN, msg) from exc
+
+
+def _estimate_multiset(
+    stype: str,
+    set_names: list[str],
+    payload_sets: dict[str, Any],
+    *,
+    force: bool,
+) -> Optional[int]:
+    counts: list[int] = []
+    for name in set_names:
+        pset = payload_sets[name]
+        gen = _open_generator(str(pset.get("generator")), dict(pset.get("options") or {}), force=force)
+        c = gen.estimate_count()
+        if c is None:
+            return None
+        if c == 0:
+            raise ValidationError(ERR_EMPTY_GENERATOR, f"payload set {name} empty")
+        counts.append(c)
+    if not counts:
+        return 0
+    if stype in (STRATEGY_PITCHFORK, STRATEGY_ZIP):
+        return min(counts)
+    # cluster_bomb / cartesian
+    total = 1
+    for c in counts:
+        total *= c
+    return total
+
+
 def validate_config(
     config: dict[str, Any],
     *,
@@ -130,18 +191,48 @@ def validate_config(
     if ver is None or int(ver) != CONFIG_SCHEMA_VERSION:
         raise ValidationError(
             ERR_UNSUPPORTED_CONFIG_VERSION,
-            f"unsupported config schema_version={ver!r}; Phase 1 requires {CONFIG_SCHEMA_VERSION}",
+            f"unsupported config schema_version={ver!r}; requires {CONFIG_SCHEMA_VERSION}",
         )
 
     tmpl = cfg.get("template") or {}
     if not tmpl.get("method") or not tmpl.get("url"):
         raise ValidationError(ERR_MISSING_BASELINE, "template method/url required")
 
+    # Storage mode
+    storage = cfg.get("storage") or {}
+    mode = str(storage.get("mode") or STORAGE_METRICS_ONLY).lower()
+    if mode not in KNOWN_STORAGE_MODES:
+        raise ValidationError(ERR_INVALID_STORAGE_MODE, f"unknown storage mode: {mode}")
+    storage["mode"] = mode
+    try:
+        sample_rate = float(storage.get("sample_rate") or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(ERR_INVALID_STORAGE_MODE, "sample_rate must be a number") from exc
+    if sample_rate < 0.0 or sample_rate > 1.0:
+        raise ValidationError(ERR_INVALID_STORAGE_MODE, "sample_rate must be in [0, 1]")
+    storage["sample_rate"] = sample_rate
+    cfg["storage"] = storage
+
+    # Timing: optional host concurrency cap
+    timing = cfg.get("timing") or {}
+    per_host = timing.get("max_concurrency_per_host")
+    if per_host is not None and per_host != "":
+        try:
+            per_host_i = int(per_host)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(ERR_UNKNOWN_PLUGIN, "max_concurrency_per_host must be int") from exc
+        if per_host_i < 1:
+            raise ValidationError(ERR_UNKNOWN_PLUGIN, "max_concurrency_per_host must be >= 1")
+        timing["max_concurrency_per_host"] = per_host_i
+    else:
+        timing["max_concurrency_per_host"] = None
+    cfg["timing"] = timing
+
     variables = variables_from_config(cfg)
     injectable = [v for v in variables if not v.is_fixed()]
     strategy = cfg.get("strategy") or {}
-    stype = str(strategy.get("type") or STRATEGY_SINGLE).lower()
-    if stype not in PHASE1_STRATEGIES:
+    stype = _normalize_strategy_type(str(strategy.get("type") or STRATEGY_SINGLE))
+    if stype not in KNOWN_STRATEGIES:
         raise ValidationError(ERR_UNKNOWN_PLUGIN, f"unknown strategy: {stype}")
 
     if stype in (STRATEGY_SINGLE, STRATEGY_SNIPER) and not injectable and not variables:
@@ -152,7 +243,6 @@ def validate_config(
         if targets is not None and len(targets) == 0:
             raise ValidationError(ERR_SNIPER_NO_TARGETS)
         if not injectable and not targets:
-            # All fixed → sniper has no targets
             raise ValidationError(ERR_SNIPER_NO_TARGETS, "sniper needs non-fixed variables")
 
     # Path inject gate
@@ -168,76 +258,85 @@ def validate_config(
 
     payload_sets = cfg.get("payload_sets") or {}
     if not isinstance(payload_sets, dict) or not payload_sets:
-        if stype in (STRATEGY_SINGLE, STRATEGY_SNIPER):
+        if stype in (STRATEGY_SINGLE, STRATEGY_SNIPER) or stype in MULTI_SET_STRATEGIES:
             raise ValidationError(ERR_UNBOUND_VARIABLE, "payload_sets required")
 
-    estimate: Optional[int] = None
+    # Validate generators / processors
     for set_name, pset in payload_sets.items():
         if not isinstance(pset, dict):
             raise ValidationError(ERR_UNKNOWN_PLUGIN, f"bad payload set {set_name}")
         gen_name = str(pset.get("generator") or "").lower()
-        if gen_name not in PHASE1_GENERATORS:
+        if gen_name not in KNOWN_GENERATORS:
             raise ValidationError(ERR_UNKNOWN_PLUGIN, f"unknown generator: {gen_name}")
         for proc in pset.get("processors") or []:
-            pname = str(proc).lower()
-            if pname not in PHASE1_PROCESSORS:
+            pname = str(proc)
+            if not is_known_processor(pname):
                 raise ValidationError(ERR_UNKNOWN_PLUGIN, f"unknown processor: {pname}")
             build_processor(pname)
 
-        opts = dict(pset.get("options") or {})
-        if force:
-            opts["force"] = True
-        if not open_generators:
-            continue
-        try:
-            gen = build_generator(gen_name, opts)
-        except ValueError as exc:
-            msg = str(exc)
-            if msg.startswith(ERR_WORDLIST_TOO_LARGE):
-                raise ValidationError(ERR_WORDLIST_TOO_LARGE, msg) from exc
-            if msg.startswith(ERR_EMPTY_GENERATOR) or "empty" in msg:
-                raise ValidationError(ERR_EMPTY_GENERATOR, msg) from exc
-            if msg.startswith(ERR_INVALID_NUMBERS) or "invalid_numbers" in msg:
-                raise ValidationError(ERR_INVALID_NUMBERS, msg) from exc
-            raise ValidationError(ERR_UNKNOWN_PLUGIN, msg) from exc
-        count = gen.estimate_count()
-        if count is not None and count == 0:
-            raise ValidationError(ERR_EMPTY_GENERATOR, f"payload set {set_name} empty")
-        if estimate is None:
-            estimate = count
-        elif count is not None and stype == STRATEGY_SNIPER:
-            # sniper total = payloads * targets
-            pass
-        elif count is not None:
-            estimate = count
+        if open_generators:
+            gen = _open_generator(gen_name, dict(pset.get("options") or {}), force=force)
+            count = gen.estimate_count()
+            if count is not None and count == 0:
+                raise ValidationError(ERR_EMPTY_GENERATOR, f"payload set {set_name} empty")
+
+    estimate: Optional[int] = None
+
+    # Multi-set strategies: resolve ordered set names and estimate
+    if stype in MULTI_SET_STRATEGIES:
+        opts = strategy.setdefault("options", {})
+        ordered = opts.get("sets") or opts.get("variables")
+        if ordered:
+            set_names = [str(s) for s in ordered]
+        else:
+            matched = [v.name for v in injectable if v.name in payload_sets]
+            set_names = matched if matched else list(payload_sets.keys())
+        if not set_names:
+            raise ValidationError(ERR_MULTISET_UNBOUND, "multi-set strategy needs payload sets")
+        for name in set_names:
+            if name not in payload_sets:
+                raise ValidationError(ERR_UNBOUND_VARIABLE, f"no payload set for {name}")
+            # Variable should exist on template (or will be treated as raw-style binding name)
+            var_names = {v.name for v in variables}
+            if name not in var_names:
+                raise ValidationError(
+                    ERR_UNBOUND_VARIABLE,
+                    f"payload set '{name}' has no matching template variable",
+                )
+        opts["sets"] = set_names
+        if open_generators:
+            estimate = _estimate_multiset(stype, set_names, payload_sets, force=force)
 
     # Estimate for sniper
     if open_generators and stype == STRATEGY_SNIPER:
         targets = (strategy.get("options") or {}).get("targets")
         n_targets = len(targets) if targets else len(injectable)
-        # Re-open first set for count
         first = next(iter(payload_sets.values()), None)
         if first:
-            opts = dict(first.get("options") or {})
-            if force:
-                opts["force"] = True
-            gen = build_generator(str(first.get("generator")), opts)
+            gen = _open_generator(
+                str(first.get("generator")), dict(first.get("options") or {}), force=force
+            )
             pc = gen.estimate_count() or 0
             estimate = pc * max(1, n_targets)
-    elif open_generators and stype == STRATEGY_SINGLE and estimate is None:
-        first = next(iter(payload_sets.values()), None)
-        if first:
-            opts = dict(first.get("options") or {})
-            if force:
-                opts["force"] = True
-            gen = build_generator(str(first.get("generator")), opts)
+    elif open_generators and stype == STRATEGY_SINGLE:
+        first_name = None
+        opts = strategy.setdefault("options", {})
+        primary = opts.get("primary") or opts.get("var")
+        if primary and primary in payload_sets:
+            first_name = primary
+        elif len(payload_sets) == 1:
+            first_name = next(iter(payload_sets.keys()))
+        if first_name:
+            pset = payload_sets[first_name]
+            gen = _open_generator(
+                str(pset.get("generator")), dict(pset.get("options") or {}), force=force
+            )
             estimate = gen.estimate_count()
 
     # Bind strategy primary var for single
     if stype == STRATEGY_SINGLE and injectable:
         opts = strategy.setdefault("options", {})
         if not opts.get("primary") and not opts.get("var"):
-            # Prefer matching payload set name
             for v in injectable:
                 if v.name in payload_sets:
                     opts["primary"] = v.name
@@ -262,3 +361,9 @@ def validate_config(
 
 def estimate_requires_confirm(estimate: Optional[int]) -> bool:
     return estimate is not None and estimate > DEFAULT_CONFIRM_THRESHOLD
+
+
+def storage_requires_confirm(config: dict[str, Any]) -> bool:
+    """all_flows storage needs operator confirm / --force."""
+    mode = str(((config or {}).get("storage") or {}).get("mode") or "").lower()
+    return mode == "all_flows"
