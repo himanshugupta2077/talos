@@ -15,9 +15,14 @@ Purpose:
     Phase 2 CLI: from, edit, once (--repeat/--parallel), redo, dup, show,
     export, history, tree, diff, note.
 
+    Tab archive CLI: tab open|list|show|close|rename|touch|clear
+        Project-scoped sticky Repeater workspace slots (repeater_tabs).
+        Metadata only — draft bodies stay local until Send.
+
 Public surface:
     engine.send_once / send_repeat / send_parallel / redo_send,
-    draft helpers, raw_http parse/serialize, request_diff, CLI entry.
+    draft helpers, raw_http parse/serialize, request_diff, CLI entry,
+    send.db tab archive helpers.
 """
 
 from talos.send.engine import (

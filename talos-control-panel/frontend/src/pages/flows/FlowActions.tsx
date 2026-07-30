@@ -150,6 +150,22 @@ export default function FlowActions({
         "repeater"
       )}
       {wrapItem(
+        variant === "menu" ? (
+          <Link to={`/testing/intruder?flow=${flow.id}`} onClick={finish}>
+            Send to Intruder
+          </Link>
+        ) : (
+          <Link
+            to={`/testing/intruder?flow=${flow.id}`}
+            className={itemClass}
+            onClick={finish}
+          >
+            Send to Intruder
+          </Link>
+        ),
+        "intruder"
+      )}
+      {wrapItem(
         <button
           type="button"
           className={itemClass}

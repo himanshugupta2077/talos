@@ -20,6 +20,8 @@ interface Props {
   onClearDrafts: () => void;
   parentFlowId: string;
   originalFlowId: string;
+  /** Last successful send execution flow id (K11 Intruder baseline). */
+  lastExecutionId?: string | null;
   noteInitial?: string;
 }
 
@@ -41,9 +43,15 @@ export default function RepeaterToolbar({
   onClearDrafts,
   parentFlowId,
   originalFlowId,
+  lastExecutionId = null,
   noteInitial = "",
 }: Props) {
   const [noteOpen, setNoteOpen] = useState(false);
+
+  // K11: prefer last successful send execution; else parent capture
+  const intruderFlowId = lastExecutionId || parentFlowId;
+  const intruderBaseline = lastExecutionId ? "last_send" : "capture";
+  const intruderHref = `/testing/intruder?flow=${intruderFlowId}&baseline=${intruderBaseline}`;
 
   return (
     <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-base-300 bg-base-100 shrink-0">
@@ -83,6 +91,28 @@ export default function RepeaterToolbar({
             <button type="button" onClick={onMulti}>
               Send multiple…
             </button>
+          </li>
+        </ul>
+      </div>
+      <div className="dropdown">
+        <button type="button" tabIndex={0} className="btn btn-sm btn-ghost">
+          More ▾
+        </button>
+        <ul
+          tabIndex={0}
+          className="dropdown-content menu p-2 shadow bg-base-200 rounded-box w-52 border border-base-300 z-20"
+        >
+          <li>
+            <Link
+              to={intruderHref}
+              title={
+                lastExecutionId
+                  ? `Baseline: last send · ${lastExecutionId.slice(0, 8)}`
+                  : `Baseline: capture · ${parentFlowId.slice(0, 8)}`
+              }
+            >
+              Send to Intruder
+            </Link>
           </li>
         </ul>
       </div>
@@ -146,10 +176,10 @@ export default function RepeaterToolbar({
       <button
         type="button"
         className="btn btn-sm btn-ghost"
-        title="Wipe all local repeater drafts for this project"
+        title="Close all Repeater tabs for this project (send flows/history kept)"
         onClick={onClearDrafts}
       >
-        Clear drafts
+        Clear tabs
       </button>
 
       <div className="flex-1" />

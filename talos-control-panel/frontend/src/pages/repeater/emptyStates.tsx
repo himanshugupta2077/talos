@@ -21,8 +21,9 @@ export function NoTabsEmpty({
     <div className="flex flex-col items-center justify-center gap-4 py-16 px-6 text-center">
       <div className="text-lg font-semibold">Repeater</div>
       <p className="text-sm text-base-content/60 max-w-md">
-        Open a captured flow to edit and send. Drafts stay local until Send;
-        every send creates a new flow with full lineage (captures stay immutable).
+        Open a captured flow to edit and send. Tabs stick in the project archive
+        (survive refresh). Draft bodies stay local until Send; every send creates
+        a new flow with full lineage (captures stay immutable).
       </p>
       <p className="text-xs text-base-content/50 max-w-md">
         Tip: from{" "}

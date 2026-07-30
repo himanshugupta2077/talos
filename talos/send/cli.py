@@ -15,9 +15,15 @@ Purpose:
         talos send tree --from <id>
         talos send diff <a> <b> [--side request|response|both]
         talos send note <flow_id> --text …
+        talos send tab open|list|show|close|rename|touch|clear …
 
     All commands require a bound project. Execution is immediate (no scheduler).
-    AI contract: fully non-interactive; --format json on once/show/history/diff/…
+    AI contract: fully non-interactive; --format json on once/show/history/diff/tab/…
+
+    Tab archive (project DB):
+        Persistent Repeater workspace slots (Burp-like). Metadata only —
+        parent/root/session/last_execution/title. Draft bodies stay local
+        until Send; re-open re-materializes from parent_flow_id.
 
 Dependencies: argparse, asyncio, os, shutil, subprocess, sys, pathlib
               talos.cli_output, talos.projects.manager, talos.send.*
@@ -378,6 +384,122 @@ def run_send_cli(manager: ProjectManager, argv: list[str]) -> None:
     )
     add_format_argument(p_note)
 
+    # --- tab (persistent Repeater archive) ---
+    p_tab = sub.add_parser(
+        "tab",
+        help=(
+            "Persistent Repeater tab archive (project DB). "
+            "Open a flow into a sticky tab; list/close/rename; touch after send. "
+            "Does not store draft bodies — re-materialize with 'send from <parent>'."
+        ),
+    )
+    tab_sub = p_tab.add_subparsers(dest="tab_cmd", metavar="<tab-command>")
+    tab_sub.required = True
+
+    p_tab_open = tab_sub.add_parser(
+        "open",
+        help=(
+            "Open a flow as a Repeater tab (create or reuse same parent). "
+            "No HTTP, no draft body stored."
+        ),
+    )
+    p_tab_open.add_argument("flow_id", help="Parent flow UUID to open.")
+    p_tab_open.add_argument(
+        "--title",
+        metavar="TEXT",
+        help="Optional tab title (default: METHOD + path).",
+    )
+    p_tab_open.add_argument(
+        "--session",
+        metavar="UUID",
+        help="Optional session_id branch stamp for later once --session.",
+    )
+    p_tab_open.add_argument(
+        "--force-new",
+        dest="force_new",
+        action="store_true",
+        help="Always create a new tab even if one exists for this parent.",
+    )
+    add_format_argument(p_tab_open)
+
+    p_tab_list = tab_sub.add_parser(
+        "list",
+        help="List all Repeater tabs for the active project (global archive).",
+    )
+    add_format_argument(p_tab_list)
+
+    p_tab_show = tab_sub.add_parser(
+        "show",
+        help="Show one Repeater tab by id.",
+    )
+    p_tab_show.add_argument("tab_id", help="Repeater tab UUID.")
+    add_format_argument(p_tab_show)
+
+    p_tab_close = tab_sub.add_parser(
+        "close",
+        help="Close (delete) a tab from the archive. Flows/history are kept.",
+    )
+    p_tab_close.add_argument("tab_id", help="Repeater tab UUID.")
+    add_format_argument(p_tab_close)
+
+    p_tab_rename = tab_sub.add_parser(
+        "rename",
+        help="Set a human title on a tab.",
+    )
+    p_tab_rename.add_argument("tab_id", help="Repeater tab UUID.")
+    p_tab_rename.add_argument(
+        "--title",
+        required=True,
+        metavar="TEXT",
+        help="New tab title.",
+    )
+    add_format_argument(p_tab_rename)
+
+    p_tab_touch = tab_sub.add_parser(
+        "touch",
+        help=(
+            "Update tab metadata after send/fork/dup "
+            "(last-execution, parent, session). No draft body."
+        ),
+    )
+    p_tab_touch.add_argument("tab_id", help="Repeater tab UUID.")
+    p_tab_touch.add_argument(
+        "--parent",
+        dest="parent_flow_id",
+        metavar="FLOW_ID",
+        help="New parent_flow_id (e.g. after Fork).",
+    )
+    p_tab_touch.add_argument(
+        "--session",
+        metavar="UUID",
+        help="Set session_id branch stamp.",
+    )
+    p_tab_touch.add_argument(
+        "--clear-session",
+        dest="clear_session",
+        action="store_true",
+        help="Clear session_id on the tab.",
+    )
+    p_tab_touch.add_argument(
+        "--last-execution",
+        dest="last_execution_id",
+        metavar="FLOW_ID",
+        help="Last send execution flow id from this tab.",
+    )
+    p_tab_touch.add_argument(
+        "--clear-last-execution",
+        dest="clear_last_execution",
+        action="store_true",
+        help="Clear last_execution_id (e.g. after Fork).",
+    )
+    add_format_argument(p_tab_touch)
+
+    p_tab_clear = tab_sub.add_parser(
+        "clear",
+        help="Close all Repeater tabs for the project (flows kept).",
+    )
+    add_format_argument(p_tab_clear)
+
     args = parser.parse_args(argv)
 
     project = manager.active()
@@ -399,6 +521,7 @@ def run_send_cli(manager: ProjectManager, argv: list[str]) -> None:
         "tree": cmd_send_tree,
         "diff": cmd_send_diff,
         "note": cmd_send_note,
+        "tab": cmd_send_tab,
     }
     handler = dispatch.get(args.send_cmd)
     if handler is None:
@@ -1100,6 +1223,197 @@ def cmd_send_note(project: object, args: argparse.Namespace) -> None:
         cli_json(payload)
         return
     cli_success("Note updated.", {"id": args.flow_id, "note": args.text})
+
+
+def cmd_send_tab(project: object, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Dispatch `talos send tab <open|list|show|close|rename|touch|clear>`.
+    Side effects:
+        Open/close/rename/touch/clear write repeater_tabs; list/show read-only.
+    """
+    sub = getattr(args, "tab_cmd", None)
+    if sub == "open":
+        _cmd_tab_open(project, args)
+    elif sub == "list":
+        _cmd_tab_list(project, args)
+    elif sub == "show":
+        _cmd_tab_show(project, args)
+    elif sub == "close":
+        _cmd_tab_close(project, args)
+    elif sub == "rename":
+        _cmd_tab_rename(project, args)
+    elif sub == "touch":
+        _cmd_tab_touch(project, args)
+    elif sub == "clear":
+        _cmd_tab_clear(project, args)
+    else:
+        cli_error(f"Unknown tab command: {sub!r}", exit_code=2)
+
+
+def _cmd_tab_open(project: object, args: argparse.Namespace) -> None:
+    """Create or reuse a Repeater tab for a parent flow."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    project_id = project.id  # type: ignore[attr-defined]
+    try:
+        result = send_db.open_repeater_tab(
+            db_path,
+            project_id,
+            args.flow_id,
+            title=getattr(args, "title", None),
+            session_id=getattr(args, "session", None),
+            reuse_same_parent=not getattr(args, "force_new", False),
+        )
+    except FileNotFoundError:
+        cli_error(f"Flow '{args.flow_id}' not found.")
+    except RuntimeError as exc:
+        cli_error(str(exc))
+
+    tab = result["tab"]
+    payload = {
+        "tab": tab,
+        "created": result["created"],
+        "reused": result["reused"],
+    }
+    if wants_json(args):
+        cli_json(payload)
+        return
+    action = "reused" if result["reused"] else "opened"
+    cli_success(
+        f"Repeater tab {action}.",
+        {
+            "Tab": tab["id"],
+            "Title": tab["title"],
+            "Parent": tab["parent_flow_id"],
+            "Root": tab["original_flow_id"],
+            "Session": tab.get("session_id") or "—",
+            "Last execution": tab.get("last_execution_id") or "—",
+        },
+    )
+
+
+def _cmd_tab_list(project: object, args: argparse.Namespace) -> None:
+    """List the project's global Repeater tab archive."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    project_id = project.id  # type: ignore[attr-defined]
+    tabs = send_db.list_repeater_tabs(db_path, project_id)
+    payload = {"tabs": tabs, "count": len(tabs)}
+    if wants_json(args):
+        cli_json(payload)
+        return
+    if not tabs:
+        cli_success("No Repeater tabs.", {"count": "0"})
+        return
+    cli_success(f"Repeater tabs ({len(tabs)}).", {})
+    for t in tabs:
+        last = t.get("last_execution_id") or "—"
+        sess = t.get("session_id") or "—"
+        print(
+            f"  {t['id'][:8]}…  {t['title']:<28}  "
+            f"parent={t['parent_flow_id'][:8]}…  last={last[:8] if last != '—' else '—'}  "
+            f"session={sess[:8] if sess != '—' else '—'}"
+        )
+
+
+def _cmd_tab_show(project: object, args: argparse.Namespace) -> None:
+    """Show one tab."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    tab = send_db.get_repeater_tab(db_path, args.tab_id)
+    if tab is None:
+        cli_error(f"Repeater tab '{args.tab_id}' not found.")
+    if wants_json(args):
+        cli_json({"tab": tab})
+        return
+    cli_success(
+        "Repeater tab.",
+        {
+            "Tab": tab["id"],
+            "Title": tab["title"],
+            "Parent": tab["parent_flow_id"],
+            "Root": tab["original_flow_id"],
+            "Session": tab.get("session_id") or "—",
+            "Last execution": tab.get("last_execution_id") or "—",
+            "Sort": str(tab.get("sort_order", 0)),
+            "Updated": tab.get("updated_at") or "—",
+        },
+    )
+
+
+def _cmd_tab_close(project: object, args: argparse.Namespace) -> None:
+    """Close one tab (flows kept)."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    ok = send_db.close_repeater_tab(db_path, args.tab_id)
+    if not ok:
+        cli_error(f"Repeater tab '{args.tab_id}' not found.")
+    payload = {"id": args.tab_id, "closed": True}
+    if wants_json(args):
+        cli_json(payload)
+        return
+    cli_success("Repeater tab closed (flows kept).", {"Tab": args.tab_id})
+
+
+def _cmd_tab_rename(project: object, args: argparse.Namespace) -> None:
+    """Rename a tab."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    try:
+        tab = send_db.rename_repeater_tab(db_path, args.tab_id, args.title)
+    except ValueError as exc:
+        cli_error(str(exc), exit_code=2)
+    if tab is None:
+        cli_error(f"Repeater tab '{args.tab_id}' not found.")
+    if wants_json(args):
+        cli_json({"tab": tab})
+        return
+    cli_success("Repeater tab renamed.", {"Tab": tab["id"], "Title": tab["title"]})
+
+
+def _cmd_tab_touch(project: object, args: argparse.Namespace) -> None:
+    """Update tab metadata after send / fork / dup."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    if getattr(args, "clear_session", False) and getattr(args, "session", None):
+        cli_error("Use either --session or --clear-session, not both.", exit_code=2)
+    if getattr(args, "clear_last_execution", False) and getattr(
+        args, "last_execution_id", None
+    ):
+        cli_error(
+            "Use either --last-execution or --clear-last-execution, not both.",
+            exit_code=2,
+        )
+    tab = send_db.touch_repeater_tab(
+        db_path,
+        args.tab_id,
+        parent_flow_id=getattr(args, "parent_flow_id", None),
+        session_id=getattr(args, "session", None),
+        last_execution_id=getattr(args, "last_execution_id", None),
+        clear_session=getattr(args, "clear_session", False),
+        clear_last_execution=getattr(args, "clear_last_execution", False),
+    )
+    if tab is None:
+        cli_error(f"Repeater tab '{args.tab_id}' not found.")
+    if wants_json(args):
+        cli_json({"tab": tab})
+        return
+    cli_success(
+        "Repeater tab updated.",
+        {
+            "Tab": tab["id"],
+            "Parent": tab["parent_flow_id"],
+            "Session": tab.get("session_id") or "—",
+            "Last execution": tab.get("last_execution_id") or "—",
+        },
+    )
+
+
+def _cmd_tab_clear(project: object, args: argparse.Namespace) -> None:
+    """Close all tabs for the project."""
+    db_path = project.db_path  # type: ignore[attr-defined]
+    project_id = project.id  # type: ignore[attr-defined]
+    n = send_db.clear_repeater_tabs(db_path, project_id)
+    payload = {"cleared": n}
+    if wants_json(args):
+        cli_json(payload)
+        return
+    cli_success(f"Cleared {n} Repeater tab(s) (flows kept).", {"count": str(n)})
 
 
 # ------------------------------------------------------------------ #

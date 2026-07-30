@@ -421,6 +421,33 @@ class NoteBody(BaseModel):
     note: str = ""
 
 
+class TabOpenBody(BaseModel):
+    """Open (create or reuse) a Repeater tab for a parent flow."""
+
+    flow_id: str
+    title: Optional[str] = None
+    session_id: Optional[str] = None
+    force_new: bool = False
+
+
+class TabRenameBody(BaseModel):
+    title: str
+
+
+class TabTouchBody(BaseModel):
+    """Update tab metadata after send / fork / dup (no draft body)."""
+
+    parent_flow_id: Optional[str] = None
+    session_id: Optional[str] = None
+    clear_session: bool = False
+    last_execution_id: Optional[str] = None
+    clear_last_execution: bool = False
+
+
+class TabReorderBody(BaseModel):
+    ordered_ids: list[str] = Field(default_factory=list)
+
+
 # ------------------------------------------------------------------ #
 # Reads                                                                #
 # ------------------------------------------------------------------ #
@@ -951,3 +978,202 @@ async def export_route(project_id: str, flow_id: str):
             "response_bytes": len(resp_bytes),
         },
     }
+
+
+# ------------------------------------------------------------------ #
+# Repeater tab archive (project DB; metadata only)                     #
+# ------------------------------------------------------------------ #
+
+
+@router.get("/tabs")
+def list_tabs(project_id: str):
+    """
+    Global Repeater tab archive for the project.
+    Draft bodies are not stored — UI re-materializes from parent_flow_id.
+    """
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    tabs = send_db.list_repeater_tabs(db_path, project_id)
+    return {"tabs": tabs, "count": len(tabs)}
+
+
+@router.get("/tabs/{tab_id}")
+def get_tab(project_id: str, tab_id: str):
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    tab = send_db.get_repeater_tab(db_path, tab_id)
+    if tab is None:
+        raise HTTPException(status_code=404, detail=f"Repeater tab '{tab_id}' not found")
+    return {"tab": tab}
+
+
+@router.post("/tabs")
+async def open_tab(project_id: str, body: TabOpenBody):
+    """
+    Send to Repeater: create or reuse a sticky tab for flow_id.
+    Synthetic steps for CommandLog. No draft body write.
+    """
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    t0 = time.monotonic()
+    try:
+        result = send_db.open_repeater_tab(
+            db_path,
+            project_id,
+            body.flow_id,
+            title=body.title,
+            session_id=body.session_id,
+            reuse_same_parent=not body.force_new,
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, detail=f"Flow '{body.flow_id}' not found"
+        ) from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    tab = result["tab"]
+    action = "reused" if result["reused"] else "opened"
+    steps = [
+        _synthetic_step(
+            cmd_str=f"send tab open {body.flow_id}",
+            ok=True,
+            duration_ms=duration_ms,
+            stdout=f"tab {action} id={tab['id']}",
+        )
+    ]
+    return {
+        "steps": steps,
+        "result": {
+            "tab": tab,
+            "created": result["created"],
+            "reused": result["reused"],
+        },
+    }
+
+
+@router.post("/tabs/{tab_id}/rename")
+async def rename_tab(project_id: str, tab_id: str, body: TabRenameBody):
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    try:
+        tab = send_db.rename_repeater_tab(db_path, tab_id, body.title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if tab is None:
+        raise HTTPException(status_code=404, detail=f"Repeater tab '{tab_id}' not found")
+    steps = [
+        _synthetic_step(
+            cmd_str=f"send tab rename {tab_id}",
+            ok=True,
+            duration_ms=0,
+            stdout=f"title={tab['title']}",
+        )
+    ]
+    return {"steps": steps, "result": {"tab": tab}}
+
+
+@router.post("/tabs/{tab_id}/touch")
+async def touch_tab(project_id: str, tab_id: str, body: TabTouchBody):
+    """Update last_execution / parent / session after send or fork."""
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    if body.clear_session and body.session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Use either session_id or clear_session, not both",
+        )
+    if body.clear_last_execution and body.last_execution_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Use either last_execution_id or clear_last_execution, not both",
+        )
+    db_path = _db_path(project_id)
+    tab = send_db.touch_repeater_tab(
+        db_path,
+        tab_id,
+        parent_flow_id=body.parent_flow_id,
+        session_id=body.session_id,
+        last_execution_id=body.last_execution_id,
+        clear_session=body.clear_session,
+        clear_last_execution=body.clear_last_execution,
+    )
+    if tab is None:
+        raise HTTPException(status_code=404, detail=f"Repeater tab '{tab_id}' not found")
+    steps = [
+        _synthetic_step(
+            cmd_str=f"send tab touch {tab_id}",
+            ok=True,
+            duration_ms=0,
+            stdout="updated",
+        )
+    ]
+    return {"steps": steps, "result": {"tab": tab}}
+
+
+@router.post("/tabs/reorder")
+async def reorder_tabs(project_id: str, body: TabReorderBody):
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    tabs = send_db.reorder_repeater_tabs(db_path, project_id, body.ordered_ids)
+    steps = [
+        _synthetic_step(
+            cmd_str="send tab reorder",
+            ok=True,
+            duration_ms=0,
+            stdout=f"count={len(tabs)}",
+        )
+    ]
+    return {"steps": steps, "result": {"tabs": tabs, "count": len(tabs)}}
+
+
+@router.delete("/tabs/{tab_id}")
+async def close_tab(project_id: str, tab_id: str):
+    """Close a tab (flows/history kept)."""
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    ok = send_db.close_repeater_tab(db_path, tab_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Repeater tab '{tab_id}' not found")
+    steps = [
+        _synthetic_step(
+            cmd_str=f"send tab close {tab_id}",
+            ok=True,
+            duration_ms=0,
+            stdout="closed",
+        )
+    ]
+    return {"steps": steps, "result": {"id": tab_id, "closed": True}}
+
+
+@router.delete("/tabs")
+async def clear_tabs(project_id: str):
+    """Close all tabs for the project (flows kept)."""
+    _ensure_talos_on_path()
+    from talos.send import db as send_db
+
+    db_path = _db_path(project_id)
+    n = send_db.clear_repeater_tabs(db_path, project_id)
+    steps = [
+        _synthetic_step(
+            cmd_str="send tab clear",
+            ok=True,
+            duration_ms=0,
+            stdout=f"cleared={n}",
+        )
+    ]
+    return {"steps": steps, "result": {"cleared": n}}

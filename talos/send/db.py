@@ -2,8 +2,9 @@
 Module: talos.send.db
 
 Purpose:
-    Data access for Repeater (send) Phase 1–2.
-    Thin wrappers over flows / replay helpers — no separate sessions table.
+    Data access for Repeater (send) Phase 1–2 + tab archive.
+    Thin wrappers over flows / replay helpers, plus project-scoped
+    `repeater_tabs` for Burp-like persistent workspace slots.
 
     History query:
         WHERE original_flow_id = ? AND source IN ('manual_send','ai_send')
@@ -12,19 +13,27 @@ Purpose:
     Note update (Phase 2 exception):
         UPDATE flow_meta.note on send sources only — never on proxy_capture.
 
-Dependencies: sqlite3, json, pathlib, talos.projects.db, talos.replay.db
+    Tab archive (schema v45):
+        Metadata only (parent/root/session/last_execution/title/order).
+        Draft request bodies are never stored here — re-materialize from
+        parent_flow_id via draft_from_flow / materialize_draft_path.
+
+Dependencies: sqlite3, json, pathlib, uuid, talos.projects.db, talos.replay.db
 Data flow:
     engine / CLI → functions here → project SQLite
 Side effects:
-    - Reads: get_flow_for_send, resolve_root_flow_id, list_send_history, get_flow_show
-    - Writes: update_send_note (send rows only); export writes files
+    - Reads: get_flow_for_send, resolve_root_flow_id, list_send_history, get_flow_show,
+      list/get repeater tabs
+    - Writes: update_send_note (send rows only); export writes files;
+      open/close/rename/touch/clear repeater tabs
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +43,9 @@ from talos.send import draft as draft_mod
 from talos.send.raw_http import serialize_request
 
 SEND_SOURCES: frozenset[str] = frozenset({"manual_send", "ai_send"})
+
+# Soft cap for project-scoped Repeater archive (CLI + Control Panel).
+MAX_REPEATER_TABS = 100
 
 
 def _duration_ms(captured_at, response_end) -> Optional[int]:
@@ -517,3 +529,404 @@ def materialize_draft_path(
         tmp.close()
         out_path = Path(tmp.name)
     return draft, out_path, raw
+
+
+# ------------------------------------------------------------------ #
+# Repeater tab archive (persistent workspace slots)                    #
+# ------------------------------------------------------------------ #
+
+def _now_iso() -> str:
+    """UTC ISO-8601 timestamp for tab created_at / updated_at."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _default_tab_title(flow: dict) -> str:
+    """
+    Purpose:
+        Human tab label: METHOD + path (Burp-like). Falls back to host.
+    """
+    method = (flow.get("method") or "GET").upper()
+    path = flow.get("path") or "/"
+    return f"{method} {path}"
+
+
+def _row_to_tab(row: sqlite3.Row | dict) -> dict:
+    """Normalize a repeater_tabs row to a plain dict."""
+    d = dict(row)
+    return {
+        "id": d["id"],
+        "project_id": d["project_id"],
+        "title": d.get("title") or "",
+        "parent_flow_id": d["parent_flow_id"],
+        "original_flow_id": d["original_flow_id"],
+        "session_id": d.get("session_id"),
+        "last_execution_id": d.get("last_execution_id"),
+        "sort_order": int(d.get("sort_order") or 0),
+        "created_at": d["created_at"],
+        "updated_at": d["updated_at"],
+    }
+
+
+def list_repeater_tabs(db_path: Path, project_id: str) -> list[dict]:
+    """
+    Purpose:
+        List all Repeater tabs for a project (global archive), ordered by
+        sort_order then updated_at DESC.
+    Input:
+        db_path, project_id
+    Output:
+        List of tab dicts (may be empty).
+    Side effects: migrate; read-only.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return []
+    with _connect_ro(db_path) as conn:
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, project_id, title, parent_flow_id, original_flow_id,
+                       session_id, last_execution_id, sort_order,
+                       created_at, updated_at
+                FROM repeater_tabs
+                WHERE project_id = ?
+                ORDER BY sort_order ASC, updated_at DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [_row_to_tab(r) for r in rows]
+
+
+def get_repeater_tab(db_path: Path, tab_id: str) -> Optional[dict]:
+    """
+    Purpose:
+        Load one Repeater tab by id.
+    Output:
+        Tab dict or None.
+    Side effects: migrate; read-only.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return None
+    with _connect_ro(db_path) as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT id, project_id, title, parent_flow_id, original_flow_id,
+                       session_id, last_execution_id, sort_order,
+                       created_at, updated_at
+                FROM repeater_tabs
+                WHERE id = ?
+                """,
+                (tab_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    if row is None:
+        return None
+    return _row_to_tab(row)
+
+
+def find_repeater_tab_by_parent(
+    db_path: Path,
+    project_id: str,
+    parent_flow_id: str,
+) -> Optional[dict]:
+    """
+    Purpose:
+        Find an existing tab opened from the same parent (dedupe open).
+    Output:
+        Tab dict or None.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return None
+    with _connect_ro(db_path) as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT id, project_id, title, parent_flow_id, original_flow_id,
+                       session_id, last_execution_id, sort_order,
+                       created_at, updated_at
+                FROM repeater_tabs
+                WHERE project_id = ? AND parent_flow_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (project_id, parent_flow_id),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    if row is None:
+        return None
+    return _row_to_tab(row)
+
+
+def open_repeater_tab(
+    db_path: Path,
+    project_id: str,
+    flow_id: str,
+    *,
+    title: Optional[str] = None,
+    session_id: Optional[str] = None,
+    reuse_same_parent: bool = True,
+) -> dict:
+    """
+    Purpose:
+        Open (create or reuse) a Repeater tab for a flow — the CLI/UI
+        "Send to Repeater" entry point. Does not send HTTP and does not
+        store draft bodies.
+    Input:
+        db_path, project_id, flow_id — parent flow to materialize from later.
+        title — optional override; default METHOD + path.
+        session_id — optional branch stamp for later once --session.
+        reuse_same_parent — when True, return existing tab with same parent.
+    Output:
+        Dict with keys: tab (dict), created (bool), reused (bool).
+    Raises:
+        FileNotFoundError if flow missing.
+        RuntimeError if tab cap (MAX_REPEATER_TABS) exceeded on create.
+    Side effects:
+        INSERT into repeater_tabs on create; may UPDATE updated_at on reuse.
+    """
+    migrate_project_db(db_path)
+    flow = get_flow_for_send(db_path, flow_id)
+    if flow is None:
+        raise FileNotFoundError(f"Flow '{flow_id}' not found.")
+
+    parent_id = str(flow["id"])
+    original_id = resolve_root_flow_id(flow)
+    tab_title = (title or "").strip() or _default_tab_title(flow)
+
+    if reuse_same_parent:
+        existing = find_repeater_tab_by_parent(db_path, project_id, parent_id)
+        if existing is not None:
+            # Bump updated_at so the tab surfaces as recently used.
+            now = _now_iso()
+            with _connect_rw(db_path) as conn:
+                conn.execute(
+                    "UPDATE repeater_tabs SET updated_at = ? WHERE id = ?",
+                    (now, existing["id"]),
+                )
+                conn.commit()
+            existing["updated_at"] = now
+            return {"tab": existing, "created": False, "reused": True}
+
+    existing_count = len(list_repeater_tabs(db_path, project_id))
+    if existing_count >= MAX_REPEATER_TABS:
+        raise RuntimeError(
+            f"Repeater tab limit reached ({MAX_REPEATER_TABS}). "
+            "Close a tab first (talos send tab close <id>)."
+        )
+
+    now = _now_iso()
+    tab_id = str(uuid.uuid4())
+    # Append to end of strip.
+    next_order = existing_count
+    with _connect_rw(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO repeater_tabs (
+                id, project_id, title, parent_flow_id, original_flow_id,
+                session_id, last_execution_id, sort_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+            """,
+            (
+                tab_id,
+                project_id,
+                tab_title,
+                parent_id,
+                original_id,
+                session_id,
+                next_order,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+    tab = {
+        "id": tab_id,
+        "project_id": project_id,
+        "title": tab_title,
+        "parent_flow_id": parent_id,
+        "original_flow_id": original_id,
+        "session_id": session_id,
+        "last_execution_id": None,
+        "sort_order": next_order,
+        "created_at": now,
+        "updated_at": now,
+    }
+    return {"tab": tab, "created": True, "reused": False}
+
+
+def close_repeater_tab(db_path: Path, tab_id: str) -> bool:
+    """
+    Purpose:
+        Remove a tab from the archive (does not delete flows / history).
+    Output:
+        True if a row was deleted.
+    Side effects: DELETE from repeater_tabs.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return False
+    with _connect_rw(db_path) as conn:
+        cur = conn.execute("DELETE FROM repeater_tabs WHERE id = ?", (tab_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def clear_repeater_tabs(db_path: Path, project_id: str) -> int:
+    """
+    Purpose:
+        Close all tabs for a project (archive wipe; flows kept).
+    Output:
+        Number of rows deleted.
+    """
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return 0
+    with _connect_rw(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM repeater_tabs WHERE project_id = ?",
+            (project_id,),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+def rename_repeater_tab(
+    db_path: Path,
+    tab_id: str,
+    title: str,
+) -> Optional[dict]:
+    """
+    Purpose:
+        Set a human title on a tab.
+    Output:
+        Updated tab dict, or None if missing.
+    """
+    migrate_project_db(db_path)
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title must be non-empty")
+    now = _now_iso()
+    with _connect_rw(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE repeater_tabs
+            SET title = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title, now, tab_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+    return get_repeater_tab(db_path, tab_id)
+
+
+def touch_repeater_tab(
+    db_path: Path,
+    tab_id: str,
+    *,
+    parent_flow_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    last_execution_id: Optional[str] = None,
+    clear_session: bool = False,
+    clear_last_execution: bool = False,
+) -> Optional[dict]:
+    """
+    Purpose:
+        Update tab metadata after a send / dup / fork without storing drafts.
+        Typical post-send: last_execution_id = new execution flow id.
+        Fork: parent_flow_id = execution id; clear_last_execution=True resets.
+    Output:
+        Updated tab, or None if missing.
+    """
+    migrate_project_db(db_path)
+    existing = get_repeater_tab(db_path, tab_id)
+    if existing is None:
+        return None
+
+    new_parent = parent_flow_id if parent_flow_id is not None else existing["parent_flow_id"]
+    if clear_session:
+        new_session: Optional[str] = None
+    elif session_id is not None:
+        new_session = session_id
+    else:
+        new_session = existing.get("session_id")
+
+    if clear_last_execution:
+        new_last: Optional[str] = None
+    elif last_execution_id is not None:
+        new_last = last_execution_id
+    else:
+        new_last = existing.get("last_execution_id")
+    now = _now_iso()
+
+    # If parent changes to a known flow, keep original_flow_id consistent
+    # with lineage root of the new parent when available.
+    new_original = existing["original_flow_id"]
+    if parent_flow_id is not None:
+        flow = get_flow_for_send(db_path, parent_flow_id)
+        if flow is not None:
+            new_original = resolve_root_flow_id(flow)
+
+    with _connect_rw(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE repeater_tabs
+            SET parent_flow_id = ?,
+                original_flow_id = ?,
+                session_id = ?,
+                last_execution_id = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_parent, new_original, new_session, new_last, now, tab_id),
+        )
+        conn.commit()
+    return get_repeater_tab(db_path, tab_id)
+
+
+def reorder_repeater_tabs(
+    db_path: Path,
+    project_id: str,
+    ordered_ids: list[str],
+) -> list[dict]:
+    """
+    Purpose:
+        Set sort_order from an explicit id list (UI drag-reorder).
+        Ids not listed keep relative order after the listed ones.
+    Output:
+        Full tab list after reorder.
+    """
+    migrate_project_db(db_path)
+    tabs = list_repeater_tabs(db_path, project_id)
+    if not tabs:
+        return []
+    by_id = {t["id"]: t for t in tabs}
+    seen: list[str] = []
+    for tid in ordered_ids:
+        if tid in by_id and tid not in seen:
+            seen.append(tid)
+    for t in tabs:
+        if t["id"] not in seen:
+            seen.append(t["id"])
+    now = _now_iso()
+    with _connect_rw(db_path) as conn:
+        for idx, tid in enumerate(seen):
+            conn.execute(
+                """
+                UPDATE repeater_tabs
+                SET sort_order = ?, updated_at = ?
+                WHERE id = ? AND project_id = ?
+                """,
+                (idx, now, tid, project_id),
+            )
+        conn.commit()
+    return list_repeater_tabs(db_path, project_id)

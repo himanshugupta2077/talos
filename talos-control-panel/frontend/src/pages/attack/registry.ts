@@ -15,7 +15,13 @@ export type ModuleStatus = "available" | "coming_soon";
 export type AttackRisk = "none" | "low" | "medium" | "high";
 
 /** Which summary endpoint powers hub KPI chips. */
-export type AttackKpiSource = "unauth" | "bac" | "secrets" | "iv" | "errors";
+export type AttackKpiSource =
+  | "unauth"
+  | "bac"
+  | "secrets"
+  | "iv"
+  | "errors"
+  | "intruder";
 
 export interface AttackModuleDef {
   id: string;
@@ -147,6 +153,29 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "characterization",
     ],
     kpi: "iv",
+  },
+  {
+    id: "intruder",
+    class: "active",
+    name: "Intruder",
+    description:
+      "High-volume mutation attacks: template positions, payload sets, strategies (sniper/pitchfork/cluster bomb), scheduler-backed sessions with pause/resume.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/intruder`,
+    keywords: [
+      "intruder",
+      "fuzz",
+      "wordlist",
+      "sniper",
+      "pitchfork",
+      "cluster bomb",
+      "payload",
+      "bruteforce",
+      "mutation",
+      "burp",
+    ],
+    kpi: "intruder",
   },
 ];
 

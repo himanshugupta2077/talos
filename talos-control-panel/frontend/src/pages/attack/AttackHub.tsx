@@ -256,6 +256,36 @@ export default function AttackHub() {
           })
           .catch(() => undefined);
       });
+
+    // Intruder (active high-volume)
+    api
+      .get<{
+        running: number;
+        paused: number;
+        interesting_total: number;
+      }>("/api/intruder/summary", { project_id: pid })
+      .then((r) => {
+        const active = (r.running ?? 0) + (r.paused ?? 0);
+        const interesting = r.interesting_total ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          intruder: {
+            chips: [
+              {
+                label: "active",
+                value: active,
+                tone: active > 0 ? "warn" : "muted",
+              },
+              {
+                label: "interesting",
+                value: interesting,
+                tone: interesting > 0 ? "danger" : "muted",
+              },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
   }, [selected]);
 
   useEffect(() => {

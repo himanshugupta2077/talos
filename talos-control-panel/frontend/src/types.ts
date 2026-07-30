@@ -574,6 +574,34 @@ export interface SendExportResponse {
   };
 }
 
+/** Project-scoped Repeater tab archive row (metadata only; no draft body). */
+export interface RepeaterTabDto {
+  id: string;
+  project_id: string;
+  title: string;
+  parent_flow_id: string;
+  original_flow_id: string;
+  session_id: string | null;
+  last_execution_id: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RepeaterTabsListResponse {
+  tabs: RepeaterTabDto[];
+  count: number;
+}
+
+export interface RepeaterTabOpenResponse {
+  steps: CommandResult[];
+  result: {
+    tab: RepeaterTabDto;
+    created: boolean;
+    reused: boolean;
+  };
+}
+
 export interface Finding {
   id: string;
   project_id: string;

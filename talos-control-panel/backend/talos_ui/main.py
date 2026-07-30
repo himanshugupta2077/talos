@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config
 from .routers import (
     access, attack, auth, auth_config, configuration, console, endpoints,
-    error_intel, findings, flows, input_validation, mutations, modules,
+    error_intel, findings, flows, input_validation, intruder, mutations, modules,
     passive, projects, proxy, replay, roles, scheduler, send,
 )
 
@@ -24,6 +24,7 @@ for router in (
     flows.router, replay.router, send.router, scheduler.router, mutations.router,
     attack.router, input_validation.router, passive.router,
     error_intel.router, findings.router, console.router, configuration.router,
+    intruder.router,
 ):
     app.include_router(router)
 

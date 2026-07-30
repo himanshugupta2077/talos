@@ -9,8 +9,10 @@ with full lineage. Captures stay immutable — every send inserts a new flow.
 • Replay = exact re-execution of the stored request (Mode 1).
 • Send = free mutation with parent/root lineage (Mode 2).
 
-Drafts stay in this browser until you Send. Parent does not advance after Send;
-use Fork on a history row to continue from that execution.
+Tabs are a project archive (server / talos send tab) — they survive refresh.
+Draft request bodies stay local until Send; re-open re-materializes from the
+parent flow. Parent does not advance after Send; use Fork on a history row to
+continue from that execution.
 `.trim();
 
 export function shortUuid(id: string | null | undefined): string {

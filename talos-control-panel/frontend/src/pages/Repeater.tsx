@@ -1,8 +1,9 @@
 /**
  * Control Panel Repeater — Mode 2 send workbench.
  *
- * Client multi-tab drafts (localStorage per project). Deep-link: /repeater?flow=
- * Operator guidance: ModuleHelp + inline CL / logout chips.
+ * Tab archive is project-scoped (server `repeater_tabs` / `talos send tab`).
+ * Draft request bodies stay client-local until Send — re-open re-materializes
+ * from parent_flow_id. Deep-link: /repeater?flow=
  */
 
 import {
@@ -16,18 +17,10 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { Modal, ModuleHelp, NoProjectNotice } from "../components/Common";
 import { useProject } from "../state/ProjectContext";
+import type { RepeaterTabDto, SendDraftResponse } from "../types";
 import {
-  clearPersist,
   createTab,
-  DEBOUNCE_MS,
-  evaluateRemoteUpdate,
-  fromPersist,
-  loadPersist,
   MAX_TABS,
-  newWriterId,
-  parseStorageEvent,
-  savePersist,
-  toPersist,
   type RepeaterTabState,
 } from "./repeater/draftState";
 import { draftFromSendResponse } from "./repeater/serializeDraft";
@@ -40,6 +33,73 @@ import {
   matchMod,
   REPEATER_SHORTCUTS,
 } from "./repeater/shortcuts";
+import {
+  clearRepeaterTabs,
+  closeRepeaterTab,
+  listRepeaterTabs,
+  openRepeaterTab,
+} from "./repeater/useSendMutation";
+
+const UI_PREFS_KEY = "talos-cp-repeater-ui-v1";
+
+function loadUiPrefs(projectId: string): {
+  activeTabId: string;
+  splitRatio: number;
+  historyCollapsed: boolean;
+} {
+  try {
+    const raw = localStorage.getItem(`${UI_PREFS_KEY}:${projectId}`);
+    if (!raw) {
+      return { activeTabId: "", splitRatio: 0.5, historyCollapsed: false };
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      activeTabId: typeof parsed.activeTabId === "string" ? parsed.activeTabId : "",
+      splitRatio:
+        typeof parsed.splitRatio === "number" ? parsed.splitRatio : 0.5,
+      historyCollapsed: !!parsed.historyCollapsed,
+    };
+  } catch {
+    return { activeTabId: "", splitRatio: 0.5, historyCollapsed: false };
+  }
+}
+
+function saveUiPrefs(
+  projectId: string,
+  prefs: {
+    activeTabId: string;
+    splitRatio: number;
+    historyCollapsed: boolean;
+  }
+): void {
+  try {
+    localStorage.setItem(`${UI_PREFS_KEY}:${projectId}`, JSON.stringify(prefs));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+async function hydrateServerTab(
+  projectId: string,
+  serverTab: RepeaterTabDto
+): Promise<RepeaterTabState> {
+  const d = (await api.get(`/api/send/draft/${serverTab.parent_flow_id}`, {
+    project_id: projectId,
+  })) as SendDraftResponse;
+  return createTab({
+    id: serverTab.id,
+    parentFlowId: serverTab.parent_flow_id,
+    originalFlowId: serverTab.original_flow_id || d.original_flow_id,
+    sessionId: serverTab.session_id,
+    lastExecutionId: serverTab.last_execution_id,
+    title: serverTab.title,
+    draft: draftFromSendResponse(d as any),
+    endpointAnnotations: d.endpoint_annotations || [],
+    editorMode: "pretty",
+    createdAt: serverTab.created_at,
+    updatedAt: serverTab.updated_at,
+  });
+}
 
 export default function Repeater() {
   const { selected } = useProject();
@@ -55,18 +115,15 @@ export default function Repeater() {
   const [openFlowOpen, setOpenFlowOpen] = useState(false);
   const [flowInput, setFlowInput] = useState("");
   const [opening, setOpening] = useState(false);
+  const [loadingTabs, setLoadingTabs] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [remoteConflict, setRemoteConflict] = useState<ReturnType<
-    typeof loadPersist
-  > | null>(null);
 
-  const writerIdRef = useRef(newWriterId());
   const tabsRef = useRef(tabs);
   const activeRef = useRef(activeTabId);
   const splitRef = useRef(splitRatio);
   const histRef = useRef(historyCollapsed);
-  const persistTimer = useRef<number | null>(null);
   const handledFlowRef = useRef<string | null>(null);
+  const loadGenRef = useRef(0);
 
   tabsRef.current = tabs;
   activeRef.current = activeTabId;
@@ -81,128 +138,100 @@ export default function Repeater() {
     []
   );
 
-  const flushPersist = useCallback(
-    (projectId: string) => {
-      if (!projectId) return;
-      const data = toPersist(
-        writerIdRef.current,
-        activeRef.current,
-        tabsRef.current,
-        splitRef.current,
-        histRef.current
-      );
-      const res = savePersist(projectId, data);
-      if (!res.ok) {
-        showToast(
-          "Draft storage full — large bodies kept in memory only",
-          "error"
-        );
-      }
-    },
-    [showToast]
-  );
+  // Persist lightweight UI prefs only (tab archive is server-side).
+  useEffect(() => {
+    if (!selected?.id) return;
+    saveUiPrefs(selected.id, {
+      activeTabId,
+      splitRatio,
+      historyCollapsed,
+    });
+  }, [selected?.id, activeTabId, splitRatio, historyCollapsed]);
 
-  const schedulePersist = useCallback(
-    (projectId: string) => {
-      if (persistTimer.current) window.clearTimeout(persistTimer.current);
-      persistTimer.current = window.setTimeout(() => {
-        flushPersist(projectId);
-      }, DEBOUNCE_MS);
-    },
-    [flushPersist]
-  );
-
-  // Load tabs when project changes
+  // Load project tab archive + re-materialize drafts from parents.
   useEffect(() => {
     if (!selected?.id) {
       setTabs([]);
       setActiveTabId("");
       return;
     }
-    // flush previous is handled by switch: load new key
-    const blob = loadPersist(selected.id);
-    if (blob) {
-      const restored = fromPersist(blob);
-      setTabs(restored.tabs);
-      setActiveTabId(restored.activeTabId || restored.tabs[0]?.id || "");
-      setSplitRatio(restored.splitRatio);
-      setHistoryCollapsed(restored.historyCollapsed);
-    } else {
-      setTabs([]);
-      setActiveTabId("");
-      setSplitRatio(0.5);
-      setHistoryCollapsed(false);
-    }
+    const projectId = selected.id;
+    const gen = ++loadGenRef.current;
+    const prefs = loadUiPrefs(projectId);
+    setSplitRatio(prefs.splitRatio);
+    setHistoryCollapsed(prefs.historyCollapsed);
+    setLoadingTabs(true);
     handledFlowRef.current = null;
-  }, [selected?.id]);
 
-  // Debounced persist on tab/state changes
-  useEffect(() => {
-    if (!selected?.id) return;
-    schedulePersist(selected.id);
-  }, [tabs, activeTabId, splitRatio, historyCollapsed, selected?.id, schedulePersist]);
-
-  // Flush on hide / unload
-  useEffect(() => {
-    if (!selected?.id) return;
-    const pid = selected.id;
-    const flush = () => flushPersist(pid);
-    const onVis = () => {
-      if (document.visibilityState === "hidden") flush();
-    };
-    window.addEventListener("pagehide", flush);
-    window.addEventListener("beforeunload", flush);
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      window.removeEventListener("pagehide", flush);
-      window.removeEventListener("beforeunload", flush);
-      document.removeEventListener("visibilitychange", onVis);
-      flush();
-    };
-  }, [selected?.id, flushPersist]);
-
-  // Multi-window storage events
-  useEffect(() => {
-    if (!selected?.id) return;
-    const pid = selected.id;
-    const onStorage = (e: StorageEvent) => {
-      const remote = parseStorageEvent(pid, e);
-      if (!remote) return;
-      const decision = evaluateRemoteUpdate(
-        tabsRef.current,
-        writerIdRef.current,
-        remote
-      );
-      if (decision.kind === "auto-reload") {
-        const restored = fromPersist(decision.remote);
-        setTabs(restored.tabs);
-        setActiveTabId(restored.activeTabId);
-        setSplitRatio(restored.splitRatio);
-        setHistoryCollapsed(restored.historyCollapsed);
-        showToast("Repeater tabs reloaded from another window", "info");
-      } else if (decision.kind === "dirty-conflict") {
-        setRemoteConflict(decision.remote);
+    (async () => {
+      try {
+        const listed = await listRepeaterTabs(projectId);
+        if (gen !== loadGenRef.current) return;
+        const hydrated: RepeaterTabState[] = [];
+        for (const st of listed.tabs) {
+          try {
+            hydrated.push(await hydrateServerTab(projectId, st));
+          } catch {
+            // Keep a stub so the archive entry remains visible even if
+            // the parent flow was deleted.
+            hydrated.push(
+              createTab({
+                id: st.id,
+                parentFlowId: st.parent_flow_id,
+                originalFlowId: st.original_flow_id,
+                sessionId: st.session_id,
+                lastExecutionId: st.last_execution_id,
+                title: st.title || "Missing parent",
+                createdAt: st.created_at,
+                updatedAt: st.updated_at,
+              })
+            );
+          }
+        }
+        if (gen !== loadGenRef.current) return;
+        setTabs(hydrated);
+        const preferred =
+          (prefs.activeTabId &&
+            hydrated.find((t) => t.id === prefs.activeTabId)?.id) ||
+          hydrated[0]?.id ||
+          "";
+        setActiveTabId(preferred);
+      } catch (err: any) {
+        if (gen !== loadGenRef.current) return;
+        setTabs([]);
+        setActiveTabId("");
+        const detail =
+          err?.body?.detail ||
+          (err instanceof Error ? err.message : "Failed to load Repeater tabs");
+        showToast(String(detail), "error");
+      } finally {
+        if (gen === loadGenRef.current) setLoadingTabs(false);
       }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    })();
   }, [selected?.id, showToast]);
 
-  // Clear drafts event from workspace toolbar
+  // Clear archive event from workspace toolbar
   useEffect(() => {
-    const onClear = () => {
+    const onClear = async () => {
       if (!selected?.id) return;
       if (
         !window.confirm(
-          "Clear all local Repeater drafts for this project? (server history is kept)"
+          "Close all Repeater tabs for this project? Send history/flows are kept."
         )
       ) {
         return;
       }
-      clearPersist(selected.id);
-      setTabs([]);
-      setActiveTabId("");
-      showToast("Local drafts cleared", "info");
+      try {
+        await clearRepeaterTabs(selected.id);
+        setTabs([]);
+        setActiveTabId("");
+        showToast("Repeater tabs cleared (flows kept)", "info");
+      } catch (err: any) {
+        const detail =
+          err?.body?.detail ||
+          (err instanceof Error ? err.message : "Failed to clear tabs");
+        showToast(String(detail), "error");
+      }
     };
     window.addEventListener("talos-repeater-clear-drafts", onClear);
     return () =>
@@ -213,7 +242,7 @@ export default function Repeater() {
     async (flowId: string) => {
       if (!selected?.id || !flowId.trim()) return;
       const id = flowId.trim();
-      // Activate existing tab with same parent if present
+      // Prefer already-loaded client tab with same parent
       const existing = tabsRef.current.find((t) => t.parentFlowId === id);
       if (existing) {
         setActiveTabId(existing.id);
@@ -225,19 +254,26 @@ export default function Repeater() {
       }
       setOpening(true);
       try {
-        const d = await api.get(`/api/send/draft/${id}`, {
-          project_id: selected.id,
+        const opened = await openRepeaterTab(selected.id, { flow_id: id });
+        const serverTab = opened.result.tab;
+        // If server reused a tab we already have, just activate.
+        const already = tabsRef.current.find((t) => t.id === serverTab.id);
+        if (already) {
+          setActiveTabId(already.id);
+          if (opened.result.reused) {
+            showToast("Activated existing Repeater tab", "info");
+          }
+          return;
+        }
+        const tab = await hydrateServerTab(selected.id, serverTab);
+        setTabs((prev) => {
+          if (prev.some((t) => t.id === tab.id)) return prev;
+          return [...prev, tab];
         });
-        const draft = draftFromSendResponse(d as any);
-        const tab = createTab({
-          parentFlowId: (d as any).parent_flow_id || id,
-          originalFlowId: (d as any).original_flow_id || id,
-          draft,
-          endpointAnnotations: (d as any).endpoint_annotations || [],
-          editorMode: "pretty",
-        });
-        setTabs((prev) => [...prev, tab]);
         setActiveTabId(tab.id);
+        if (opened.result.reused) {
+          showToast("Opened existing archive tab", "info");
+        }
       } catch (err: any) {
         const detail =
           err?.body?.detail ||
@@ -253,16 +289,45 @@ export default function Repeater() {
   // Deep-link ?flow=
   useEffect(() => {
     const flow = searchParams.get("flow");
-    if (!flow || !selected?.id) return;
+    if (!flow || !selected?.id || loadingTabs) return;
     if (handledFlowRef.current === flow) return;
     handledFlowRef.current = flow;
     openFlow(flow).then(() => {
-      // clear query to avoid re-open on tab switch
       const next = new URLSearchParams(searchParams);
       next.delete("flow");
       setSearchParams(next, { replace: true });
     });
-  }, [searchParams, selected?.id, openFlow, setSearchParams]);
+  }, [searchParams, selected?.id, openFlow, setSearchParams, loadingTabs]);
+
+  const closeTab = useCallback(
+    async (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (tab?.dirty && !window.confirm("Discard unsaved draft in this tab?")) {
+        return;
+      }
+      if (!selected?.id) return;
+      try {
+        await closeRepeaterTab(selected.id, id);
+      } catch (err: any) {
+        // 404 = already gone server-side; still drop locally.
+        if (err?.status !== 404) {
+          const detail =
+            err?.body?.detail ||
+            (err instanceof Error ? err.message : "Failed to close tab");
+          showToast(String(detail), "error");
+          return;
+        }
+      }
+      setTabs((prev) => {
+        const next = prev.filter((t) => t.id !== id);
+        if (activeRef.current === id) {
+          setActiveTabId(next[next.length - 1]?.id || "");
+        }
+        return next;
+      });
+    },
+    [selected?.id, showToast]
+  );
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -279,7 +344,6 @@ export default function Repeater() {
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
-        // Allow Ctrl+Enter from textarea and global
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("talos-repeater-send"));
         return;
@@ -291,7 +355,7 @@ export default function Repeater() {
       }
       if (e.shiftKey && (e.key === "W" || e.key === "w")) {
         e.preventDefault();
-        if (activeRef.current) closeTab(activeRef.current);
+        if (activeRef.current) void closeTab(activeRef.current);
         return;
       }
       if (e.shiftKey && e.key === "]") {
@@ -307,7 +371,7 @@ export default function Repeater() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [closeTab]);
 
   const cycleTab = (dir: number) => {
     const list = tabsRef.current;
@@ -317,29 +381,9 @@ export default function Repeater() {
     if (next) setActiveTabId(next.id);
   };
 
-  const closeTab = (id: string) => {
-    const tab = tabsRef.current.find((t) => t.id === id);
-    if (tab?.dirty && !window.confirm("Discard unsaved draft in this tab?")) {
-      return;
-    }
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id);
-      if (activeRef.current === id) {
-        setActiveTabId(next[next.length - 1]?.id || "");
-      }
-      return next;
-    });
-  };
-
   const updateTab = (next: RepeaterTabState) => {
     setTabs((prev) => prev.map((t) => (t.id === next.id ? next : t)));
   };
-
-  // Bridge send shortcut to active workspace via custom event listened in workspace
-  useEffect(() => {
-    // Workspace listens for talos-repeater-send — we inject a small bridge
-    // by storing a callback on window (simplest without context)
-  }, []);
 
   if (!selected) {
     return (
@@ -357,8 +401,8 @@ export default function Repeater() {
         <div>
           <h1 className="text-base font-semibold leading-tight">Repeater</h1>
           <p className="text-[11px] text-base-content/50">
-            Mode 2 send — edit & fire with lineage. Exact re-run stays under{" "}
-            <strong>Replay</strong> on Flow Detail.
+            Mode 2 send — sticky tabs in the project archive. Exact re-run stays
+            under <strong>Replay</strong> on Flow Detail.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -382,9 +426,9 @@ export default function Repeater() {
         tabs={tabs}
         activeTabId={active?.id || ""}
         onSelect={setActiveTabId}
-        onClose={closeTab}
+        onClose={(id) => void closeTab(id)}
         onNew={() => setOpenFlowOpen(true)}
-        disabled={opening}
+        disabled={opening || loadingTabs}
       />
 
       {toast && (
@@ -401,43 +445,13 @@ export default function Repeater() {
         </div>
       )}
 
-      {remoteConflict && (
-        <div className="mx-3 mt-1 alert alert-warning py-2 text-xs flex flex-wrap gap-2 items-center">
-          <span>
-            Another window updated Repeater drafts. You have local unsaved
-            edits.
-          </span>
-          <button
-            type="button"
-            className="btn btn-xs"
-            onClick={() => {
-              const restored = fromPersist(remoteConflict);
-              setTabs(restored.tabs);
-              setActiveTabId(restored.activeTabId);
-              setSplitRatio(restored.splitRatio);
-              setHistoryCollapsed(restored.historyCollapsed);
-              setRemoteConflict(null);
-              showToast("Loaded remote drafts (local discarded)", "info");
-            }}
-          >
-            Load remote (discard local)
-          </button>
-          <button
-            type="button"
-            className="btn btn-xs btn-primary"
-            onClick={() => {
-              setRemoteConflict(null);
-              flushPersist(selected.id);
-              showToast("Keeping local — will overwrite remote on save", "info");
-            }}
-          >
-            Keep local
-          </button>
-        </div>
-      )}
-
       <div className="flex-1 min-h-0">
-        {!active ? (
+        {loadingTabs ? (
+          <div className="flex items-center justify-center py-16 text-sm text-base-content/50">
+            <span className="loading loading-spinner loading-sm mr-2" />
+            Loading Repeater archive…
+          </div>
+        ) : !active ? (
           <NoTabsEmpty onOpenFlow={() => setOpenFlowOpen(true)} />
         ) : (
           <RepeaterWorkspaceWithSendBridge
@@ -460,8 +474,10 @@ export default function Repeater() {
       >
         <div className="space-y-3">
           <p className="text-xs text-base-content/60">
-            Enter a flow UUID (capture, prior send, or replay row). Engine
-            requires a parent for lineage — blank compose is not supported.
+            Enter a flow UUID (capture, prior send, or replay row). Creates a
+            sticky project tab (same as{" "}
+            <span className="mono">talos send tab open</span>). Draft bodies
+            stay local until Send.
           </p>
           <input
             className="input input-bordered input-sm w-full mono"

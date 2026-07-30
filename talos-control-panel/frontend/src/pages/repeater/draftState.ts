@@ -13,7 +13,8 @@ import {
 } from "./serializeDraft";
 
 export const PERSIST_VERSION = 1 as const;
-export const MAX_TABS = 12;
+/** Align with server soft cap (talos.send.db.MAX_REPEATER_TABS). */
+export const MAX_TABS = 100;
 export const LS_BODY_CAP = 512 * 1024; // drop large bodies from LS
 export const DEBOUNCE_MS = 300;
 
@@ -77,30 +78,36 @@ export function newTabId(): string {
 }
 
 export function createTab(partial: {
+  /** Server tab id when hydrating from project archive; else client-generated. */
+  id?: string;
   parentFlowId: string;
   originalFlowId: string;
   draft?: RequestDraft;
   sessionId?: string | null;
+  lastExecutionId?: string | null;
+  title?: string;
   endpointAnnotations?: string[];
   editorMode?: SendEditorMode;
+  createdAt?: string;
+  updatedAt?: string;
 }): RepeaterTabState {
   const now = new Date().toISOString();
   const draft = partial.draft || emptyDraft();
   return {
-    id: newTabId(),
-    title: draftTitle(draft),
+    id: partial.id || newTabId(),
+    title: partial.title?.trim() || draftTitle(draft),
     parentFlowId: partial.parentFlowId,
     originalFlowId: partial.originalFlowId,
     sessionId: partial.sessionId ?? null,
     draft,
     dirty: false,
-    lastExecutionId: null,
+    lastExecutionId: partial.lastExecutionId ?? null,
     lastOutcome: null,
     updateContentLength: true,
     editorMode: partial.editorMode || "pretty",
     endpointAnnotations: partial.endpointAnnotations || [],
-    createdAt: now,
-    updatedAt: now,
+    createdAt: partial.createdAt || now,
+    updatedAt: partial.updatedAt || now,
   };
 }
 

@@ -536,3 +536,78 @@ def test_redo(client):
     assert r.status_code == 200
     assert r.json()["steps"][0]["ok"] is True
     assert r.json()["result"]["outcomes"][0]["execution_flow_id"] == new_id
+
+
+def test_tabs_open_list_reuse_touch_close(client):
+    """Persistent Repeater tab archive API (metadata only)."""
+    tc, pid, flow_id, _db = client
+
+    r0 = tc.get("/api/send/tabs", params={"project_id": pid})
+    assert r0.status_code == 200
+    assert r0.json()["count"] == 0
+
+    r = tc.post(
+        "/api/send/tabs",
+        params={"project_id": pid},
+        json={"flow_id": flow_id},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["steps"][0]["ok"] is True
+    assert body["result"]["created"] is True
+    tab = body["result"]["tab"]
+    assert tab["parent_flow_id"] == flow_id
+    assert tab["original_flow_id"] == flow_id
+    tab_id = tab["id"]
+
+    # Reuse same parent
+    r2 = tc.post(
+        "/api/send/tabs",
+        params={"project_id": pid},
+        json={"flow_id": flow_id},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["result"]["reused"] is True
+    assert r2.json()["result"]["tab"]["id"] == tab_id
+
+    # List
+    r3 = tc.get("/api/send/tabs", params={"project_id": pid})
+    assert r3.status_code == 200
+    assert r3.json()["count"] == 1
+
+    # Touch last execution
+    exec_id = str(uuid.uuid4())
+    r4 = tc.post(
+        f"/api/send/tabs/{tab_id}/touch",
+        params={"project_id": pid},
+        json={"last_execution_id": exec_id},
+    )
+    assert r4.status_code == 200
+    assert r4.json()["result"]["tab"]["last_execution_id"] == exec_id
+
+    # Rename
+    r5 = tc.post(
+        f"/api/send/tabs/{tab_id}/rename",
+        params={"project_id": pid},
+        json={"title": "probe item"},
+    )
+    assert r5.status_code == 200
+    assert r5.json()["result"]["tab"]["title"] == "probe item"
+
+    # Close
+    r6 = tc.delete(f"/api/send/tabs/{tab_id}", params={"project_id": pid})
+    assert r6.status_code == 200
+    assert r6.json()["result"]["closed"] is True
+
+    r7 = tc.get("/api/send/tabs", params={"project_id": pid})
+    assert r7.json()["count"] == 0
+
+
+def test_tabs_open_missing_flow(client):
+    tc, pid, _fid, _db = client
+    r = tc.post(
+        "/api/send/tabs",
+        params={"project_id": pid},
+        json={"flow_id": "does-not-exist"},
+    )
+    assert r.status_code == 404

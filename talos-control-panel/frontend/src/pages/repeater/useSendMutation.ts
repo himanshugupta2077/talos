@@ -4,6 +4,9 @@
 
 import { api } from "../../api/client";
 import type {
+  RepeaterTabDto,
+  RepeaterTabOpenResponse,
+  RepeaterTabsListResponse,
   SendDupResponse,
   SendExportResponse,
   SendMutationResponse,
@@ -86,6 +89,76 @@ export async function postExport(
   return api.post<SendExportResponse>(
     `/api/send/export/${flowId}`,
     {},
+    { project_id: projectId }
+  );
+}
+
+// ------------------------------------------------------------------ #
+// Tab archive (project DB; sticky Repeater workspaces)                #
+// ------------------------------------------------------------------ #
+
+export async function listRepeaterTabs(
+  projectId: string
+): Promise<RepeaterTabsListResponse> {
+  return api.get<RepeaterTabsListResponse>("/api/send/tabs", {
+    project_id: projectId,
+  });
+}
+
+export async function openRepeaterTab(
+  projectId: string,
+  body: {
+    flow_id: string;
+    title?: string;
+    session_id?: string | null;
+    force_new?: boolean;
+  }
+): Promise<RepeaterTabOpenResponse> {
+  return api.post<RepeaterTabOpenResponse>(
+    "/api/send/tabs",
+    {
+      flow_id: body.flow_id,
+      title: body.title ?? null,
+      session_id: body.session_id ?? null,
+      force_new: !!body.force_new,
+    },
+    { project_id: projectId }
+  );
+}
+
+export async function closeRepeaterTab(
+  projectId: string,
+  tabId: string
+): Promise<StepsResponse & { result: { id: string; closed: boolean } }> {
+  return api.del(`/api/send/tabs/${tabId}`, { project_id: projectId });
+}
+
+export async function clearRepeaterTabs(
+  projectId: string
+): Promise<StepsResponse & { result: { cleared: number } }> {
+  return api.del("/api/send/tabs", { project_id: projectId });
+}
+
+export async function touchRepeaterTab(
+  projectId: string,
+  tabId: string,
+  body: {
+    parent_flow_id?: string | null;
+    session_id?: string | null;
+    clear_session?: boolean;
+    last_execution_id?: string | null;
+    clear_last_execution?: boolean;
+  }
+): Promise<StepsResponse & { result: { tab: RepeaterTabDto } }> {
+  return api.post(
+    `/api/send/tabs/${tabId}/touch`,
+    {
+      parent_flow_id: body.parent_flow_id ?? null,
+      session_id: body.session_id ?? null,
+      clear_session: !!body.clear_session,
+      last_execution_id: body.last_execution_id ?? null,
+      clear_last_execution: !!body.clear_last_execution,
+    },
     { project_id: projectId }
   );
 }

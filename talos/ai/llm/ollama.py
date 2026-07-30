@@ -37,22 +37,36 @@ class OllamaProvider:
         max_tokens: Optional[int] = None,
     ) -> CompleteResult:
         del tools  # Ollama tool calling varies; JSON instructions in system prompt.
+        # Ollama's default num_ctx is often 2048/4096. The Talos planner system
+        # pack (all ToolSpec schemas) is ~4k+ tokens alone, which leaves almost
+        # no room for generation and yields empty/truncated replies. Prefer a
+        # roomy default; operators can override via config.extra.num_ctx.
+        extra = getattr(self._cfg, "extra", None) or {}
+        try:
+            num_ctx = int(extra["num_ctx"]) if "num_ctx" in extra else 16_384
+        except (TypeError, ValueError):
+            num_ctx = 16_384
+
+        options: dict[str, Any] = {
+            "temperature": (
+                float(temperature)
+                if temperature is not None
+                else float(self._cfg.temperature)
+            ),
+        }
+        if num_ctx > 0:
+            options["num_ctx"] = num_ctx
+        if max_tokens is not None or self._cfg.max_tokens:
+            options["num_predict"] = int(
+                max_tokens if max_tokens is not None else self._cfg.max_tokens
+            )
+
         payload: dict[str, Any] = {
             "model": self._model,
             "stream": False,
             "messages": [_to_ollama_message(m) for m in messages],
-            "options": {
-                "temperature": (
-                    float(temperature)
-                    if temperature is not None
-                    else float(self._cfg.temperature)
-                ),
-            },
+            "options": options,
         }
-        if max_tokens is not None or self._cfg.max_tokens:
-            payload["options"]["num_predict"] = int(
-                max_tokens if max_tokens is not None else self._cfg.max_tokens
-            )
 
         url = f"{self._base_url}/api/chat"
         try:

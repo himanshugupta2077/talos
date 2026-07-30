@@ -372,3 +372,113 @@ def test_send_redo_cli(manager: MagicMock, db_path: Path) -> None:
     assert redo["parent_flow_id"] == once["execution_flow_id"]
     assert redo["original_flow_id"] == fid
     assert redo["execution_flow_id"]
+
+
+def test_send_tab_open_list_reuse_touch_close(
+    manager: MagicMock, db_path: Path
+) -> None:
+    """Persistent tab archive: open, list, reuse, touch after send, close."""
+    fid = _insert_capture(db_path)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_send_cli(manager, ["tab", "open", fid, "--format", "json"])
+    opened = json.loads(buf.getvalue())
+    assert opened["created"] is True
+    assert opened["reused"] is False
+    tab = opened["tab"]
+    assert tab["parent_flow_id"] == fid
+    assert tab["original_flow_id"] == fid
+    assert tab["title"].startswith("GET ")
+    tab_id = tab["id"]
+
+    # Same parent reuses the existing tab.
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        run_send_cli(manager, ["tab", "open", fid, "--format", "json"])
+    reused = json.loads(buf2.getvalue())
+    assert reused["reused"] is True
+    assert reused["created"] is False
+    assert reused["tab"]["id"] == tab_id
+
+    # Force a second tab for the same parent.
+    buf3 = io.StringIO()
+    with redirect_stdout(buf3):
+        run_send_cli(
+            manager,
+            ["tab", "open", fid, "--force-new", "--title", "extra", "--format", "json"],
+        )
+    forced = json.loads(buf3.getvalue())
+    assert forced["created"] is True
+    assert forced["tab"]["id"] != tab_id
+    assert forced["tab"]["title"] == "extra"
+
+    buf_list = io.StringIO()
+    with redirect_stdout(buf_list):
+        run_send_cli(manager, ["tab", "list", "--format", "json"])
+    listed = json.loads(buf_list.getvalue())
+    assert listed["count"] == 2
+    assert {t["id"] for t in listed["tabs"]} == {tab_id, forced["tab"]["id"]}
+
+    # After a send, touch last_execution on the first tab.
+    with patch("talos.send.engine.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"ok"
+        resp.headers = {"content-type": "text/plain"}
+        client.request = AsyncMock(return_value=resp)
+        client_cls.return_value = client
+
+        buf_once = io.StringIO()
+        with redirect_stdout(buf_once):
+            run_send_cli(manager, ["once", fid, "--format", "json"])
+        once = json.loads(buf_once.getvalue())
+
+    buf_touch = io.StringIO()
+    with redirect_stdout(buf_touch):
+        run_send_cli(
+            manager,
+            [
+                "tab",
+                "touch",
+                tab_id,
+                "--last-execution",
+                once["execution_flow_id"],
+                "--format",
+                "json",
+            ],
+        )
+    touched = json.loads(buf_touch.getvalue())
+    assert touched["tab"]["last_execution_id"] == once["execution_flow_id"]
+
+    buf_close = io.StringIO()
+    with redirect_stdout(buf_close):
+        run_send_cli(
+            manager,
+            ["tab", "close", forced["tab"]["id"], "--format", "json"],
+        )
+    closed = json.loads(buf_close.getvalue())
+    assert closed["closed"] is True
+
+    buf_list2 = io.StringIO()
+    with redirect_stdout(buf_list2):
+        run_send_cli(manager, ["tab", "list", "--format", "json"])
+    listed2 = json.loads(buf_list2.getvalue())
+    assert listed2["count"] == 1
+    assert listed2["tabs"][0]["id"] == tab_id
+
+    # Clear archive; send history is independent of tabs.
+    buf_clear = io.StringIO()
+    with redirect_stdout(buf_clear):
+        run_send_cli(manager, ["tab", "clear", "--format", "json"])
+    cleared = json.loads(buf_clear.getvalue())
+    assert cleared["cleared"] == 1
+
+    buf_h = io.StringIO()
+    with redirect_stdout(buf_h):
+        run_send_cli(manager, ["history", "--from", fid, "--format", "json"])
+    hist = json.loads(buf_h.getvalue())
+    assert hist["count"] >= 1

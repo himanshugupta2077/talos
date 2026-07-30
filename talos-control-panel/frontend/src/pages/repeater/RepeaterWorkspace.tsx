@@ -42,6 +42,7 @@ import {
   postNote,
   postRedo,
   postSendOnce,
+  touchRepeaterTab,
 } from "./useSendMutation";
 
 interface Props {
@@ -179,6 +180,19 @@ export default function RepeaterWorkspace({
     return postExport(projectId, target);
   });
 
+  const persistTabMeta = async (body: {
+    parent_flow_id?: string | null;
+    session_id?: string | null;
+    last_execution_id?: string | null;
+    clear_last_execution?: boolean;
+  }) => {
+    try {
+      await touchRepeaterTab(projectId, tab.id, body);
+    } catch {
+      /* non-fatal: local state already updated */
+    }
+  };
+
   const onSend = async () => {
     if (logoutBlocked) {
       onToast("Logout-annotated endpoint — send blocked", "error");
@@ -195,6 +209,11 @@ export default function RepeaterWorkspace({
           dirty: false,
           // parent stays (product rule)
         });
+        if (outcome.execution_flow_id) {
+          void persistTabMeta({
+            last_execution_id: outcome.execution_flow_id,
+          });
+        }
         onToast(
           `Send ${outcome.status_code ?? "—"} / ${outcome.verdict ?? "—"}`,
           outcome.success ? "success" : "error"
@@ -216,6 +235,11 @@ export default function RepeaterWorkspace({
           lastExecutionId: outcome.execution_flow_id,
           lastOutcome: outcome,
         });
+        if (outcome.execution_flow_id) {
+          void persistTabMeta({
+            last_execution_id: outcome.execution_flow_id,
+          });
+        }
         onToast(
           `Redo ${outcome.status_code ?? "—"} / ${outcome.verdict ?? "—"}`,
           outcome.success ? "success" : "error"
@@ -234,6 +258,7 @@ export default function RepeaterWorkspace({
       if (sid) {
         patch({ sessionId: sid });
         setSessionFilter(sid);
+        void persistTabMeta({ session_id: sid });
         onToast(`Branch session ${sid.slice(0, 8)}`, "info");
       }
     } catch {
@@ -336,6 +361,11 @@ export default function RepeaterWorkspace({
           lastOutcome: last,
           dirty: false,
         });
+        if (last.execution_flow_id) {
+          void persistTabMeta({
+            last_execution_id: last.execution_flow_id,
+          });
+        }
       }
       loadHistory();
     } catch {
@@ -415,6 +445,10 @@ export default function RepeaterWorkspace({
         editorMode: "pretty",
         lastExecutionId: null,
         lastOutcome: null,
+      });
+      void persistTabMeta({
+        parent_flow_id: row.id,
+        clear_last_execution: true,
       });
       onToast(`Forked from ${row.id.slice(0, 8)}`, "info");
       loadHistory();
@@ -523,6 +557,7 @@ export default function RepeaterWorkspace({
         }}
         parentFlowId={tab.parentFlowId}
         originalFlowId={tab.originalFlowId}
+        lastExecutionId={tab.lastExecutionId}
       />
 
       <SplitPane
