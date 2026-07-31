@@ -2,6 +2,39 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## URL Sink Discovery Phase 1 — passive core (value + name + inventory)
+
+**Shipped:** 2026-07-31 · schema **v52 → v53** (`parameters.url_features`).
+
+First slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementation Plan.md`).
+Adds a dedicated **`talos.url_sink`** package for passive characterization of
+parameters that look like network resources (URLs, hostnames, IPs, paths, UNC)
+or whose **names** suggest sink categories (redirect, webhook, remote_fetch, …).
+
+| Surface | Detail |
+|---------|--------|
+| Value classifier | Pure `classify_value`: schemes (http/https/ftp/…), protocol-relative `//host`, IPv4/IPv6, UNC, paths, hostnames; **email ignored** |
+| Name catalog | Categorized name dictionary (redirect / webhook / remote_fetch / remote_asset / import_metadata / infrastructure / network_probe / path_like / oauth); camelCase/snake/kebab normalize |
+| `url_features` | Composed JSON on every extracted parameter: score (value-first), flags, `name_category`/`name_categories`, evidence |
+| Inventory | `parameters.url_features` TEXT JSON (schema v53); computed on extract, persisted on upsert (stronger score wins) |
+| Semantic type | `semantic_type=url` for URL-shaped values **without** name hints; hostnames not misclassified as `filename` |
+
+```bash
+# Features are passive — no new CLI yet. After capture, inspect via DB / endpoint params:
+# SELECT name, semantic_type, url_features FROM parameters WHERE name = 'abc';
+# Example: abc=https://cdn.example/x → score ≥ 90, possible_network_resource=true
+```
+
+**Explicitly out of this ship (later phases):** encoded/JWT/HTML structure discovery,
+IV URL canary probes, `network_resource_sink` capabilities, candidate rewrite
+(ssrf/open_redirect value-first), Control Panel filters.
+
+**Files:** `talos/url_sink/{__init__,value_classify,name_classify,catalog,features}.py`,
+`talos/projects/parameters.py`, `talos/projects/db.py` (v53),
+`tests/test_url_sink_*.py`, docs.
+
+---
+
 ## AI Layer Phase E — markdown KB + draft findings + session export (core CLI)
 
 **Shipped:** 2026-07-29 · schema **v51 → v52** (`ai_draft_findings`).

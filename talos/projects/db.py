@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
 -- Expanded in v25: semantic_type, seen_count, role/module tracking,   --
 -- and passive reflection intelligence (is_reflected, reflection_count, --
 -- reflection_locations, reflection_encoding).                          --
+-- v53: url_features — passive URL Sink Discovery JSON document.      --
 -- ------------------------------------------------------------------ --
 CREATE TABLE IF NOT EXISTS parameters (
     id                   TEXT    PRIMARY KEY,     -- UUID
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS parameters (
     cross_flow_reflected       INTEGER NOT NULL DEFAULT 0,    -- boolean: value seen in another flow's response
     cross_flow_reflection_count INTEGER NOT NULL DEFAULT 0,   -- count of cross-flow reflection observations
     cross_flow_sink_endpoints  TEXT    NOT NULL DEFAULT '[]', -- JSON array of sink endpoint ids
+    url_features         TEXT    NOT NULL DEFAULT '{}',       -- JSON: passive URL sink features (v53)
     UNIQUE (endpoint_id, name, location)
 );
 
@@ -2339,6 +2341,23 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
         # AI Layer Phase A: sessions, audit events, project prefs.
         conn.executescript(_AI_SCHEMA_V49_DDL)
 
+    if from_version < 53:
+        # URL Sink Discovery Phase 1: passive url_features on parameters.
+        try:
+            existing_params = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(parameters)"
+                ).fetchall()
+            }
+        except sqlite3.OperationalError:
+            existing_params = set()
+        if existing_params and "url_features" not in existing_params:
+            conn.execute(
+                "ALTER TABLE parameters ADD COLUMN "
+                "url_features TEXT NOT NULL DEFAULT '{}'"
+            )
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2473,6 +2492,7 @@ def migrate_project_db(db_path: Path) -> None:
         v50 → v51: AI Layer Phase B — ai_suggestions, ai_execution_plans,
                    ai_observations, ai_task_nodes.
         v51 → v52: AI Layer Phase E — ai_draft_findings (KB = markdown dir).
+        v52 → v53: URL Sink Discovery Phase 1 — parameters.url_features JSON.
     """
     if not db_path.exists():
         return
@@ -3811,6 +3831,25 @@ def migrate_project_db(db_path: Path) -> None:
             # AI Layer Phase E (PR9): draft findings (KB is filesystem markdown).
             conn.executescript(_AI_SCHEMA_V52_DDL)
             conn.execute("UPDATE schema_version SET version = 52")
+            conn.commit()
+
+        if current < 53:
+            # URL Sink Discovery Phase 1: passive url_features on parameters.
+            try:
+                existing_params = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(parameters)"
+                    ).fetchall()
+                }
+            except sqlite3.OperationalError:
+                existing_params = set()
+            if existing_params and "url_features" not in existing_params:
+                conn.execute(
+                    "ALTER TABLE parameters ADD COLUMN "
+                    "url_features TEXT NOT NULL DEFAULT '{}'"
+                )
+            conn.execute("UPDATE schema_version SET version = 53")
             conn.commit()
 
 

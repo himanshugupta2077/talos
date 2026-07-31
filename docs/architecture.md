@@ -197,6 +197,12 @@ talos
     │           Infer semantic types: uuid | jwt | email | objectid | url | ip |
     │                                 hash | timestamp | filename | boolean |
     │                                 integer | float | array | string
+    │           URL Sink Discovery (passive, talos.url_sink — Phase 1):
+    │             value classifier (URL/host/IP/path/UNC/schemes; email ignored)
+    │             name category catalog (redirect, webhook, remote_fetch, …)
+    │             compose url_features → parameters.url_features (JSON, schema v53)
+    │             value-first scoring: abc=https://… surfaces as network resource
+    │             (IV probes / capabilities / candidates land in later phases)
     │           Passive Reflection Intelligence (same-flow):
     │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)
     │             record: is_reflected, reflection_count, reflection_locations, reflection_encoding
@@ -224,7 +230,7 @@ talos
     SQLite:
         - flows
         - endpoints
-        - parameters  (v25: semantic_type, same-flow reflection; v42: cross_flow_*)
+        - parameters  (v25: semantic_type, same-flow reflection; v42: cross_flow_*; v53: url_features)
         - value_index / cross_flow_reflections  (v42: stored / cross-page value links)
         - roles/modules
         - access_map
@@ -1791,7 +1797,8 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.projects.access_cli` | Argument parsing + output for role/module (incl. show/rename/delete) and access commands | State management |
 | `talos.projects.cli` | Argument parsing + output formatting for project commands | State management |
 | `talos.projects.endpoints` | Canonicalize raw paths/queries into stable endpoint identities | DB writes, access inference |
-| `talos.projects.parameters` | Extract query/body parameters from flows; upsert per-endpoint parameter inventory with type inference and deduplication | DB schema changes, advanced classification |
+| `talos.projects.parameters` | Extract query/body parameters from flows; upsert per-endpoint parameter inventory with type inference, deduplication, and passive `url_features` | DB schema changes beyond inventory |
+| `talos.url_sink` | URL Sink Discovery (Phase 1): pure value/name classifiers + `url_features` compose; inventory only | IV probes, Findings, candidate scoring (later phases) |
 | `talos.url_identity` | Shared URL identity: scheme, hostname, ports, canonical authority/origin, path normalization | Scope policy, I/O |
 | `talos.projects.scope_io` | Atomic scope file/bulk-text parse (one prefix per line; `#` comments) | Storage, matching |
 | `talos.projects.scope_cli` | `project scope add\|remove\|list\|clear\|import` | Registry writes (via manager) |
@@ -2063,7 +2070,7 @@ Shutdown:
   registry.json                   index of all projects + active state + constraints
   projects/
     <id>/
-      talos.db                    structured data (SCHEMA_VERSION 49)
+      talos.db                    structured data (SCHEMA_VERSION 53)
       archive/
         flows-YYYY-MM-DD.jsonl    raw capture archive
       headers_drop.txt            capture header filter template copy
@@ -2142,13 +2149,15 @@ Empty in-scope list → nothing captured (strict opt-in).
 
 ## Database Schema (per project)
 
-`SCHEMA_VERSION = 52` (`talos.projects.db`). WAL mode and foreign keys are enabled.
+`SCHEMA_VERSION = 53` (`talos.projects.db`). WAL mode and foreign keys are enabled.
 Intruder tables: `intruder_sessions`, `intruder_results` (v46; `finding_id` v48); `intruder_pools` (v47).
 AI Layer Phase A (v49): `ai_sessions`, `ai_audit_events`, `ai_project_prefs`.
 AI Layer Phase B (v50–v51): `ai_app_notes`, `ai_app_note_revisions`; immutable
 `ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes`.
 AI Layer Phase E (v52): `ai_draft_findings`. Markdown KB is filesystem-only
 (`~/.talos/ai/kb/*.md` — not SQLite).
+URL Sink Discovery Phase 1 (v53): `parameters.url_features` JSON (passive value +
+name classification via `talos.url_sink`).
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2159,10 +2168,10 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 
 | Table | Purpose |
 |-------|---------|
-| `schema_version` | Single version integer (52) |
+| `schema_version` | Single version integer (53) |
 | `flows` | Captured and replayed HTTP exchanges |
 | `endpoints` | Deduplicated method + **canonical origin** (`host` column) + normalized_path |
-| `parameters` | Endpoint Intelligence parameter inventory (v42: `cross_flow_*` flags) |
+| `parameters` | Endpoint Intelligence parameter inventory (v42: `cross_flow_*`; v53: `url_features`) |
 | `value_index` | Distinctive request values for cross-flow matching (v42) |
 | `cross_flow_reflections` | Source→sink stored-reflection links (v42) |
 | `sessions` | Session identity placeholders |
@@ -2255,7 +2264,7 @@ source, and limit). Ordered by `captured_at` DESC for chronological discovery.
 
 ### Migrations
 
-`migrate_project_db(db_path)` upgrades older databases in place up to `SCHEMA_VERSION` (49). Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
+`migrate_project_db(db_path)` upgrades older databases in place up to `SCHEMA_VERSION` (53). Called automatically on project DB use. For the full step list, see migration branches in `talos/projects/db.py` (`_migrate_schema` / `migrate_project_db`).
 
 Notable milestones:
 
@@ -2275,6 +2284,7 @@ Notable milestones:
 | v50 | AI Layer Phase B: `ai_app_notes`, `ai_app_note_revisions` |
 | v51 | AI Layer Phase B: `ai_suggestions`, `ai_execution_plans`, `ai_observations`, `ai_task_nodes` |
 | v52 | AI Layer Phase E: `ai_draft_findings` (markdown KB is filesystem `~/.talos/ai/kb`) |
+| v53 | URL Sink Discovery Phase 1: `parameters.url_features` (passive value + name classification) |
 
 ---
 

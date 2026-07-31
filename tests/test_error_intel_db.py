@@ -70,8 +70,9 @@ def db_path(tmp_path: Path) -> Path:
 # Schema                                                               #
 # ------------------------------------------------------------------ #
 
-def test_schema_version_is_44() -> None:
-    assert SCHEMA_VERSION == 44
+def test_schema_version_at_least_error_intel() -> None:
+    # Error Intelligence landed at v43/v44; later phases bump SCHEMA_VERSION.
+    assert SCHEMA_VERSION >= 44
 
 
 def test_fresh_db_has_error_intel_tables(db_path: Path) -> None:

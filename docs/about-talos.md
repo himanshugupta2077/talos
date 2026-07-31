@@ -386,7 +386,16 @@ is_reflected      (boolean: value seen in response)
 reflection_count
 reflection_locations  (html | json | xml | javascript | other)
 reflection_encoding   (raw | html_encoded | url_encoded)
+url_features      (JSON: passive URL Sink Discovery — value/name classification)
 ```
+
+### URL Sink Discovery (passive)
+
+Parameters may carry a `url_features` document (schema v53+) produced by
+`talos.url_sink`: value-first detection of URLs/hostnames/IPs/paths plus a
+categorized name catalog (redirect, webhook, remote_fetch, remote_asset, …).
+This is characterization only — not exploit confirmation. Random-named values
+like `abc=https://cdn.example/x` still score as network resources.
 
 ### Passive Reflection Intelligence
 

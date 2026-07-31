@@ -21,7 +21,12 @@ Purpose:
     Passive reflection intelligence is also collected: when a parameter value
     appears in the response body, the reflection location and encoding are noted.
 
-Dependencies: dataclasses, json, re, sqlite3, urllib.parse, uuid, xml.etree.ElementTree
+    URL Sink Discovery (Phase 1): each extracted parameter carries a composed
+    ``url_features`` document (value classifier + name category catalog) that is
+    persisted on the parameters table for inventory and later IV/candidate use.
+
+Dependencies: dataclasses, json, re, sqlite3, urllib.parse, uuid, xml.etree.ElementTree,
+              talos.url_sink
 Data flow:
     FlowWorker -> extract_flow_params() -> upsert_endpoint_params() -> parameters table
 Side effects: None in extraction layer; DB write in upsert layer.
@@ -34,6 +39,9 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, quote
 from xml.etree import ElementTree
+
+from talos.url_sink.features import compose_url_features
+from talos.url_sink.value_classify import classify_value
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +123,8 @@ class ExtractedParam:
     """
     Purpose:
         Carry one observed parameter: name, location, scalar type, semantic
-        type, sample value, and the capture-context role/module for tracking.
+        type, sample value, URL sink features, and the capture-context
+        role/module for tracking.
     Fields:
         name          - Parameter name as supplied by the client.
         location      - 'path' | 'query' | 'body' | 'header' | 'cookie'
@@ -125,6 +134,7 @@ class ExtractedParam:
         sample_value  - Raw string value (may be empty).
         role_id       - Role UUID at capture time.
         module_id     - Module UUID at capture time.
+        url_features  - JSON string of passive URL sink features (may be "{}").
     Side effects: None.
     """
 
@@ -135,6 +145,7 @@ class ExtractedParam:
     sample_value: str
     role_id: str = ""
     module_id: str = ""
+    url_features: str = "{}"
 
 
 @dataclass
@@ -298,7 +309,7 @@ def upsert_endpoint_params(
             SELECT id, param_type, semantic_type, example_values,
                    appears_in_roles, appears_in_modules,
                    is_reflected, reflection_count, reflection_locations,
-                   reflection_encoding, seen_count
+                   reflection_encoding, seen_count, url_features
             FROM parameters
             WHERE endpoint_id = ? AND name = ? AND location = ?
             """,
@@ -306,6 +317,7 @@ def upsert_endpoint_params(
         ).fetchone()
 
         obs = refl_map.get((param.name, param.location))
+        features_json = _resolve_url_features_json(param)
 
         if row is None:
             initial_examples = (
@@ -325,8 +337,8 @@ def upsert_endpoint_params(
                     appears_in_roles, appears_in_modules,
                     is_reflected, reflection_count,
                     reflection_locations, reflection_encoding,
-                    seen_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    seen_count, url_features
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -343,6 +355,7 @@ def upsert_endpoint_params(
                     refl_locs,
                     refl_encs,
                     1,
+                    features_json,
                 ),
             )
             continue
@@ -355,6 +368,17 @@ def upsert_endpoint_params(
         updated_semantic: str = row["semantic_type"]
         if updated_semantic == "unknown" and param.semantic_type != "unknown":
             updated_semantic = param.semantic_type
+        # Prefer stronger semantic types when a URL-shaped value upgrades string.
+        if (
+            param.semantic_type == "url"
+            and updated_semantic in ("unknown", "string", "filename")
+        ):
+            updated_semantic = "url"
+        if (
+            param.semantic_type == "ip"
+            and updated_semantic in ("unknown", "string")
+        ):
+            updated_semantic = "ip"
 
         # Accumulate example values.
         try:
@@ -387,6 +411,12 @@ def upsert_endpoint_params(
                 row["reflection_encoding"], obs.encoding
             )
 
+        # Prefer higher-score url_features when a stronger observation arrives.
+        updated_url_features = _merge_url_features(
+            row["url_features"] if "url_features" in row.keys() else None,
+            features_json,
+        )
+
         conn.execute(
             """
             UPDATE parameters SET
@@ -399,7 +429,8 @@ def upsert_endpoint_params(
                 reflection_count     = ?,
                 reflection_locations = ?,
                 reflection_encoding  = ?,
-                seen_count           = seen_count + 1
+                seen_count           = seen_count + 1,
+                url_features         = ?
             WHERE id = ?
             """,
             (
@@ -412,6 +443,7 @@ def upsert_endpoint_params(
                 updated_refl_count,
                 updated_refl_locs,
                 updated_refl_encs,
+                updated_url_features,
                 row["id"],
             ),
         )
@@ -439,9 +471,115 @@ def _stamp(
             sample_value=p.sample_value,
             role_id=role_id,
             module_id=module_id,
+            url_features=p.url_features,
         )
         for p in params
     ]
+
+
+def _make_param(
+    name: str,
+    location: str,
+    sample_value: str,
+    *,
+    param_type: str | None = None,
+    semantic_type: str | None = None,
+) -> ExtractedParam:
+    """
+    Purpose:
+        Build an ExtractedParam with scalar type, semantic type, and composed
+        url_features derived from name + sample value.
+    Input:
+        name / location / sample_value — identity fields.
+        param_type / semantic_type — optional overrides (e.g. array, filename).
+    Output:
+        ExtractedParam with url_features JSON populated.
+    Side effects: None.
+    """
+    value = sample_value if sample_value is not None else ""
+    ptype = param_type if param_type is not None else _scalar_type(value)
+    stype = (
+        semantic_type
+        if semantic_type is not None
+        else _semantic_type(name, value)
+    )
+    features = compose_url_features(name=name, value=value)
+    return ExtractedParam(
+        name=name,
+        location=location,
+        param_type=ptype,
+        semantic_type=stype,
+        sample_value=value,
+        url_features=json.dumps(features, separators=(",", ":")),
+    )
+
+
+def _resolve_url_features_json(param: ExtractedParam) -> str:
+    """
+    Purpose:
+        Ensure url_features JSON is present for upsert (recompute if empty).
+    Input:
+        param — extracted parameter.
+    Output:
+        Compact JSON string.
+    Side effects: None.
+    """
+    raw = (param.url_features or "").strip()
+    if raw and raw != "{}":
+        return raw
+    features = compose_url_features(name=param.name, value=param.sample_value)
+    return json.dumps(features, separators=(",", ":"))
+
+
+def _merge_url_features(existing_json: str | None, new_json: str) -> str:
+    """
+    Purpose:
+        Keep the stronger url_features document (higher score wins; ties prefer
+        the observation with more evidence / name categories).
+    Input:
+        existing_json — prior row value (may be None / invalid).
+        new_json      — features from the current flow.
+    Output:
+        JSON string to store.
+    Side effects: None.
+    """
+    try:
+        new_doc = json.loads(new_json) if new_json else {}
+    except (json.JSONDecodeError, TypeError):
+        new_doc = {}
+    if not isinstance(new_doc, dict):
+        new_doc = {}
+
+    try:
+        old_doc = json.loads(existing_json) if existing_json else {}
+    except (json.JSONDecodeError, TypeError):
+        old_doc = {}
+    if not isinstance(old_doc, dict) or not old_doc:
+        return json.dumps(new_doc, separators=(",", ":")) if new_doc else (new_json or "{}")
+
+    old_score = int(old_doc.get("score") or 0)
+    new_score = int(new_doc.get("score") or 0)
+    if new_score > old_score:
+        return json.dumps(new_doc, separators=(",", ":"))
+    if new_score < old_score:
+        return json.dumps(old_doc, separators=(",", ":"))
+
+    # Equal score: prefer more evidence / categories; else prefer new (fresh).
+    old_ev = len(old_doc.get("evidence") or [])
+    new_ev = len(new_doc.get("evidence") or [])
+    if new_ev >= old_ev and new_doc:
+        # Merge name categories from both when scores equal.
+        cats = list(dict.fromkeys(
+            list(old_doc.get("name_categories") or [])
+            + list(new_doc.get("name_categories") or [])
+        ))
+        if cats:
+            new_doc = dict(new_doc)
+            new_doc["name_categories"] = cats
+            if not new_doc.get("name_category") and old_doc.get("name_category"):
+                new_doc["name_category"] = old_doc["name_category"]
+        return json.dumps(new_doc, separators=(",", ":"))
+    return json.dumps(old_doc, separators=(",", ":"))
 
 
 def _extract_path_params(raw_path: str, normalized_path: str) -> list[ExtractedParam]:
@@ -467,13 +605,7 @@ def _extract_path_params(raw_path: str, normalized_path: str) -> list[ExtractedP
     for raw_seg, norm_seg in zip(raw_segs, norm_segs):
         if norm_seg.startswith("{") and norm_seg.endswith("}"):
             name = norm_seg[1:-1] or "id"
-            results.append(ExtractedParam(
-                name=name,
-                location="path",
-                param_type=_scalar_type(raw_seg),
-                semantic_type=_semantic_type(name, raw_seg),
-                sample_value=raw_seg,
-            ))
+            results.append(_make_param(name, "path", raw_seg))
     return results
 
 
@@ -491,13 +623,7 @@ def _extract_query_params(query: str) -> list[ExtractedParam]:
     for name, value in parse_qsl(query, keep_blank_values=True):
         if not name:
             continue
-        results.append(ExtractedParam(
-            name=name,
-            location="query",
-            param_type=_scalar_type(value),
-            semantic_type=_semantic_type(name, value),
-            sample_value=value,
-        ))
+        results.append(_make_param(name, "query", value))
     return results
 
 
@@ -537,13 +663,7 @@ def _extract_header_params(headers: dict) -> list[ExtractedParam]:
         if norm_key not in _SECURITY_HEADERS:
             continue
         value = _coerce_header(raw_value)
-        results.append(ExtractedParam(
-            name=norm_key,
-            location="header",
-            param_type=_scalar_type(value),
-            semantic_type=_semantic_type(norm_key, value),
-            sample_value=value,
-        ))
+        results.append(_make_param(norm_key, "header", value))
     return results
 
 
@@ -573,13 +693,7 @@ def _extract_cookie_params(
                     jar[k] = v.strip()
 
     return [
-        ExtractedParam(
-            name=name,
-            location="cookie",
-            param_type=_scalar_type(value),
-            semantic_type=_semantic_type(name, value),
-            sample_value=value,
-        )
+        _make_param(name, "cookie", value)
         for name, value in jar.items()
     ]
 
@@ -618,32 +732,24 @@ def _walk_json(
             if isinstance(value, dict):
                 _walk_json(value, full, results, depth + 1)
             elif isinstance(value, list):
-                results.append(ExtractedParam(
-                    name=full, location="body",
+                results.append(_make_param(
+                    full, "body", "",
                     param_type="unknown", semantic_type="array",
-                    sample_value="",
                 ))
                 if value and isinstance(value[0], dict):
                     _walk_json(value[0], full + "[]", results, depth + 1)
             elif value is None:
-                results.append(ExtractedParam(
-                    name=full, location="body",
+                results.append(_make_param(
+                    full, "body", "",
                     param_type="unknown", semantic_type="unknown",
-                    sample_value="",
                 ))
             else:
                 sample = str(value)
-                results.append(ExtractedParam(
-                    name=full, location="body",
-                    param_type=_scalar_type(sample),
-                    semantic_type=_semantic_type(full, sample),
-                    sample_value=sample,
-                ))
+                results.append(_make_param(full, "body", sample))
     elif isinstance(node, list):
-        results.append(ExtractedParam(
-            name="[]", location="body",
+        results.append(_make_param(
+            "[]", "body", "",
             param_type="unknown", semantic_type="array",
-            sample_value="",
         ))
         if node and isinstance(node[0], dict):
             _walk_json(node[0], "[]", results, depth + 1)
@@ -658,12 +764,7 @@ def _extract_form_params(body: bytes) -> list[ExtractedParam]:
     except Exception:
         return []
     return [
-        ExtractedParam(
-            name=name, location="body",
-            param_type=_scalar_type(value),
-            semantic_type=_semantic_type(name, value),
-            sample_value=value,
-        )
+        _make_param(name, "body", value)
         for name, value in pairs
         if name
     ]
@@ -702,19 +803,13 @@ def _extract_multipart_params(body: bytes, content_type: str) -> list[ExtractedP
             continue
         name = name_m.group(1)
         if 'filename="' in head_text:
-            results.append(ExtractedParam(
-                name=name, location="body",
+            results.append(_make_param(
+                name, "body", "",
                 param_type="string", semantic_type="filename",
-                sample_value="",
             ))
             continue
         value = part_body.rstrip(b"\r\n").decode("utf-8", errors="replace")
-        results.append(ExtractedParam(
-            name=name, location="body",
-            param_type=_scalar_type(value),
-            semantic_type=_semantic_type(name, value),
-            sample_value=value,
-        ))
+        results.append(_make_param(name, "body", value))
     return results
 
 
@@ -742,12 +837,7 @@ def _walk_xml(
         tag = tag.split("}", 1)[1]
     text = (element.text or "").strip()
     if not list(element):
-        results.append(ExtractedParam(
-            name=tag, location="body",
-            param_type=_scalar_type(text),
-            semantic_type=_semantic_type(tag, text),
-            sample_value=text,
-        ))
+        results.append(_make_param(tag, "body", text))
     else:
         for child in element:
             _walk_xml(child, results, depth + 1)
@@ -769,10 +859,9 @@ def _extract_graphql_params(body: bytes) -> list[ExtractedParam]:
     results: list[ExtractedParam] = []
     op = parsed.get("operationName")
     if op and isinstance(op, str):
-        results.append(ExtractedParam(
-            name="operationName", location="body",
+        results.append(_make_param(
+            "operationName", "body", op,
             param_type="string", semantic_type="string",
-            sample_value=op,
         ))
     variables = parsed.get("variables")
     if isinstance(variables, dict):
@@ -804,6 +893,11 @@ def _semantic_type(name: str, value: str) -> str:
     """
     Classify a parameter by its security-relevant semantic type using
     both value patterns and name heuristics.
+
+    URL Sink Discovery: strong URL-shaped values (any scheme, protocol-relative)
+    map to semantic_type=url even without a name hint. Hostnames that score as
+    network resources stay string (not filename). IPs remain ip.
+
     Returns one of: uuid | jwt | email | objectid | url | ip | hash |
                     timestamp | filename | boolean | integer | float |
                     array | string | unknown
@@ -831,18 +925,31 @@ def _semantic_type(name: str, value: str) -> str:
         return "objectid"
     if _IPV4_RE.match(check_value):
         return "ip"
+
+    # Value-first URL detection via url_sink classifier (broader than https?://).
+    vf = classify_value(check_value)
+    if vf.possible_ip and not vf.possible_url_value:
+        return "ip"
+    if vf.possible_url_value or (
+        vf.possible_protocol and vf.score >= 85
+    ):
+        return "url"
+    # Legacy thin http(s) check kept as belt-and-suspenders.
     if _URL_RE.match(check_value):
         return "url"
+
     if len(check_value) in (32, 40, 64) and _HASH_RE.match(check_value):
         return "hash"
     if _UNIX_TS_RE.match(check_value):
         return "timestamp"
     if _ISO_DATE_RE.match(check_value):
         return "timestamp"
-    # Hostname check before filename: no spaces, at least two labels separated by dots.
-    if _HOSTNAME_RE.match(check_value):
+    # Hostname / domain: never misclassify as filename (network resource shape).
+    if vf.possible_hostname or vf.possible_domain or _HOSTNAME_RE.match(check_value):
         return "string"
     if _FILENAME_RE.match(check_value) and "." in check_value:
+        # Skip filename when the leaf name is a known URL-ish sink category
+        # with a value that is only weakly path-like — still allow real files.
         return "filename"
     # Only treat 'true'/'false'/'yes'/'no' as boolean — not '1'/'0' which are
     # more often integers in API contexts.
@@ -878,7 +985,13 @@ def _name_hint(name: str) -> str:
     if any(t in low for t in ("ip_address", "ip_addr", "remote_addr", "x_forwarded_for",
                                "x_real_ip", "x_custom_ip")):
         return "ip"
-    if any(t in low for t in ("url", "redirect", "callback", "next", "return_url")):
+    # Broader URL-ish name hints (catalog leaf tokens).
+    if any(t in low for t in (
+        "url", "uri", "redirect", "callback", "webhook", "return_url",
+        "return_uri", "return_to", "goto", "next", "continue", "avatar",
+        "image_url", "img_url", "media_url", "base_url", "api_url",
+        "endpoint", "fetch", "href", "src",
+    )):
         return "url"
     if any(t in low for t in ("hash", "checksum", "digest", "hmac", "signature")):
         return "hash"

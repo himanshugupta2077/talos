@@ -99,11 +99,12 @@ def _insert_endpoint(db_path: Path, project_id: str, endpoint_id: str | None = N
 
 
 class TestSchemaPhaseE:
-    def test_schema_version_is_52(self) -> None:
-        assert SCHEMA_VERSION == 52
+    def test_schema_version_at_least_phase_e(self) -> None:
+        assert SCHEMA_VERSION >= 52  # Phase E landed at 52; later phases may bump
 
     def test_fresh_db_has_draft_table(self, project) -> None:
-        assert get_schema_version(project.db_path) == 52
+        assert get_schema_version(project.db_path) == SCHEMA_VERSION
+        assert SCHEMA_VERSION >= 52
         with sqlite3.connect(str(project.db_path)) as conn:
             tables = {
                 r[0]
@@ -126,7 +127,8 @@ class TestSchemaPhaseE:
             conn.execute("UPDATE schema_version SET version = 51")
             conn.commit()
         migrate_project_db(db)
-        assert get_schema_version(db) == 52
+        assert get_schema_version(db) == SCHEMA_VERSION
+        assert SCHEMA_VERSION >= 52
         with sqlite3.connect(str(db)) as conn:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE name='ai_draft_findings'"
