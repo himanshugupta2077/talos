@@ -360,6 +360,10 @@ def detect_reflections(
     observations: list[ReflectionObservation] = []
 
     for param in params:
+        # Response-derived inventory (HTML/JS) is extracted *from* this body —
+        # treating those values as "reflected" is always a false positive.
+        if param.location == "response":
+            continue
         value = param.sample_value
         if not value or len(value) < 4:
             continue
@@ -1093,10 +1097,14 @@ def _semantic_type(
 
     # Strip common auth prefixes before pattern matching so 'Bearer <jwt>'
     # is still classified as jwt rather than string.
+    # Basic auth is opaque base64 credentials — never a JWT.
+    low_value = value.lower()
+    if low_value.startswith("basic "):
+        return "string"
     check_value = value
-    if value.lower().startswith("bearer "):
+    if low_value.startswith("bearer "):
         check_value = value[7:].strip()
-    elif value.lower().startswith("token "):
+    elif low_value.startswith("token "):
         check_value = value[6:].strip()
     elif value.lower().startswith("basic "):
         check_value = value[6:].strip()
@@ -1175,9 +1183,9 @@ def _name_hint(name: str) -> str:
         return "uuid"
     if any(t in low for t in ("jwt", "access_token", "id_token", "refresh_token")):
         return "jwt"
-    # 'authorization' header always carries an auth credential.
-    if low in ("authorization", "proxy_authorization", "x_auth_token", "x_access_token",
-               "x_api_key", "x_amz_security_token"):
+    # Auth header names alone do not imply JWT (Basic/API-key schemes exist).
+    # Value-shape detection above already maps compact JWTs → jwt.
+    if low in ("x_auth_token", "x_access_token", "x_api_key", "x_amz_security_token"):
         return "jwt"
     if "email" in low or "mail" in low:
         return "email"
@@ -1278,8 +1286,8 @@ def _expand_structure_discovery(
         Original params plus expansions (caller dedupes).
     Side effects: None.
     Risk control:
-        Per-value leaf cap; skip huge / non-string samples; no recursive re-unwrap
-        of virtual jwt.* names.
+        Per-value leaf cap; one nested re-unwrap pass on newly emitted leaves
+        (base64-in-base64); skip virtual jwt.* re-decode of claims.
     """
     if not params:
         return params
@@ -1293,6 +1301,20 @@ def _expand_structure_discovery(
             extra.extend(_expand_encoded_json_param(param))
         # JWT claims from any JWT-shaped sample.
         extra.extend(_expand_jwt_param(param))
+
+    # Second pass: nested encoded blobs that surfaced as leaves in pass 1
+    # (e.g. outer base64 JSON containing an inner base64 JSON string).
+    if extra:
+        nested: list[ExtractedParam] = []
+        for param in extra:
+            if param.name.startswith("jwt."):
+                continue
+            if not (param.sample_value or ""):
+                continue
+            nested.extend(_expand_encoded_json_param(param))
+        if nested:
+            extra = list(extra) + nested
+
     if not extra:
         return params
     return list(params) + extra

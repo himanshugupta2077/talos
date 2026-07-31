@@ -210,7 +210,9 @@ talos
     │                 (e.g. config.oauth.metadata.url)
     │               JWT URL claims → virtual jwt.jku / jwt.iss / jwt.aud / …
     │               HTML hidden + __NEXT_DATA__ / window.__CONFIG__ / apiUrl assigns
-    │                 (score ≥ 45 or name category; de-duped; no external script fetch)
+    │                 (score ≥ 45 or name+network-shaped value; empty only for strong
+    │                  sink categories; de-duped; no external script fetch;
+    │                  location=response skipped by same-flow reflection)
     │             (IV probes / capabilities / candidates land in later phases)
     │           Passive Reflection Intelligence (same-flow):
     │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)

@@ -13,11 +13,11 @@ params — still **characterization only** (no IV probes, no candidates rewrite)
 
 | Surface | Detail |
 |---------|--------|
-| Encoded JSON | Base64 / base64url / URL-encoded JSON in form, query, JSON string leaves, multipart fields → walk leaves with **full dotted paths** (`config.oauth.metadata.url`); depth/size/leaf caps |
-| JWT claims | Virtual params `jwt.jku` / `jwt.iss` / `jwt.aud` (and URL-shaped `kid`) from Authorization / cookies / other JWT values; inventory-only decode (no verify) |
-| Headers | Expanded allowlist (`content-location`, `link`, `destination`, `x-rewrite-url`, `x-forwarded-server`, …) + **value-first** capture of custom headers whose values look like network resources |
-| HTML / JS | Hidden `<input type=hidden>` + `__NEXT_DATA__` / `window.__CONFIG__` / common `apiUrl` assigns → `location=response`; gate = name category **or** score ≥ 45; de-dupe; no external script fetch |
-| Wiring | `extract_flow_params` expands structure; FlowWorker also calls `extract_response_url_sink_params` after response body is available |
+| Encoded JSON | Base64 / base64url / URL-encoded JSON in form, query, JSON string leaves, multipart fields → walk leaves with **full dotted paths** (`config.oauth.metadata.url`); depth/size/leaf caps; **one nested re-unwrap pass** for base64-in-base64 |
+| JWT claims | Virtual params `jwt.jku` / `jwt.iss` / `jwt.aud` (array aud → `jwt.aud[1]`, …; URL-shaped `kid`) from Authorization / cookies / other JWT values; inventory-only decode (no verify) |
+| Headers | Expanded allowlist (`content-location`, `link`, `destination`, `x-rewrite-url`, `x-forwarded-server`, …) + **value-first** capture of custom headers whose values look like network resources; Link `<https://…>` angle-brackets classified as URLs |
+| HTML / JS | Hidden `<input type=hidden>` (quoted or bare) + `__NEXT_DATA__` / `window.__CONFIG__` / common `apiUrl` assigns → `location=response`; gate = value score ≥ 45 **or** name category with network-shaped value (empty samples only for strong sink categories); de-dupe; no external script fetch |
+| Wiring | `extract_flow_params` expands structure; FlowWorker also calls `extract_response_url_sink_params` after response body is available; `location=response` excluded from same-flow reflection (avoids false positives) |
 
 ```bash
 # Still passive — no new CLI. Example inventory rows after capture:
@@ -31,9 +31,14 @@ params — still **characterization only** (no IV probes, no candidates rewrite)
 `network_resource_sink` capabilities, candidate rewrite (ssrf/open_redirect value-first),
 Control Panel / CLI filters, endpoint rollups.
 
-**Files:** `talos/url_sink/{decode,jwt_claims,html_js_extract}.py`,
+**Files:** `talos/url_sink/{decode,jwt_claims,html_js_extract,value_classify}.py`,
 `talos/projects/parameters.py`, `talos/worker/worker.py`,
 `tests/test_url_sink_structure.py`, docs (architecture, about-talos, cheat sheet).
+
+**QA follow-up (same phase):** response inventory no longer false-marks reflections;
+unquoted `type=hidden` matched; HTML/JS gate rejects weak catalog junk (`next=1`);
+Link header bracket URIs score as network resources; nested base64 JSON second pass;
+multi-value JWT `aud` uses distinct names; `Authorization: Basic` is not semantic_type=jwt.
 
 ---
 

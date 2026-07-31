@@ -158,6 +158,7 @@ def extract_url_claim_params(
             continue
         claim_l = claim.lower()
         values = _claim_values_as_strings(raw_claim_val)
+        emitted_for_claim = 0
         for sample in values:
             if not sample:
                 continue
@@ -172,12 +173,20 @@ def extract_url_claim_params(
                 evidence.append(f"parent:{parent_name}")
             if parent_location:
                 evidence.append(f"parent_location:{parent_location}")
+            # Array claims (aud: [url1, url2]) get distinct inventory names so
+            # de-dupe does not drop secondary values.
+            if emitted_for_claim == 0:
+                vname = f"jwt.{claim_l}"
+            else:
+                vname = f"jwt.{claim_l}[{emitted_for_claim}]"
+                evidence.append("jwt_claim_array")
             results.append(JwtClaimParam(
-                name=f"jwt.{claim_l}",
+                name=vname,
                 sample_value=sample,
                 claim=claim_l,
                 evidence=tuple(evidence),
             ))
+            emitted_for_claim += 1
             if len(results) >= _MAX_CLAIMS:
                 break
     return results

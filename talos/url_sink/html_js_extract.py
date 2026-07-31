@@ -25,7 +25,6 @@ from typing import Any
 
 from talos.url_sink.decode import MAX_JSON_DEPTH, walk_unwrapped_leaves
 from talos.url_sink.features import NETWORK_RESOURCE_SCORE_THRESHOLD, compose_url_features
-from talos.url_sink.name_classify import classify_name
 from talos.url_sink.value_classify import classify_value
 
 # ---------------------------------------------------------------------------
@@ -38,19 +37,33 @@ _MAX_HTML_SCAN_CHARS: int = 2_000_000
 _MAX_BOOTSTRAP_PAYLOAD: int = 500_000
 _MAX_BOOTSTRAP_ISLANDS: int = 20
 
-# Hidden input: type=hidden with name + optional value (any attr order).
+# Hidden input: type=hidden (quoted or unquoted) with name + optional value.
+# Attr order is free: type may appear before or after name/value.
 _HIDDEN_INPUT_RE = re.compile(
-    r"""<input\b(?P<attrs>[^>]*?\btype\s*=\s*['"]hidden['"][^>]*?)>""",
+    r"""<input\b(?P<attrs>[^>]*?\btype\s*=\s*(?:['"]hidden['"]|hidden\b)[^>]*?)>""",
     re.IGNORECASE | re.DOTALL,
 )
+# name='…' | name="…" | name=bare
 _ATTR_NAME = re.compile(
-    r"""\bname\s*=\s*['"]([^'"]+)['"]""",
+    r"""\bname\s*=\s*(?:['"]([^'"]+)['"]|([^\s>]+))""",
     re.IGNORECASE,
 )
 _ATTR_VALUE = re.compile(
-    r"""\bvalue\s*=\s*['"]([^'"]*)['"]""",
+    r"""\bvalue\s*=\s*(?:['"]([^'"]*)['"]|([^\s>]*))""",
     re.IGNORECASE,
 )
+
+# Name categories strong enough that an empty sample still inventorizes a
+# potential sink name (redirect_url="" on a login page). Weak tokens like
+# next/to/key with junk values are excluded from HTML/JS inventory.
+_STRONG_EMPTY_NAME_CATEGORIES: frozenset[str] = frozenset({
+    "redirect",
+    "oauth",
+    "webhook",
+    "remote_fetch",
+    "remote_asset",
+    "import_metadata",
+})
 
 # Script tags (inline only — skip src=).
 _SCRIPT_TAG = re.compile(
@@ -158,14 +171,10 @@ def extract_html_js_params(
         if hidden_count >= max_hidden:
             break
         attrs = m.group("attrs") or ""
-        name_m = _ATTR_NAME.search(attrs)
-        if not name_m:
-            continue
-        name = name_m.group(1).strip()
+        name = _attr_capture(_ATTR_NAME, attrs)
         if not name:
             continue
-        value_m = _ATTR_VALUE.search(attrs)
-        value = value_m.group(1) if value_m else ""
+        value = _attr_capture(_ATTR_VALUE, attrs) or ""
         hidden_count += 1
         _maybe_add(
             candidates,
@@ -235,7 +244,11 @@ def passes_inventory_gate(
 ) -> tuple[bool, int, list[str]]:
     """
     Purpose:
-        Shared gate: name category **or** composed score ≥ threshold.
+        Gate HTML/JS inventory candidates to avoid flooding parameters with
+        weak catalog name hits (``next=1``, ``key=abc``) while still accepting:
+            - value-first network resources (score ≥ threshold)
+            - name categories with URL/host/IP/path-shaped values
+            - empty samples only for strong sink categories (redirect/oauth/…)
     Input:
         name / value / score_threshold
     Output:
@@ -244,20 +257,59 @@ def passes_inventory_gate(
     """
     features = compose_url_features(name=name, value=value)
     score = int(features.get("score") or 0)
-    categories = features.get("name_categories") or []
+    categories = list(features.get("name_categories") or [])
     evidence = list(features.get("evidence") or [])
-    if categories or score >= score_threshold:
-        return True, score, evidence
-    # Strong value flags even if score edge-case
     vf = classify_value(value)
+    value_stripped = (value or "").strip()
+
+    # Value-first: absolute URL / strong network resource.
+    if score >= score_threshold:
+        return True, score, evidence
     if vf.possible_url_value and vf.score >= score_threshold:
         return True, max(score, vf.score), evidence
+
+    if not categories:
+        return False, score, evidence
+
+    # Name category + network-shaped value (hostname, IP, path, URL).
+    if value_stripped and (
+        vf.possible_url_value
+        or vf.possible_hostname
+        or vf.possible_domain
+        or vf.possible_ip
+        or vf.possible_path
+        or vf.possible_unc
+        or vf.score >= 40
+    ):
+        return True, score, evidence
+
+    # Empty sample: only strong sink categories (discover name as potential sink).
+    if not value_stripped:
+        if any(c in _STRONG_EMPTY_NAME_CATEGORIES for c in categories):
+            return True, score, evidence
+        return False, score, evidence
+
+    # Name category + non-empty junk (next=1, key=abc) — reject.
     return False, score, evidence
 
 
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _attr_capture(pattern: re.Pattern[str], attrs: str) -> str:
+    """Return first capture group (quoted or bare) from an attribute match."""
+    m = pattern.search(attrs)
+    if not m:
+        return ""
+    for g in m.groups():
+        if g is not None and g != "":
+            return g.strip()
+    # value="" is a valid empty quoted value — group may be "".
+    if m.lastindex:
+        return (m.group(1) if m.group(1) is not None else m.group(2) or "").strip()
+    return ""
 
 
 def _maybe_add(
@@ -273,15 +325,10 @@ def _maybe_add(
     """Gate + de-dupe; append when accepted. Returns True if added."""
     if not name or name in seen_names:
         return False
-    # Skip pure empty name-less noise; empty value allowed if name category hits.
     ok, score, base_ev = passes_inventory_gate(
         name, value or "", score_threshold=score_threshold,
     )
     if not ok:
-        return False
-    # Drop name-only hits with empty value and weak path (still allow named sinks).
-    nf = classify_name(name)
-    if not (value or "").strip() and not nf.name_categories:
         return False
     evidence = list(dict.fromkeys(list(extra_evidence) + base_ev))
     seen_names.add(name)

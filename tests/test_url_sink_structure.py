@@ -341,10 +341,107 @@ def test_inventory_gate_rejects_static_cdn_noise_without_name() -> None:
     assert score < 45
 
 
+def test_inventory_gate_rejects_weak_catalog_junk() -> None:
+    """QA: next=1 / key=abc must not flood HTML inventory."""
+    assert passes_inventory_gate("next", "1")[0] is False
+    assert passes_inventory_gate("to", "home")[0] is False
+    assert passes_inventory_gate("key", "abc")[0] is False
+
+
+def test_inventory_gate_accepts_strong_empty_sink_name() -> None:
+    """Empty redirect_url still inventorizes as potential sink name."""
+    ok, score, _ = passes_inventory_gate("redirect_url", "")
+    assert ok is True
+    assert score >= 15
+
+
 def test_inventory_gate_accepts_value_first() -> None:
     ok, score, _ = passes_inventory_gate("abc", "https://cdn.example/x")
     assert ok is True
     assert score >= 90
+
+
+def test_hidden_input_unquoted_type() -> None:
+    """QA: type=hidden without quotes is valid HTML."""
+    html = '<html><input type=hidden name="d" value="https://u.example/"></html>'
+    cands = extract_html_js_params(html)
+    assert any(c.name == "d" and "u.example" in c.sample_value for c in cands)
+
+
+def test_response_params_not_false_reflected() -> None:
+    """QA: values extracted FROM the response must not count as reflections."""
+    from talos.projects.parameters import detect_reflections
+
+    html = (
+        b'<!doctype html><html><body>'
+        b'<input type="hidden" name="redirect_url" '
+        b'value="https://app.example/home"></body></html>'
+    )
+    resp = extract_response_url_sink_params(html, {"content-type": "text/html"})
+    assert resp
+    refs = detect_reflections(resp, html, {"content-type": "text/html"})
+    assert refs == []
+
+
+def test_link_header_angle_bracket_url_score() -> None:
+    """QA: RFC 8288 Link <https://…> must score as network resource."""
+    params = extract_flow_params(
+        query="",
+        request_body=None,
+        request_headers={
+            "link": "<https://cdn.example/style.css>; rel=preload",
+        },
+    )
+    link = next(p for p in params if p.name == "link")
+    feat = json.loads(link.url_features)
+    assert feat["score"] >= 90
+    assert feat["possible_network_resource"] is True
+    assert link.semantic_type == "url"
+
+
+def test_nested_base64_second_pass() -> None:
+    """QA: base64 JSON containing another base64 JSON expands two levels."""
+    import base64
+
+    inner = base64.b64encode(
+        json.dumps({"url": "https://nested.example/"}).encode()
+    ).decode()
+    outer = base64.b64encode(json.dumps({"blob": inner}).encode()).decode()
+    params = extract_flow_params(
+        query="",
+        request_body=f"cfg={outer}".encode(),
+        request_headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    names = {p.name for p in params}
+    assert "cfg.blob" in names
+    assert "cfg.blob.url" in names
+    nested = next(p for p in params if p.name == "cfg.blob.url")
+    assert nested.sample_value == "https://nested.example/"
+    assert nested.semantic_type == "url"
+
+
+def test_jwt_array_aud_distinct_names() -> None:
+    """QA: multi-value aud claims must not collapse under de-dupe."""
+    token = _make_jwt({
+        "aud": ["https://api.example/", "https://other.example/"],
+        "iss": "https://login.example/",
+    })
+    claims = extract_url_claim_params(f"Bearer {token}")
+    names = [c.name for c in claims]
+    assert "jwt.aud" in names
+    assert "jwt.aud[1]" in names
+    assert "jwt.iss" in names
+
+
+def test_basic_auth_not_semantic_jwt() -> None:
+    """QA: Authorization: Basic … is not a JWT."""
+    params = extract_flow_params(
+        query="",
+        request_body=None,
+        request_headers={"authorization": "Basic dXNlcjpwYXNz"},
+    )
+    auth = next(p for p in params if p.name == "authorization")
+    assert auth.semantic_type != "jwt"
 
 
 def test_extract_response_url_sink_params_location() -> None:

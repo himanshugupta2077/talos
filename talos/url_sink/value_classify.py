@@ -233,6 +233,20 @@ def classify_value(value: str | None) -> UrlValueFeatures:
     evidence: list[str] = []
     score = 0
 
+    # RFC 8288 Link header / angle-bracket URI reference:
+    #   <https://cdn.example/x.css>; rel=preload
+    # Classify the first <…> target so Link headers score as URLs.
+    if raw.startswith("<") and ">" in raw:
+        inner = raw[1 : raw.index(">")].strip()
+        if inner and (
+            "://" in inner
+            or inner.startswith("//")
+            or inner.startswith("/")
+            or "." in inner
+        ):
+            evidence.append("value_link_bracket")
+            raw = inner
+
     # --- 1. Absolute scheme:// -------------------------------------------------
     scheme_m = _SCHEME_RE.match(raw)
     if scheme_m:

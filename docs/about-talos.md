@@ -402,7 +402,10 @@ Parameters may carry a `url_features` document (schema v53+) produced by
 categorized name catalog (redirect, webhook, remote_fetch, remote_asset, …).
 Phase 2 also expands **structure discovery** (encoded JSON dotted paths, JWT
 URL claims, HTML/JS response sinks) with evidence tokens such as
-`decode:base64`, `jwt_claim`, `html_hidden`, `js_config`.
+`decode:base64`, `jwt_claim`, `html_hidden`, `js_config`. Response-derived
+params use `location=response` and are excluded from same-flow reflection
+detection (values already came from that body). HTML/JS inventory is gated so
+weak catalog names with junk values (`next=1`) do not flood the table.
 
 This is characterization only — not exploit confirmation. Random-named values
 like `abc=https://cdn.example/x` still score as network resources.
