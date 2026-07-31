@@ -308,15 +308,97 @@ def test_unapprove_approved_to_pending(db_path: Path) -> None:
     as_db.approve_candidates(db_path, [c.id])
     assert as_db.get_candidate(db_path, c.id).status == STATUS_APPROVED
 
-    moved, skipped = as_db.unapprove_candidates(db_path, [c.id])
+    moved, skipped, blocked = as_db.unapprove_candidates(db_path, [c.id])
     assert moved == [c.id]
     assert skipped == []
+    assert blocked == []
     assert as_db.get_candidate(db_path, c.id).status == STATUS_PENDING
 
     # pending cannot unapprove again
-    moved2, skipped2 = as_db.unapprove_candidates(db_path, [c.id])
+    moved2, skipped2, blocked2 = as_db.unapprove_candidates(db_path, [c.id])
     assert moved2 == []
     assert skipped2 == [c.id]
+    assert blocked2 == []
+
+
+def test_unapprove_blocked_when_active_job(db_path: Path) -> None:
+    """Cannot unapprove while a pending/running auth_session_attack job exists."""
+    import json
+    import uuid
+
+    import talos.scheduler.db as sched_db
+    from talos.scheduler.job import AUTH_SESSION_ATTACK, PRIORITY_MANUAL
+
+    b = as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    c = as_db.insert_candidate(
+        db_path,
+        binding_id=b.id,
+        baseline_flow_id="f1",
+        auth_type="jwt",
+        test_id="jwt.alg_degrade.rs256_to_es256",
+        test_family="algorithm_degrade",
+        title="t",
+        mutation_summary="m",
+        endpoint_id="ep-1",
+    )
+    as_db.approve_candidates(db_path, [c.id])
+    job_id = str(uuid.uuid4())
+    sched_db.enqueue_job(
+        db_path=db_path,
+        job_id=job_id,
+        job_type=AUTH_SESSION_ATTACK,
+        project_id="proj",
+        flow_id="f1",
+        endpoint_id="ep-1",
+        priority=PRIORITY_MANUAL,
+        meta=json.dumps({
+            "candidate_id": c.id,
+            "binding_id": b.id,
+            "test_id": c.test_id,
+        }),
+    )
+    assert as_db.has_active_auth_session_job_for_candidate(db_path, c.id)
+
+    moved, skipped, blocked = as_db.unapprove_candidates(db_path, [c.id])
+    assert moved == []
+    assert blocked == [c.id]
+    assert as_db.get_candidate(db_path, c.id).status == STATUS_APPROVED
+
+    # After job is done, unapprove works.
+    with __import__("sqlite3").connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE scheduler_jobs SET status = 'done' WHERE job_id = ?",
+            (job_id,),
+        )
+        conn.commit()
+    assert not as_db.has_active_auth_session_job_for_candidate(db_path, c.id)
+    moved2, _, blocked2 = as_db.unapprove_candidates(db_path, [c.id])
+    assert moved2 == [c.id]
+    assert blocked2 == []
+
+
+def test_settle_source_accepts_pending_for_recovery(db_path: Path) -> None:
+    """Safety net: mark done/failed from pending after orphaned job settle."""
+    b = as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    c = as_db.insert_candidate(
+        db_path,
+        binding_id=b.id,
+        baseline_flow_id="f1",
+        auth_type="jwt",
+        test_id="jwt.alg_none",
+        test_family="algorithm",
+        title="t",
+        mutation_summary="m",
+        status=STATUS_PENDING,
+    )
+    # Simulate settle after unapprove race (candidate still pending).
+    done = as_db.mark_candidate_done(db_path, c.id)
+    assert done is not None
+    assert done.status == STATUS_DONE
 
 
 def test_list_candidates_filters(db_path: Path) -> None:

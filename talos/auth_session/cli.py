@@ -52,8 +52,11 @@ from talos.auth_session.models import (
     LOCATION_COOKIE,
     LOCATION_HEADER,
     STATUS_APPROVED,
+    STATUS_DONE,
     STATUS_FAILED,
     STATUS_PENDING,
+    STATUS_REJECTED,
+    STATUS_RUNNING,
 )
 from talos.auth_session.suite_jwt import CORE_JWT_TEST_CASES, alg_degradation_tests
 from talos.auth_session.types import ANALYZERS
@@ -861,12 +864,7 @@ def cmd_generate(manager: ProjectManager, args: argparse.Namespace) -> None:
     module_id = _resolve_module_id(db_path, getattr(args, "module", None))
 
     families = getattr(args, "families", None)
-    if families:
-        bad = [f for f in families if f not in KNOWN_FAMILIES]
-        if bad:
-            cli_usage_error(
-                f"Unknown family {bad!r}; known: {sorted(KNOWN_FAMILIES)}"
-            )
+    _validate_families(families)
 
     try:
         stats = generate_candidates(
@@ -928,13 +926,15 @@ def cmd_generate(manager: ProjectManager, args: argparse.Namespace) -> None:
 
 def cmd_candidates_list(manager: ProjectManager, args: argparse.Namespace) -> None:
     project = _require_active(manager)
+    families = getattr(args, "families", None)
+    _validate_families(families)
     rows = as_db.list_candidates(
         project.db_path,
         status=getattr(args, "status", None),
         endpoint_id=getattr(args, "endpoint_id", None),
         binding_id=getattr(args, "binding_id", None),
         test_ids=getattr(args, "test_ids", None),
-        families=getattr(args, "families", None),
+        families=families,
         limit=getattr(args, "limit", None),
     )
     if wants_json(args):
@@ -971,6 +971,17 @@ def cmd_candidates_show(manager: ProjectManager, args: argparse.Namespace) -> No
     print(f"  Updated           : {cand.updated_at}")
 
 
+def _validate_families(families: Optional[list[str]]) -> None:
+    """Raise usage error if any family name is unknown."""
+    if not families:
+        return
+    bad = [f for f in families if f not in KNOWN_FAMILIES]
+    if bad:
+        cli_usage_error(
+            f"Unknown family {bad!r}; known: {sorted(KNOWN_FAMILIES)}"
+        )
+
+
 def _collect_ids_for_lifecycle(
     db_path,
     args: argparse.Namespace,
@@ -985,6 +996,7 @@ def _collect_ids_for_lifecycle(
     endpoint_id = getattr(args, "endpoint_id", None)
     test_ids = getattr(args, "test_ids", None)
     families = getattr(args, "families", None)
+    _validate_families(families)
     all_pending = bool(getattr(args, "all_pending", False))
     retry_failed = bool(getattr(args, "retry_failed", False))
     all_approved = bool(getattr(args, "all_approved", False))
@@ -1122,16 +1134,23 @@ def cmd_unapprove(manager: ProjectManager, args: argparse.Namespace) -> None:
         print("No matching candidates to unapprove.")
         return
 
-    moved, skipped = as_db.unapprove_candidates(db_path, ids)
+    moved, skipped, blocked = as_db.unapprove_candidates(db_path, ids)
     if wants_json(args):
         cli_json({
             "unapproved": list(moved),
             "skipped": list(skipped),
+            "blocked_active_job": list(blocked),
             "unapproved_count": len(moved),
             "skipped_count": len(skipped),
+            "blocked_active_job_count": len(blocked),
         })
         return
     print(f"Unapproved (→ pending): {len(moved)}")
+    if blocked:
+        print(
+            f"Blocked : {len(blocked)} (pending/running auth_session_attack job — "
+            "cancel the job or wait for settle, then unapprove)"
+        )
     if skipped:
         print(f"Skipped : {len(skipped)} (not approved or missing)")
 
@@ -1149,12 +1168,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     project_id = project.id
 
     families = getattr(args, "families", None)
-    if families:
-        bad = [f for f in families if f not in KNOWN_FAMILIES]
-        if bad:
-            cli_usage_error(
-                f"Unknown family {bad!r}; known: {sorted(KNOWN_FAMILIES)}"
-            )
+    _validate_families(families)
 
     candidate_ids = getattr(args, "candidate_ids", None)
     rows = as_db.list_candidates(
@@ -1217,15 +1231,17 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         enqueued += 1
 
     if as_json:
-        cli_json({
+        payload = {
             "mode": "enqueue",
             "approved_matched": len(rows),
             "jobs_enqueued": enqueued,
             "dedup_skipped": dedup_skipped,
             "job_ids": job_ids,
-        })
+        }
         if enqueued == 0 and not dedup_skipped:
+            # Fail after printing JSON is unfriendly to scripts; error only.
             cli_error("No jobs were enqueued.")
+        cli_json(payload)
         return
 
     print("Auth-session run complete")
@@ -1465,13 +1481,15 @@ def cmd_filter_validate(manager: ProjectManager, _args: argparse.Namespace) -> N
 
 def cmd_results_list(manager: ProjectManager, args: argparse.Namespace) -> None:
     project = _require_active(manager)
+    families = getattr(args, "families", None)
+    _validate_families(families)
     rows = as_db.list_results(
         project.db_path,
         endpoint_id=getattr(args, "endpoint_id", None),
         candidate_id=getattr(args, "candidate_id", None),
         binding_id=getattr(args, "binding_id", None),
         test_ids=getattr(args, "test_ids", None),
-        families=getattr(args, "families", None),
+        families=families,
         verdict=getattr(args, "verdict", None),
         limit=getattr(args, "limit", None),
     )
@@ -1625,9 +1643,9 @@ def cmd_status(manager: ProjectManager, args: argparse.Namespace) -> None:
     for status in (
         STATUS_PENDING,
         STATUS_APPROVED,
-        "rejected",
-        "running",
-        "done",
+        STATUS_REJECTED,
+        STATUS_RUNNING,
+        STATUS_DONE,
         STATUS_FAILED,
     ):
         n = by_status.get(status, 0)

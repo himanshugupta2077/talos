@@ -359,6 +359,11 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
     gen = json.loads(out.getvalue())
     assert gen["created"] > 0
     assert "bindings_processed" in gen
+    # Full Phase 5 matrix for RS256 includes cross-family edges.
+    pending = as_db.list_candidates(db_path, status=STATUS_PENDING)
+    degrade_ids = {c.test_id for c in pending if c.test_id.startswith("jwt.alg_degrade.")}
+    assert "jwt.alg_degrade.rs256_to_es256" in degrade_ids
+    assert "jwt.alg_degrade.rs256_to_ps256" in degrade_ids
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -387,3 +392,46 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
     assert "Auth-session status" in text
     assert "approved" in text.lower()
     assert str(gen["created"]) in text
+
+
+def test_unknown_family_rejected_on_approve(manager: MagicMock, db_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        run_auth_session_cli(
+            manager,
+            _parse_as(["approve", "--all-pending", "--family", "not_a_family"]),
+        )
+    assert exc.value.code == 2  # usage
+
+
+def test_unapprove_blocked_when_job_pending(
+    manager: MagicMock, db_path: Path
+) -> None:
+    """Unapprove refuses while auth_session_attack job is still queued."""
+    run_auth_session_cli(
+        manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
+    )
+    run_auth_session_cli(
+        manager,
+        _parse_as([
+            "generate", "--endpoint", EP,
+            "--test-id", "jwt.alg_degrade.rs256_to_es256",
+        ]),
+    )
+    run_auth_session_cli(manager, _parse_as(["approve", "--all-pending"]))
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["run", "--format", "json"]))
+    run_data = json.loads(out.getvalue())
+    assert run_data["jobs_enqueued"] == 1
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["unapprove", "--all-approved", "--format", "json"])
+        )
+    u = json.loads(out.getvalue())
+    assert u["unapproved_count"] == 0
+    assert u["blocked_active_job_count"] == 1
+    # Still approved (not stuck pending with a live job).
+    approved = as_db.list_candidates(db_path, status=STATUS_APPROVED)
+    assert len(approved) == 1

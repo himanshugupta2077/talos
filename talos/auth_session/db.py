@@ -52,10 +52,12 @@ APPROVE_SOURCE_STATUSES: frozenset[str] = frozenset({
 REJECT_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_PENDING})
 # Scheduler claims approved candidates before engine runs.
 RUN_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED})
-# Settle always from running (or approved for right-now race safety).
+# Settle from running / approved (right-now race) / pending (recovery when
+# operator unapproved after enqueue but before claim — see unapprove guard).
 SETTLE_SOURCE_STATUSES: frozenset[str] = frozenset({
     STATUS_RUNNING,
     STATUS_APPROVED,
+    STATUS_PENDING,
 })
 
 
@@ -802,10 +804,40 @@ def reject_candidates(
 UNAPPROVE_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED})
 
 
+def has_active_auth_session_job_for_candidate(
+    db_path: Path,
+    candidate_id: str,
+) -> bool:
+    """
+    Purpose:
+        True if a pending/running ``auth_session_attack`` job references this
+        candidate_id in meta (blocks unapprove while work is queued/in-flight).
+    Side effects: None (read-only after migrate).
+    """
+    if not candidate_id or not db_path.exists():
+        return False
+    migrate_project_db(db_path)
+    from talos.scheduler.job import AUTH_SESSION_ATTACK
+
+    with _connect(db_path, rw=False) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM scheduler_jobs
+            WHERE job_type = ?
+              AND status IN ('pending', 'running')
+              AND json_extract(meta, '$.candidate_id') = ?
+            LIMIT 1
+            """,
+            (AUTH_SESSION_ATTACK, candidate_id),
+        ).fetchone()
+    return row is not None
+
+
 def unapprove_candidates(
     db_path: Path,
     candidate_ids: list[str],
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     """
     Purpose:
         Move approved candidates back to pending so operators can re-review
@@ -813,13 +845,21 @@ def unapprove_candidates(
 
         Design state machine: ``approved → pending`` (optional unapprove).
         Does **not** touch running/done/failed/rejected.
+
+        Refuses candidates that still have a pending/running
+        ``auth_session_attack`` job (would leave status stuck if job later
+        settles while candidate is pending).
     Output:
-        (unapproved_ids, skipped_ids)
+        (unapproved_ids, skipped_ids, blocked_active_job_ids)
     Side effects: DB write.
     """
     done: list[str] = []
     skipped: list[str] = []
+    blocked: list[str] = []
     for cid in candidate_ids:
+        if has_active_auth_session_job_for_candidate(db_path, cid):
+            blocked.append(cid)
+            continue
         result = set_candidate_status(
             db_path,
             cid,
@@ -830,7 +870,7 @@ def unapprove_candidates(
             done.append(cid)
         else:
             skipped.append(cid)
-    return done, skipped
+    return done, skipped, blocked
 
 
 def mark_candidate_running(
@@ -858,7 +898,8 @@ def mark_candidate_done(
 ) -> Optional[AuthSessionCandidate]:
     """
     Purpose:
-        Transition candidate running (or approved) → done after successful settle.
+        Transition candidate running / approved / pending → done after successful
+        settle (pending allowed as recovery if unapproved after enqueue).
     Side effects: DB write.
     """
     return set_candidate_status(

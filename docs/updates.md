@@ -2,6 +2,20 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 5 QA fixes
+
+**Shipped:** 2026-07-31 · follow-up to Phase 5 polish.
+
+| Fix | Detail |
+|-----|--------|
+| **Unapprove + live job** | `unapprove` refuses candidates that still have a pending/running `auth_session_attack` job (would leave status stuck while the job finishes) |
+| **Settle recovery** | `mark_candidate_done`/`failed` also accept `pending` so orphaned mid-flight states still settle to terminal |
+| **Family validation** | `--family` unknown names error on approve/reject/unapprove/candidates/results/run (not silent empty) |
+
+**Tests:** `test_unapprove_blocked_when_active_job`, settle-from-pending recovery, CLI unapprove+run block.
+
+---
+
 ## Auth-session engine — Phase 5 suite completeness & CLI polish
 
 **Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
