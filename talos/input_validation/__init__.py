@@ -40,6 +40,8 @@ Sub-modules:
                   negative-evidence helpers (Module 7).
     parser_intel — Normalization pipeline stages + parser fingerprinting
                   (duplicate keys, JSON null/empty, array styles) (Module 8).
+    url_sink_probes — URL Sink Discovery Phase 3: benign URL canaries +
+                  observed.url_sink synthesis (characterization only).
     surface     — Path/header/cookie/multipart/GraphQL/XML inject + auth-skip
                   policy (Module 9).
     learning    — Multi-level learning (Module 10): endpoint/app aggregation,

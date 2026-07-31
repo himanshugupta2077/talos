@@ -2,6 +2,40 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## URL Sink Discovery Phase 3 — IV canary probes + fingerprinting
+
+**Shipped:** 2026-07-31 · schema remains **v53** (no column bump).
+
+Third slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementation Plan.md`):
+**PR-6 + PR-7**. Active **characterization only** — IV schedules benign URL canaries when
+passive `url_features` warrants, fingerprints responses for validation / DNS / fetch /
+redirect signals, and records `observed.url_sink` on the param profile. **No Findings**,
+no OAST collaborator domains, no `network_resource_sink` capabilities yet (Phase 4).
+
+| Surface | Detail |
+|---------|--------|
+| Planner | New action `url_sink_probes` when `possible_network_resource` / score ≥ 45 / warrant category (redirect, webhook, remote_fetch, …) / `semantic_type=url`; still runs under standard early-stop when warranted; gated by types analysis toggle |
+| Canaries | `https://talos-canary.invalid/`, `http://…`, hostname-only, `127.0.0.1`, `/talos-canary`; deep+ adds `ftp` / `gopher` / `file` / UNC — all characterization, not exploit |
+| Job type | `iv_url_sink` (analysis=`url_sink`) |
+| Fingerprint | Phrase map (DNS lookup failed, malformed URL, unsupported protocol, timeout, …) + Location canary reflection + soft timing delta → error classes / redirect / fetch signals |
+| Synthesis | `observed.url_sink` (accepts_url/hostname/ip/path, requires_absolute/https, dns/redirect/fetch flags, validation_behavior, error_classes, per_probe) + `tested.url_sink:*` |
+| Budget | quick ~2 · standard ~5 · deep ~8 · exhaustive ~9 |
+
+```bash
+# No new CLI. After IV run on a URL-shaped param, inspect the profile:
+# talos input-validation show <param>   # observed.url_sink when synthesized
+# Or: SQLite iv_param_profiles.profile_json → observed.url_sink
+```
+
+**Explicitly out of this ship (later phases):** `network_resource_sink` capability derivation,
+value-first candidate rewrite (ssrf/open_redirect/webhook_abuse/oauth_redirect), CLI/CP filters.
+
+**Files:** `talos/input_validation/url_sink_probes.py`, `fingerprint.py` (URL analyzers),
+`planner.py`, `engine.py`, `synthesize.py`, `profile.py`, `talos/scheduler/job.py` (`IV_URL_SINK`),
+`tests/test_iv_url_sink.py`, docs (`input-validation.md`, architecture, about-talos).
+
+---
+
 ## URL Sink Discovery Phase 2 — structure discovery (encoded / JWT / HTML / JS)
 
 **Shipped:** 2026-07-31 · schema remains **v53** (no column bump).

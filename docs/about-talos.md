@@ -395,7 +395,7 @@ reflection_encoding   (raw | html_encoded | url_encoded)
 url_features      (JSON: passive URL Sink Discovery — value/name + structure evidence)
 ```
 
-### URL Sink Discovery (passive)
+### URL Sink Discovery (passive + IV Phase 3)
 
 Parameters may carry a `url_features` document (schema v53+) produced by
 `talos.url_sink`: value-first detection of URLs/hostnames/IPs/paths plus a
@@ -406,6 +406,16 @@ URL claims, HTML/JS response sinks) with evidence tokens such as
 params use `location=response` and are excluded from same-flow reflection
 detection (values already came from that body). HTML/JS inventory is gated so
 weak catalog names with junk values (`next=1`) do not flood the table.
+
+**Phase 3 (active IV):** when Input Validation runs and passive signals warrant
+it, the planner schedules `url_sink_probes` (`iv_url_sink` jobs) with benign
+canaries (`talos-canary.invalid`, path/IP forms; deep+ protocol variants).
+Responses are fingerprinted for validation phrases, DNS/fetch/timeout classes,
+and Location canary reflection. Results land in the IV param profile as
+`observed.url_sink` (accepts_url/hostname/…, redirect_behavior, fetch_behavior,
+error_classes, …) plus `tested.url_sink:*` — still **characterization only**,
+not confirmed SSRF/open-redirect findings. Unified capabilities and attack
+candidate scoring come later.
 
 This is characterization only — not exploit confirmation. Random-named values
 like `abc=https://cdn.example/x` still score as network resources.
@@ -477,6 +487,7 @@ always running a fixed ~70-probe matrix. Default tier is **standard**
 | 3: Characters | Class representatives / drill-down (skipped under standard when multiprobe confident) |
 | 4: Length | Binary/log length search (fixed matrix only on exhaustive) |
 | 5: Types | Passive-first type_confirm (pruned under standard; full on exhaustive) |
+| 5b: URL sink | Benign URL canaries when passive `url_features` warrants → `observed.url_sink` (Phase 3; characterization only) |
 | 6: Transformations | Detect trim, lowercase, normalization, escaping, encoding (enriched by M8 pipeline) |
 | 7: Reflection | Endpoint-specific reflection analysis (not globally cached) |
 | 8: Validation | Semantic rules + core validation; exploit-shaped strings deep+ only; tested{} negatives |

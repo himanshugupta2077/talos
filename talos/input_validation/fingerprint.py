@@ -37,6 +37,7 @@ Data flow:
         → ResponseFingerprint
     baseline + probe fingerprints → compare_fingerprints() → delta dict
     (outcomes.classify_outcome consumes fingerprints + deltas)
+    URL sink canary responses → analyze_url_sink_response() (Phase 3)
 
 Side effects: None.
 """
@@ -766,3 +767,269 @@ def _extract_duration_ms(flow: dict) -> float | None:
         return ms
     except (TypeError, ValueError, OSError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# URL Sink Discovery Phase 3 — response fingerprinting for URL behavior
+# ---------------------------------------------------------------------------
+
+# Reserved canary host (RFC 2606 .invalid). Never a real collaborator domain.
+CANARY_HOST = "talos-canary.invalid"
+
+# Soft timing threshold: probe duration - baseline ≥ this → soft fetch signal.
+URL_SINK_TIMING_DELTA_MS = 800.0
+
+# Body/header phrase → error class labels (case-insensitive substring match).
+# Characterization only — strong indicators for capabilities, not Findings.
+_URL_SINK_PHRASE_CLASSES: tuple[tuple[str, str], ...] = (
+    # DNS / resolve
+    ("invalid hostname", "dns_lookup_failed"),
+    ("dns lookup failed", "dns_lookup_failed"),
+    ("cannot resolve", "dns_lookup_failed"),
+    ("could not resolve", "dns_lookup_failed"),
+    ("name or service not known", "dns_lookup_failed"),
+    ("no such host", "dns_lookup_failed"),
+    ("getaddrinfo", "dns_lookup_failed"),
+    ("nodename nor servname", "dns_lookup_failed"),
+    ("unknown host", "dns_lookup_failed"),
+    ("host not found", "dns_lookup_failed"),
+    ("failed to resolve", "dns_lookup_failed"),
+    # Fetch / connection
+    ("unable to fetch", "unable_to_fetch"),
+    ("failed to fetch", "unable_to_fetch"),
+    ("connection refused", "connection_refused"),
+    ("connect refused", "connection_refused"),
+    ("connection reset", "connection_refused"),
+    ("host unreachable", "host_unreachable"),
+    ("network is unreachable", "host_unreachable"),
+    ("no route to host", "host_unreachable"),
+    # Timeout
+    ("timed out", "timeout"),
+    ("timeout", "timeout"),
+    ("deadline exceeded", "timeout"),
+    ("context deadline", "timeout"),
+    # Protocol / URL validation
+    ("unsupported protocol", "unsupported_protocol"),
+    ("protocol not supported", "unsupported_protocol"),
+    ("invalid redirect", "invalid_redirect_uri"),
+    ("invalid redirect_uri", "invalid_redirect_uri"),
+    ("redirect_uri mismatch", "invalid_redirect_uri"),
+    ("malformed url", "malformed_url"),
+    ("invalid url", "malformed_url"),
+    ("not a valid url", "malformed_url"),
+    ("must be absolute", "requires_absolute_url"),
+    ("must be an absolute", "requires_absolute_url"),
+    ("absolute url required", "requires_absolute_url"),
+    ("url required", "url_required"),
+    ("url is required", "url_required"),
+    ("invalid scheme", "unsupported_protocol"),
+    ("scheme not allowed", "unsupported_protocol"),
+    ("only https", "requires_https"),
+    ("https required", "requires_https"),
+    ("must be https", "requires_https"),
+)
+
+
+@dataclass(frozen=True)
+class UrlSinkResponseSignals:
+    """
+    Purpose:
+        Structured URL-behavior signals derived from one probe response.
+        Used by url_sink_probes synthesis (characterization only).
+
+    Fields:
+        error_classes            — matched phrase / status classes.
+        redirect_behavior        — Location / redirect reflects canary host.
+        fetch_behavior           — soft fetch/timeout/connection signal.
+        dns_resolution_detected  — DNS/resolve error phrases present.
+        validation_behavior      — primary validation label (or empty).
+        canary_in_location       — canary host seen in Location/redirect.
+        canary_in_body           — canary host reflected in body.
+        timing_delta_ms          — probe - baseline duration, if both known.
+    """
+
+    error_classes: tuple[str, ...] = ()
+    redirect_behavior: bool = False
+    fetch_behavior: bool = False
+    dns_resolution_detected: bool = False
+    validation_behavior: str = ""
+    canary_in_location: bool = False
+    canary_in_body: bool = False
+    timing_delta_ms: float | None = None
+
+
+def classify_url_error_phrases(text: str | None) -> list[str]:
+    """
+    Purpose:
+        Map body/header text to stable URL-sink error class labels via
+        case-insensitive phrase matching.
+    Input: free-form response body or combined text.
+    Output: ordered unique error class strings (may be empty).
+    Side effects: None.
+    """
+    if not text:
+        return []
+    lower = str(text).lower()
+    found: list[str] = []
+    seen: set[str] = set()
+    for phrase, label in _URL_SINK_PHRASE_CLASSES:
+        if phrase in lower and label not in seen:
+            seen.add(label)
+            found.append(label)
+    return found
+
+
+def location_reflects_canary(
+    redirect: str | None,
+    headers: dict[str, str] | None = None,
+    canary_host: str = CANARY_HOST,
+) -> bool:
+    """
+    Purpose:
+        True when Location / redirect summary contains the canary host
+        (open-redirect-like characterization signal).
+    Side effects: None.
+    """
+    host = (canary_host or CANARY_HOST).lower()
+    candidates: list[str] = []
+    if redirect:
+        candidates.append(str(redirect))
+    if headers:
+        loc = _header_get(headers, "location")
+        if loc:
+            candidates.append(loc)
+    for c in candidates:
+        if host in c.lower():
+            return True
+        try:
+            parsed = urlparse(c.strip())
+            if host in (parsed.netloc or "").lower() or host in (parsed.path or "").lower():
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def timing_suggests_fetch(
+    baseline_ms: float | None,
+    probe_ms: float | None,
+    *,
+    threshold_ms: float = URL_SINK_TIMING_DELTA_MS,
+) -> bool:
+    """
+    Purpose:
+        Soft fetch/timeout signal when probe latency exceeds baseline by
+        threshold (characterization only; not a finding).
+    Side effects: None.
+    """
+    if baseline_ms is None or probe_ms is None:
+        return False
+    try:
+        return float(probe_ms) - float(baseline_ms) >= float(threshold_ms)
+    except (TypeError, ValueError):
+        return False
+
+
+def analyze_url_sink_response(
+    *,
+    body: str | None = None,
+    status_code: int | None = None,
+    response_headers: object = None,
+    redirect: str | None = None,
+    error_signature: str | None = None,
+    payload: str | None = None,
+    canary_host: str = CANARY_HOST,
+    baseline_duration_ms: float | None = None,
+    probe_duration_ms: float | None = None,
+    timing_threshold_ms: float = URL_SINK_TIMING_DELTA_MS,
+) -> UrlSinkResponseSignals:
+    """
+    Purpose:
+        Pure analyzer: extract URL-sink behavior signals from one probe
+        response (body phrases, Location canary, soft timing, status).
+
+    Input:
+        body / status / headers / redirect / error_signature from the probe.
+        payload — injected canary (optional; used for body reflection).
+        canary_host — expected host fragment (default talos-canary.invalid).
+        baseline/probe duration — optional soft fetch signal.
+
+    Output:
+        UrlSinkResponseSignals (always; empty when no signals).
+
+    Side effects: None.
+    """
+    headers = _parse_headers(response_headers)
+    text_parts = [body or ""]
+    if error_signature:
+        text_parts.append(str(error_signature))
+    # Include selected header values that may carry error messages.
+    for hname in ("x-error", "x-error-message", "warning", "www-authenticate"):
+        hv = _header_get(headers, hname)
+        if hv:
+            text_parts.append(hv)
+    blob = "\n".join(text_parts)
+
+    error_classes = classify_url_error_phrases(blob)
+    # Status-only soft classes when body is silent.
+    if status_code is not None and int(status_code) == 408 and "timeout" not in error_classes:
+        error_classes.append("timeout")
+    if status_code is not None and int(status_code) == 504 and "timeout" not in error_classes:
+        error_classes.append("timeout")
+
+    canary_loc = location_reflects_canary(redirect, headers, canary_host)
+    host = (canary_host or CANARY_HOST).lower()
+    body_l = (body or "").lower()
+    canary_body = host in body_l
+    if payload and len(str(payload)) >= 8:
+        # Also treat full payload echo as body canary.
+        if str(payload).lower() in body_l:
+            canary_body = True
+
+    dns = any(c == "dns_lookup_failed" for c in error_classes)
+    fetch_classes = {
+        "unable_to_fetch", "connection_refused", "host_unreachable", "timeout",
+    }
+    fetch_from_phrase = bool(set(error_classes) & fetch_classes)
+    delta: float | None = None
+    if baseline_duration_ms is not None and probe_duration_ms is not None:
+        try:
+            delta = float(probe_duration_ms) - float(baseline_duration_ms)
+        except (TypeError, ValueError):
+            delta = None
+    fetch_from_timing = timing_suggests_fetch(
+        baseline_duration_ms,
+        probe_duration_ms,
+        threshold_ms=timing_threshold_ms,
+    )
+
+    # Primary validation label: first validation-ish class.
+    validation_priority = (
+        "requires_https",
+        "requires_absolute_url",
+        "invalid_redirect_uri",
+        "malformed_url",
+        "url_required",
+        "unsupported_protocol",
+        "dns_lookup_failed",
+        "timeout",
+        "connection_refused",
+        "unable_to_fetch",
+        "host_unreachable",
+    )
+    validation = ""
+    for label in validation_priority:
+        if label in error_classes:
+            validation = label
+            break
+
+    return UrlSinkResponseSignals(
+        error_classes=tuple(error_classes),
+        redirect_behavior=canary_loc,
+        fetch_behavior=fetch_from_phrase or fetch_from_timing,
+        dns_resolution_detected=dns,
+        validation_behavior=validation,
+        canary_in_location=canary_loc,
+        canary_in_body=canary_body,
+        timing_delta_ms=delta,
+    )

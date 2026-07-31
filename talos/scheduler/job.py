@@ -116,6 +116,9 @@ IV_VALIDATION = "iv_validation"
 IV_PARSER = "iv_parser"
 """Module 8 — Normalization pipeline + parser fingerprint probes."""
 
+IV_URL_SINK = "iv_url_sink"
+"""URL Sink Discovery Phase 3 — benign URL canary characterization probes."""
+
 IV_JOB_TYPES: tuple[str, ...] = (
     IV_BASELINE,
     IV_MULTIPROBE,
@@ -127,6 +130,7 @@ IV_JOB_TYPES: tuple[str, ...] = (
     IV_REFLECTION,
     IV_VALIDATION,
     IV_PARSER,
+    IV_URL_SINK,
 )
 
 # ------------------------------------------------------------------ #

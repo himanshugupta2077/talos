@@ -110,6 +110,10 @@ from talos.input_validation.parser_intel import (
     apply_parser_synthesis_to_profile,
     synthesize_parser_state,
 )
+from talos.input_validation.url_sink_probes import (
+    apply_url_sink_synthesis_to_profile,
+    synthesize_url_sink_state,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +130,7 @@ SCAN_ANALYSES: frozenset[str] = frozenset({
     "types",
     "validation",
     "parser",
+    "url_sink",
 })
 
 # Analyses preferred as prerequisites before transform/reflection synthesis
@@ -146,6 +151,7 @@ _SCAN_JOB_TYPES: frozenset[str] = frozenset({
     "iv_types",
     "iv_validation",
     "iv_parser",
+    "iv_url_sink",
 })
 
 # Outcomes treated as "accepted enough" for charset / type / length aggregation.
@@ -272,6 +278,7 @@ def synthesize_param_profile(
     _fill_validation_tested(profile, probe_summaries)
     _fill_transforms(profile, completed)
     _fill_parser_and_normalization(profile, completed, probe_summaries)
+    _fill_url_sink(profile, completed, probe_summaries, baseline_fp=baseline_fp)
     _fill_reflection(profile, completed, probe_summaries)
     # PR5: merge cross-flow / stored reflection links after probe same-request
     # fill. score=False — capabilities + candidates run once in _fill_capabilities.
@@ -1437,6 +1444,78 @@ def _fill_parser_and_normalization(
             if name == "url_decode" and "url_decode" not in existing:
                 existing.append("url_decode")
         profile["inferred"]["transforms"] = existing
+
+
+def _fill_url_sink(
+    profile: dict[str, Any],
+    completed_probes: list[dict],
+    summaries: list[dict],
+    *,
+    baseline_fp: ResponseFingerprint | None = None,
+) -> None:
+    """
+    Purpose:
+        URL Sink Discovery Phase 3 — fold url_sink canary probe evidence into
+        observed.url_sink and tested.url_sink:* (characterization only).
+    Side effects: Mutates profile.
+    """
+    body_by_flow: dict[str, str] = {}
+    status_by_flow: dict[str, int | None] = {}
+    headers_by_flow: dict[str, Any] = {}
+    for p in completed_probes:
+        fid = p.get("flow_id")
+        if not fid:
+            continue
+        body_by_flow[str(fid)] = str(p.get("body") or "")
+        sc = p.get("status_code")
+        try:
+            status_by_flow[str(fid)] = int(sc) if sc is not None else None
+        except (TypeError, ValueError):
+            status_by_flow[str(fid)] = None
+        headers_by_flow[str(fid)] = p.get("response_headers")
+
+    rows: list[dict[str, Any]] = []
+    for s in summaries:
+        if s.get("analysis") != "url_sink":
+            continue
+        fid = s.get("flow_id")
+        # Prefer fingerprint extras when present on the summary.
+        fp = s.get("fingerprint") or {}
+        redirect = None
+        error_sig = None
+        duration = s.get("duration_ms")
+        if isinstance(fp, dict):
+            redirect = fp.get("redirect")
+            error_sig = fp.get("error_signature")
+            if duration is None:
+                duration = fp.get("duration_ms")
+        rows.append({
+            "payload_type": s.get("payload_type"),
+            "payload": s.get("payload"),
+            "outcome": s.get("outcome"),
+            "confidence": s.get("confidence"),
+            "body": body_by_flow.get(str(fid or ""), ""),
+            "status_code": status_by_flow.get(str(fid or "")),
+            "response_headers": headers_by_flow.get(str(fid or "")),
+            "redirect": redirect,
+            "error_signature": error_sig,
+            "duration_ms": duration,
+            "flow_id": fid,
+            "analysis": "url_sink",
+        })
+
+    if not rows:
+        return
+
+    baseline_ms: float | None = None
+    if baseline_fp is not None and baseline_fp.duration_ms is not None:
+        try:
+            baseline_ms = float(baseline_fp.duration_ms)
+        except (TypeError, ValueError):
+            baseline_ms = None
+
+    synth = synthesize_url_sink_state(rows, baseline_duration_ms=baseline_ms)
+    apply_url_sink_synthesis_to_profile(profile, synth)
 
 
 def _fill_transforms(profile: dict[str, Any], completed_probes: list[dict]) -> None:

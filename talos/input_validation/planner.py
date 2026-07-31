@@ -43,6 +43,11 @@ Module 8 executors (engine implements):
 
     parser_probes   — normalization stages + parser fingerprint (dup/null/array)
 
+URL Sink Discovery Phase 3 (engine implements):
+
+    url_sink_probes — benign URL canaries when passive url_features warrants;
+                      records observed.url_sink (characterization only)
+
 Module 9 (surface completeness) has no new action tokens: path/header/cookie/
 multipart/GraphQL/XML inject live in surface.py + prepare_iv_probe; planner
 still keys profiles by (host, location, name) uniformly.
@@ -104,6 +109,7 @@ ACTION_TYPE_CONFIRM = "type_confirm"  # Module 7 executor
 ACTION_VALIDATION = "validation"
 ACTION_SEMANTIC_RULES = "semantic_rules"  # Module 7
 ACTION_PARSER_PROBES = "parser_probes"  # Module 8
+ACTION_URL_SINK_PROBES = "url_sink_probes"  # URL Sink Discovery Phase 3
 ACTION_TRANSFORMATIONS = "transformations"
 ACTION_REFLECTION = "reflection"
 ACTION_SYNTHESIZE = "synthesize"
@@ -123,6 +129,7 @@ HTTP_ACTIONS: frozenset[str] = frozenset({
     ACTION_VALIDATION,
     ACTION_SEMANTIC_RULES,
     ACTION_PARSER_PROBES,
+    ACTION_URL_SINK_PROBES,
 })
 
 # Analysis-only / finalize actions (0 HTTP).
@@ -153,6 +160,11 @@ M7_ACTION_TOKENS: frozenset[str] = frozenset({
 # Module 8 implemented action tokens.
 M8_ACTION_TOKENS: frozenset[str] = frozenset({
     ACTION_PARSER_PROBES,
+})
+
+# URL Sink Discovery Phase 3 implemented action tokens.
+URL_SINK_ACTION_TOKENS: frozenset[str] = frozenset({
+    ACTION_URL_SINK_PROBES,
 })
 
 
@@ -221,6 +233,13 @@ _PARSER_PROBES_ESTIMATE: dict[str, int] = {
     BUDGET_TIER_STANDARD: 5,
     BUDGET_TIER_DEEP: 10,
     BUDGET_TIER_EXHAUSTIVE: 14,
+}
+# URL sink canary probes (only when passive url_features warrants).
+_URL_SINK_PROBES_ESTIMATE: dict[str, int] = {
+    BUDGET_TIER_QUICK: 2,
+    BUDGET_TIER_STANDARD: 5,
+    BUDGET_TIER_DEEP: 8,
+    BUDGET_TIER_EXHAUSTIVE: 9,
 }
 
 # Confidence thresholds (Section 0.4 consumer guidance).
@@ -295,6 +314,7 @@ class PlanContext:
     types_completed_count: int = 0
     validation_completed_count: int = 0
     parser_completed_count: int = 0
+    url_sink_completed_count: int = 0
 
     # Analysis / finalize completion (param cache / reflection cache).
     transformations_done: bool = False
@@ -316,6 +336,7 @@ class PlanContext:
     types_confidence: int = 0
     acceptance_class_count: int = 0
     parser_known: bool = False
+    url_sink_known: bool = False
 
     # Passive Endpoint Intelligence (Module 7 type pruning).
     semantic_type: str = "unknown"
@@ -325,6 +346,9 @@ class PlanContext:
     content_type: str = ""
     # Parameter location (query|body|header|cookie|path) for M8 selection.
     location: str = "query"
+    # URL Sink Discovery: passive warrant + features for probe selection.
+    url_sink_warranted: bool = False
+    url_features: dict[str, Any] = field(default_factory=dict)
 
     # Module 10 — multi-level inheritance priors (from endpoint/app profiles).
     # These are inferred-only; local observed is already folded into the
@@ -435,6 +459,7 @@ def signals_from_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
     types = obs.get("types") or {}
     acceptance = (obs.get("acceptance") or {}).get("classes") or {}
     parser_obs = obs.get("parser") or profile.get("parser") or {}
+    url_sink_obs = obs.get("url_sink") or {}
     pipeline = profile.get("normalization_pipeline") or []
     inferred = profile.get("inferred") or {}
     synth = inferred.get("synthesis") if isinstance(inferred, dict) else None
@@ -463,6 +488,18 @@ def signals_from_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
         or (isinstance(pipeline, list) and len(pipeline) > 0)
     )
 
+    url_sink_known = bool(
+        isinstance(url_sink_obs, dict)
+        and (
+            int(url_sink_obs.get("confidence") or 0) > 0
+            or url_sink_obs.get("per_probe")
+            or url_sink_obs.get("error_classes")
+            or url_sink_obs.get("accepts_url") is True
+            or url_sink_obs.get("redirect_behavior") is True
+            or url_sink_obs.get("fetch_behavior") is True
+        )
+    )
+
     max_accepted: int | None = None
     raw_max = length.get("max_accepted") if isinstance(length, dict) else None
     if raw_max is not None:
@@ -487,6 +524,7 @@ def signals_from_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
         "types_confidence": types_confidence,
         "acceptance_class_count": class_count,
         "parser_known": parser_known,
+        "url_sink_known": url_sink_known,
         "max_accepted_length": max_accepted,
         "synthesize_done": synthesize_done,
         "requests_used": int(profile.get("requests_used") or 0),
@@ -715,6 +753,7 @@ def _needs_scan_followups(ctx: PlanContext, tier: str) -> bool:
         ACTION_VALIDATION,
         ACTION_SEMANTIC_RULES,
         ACTION_PARSER_PROBES,
+        ACTION_URL_SINK_PROBES,
     ):
         if ctx.is_pending(action):
             return True
@@ -743,6 +782,8 @@ def _exhaustive_matrix_incomplete(ctx: PlanContext) -> bool:
         return True
     if _parser_probes_needed(ctx, BUDGET_TIER_EXHAUSTIVE):
         return True
+    if _url_sink_probes_needed(ctx, BUDGET_TIER_EXHAUSTIVE):
+        return True
     return False
 
 
@@ -765,7 +806,37 @@ def _deep_followups_needed(ctx: PlanContext) -> bool:
         return True
     if _parser_probes_needed(ctx, BUDGET_TIER_DEEP):
         return True
+    if _url_sink_probes_needed(ctx, BUDGET_TIER_DEEP):
+        return True
     return False
+
+
+def _url_sink_probes_needed(ctx: PlanContext, tier: str) -> bool:
+    """
+    Purpose:
+        True when URL Sink Discovery Phase 3 canary probes should still run.
+
+        Requires passive warrant (url_features / semantic url / name category).
+        Quick still runs a tiny set when warranted.  Skips when already
+        completed, known from profile, or pending.
+
+        Gated by types analysis toggle when analyses map is non-empty
+        (url_sink characterization is part of type/value intelligence).
+    Side effects: None.
+    """
+    if not getattr(ctx, "url_sink_warranted", False):
+        return False
+    # Prefer types toggle as the operator gate (no separate DB column yet).
+    if ctx.analyses_enabled and not ctx.analysis_on("types"):
+        return False
+    if ctx.is_pending(ACTION_URL_SINK_PROBES):
+        return True
+    if ctx.url_sink_completed_count >= 1 or ctx.url_sink_known:
+        return False
+    if ctx.has_completed("url_sink"):
+        return False
+    return True
+
 
 
 def _parser_probes_needed(ctx: PlanContext, tier: str) -> bool:
@@ -848,6 +919,15 @@ def _adaptive_followups_needed(ctx: PlanContext, tier: str) -> bool:
             ctx.reflection_confidence,
             ctx.reflection_uncertainty,
         )
+    ):
+        return True
+
+    # URL sink canaries when passive EI warrants — takes priority over early
+    # stop so network-resource params still get characterization probes.
+    if (
+        tier in (BUDGET_TIER_QUICK, BUDGET_TIER_STANDARD)
+        and _url_sink_probes_needed(ctx, tier)
+        and ctx.remaining_budget() >= 1
     ):
         return True
 
@@ -1110,6 +1190,27 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
                         "reflection_state": ctx.reflection_state,
                     },
                 ))
+        if (
+            _url_sink_probes_needed(ctx, BUDGET_TIER_EXHAUSTIVE)
+            and not ctx.is_pending(ACTION_URL_SINK_PROBES)
+            and budget_left >= 1
+        ):
+            est = min(
+                _URL_SINK_PROBES_ESTIMATE[BUDGET_TIER_EXHAUSTIVE],
+                budget_left,
+            )
+            if est:
+                _take(PlanAction(
+                    action=ACTION_URL_SINK_PROBES,
+                    hypothesis="url_sink.characterize_exhaustive",
+                    estimated_requests=est,
+                    meta={
+                        "tier": BUDGET_TIER_EXHAUSTIVE,
+                        "semantic_type": ctx.semantic_type or "unknown",
+                        "param_name": ctx.param_name or "",
+                        "url_features": dict(ctx.url_features or {}),
+                    },
+                ))
         if actions:
             return PlanResult(
                 state=STATE_EVALUATE,
@@ -1251,6 +1352,27 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
                     "include_double_encode": True,
                 },
             ))
+        if (
+            _url_sink_probes_needed(ctx, BUDGET_TIER_DEEP)
+            and not ctx.is_pending(ACTION_URL_SINK_PROBES)
+            and budget_left >= 1
+        ):
+            est = min(
+                _URL_SINK_PROBES_ESTIMATE[BUDGET_TIER_DEEP],
+                budget_left,
+            )
+            if est:
+                _take(PlanAction(
+                    action=ACTION_URL_SINK_PROBES,
+                    hypothesis="url_sink.characterize_deep",
+                    estimated_requests=est,
+                    meta={
+                        "tier": BUDGET_TIER_DEEP,
+                        "semantic_type": ctx.semantic_type or "unknown",
+                        "param_name": ctx.param_name or "",
+                        "url_features": dict(ctx.url_features or {}),
+                    },
+                ))
         if actions:
             return PlanResult(
                 state=STATE_EVALUATE,
@@ -1293,6 +1415,35 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
         )
 
     if _early_stop_ok(ctx, tier):
+        # URL sink canaries still run when passive EI warrants (Phase 3).
+        if (
+            _url_sink_probes_needed(ctx, tier)
+            and not ctx.is_pending(ACTION_URL_SINK_PROBES)
+            and budget_left >= 1
+        ):
+            est = min(
+                _URL_SINK_PROBES_ESTIMATE.get(tier, 5),
+                budget_left,
+            )
+            if est:
+                _take(PlanAction(
+                    action=ACTION_URL_SINK_PROBES,
+                    hypothesis="url_sink.characterize_early",
+                    estimated_requests=est,
+                    meta={
+                        "tier": tier,
+                        "semantic_type": ctx.semantic_type or "unknown",
+                        "param_name": ctx.param_name or "",
+                        "url_features": dict(ctx.url_features or {}),
+                    },
+                ))
+                return PlanResult(
+                    state=STATE_EVALUATE,
+                    actions=actions,
+                    done=False,
+                    reason="url_sink probes despite early stop (passive warrant)",
+                    budget_remaining=budget_left,
+                )
         return _plan_finalize_or_synthesize(
             ctx,
             budget_left,
@@ -1431,6 +1582,30 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
                     "reflection_state": ctx.reflection_state,
                     "include_unicode": False,
                     "include_double_encode": False,
+                },
+            ))
+
+    # Standard / quick: URL sink canaries when passive url_features warrants.
+    if (
+        tier in (BUDGET_TIER_STANDARD, BUDGET_TIER_QUICK)
+        and _url_sink_probes_needed(ctx, tier)
+        and not ctx.is_pending(ACTION_URL_SINK_PROBES)
+        and budget_left >= 1
+    ):
+        est = min(
+            _URL_SINK_PROBES_ESTIMATE.get(tier, 5),
+            budget_left,
+        )
+        if est:
+            _take(PlanAction(
+                action=ACTION_URL_SINK_PROBES,
+                hypothesis="url_sink.characterize",
+                estimated_requests=est,
+                meta={
+                    "tier": tier,
+                    "semantic_type": ctx.semantic_type or "unknown",
+                    "param_name": ctx.param_name or "",
+                    "url_features": dict(ctx.url_features or {}),
                 },
             ))
 

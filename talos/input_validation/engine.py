@@ -112,6 +112,7 @@ from talos.input_validation.planner import (
     ACTION_TRANSFORMATIONS,
     ACTION_TYPE_CONFIRM,
     ACTION_TYPES,
+    ACTION_URL_SINK_PROBES,
     ACTION_VALIDATION,
     PlanAction,
     PlanContext,
@@ -123,6 +124,7 @@ from talos.input_validation.taxonomy import char_probes_for_strategy
 from talos.scheduler.job import (
     IV_BASELINE, IV_MULTIPROBE, IV_IDENTIFIER, IV_CHARACTERS, IV_LENGTH,
     IV_TYPES, IV_TRANSFORMATIONS, IV_REFLECTION, IV_VALIDATION, IV_PARSER,
+    IV_URL_SINK,
     PRIORITY_AUTO,
 )
 
@@ -142,6 +144,7 @@ _ACTION_TO_JOB_TYPE: dict[str, str] = {
     ACTION_VALIDATION: IV_VALIDATION,
     ACTION_SEMANTIC_RULES: IV_VALIDATION,
     ACTION_PARSER_PROBES: IV_PARSER,
+    ACTION_URL_SINK_PROBES: IV_URL_SINK,
     ACTION_TRANSFORMATIONS: IV_TRANSFORMATIONS,
     ACTION_REFLECTION: IV_REFLECTION,
 }
@@ -1002,7 +1005,7 @@ def build_plan_context(
         if p.get("status") in _settled
         and (p.get("analysis") or "") in (
             "baseline", "multiprobe", "identifier", "characters",
-            "length", "types", "validation", "parser",
+            "length", "types", "validation", "parser", "url_sink",
         )
     )
 
@@ -1065,6 +1068,7 @@ def build_plan_context(
         types_completed_count=completed_by_analysis.get("types", 0),
         validation_completed_count=completed_by_analysis.get("validation", 0),
         parser_completed_count=completed_by_analysis.get("parser", 0),
+        url_sink_completed_count=completed_by_analysis.get("url_sink", 0),
         transformations_done=transformations_done,
         reflection_done=reflection_done,
         synthesize_done=bool(signals.get("synthesize_done")),
@@ -1080,11 +1084,14 @@ def build_plan_context(
         types_confidence=int(signals.get("types_confidence") or 0),
         acceptance_class_count=acceptance_class_count,
         parser_known=bool(signals.get("parser_known")),
+        url_sink_known=bool(signals.get("url_sink_known")),
         semantic_type=str(passive.get("semantic_type") or "unknown"),
         param_name=name,
         max_accepted_length=max_accepted,
         content_type=content_type,
         location=location or "query",
+        url_sink_warranted=bool(passive.get("url_sink_warranted")),
+        url_features=dict(passive.get("url_features") or {}),
         inheritance_active=inheritance.is_active(),
         inherited_tested=dict(inheritance.tested),
         inherited_rejected_classes=inheritance.rejected_classes,
@@ -1153,27 +1160,47 @@ def _passive_param_intel(
 ) -> dict[str, Any]:
     """
     Purpose:
-        Load passive Endpoint Intelligence (semantic_type, examples) for a
-        parameter identified by (host, location, name).
+        Load passive Endpoint Intelligence (semantic_type, examples,
+        url_features) for a parameter identified by (host, location, name).
     Output:
-        {semantic_type, examples} — empty/unknown defaults when missing.
+        {semantic_type, examples, url_features, url_sink_warranted}
+        — empty/unknown defaults when missing.
     Side effects: Read-only DB.
     """
-    out: dict[str, Any] = {"semantic_type": "unknown", "examples": []}
+    out: dict[str, Any] = {
+        "semantic_type": "unknown",
+        "examples": [],
+        "url_features": {},
+        "url_sink_warranted": False,
+    }
     try:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                """
-                SELECT p.semantic_type, p.example_values
-                FROM parameters p
-                JOIN endpoints e ON e.id = p.endpoint_id
-                WHERE e.host = ? AND p.location = ? AND p.name = ?
-                ORDER BY p.seen_count DESC
-                LIMIT 1
-                """,
-                (host, location, name),
-            ).fetchone()
+            # url_features may be missing on pre-v53 DBs — fall back gracefully.
+            try:
+                row = conn.execute(
+                    """
+                    SELECT p.semantic_type, p.example_values, p.url_features
+                    FROM parameters p
+                    JOIN endpoints e ON e.id = p.endpoint_id
+                    WHERE e.host = ? AND p.location = ? AND p.name = ?
+                    ORDER BY p.seen_count DESC
+                    LIMIT 1
+                    """,
+                    (host, location, name),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    """
+                    SELECT p.semantic_type, p.example_values
+                    FROM parameters p
+                    JOIN endpoints e ON e.id = p.endpoint_id
+                    WHERE e.host = ? AND p.location = ? AND p.name = ?
+                    ORDER BY p.seen_count DESC
+                    LIMIT 1
+                    """,
+                    (host, location, name),
+                ).fetchone()
         if not row:
             return out
         st = (row["semantic_type"] or "unknown").strip().lower()
@@ -1184,6 +1211,26 @@ def _passive_param_intel(
             examples = []
         if isinstance(examples, list):
             out["examples"] = [str(x) for x in examples if x is not None]
+        uf: dict[str, Any] = {}
+        try:
+            raw_uf = row["url_features"]
+        except (IndexError, KeyError):
+            raw_uf = None
+        if raw_uf:
+            try:
+                parsed = json.loads(raw_uf) if isinstance(raw_uf, str) else raw_uf
+                if isinstance(parsed, dict):
+                    uf = parsed
+            except (json.JSONDecodeError, TypeError):
+                uf = {}
+        out["url_features"] = uf
+        from talos.input_validation.url_sink_probes import url_sink_is_warranted
+
+        out["url_sink_warranted"] = url_sink_is_warranted(
+            url_features=uf,
+            semantic_type=out["semantic_type"],
+            param_name=name,
+        )
     except sqlite3.Error as exc:
         _log.debug("[iv] passive param intel read failed: %s", exc)
     return out
@@ -1349,6 +1396,11 @@ def _enqueue_single_action(
         )
     elif token == ACTION_PARSER_PROBES:
         return _enqueue_parser_probes(
+            db_path, project_id, host, location, name, param_uuid,
+            endpoint_id, config, action, ignore_cache=ignore_cache,
+        )
+    elif token == ACTION_URL_SINK_PROBES:
+        return _enqueue_url_sink_probes(
             db_path, project_id, host, location, name, param_uuid,
             endpoint_id, config, action, ignore_cache=ignore_cache,
         )
@@ -1830,6 +1882,104 @@ def _enqueue_parser_probes(
     return inserted
 
 
+def _enqueue_url_sink_probes(
+    db_path: Path,
+    project_id: str,
+    host: str,
+    location: str,
+    name: str,
+    param_uuid: str,
+    endpoint_id: str,
+    config: IVConfig,
+    action: PlanAction,
+    *,
+    ignore_cache: bool = False,
+) -> int:
+    """
+    Purpose:
+        Expand ACTION_URL_SINK_PROBES into iv_url_sink scheduler jobs with
+        benign canary payloads (URL Sink Discovery Phase 3).
+    Side effects: Inserts scheduler_jobs rows.
+    """
+    from talos.input_validation.url_sink_probes import select_url_sink_probes
+
+    strategy = (config.probe_strategy or "standard").lower()
+    meta = action.meta or {}
+    passive = _passive_param_intel(db_path, host, location, name)
+    url_features = meta.get("url_features")
+    if not isinstance(url_features, dict):
+        url_features = passive.get("url_features") or {}
+    semantic_type = str(
+        meta.get("semantic_type") or passive.get("semantic_type") or "unknown"
+    )
+    param_name = str(meta.get("param_name") or name or "")
+
+    plan = select_url_sink_probes(
+        strategy=strategy,
+        url_features=url_features if isinstance(url_features, dict) else {},
+        semantic_type=semantic_type,
+        param_name=param_name,
+        max_probes=action.estimated_requests or None,
+        force=bool(meta.get("force")),
+    )
+    if not plan.probes:
+        _log.debug(
+            "[iv] url_sink_probes empty for %s/%s (%s)",
+            location, name, plan.reason,
+        )
+        return 0
+
+    inserted = 0
+    analysis_name = "url_sink"
+    with sqlite3.connect(str(db_path)) as conn:
+        for offset, spec in enumerate(plan.probes):
+            if (
+                action.estimated_requests > 0
+                and inserted >= action.estimated_requests
+            ):
+                break
+            idx = offset
+            if not ignore_cache and iv_db.is_probe_completed(
+                db_path, param_uuid, analysis_name, spec.payload_type, idx
+            ):
+                continue
+            meta_obj: dict[str, Any] = {
+                "host": host,
+                "location": location,
+                "parameter_name": name,
+                "parameter_uuid": param_uuid,
+                "project_id": project_id,
+                "endpoint_id": endpoint_id,
+                "analysis": analysis_name,
+                "payload": spec.payload,
+                "payload_type": spec.payload_type,
+                "payload_index": idx,
+                "probe_strategy": config.probe_strategy,
+                "planner_action": ACTION_URL_SINK_PROBES,
+                "hypothesis": action.hypothesis or spec.hypothesis,
+                "form_kind": spec.form_kind,
+            }
+            conn.execute(
+                """
+                INSERT INTO scheduler_jobs
+                    (job_id, endpoint_id, job_type, priority, status,
+                     created_at, meta)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    endpoint_id or None,
+                    IV_URL_SINK,
+                    PRIORITY_AUTO,
+                    _now_utc(),
+                    json.dumps(meta_obj),
+                ),
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
 def _probes_for_planner_action(
     token: str,
     config: IVConfig,
@@ -1855,6 +2005,7 @@ def _probes_for_planner_action(
         ACTION_TYPES, ACTION_TYPE_CONFIRM,
         ACTION_VALIDATION, ACTION_SEMANTIC_RULES,
         ACTION_PARSER_PROBES,
+        ACTION_URL_SINK_PROBES,
     ):
         return []
 
@@ -2241,6 +2392,7 @@ def _phase_to_analysis(phase: str) -> str:
         IV_REFLECTION:      "reflection",
         IV_VALIDATION:      "validation",
         IV_PARSER:          "parser",
+        IV_URL_SINK:        "url_sink",
     }
     return _map.get(phase, phase.replace("iv_", ""))
 

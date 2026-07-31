@@ -82,6 +82,7 @@ Planner (adaptive DAG)  ──►  Scheduler jobs (iv_*)
 | M6 Taxonomy / length | `taxonomy.py`, `length_search.py` | Class representatives; binary/log length |
 | M7 Types / semantic | `type_intel.py` | Passive-first types; validation families |
 | M8 Parser | `parser_intel.py` | Normalization + parser fingerprint |
+| URL sink (Phase 3) | `url_sink_probes.py` + fingerprint helpers | Benign URL canaries → `observed.url_sink` |
 | M9 Surface | `surface.py` | Path/header/cookie/multipart/GraphQL/XML inject |
 | M10 Learning | `learning.py` | Endpoint + app aggregation; inheritance priors |
 | M11 Candidates | `capabilities.py`, `candidates.py` | Flags + attack scores |
@@ -125,7 +126,7 @@ The planner is a pure state machine (`plan_next(PlanContext)`). The engine maps 
 ```
 INIT → ENSURE_BASELINE → MULTIPROBE → EVALUATE
                                     → CHAR_DRILLDOWN | LENGTH_BINARY | TYPE_CONFIRM
-                                      | PARSER_PROBES | SEMANTIC_RULES | …
+                                      | PARSER_PROBES | URL_SINK_PROBES | SEMANTIC_RULES | …
                                     → FINALIZE → SYNTHESIZE → DONE
 ```
 
@@ -143,8 +144,86 @@ After each IV job settles, the scheduler calls `continue_param_plan()` so the ne
 | Types | `iv_types` | Passive-first pruned type confirms (`type_confirm`) |
 | Validation | `iv_validation` | Core + semantic business rules (`semantic_rules`); no SQLi/XSS strings under standard |
 | Parser | `iv_parser` | Dup keys, JSON null/empty/omit, array styles, normalization stages |
+| URL sink | `iv_url_sink` | Benign URL canaries when passive `url_features` warrants (`url_sink_probes`) — see §4.3 |
 | Transformations | analysis | Offline / finalize: trim, case, encode transforms |
 | Reflection | analysis | Same-request reflection context (multiprobe / probe response) |
+
+### 4.3 URL sink characterization probes (Phase 3)
+
+**Source:** `talos.input_validation.url_sink_probes` + fingerprint helpers in `fingerprint.py`.  
+**Philosophy:** Characterization only — no OAST collaborator domains, no SSRF exploit chains, no Findings. Capabilities (`network_resource_sink`) and candidate rewrites land in a later phase.
+
+**When scheduled**
+
+Planner action `url_sink_probes` runs when passive Endpoint Intelligence warrants it:
+
+- `url_features.possible_network_resource` **or** `url_features.score ≥ 45`, **or**
+- `name_category` / `name_categories` in `{redirect, webhook, remote_fetch, remote_asset, import_metadata, infrastructure, network_probe, oauth}`, **or**
+- `semantic_type=url`
+
+Gated by the **types** analysis toggle (no separate config column yet). Runs even under standard **early stop** when warranted so network-resource params still get canaries. Skipped when `observed.url_sink` is already known or probes already completed.
+
+**Canaries (benign only)**
+
+| Label | Example payload | Tier |
+|-------|-----------------|------|
+| `url_sink:https` | `https://talos-canary.invalid/` | quick+ |
+| `url_sink:http` | `http://talos-canary.invalid/` | standard+ |
+| `url_sink:hostname` | `talos-canary.invalid` | quick+ |
+| `url_sink:ipv4_loopback` | `127.0.0.1` | standard+ |
+| `url_sink:path` | `/talos-canary` | standard+ |
+| `url_sink:ftp` / `gopher` / `file` / `unc` | protocol / UNC forms | deep+ only |
+
+Host uses the reserved **`.invalid`** TLD (never a real collaborator). Loopback/path/file forms are acceptance characterization, not exploit confirmation.
+
+**Budget estimates**
+
+| Tier | Approx. probes |
+|------|----------------|
+| `quick` | 2 |
+| `standard` | 5 |
+| `deep` | 8 |
+| `exhaustive` | 9 |
+
+**Response fingerprinting**
+
+`analyze_url_sink_response` maps body/header phrases and Location into stable classes:
+
+- DNS / resolve: `dns_lookup_failed`, …
+- Fetch / connectivity: `unable_to_fetch`, `connection_refused`, `host_unreachable`, `timeout`
+- Validation: `malformed_url`, `requires_absolute_url`, `requires_https`, `invalid_redirect_uri`, `unsupported_protocol`, `url_required`
+- `Location` contains canary host → `redirect_behavior`
+- Soft timing delta vs baseline (≥ ~800 ms) → `fetch_behavior`
+
+**Profile output**
+
+Offline synthesis fills:
+
+```json
+"observed": {
+  "url_sink": {
+    "confidence": 0,
+    "accepts_url": false,
+    "accepts_hostname": false,
+    "accepts_ip": false,
+    "accepts_path": false,
+    "accepts_unc": false,
+    "accepts_protocol": false,
+    "accepted_protocols": [],
+    "requires_absolute": false,
+    "requires_https": false,
+    "dns_resolution_detected": false,
+    "redirect_behavior": false,
+    "fetch_behavior": false,
+    "validation_behavior": "",
+    "error_classes": [],
+    "per_probe": {},
+    "evidence": []
+  }
+}
+```
+
+Plus `tested.url_sink:*` family outcomes (positive and negative). **Does not** create Findings or `network_resource_sink` capability flags (Phase 4).
 
 **Cross-flow / stored reflection (parameter intelligence):** separately from the IV reflection analysis phase, every committed flow (proxy worker **and** replay/IV) can index distinctive request values and scan later response bodies for matches on the **same host**. Links are stored in `cross_flow_reflections` and merged into param profiles as `observed.reflection.cross_flow` (see §6–§7). Disabled by default:
 
@@ -241,6 +320,7 @@ Offline synthesis (`synthesize_param_profile`) for each completed probe with a f
 | Length | length | `observed.length` |
 | Validation families | validation | `tested{}`, `observed.semantic` |
 | Parser | parser | `observed.parser`, `normalization_pipeline`, `tested.parser:*` |
+| URL sink | url_sink | `observed.url_sink`, `tested.url_sink:*` |
 | Reflection | multiprobe / reflection / payload presence | `observed.reflection` |
 | Rejected classes | acceptance majority `rejected` | also `tested[class]` (negative evidence) |
 

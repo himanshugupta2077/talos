@@ -236,6 +236,7 @@ def empty_observed_block() -> dict[str, Any]:
         "types": {},
         "semantic": {},  # Module 7 validation/semantic family outcomes
         "parser": {},  # Module 8: duplicate_query, json_null, array_*, …
+        "url_sink": {},  # URL Sink Discovery Phase 3: active canary characterization
         "timing": {
             "samples_ms": [],
         },

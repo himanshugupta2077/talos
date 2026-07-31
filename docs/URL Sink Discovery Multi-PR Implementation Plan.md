@@ -408,29 +408,6 @@ Score bands (illustrative):
 
 ---
 
-### PR-10 — Operator surfaces (CLI, Control Panel, docs)
-
-**Scope**
-
-- CLI: show `url_features` on param intelligence; filter candidates by new attacks; optional `talos url-sink` inspect command (or under `input-validation show` / endpoint params).
-- Control panel: display sink features + new capabilities on IV profile page; candidate attack filters.
-- Docs: architecture diagram, input-validation capability/candidate tables, cli-cheat-sheet, updates.md phase notes, about-talos if needed.
-
-**Tests:** route/CLI smoke as existing patterns.
-
----
-
-### PR-11 (optional / later) — Endpoint & app rollups
-
-**Scope**
-
-- Endpoint/app profile aggregates: “N network_resource_sinks”, top categories.
-- Inheritance: if app often accepts URLs, prioritize URL probes on new params (learning.py).
-
-Can ship after Phase D if needed for prioritization at scale.
-
----
-
 ### Explicit non-goals (this program)
 
 - Confirmed SSRF/open-redirect Findings modules / OAST verification engines
@@ -495,14 +472,18 @@ Each phase = **mergeable vertical slice** combining 2–3 PRs, with tests green 
 
 **Acceptance**
 
-- [ ] Planner schedules URL probes when passive score/category warrants
-- [ ] Standard budget remains controlled; deep+ expands protocols
-- [ ] Fingerprint maps error phrases + Location reflection of canary
-- [ ] Synthesis fills `observed.url_sink` without creating Findings
-- [ ] Tests offline with canned fingerprints
-- [ ] Docs: input-validation.md new probe family
+- [x] Planner schedules URL probes when passive score/category warrants
+- [x] Standard budget remains controlled; deep+ expands protocols
+- [x] Fingerprint maps error phrases + Location reflection of canary
+- [x] Synthesis fills `observed.url_sink` without creating Findings
+- [x] Tests offline with canned fingerprints
+- [x] Docs: input-validation.md new probe family
 
 **Suggested AI prompt focus:** “Add URL sink characterization probes and response fingerprinting to IV; characterization only.”
+
+**Shipped:** 2026-07-31 on `main` (schema remains v53). Modules:
+`talos/input_validation/url_sink_probes.py`; fingerprint URL analyzers;
+planner `url_sink_probes` → job type `iv_url_sink`; synthesize → `observed.url_sink`.
 
 ---
 

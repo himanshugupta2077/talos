@@ -213,7 +213,12 @@ talos
     │                 (score ≥ 45 or name+network-shaped value; empty only for strong
     │                  sink categories; de-duped; no external script fetch;
     │                  location=response skipped by same-flow reflection)
-    │             (IV probes / capabilities / candidates land in later phases)
+    │             Phase 3 active IV (talos.input_validation.url_sink_probes):
+    │               planner url_sink_probes when passive warrants → iv_url_sink jobs
+    │               benign canaries (talos-canary.invalid, path/IP/forms; deep+ protocols)
+    │               fingerprint phrases + Location canary + soft timing
+    │               → observed.url_sink + tested.url_sink:* (no Findings)
+    │             (capabilities / candidates land in Phase 4)
     │           Passive Reflection Intelligence (same-flow):
     │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)
     │             record: is_reflected, reflection_count, reflection_locations, reflection_encoding
@@ -350,6 +355,17 @@ talos
     │     standard ~5 cost-controlled; quick skips; deep extra encoding probes
     │     tested.parser:duplicate etc. when rejects; capability duplicate_parameter
     │     Fingerprint only — no HPP exploit chains
+    │
+    ├── URL sink characterization (URL Sink Discovery Phase 3):
+    │     talos.input_validation.url_sink_probes — select_url_sink_probes when
+    │       passive url_features / name category / semantic_type=url warrants
+    │     Benign canaries only (talos-canary.invalid .invalid TLD; loopback/path;
+    │       deep+: ftp/gopher/file/UNC) — no OAST collaborator, no Findings
+    │     Job type iv_url_sink; planner action url_sink_probes
+    │     fingerprint.analyze_url_sink_response — DNS/fetch/timeout/malformed-URL
+    │       phrases, Location canary → redirect_behavior, soft timing → fetch
+    │     Synthesis → observed.url_sink + tested.url_sink:*
+    │     network_resource_sink capabilities / candidate rewrite → Phase 4
     │
 ├── Surface completeness (Module 9):
     │     talos.input_validation.surface — path segment rewrite ({name} from

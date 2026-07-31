@@ -1652,6 +1652,8 @@ talos input-validation config
 
 # Adaptive planner (Module 5): enqueues next wave only (baseline first), not full matrix
 # Surfaces (Module 9): path, query, body (JSON/form/multipart/XML/GraphQL), header, cookie
+# URL sink (Phase 3): when passive url_features warrants, planner adds url_sink_probes
+#   (benign talos-canary.invalid canaries → observed.url_sink; no Findings yet)
 # Operator path (Module 12): run --budget → show → candidates (no SQL required)
 talos input-validation run --budget standard
 talos input-validation run
@@ -1667,6 +1669,7 @@ talos input-validation status --format json
 talos input-validation resume
 
 # Offline intelligence from existing probes (Module 3 — zero new HTTP)
+# Includes observed.url_sink when url_sink canary probes completed
 talos input-validation synthesize
 talos input-validation synthesize --host api.example.com
 talos input-validation synthesize --param-uuid <param_uuid>
