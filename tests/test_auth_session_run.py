@@ -359,7 +359,7 @@ def test_results_list_cli(manager: MagicMock, db_path: Path) -> None:
 
 
 def test_scheduler_settle_marks_candidate_done(db_path: Path) -> None:
-    """Unit-level settle: done path updates candidate without findings."""
+    """Unit-level settle: done path updates candidate; WEAK creates finding."""
     from talos.auth_session.models import AuthSessionOutcome
     from talos.scheduler.job import ReplayJob
     from talos.scheduler.scheduler import ReplayScheduler

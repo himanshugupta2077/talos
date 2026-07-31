@@ -5,7 +5,7 @@
 | **Document** | Design: Authentication & Session Testing Engine |
 | **Author** | Talos Engineering |
 | **Date** | 2026-07-31 |
-| **Status** | Phases 1–3 implemented (foundation + bindings/candidates + engine/scheduler/run); Phases 4–5 remaining |
+| **Status** | Phases 1–4 implemented (foundation + bindings/candidates + engine/scheduler/run + filter/findings); Phase 5 remaining |
 | **Audience** | Senior engineers familiar with Talos attack modules |
 | **Related** | `docs/architecture.md`, `docs/cli-cheat-sheet.md`, `AGENTS.md` |
 
@@ -1370,32 +1370,32 @@ When told **“implement Phase N”**, an AI implementer should deliver **all PR
 
 ---
 
-### Phase 4: Decision filter & findings
+### Phase 4: Decision filter & findings — **DONE**
 
 **Goal:** Project-tunable SECURE/WEAK patterns and automatic finding creation for `WEAK_VALIDATION`, integrated with existing findings triage.
 
 **Exit criteria:**
-- `auth-session-decision-filter.yaml` load/eval (same shape as unauth/BAC filters); CLI `filter init|show|validate`.
-- Engine uses filter when present, else heuristic.
-- `VERDICT_TRIGGERS["auth_session"] = {"WEAK_VALIDATION"}`; cluster key `AUTH_SESSION:<endpoint_id>:<auth_type>`; evidence includes `auth_session_result`.
-- `talos finding list` shows Authentication & Session Testing findings after a successful weak-validation run (mocked or integration).
-- Unit tests for filter + findings bridge.
+- [x] `auth-session-decision-filter.yaml` load/eval (same shape as unauth/BAC filters); CLI `filter init|show|validate`.
+- [x] Engine uses filter when present, else heuristic (filter miss → heuristic, not UNKNOWN-only).
+- [x] `VERDICT_TRIGGERS["auth_session"] = {"WEAK_VALIDATION"}`; cluster key `AUTH_SESSION:<endpoint_id>:<auth_type>`; evidence includes `auth_session_result`.
+- [x] `talos finding list` shows Authentication & Session Testing findings after a successful weak-validation run (mocked or integration).
+- [x] Unit tests for filter + findings bridge.
 
 **Depends on:** Phase 3
 
-**AI implementer scope:** PR 4.1 → 4.2. Wire creator from **scheduler settle only** (never engine) after findings constants land.
+**AI implementer scope:** PR 4.1 → 4.2. Wire creator from **scheduler settle** (and CLI `--right-now` settle) via findings_bridge — never inside the mutation engine.
 
-#### PR 4.1: Decision filter
+#### PR 4.1: Decision filter — **DONE**
 
 - **Files/components:** `talos/auth_session/decision_filter.py`; CLI `filter init|show|validate`; default YAML with SECURE soft-fail body patterns; wire engine fallback order (filter miss → heuristic); `tests/test_auth_session_decision_filter.py`.
 - **Dependencies:** Phase 3
 - **Description:** Match sections; **heuristic fallback** when no file or no match (not unauth-style UNKNOWN-only).
 
-#### PR 4.2: Findings model + bridge
+#### PR 4.2: Findings model + bridge — **DONE**
 
 - **Files/components:** full Findings checklist (model, `build_cluster_key(auth_type=)`, creator evidence branch, report.py, bridge title formula, scheduler settle call site); `tests/test_auth_session_findings.py`.
 - **Dependencies:** PR 4.1
-- **Description:** `WEAK_VALIDATION` → TRIAGING finding from **scheduler settle only** via findings_bridge; extend creator with `title=` + `auth_type=`; title formula Appendix B.
+- **Description:** `WEAK_VALIDATION` → TRIAGING finding from **scheduler settle / --right-now** via findings_bridge; extend creator with `title=` + `auth_type=`; title formula Appendix B.
 
 ---
 

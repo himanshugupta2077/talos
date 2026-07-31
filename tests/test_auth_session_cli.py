@@ -241,7 +241,35 @@ def test_talos_helper_documents_auth_session() -> None:
     assert "auth-session approve|reject|unapprove" in text
     assert "auth-session run" in text
     assert "auth-session results" in text
+    assert "auth-session filter" in text
     assert "auth-session suite list" in text
+
+
+def test_filter_init_show_validate(manager: MagicMock, db_path: Path) -> None:
+    from talos.auth_session.decision_filter import FILTER_FILENAME
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["filter", "init"]))
+    assert "Created:" in out.getvalue()
+    assert (db_path.parent / FILTER_FILENAME).exists()
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["filter", "init"]))
+    assert "Already exists" in out.getvalue()
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["filter", "validate"]))
+    text = out.getvalue()
+    assert "OK" in text
+    assert "passed_detection" in text
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["filter", "show"]))
+    assert "version:" in out.getvalue()
 
 
 def test_bind_normalizes_header_case(manager: MagicMock, db_path: Path) -> None:

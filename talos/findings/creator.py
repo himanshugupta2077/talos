@@ -11,9 +11,10 @@ Purpose:
     created and handles all DB writes.
 
     Verdict trigger map (defined in model.VERDICT_TRIGGERS):
-        bac       → POSSIBLE_BAC triggers a finding.
-        auth_test → BYPASS       triggers a finding.
-        unauth    → BYPASS       triggers a finding.
+        bac          → POSSIBLE_BAC    triggers a finding.
+        auth_test    → BYPASS          triggers a finding.
+        unauth       → BYPASS          triggers a finding.
+        auth_session → WEAK_VALIDATION triggers a finding.
 
     Relationship (PRIMARY / LINKED) is decided here via cluster_key:
         first finding in a cluster → PRIMARY
@@ -68,6 +69,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_BAC_RESULT,
     EVIDENCE_TYPE_AUTH_TEST_RESULT,
     EVIDENCE_TYPE_UNAUTH_RESULT,
+    EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
     TIMELINE_ACTOR_SYSTEM,
@@ -157,6 +159,8 @@ def create_finding_from_verdict(
     attack_type: Optional[str] = None,
     variant: Optional[str] = None,
     diff_verdict: Optional[str] = None,
+    title: Optional[str] = None,
+    auth_type: Optional[str] = None,
 ) -> Optional[str]:
     """
     Purpose:
@@ -166,9 +170,10 @@ def create_finding_from_verdict(
         Relationship decision (PRIMARY vs LINKED) is owned here — attack
         modules only report successful verdicts.  Cluster identity is
         attack-specific (see findings_db.build_cluster_key):
-            unauth    → UNAUTH:<endpoint_id>
-            auth_test → AUTH_TEST:<endpoint_id>
-            bac       → BAC:<endpoint_id>:<attacker>:<target>
+            unauth       → UNAUTH:<endpoint_id>
+            auth_test    → AUTH_TEST:<endpoint_id>
+            bac          → BAC:<endpoint_id>:<attacker>:<target>
+            auth_session → AUTH_SESSION:<endpoint_id>:<auth_type>
 
         The first finding in a cluster becomes PRIMARY; later findings in
         the same cluster become LINKED to that PRIMARY.  Every successful
@@ -177,7 +182,7 @@ def create_finding_from_verdict(
     Input:
         db_path         — path to the project's talos.db.
         project_id      — project identifier.
-        attack_module   — 'bac' | 'auth_test' | 'unauth' (key into VERDICT_TRIGGERS).
+        attack_module   — 'bac' | 'auth_test' | 'unauth' | 'auth_session'.
         verdict         — verdict string produced by the attack engine.
         endpoint_id     — FK to endpoints.id; may be None.
         original_flow_id— UUID of the original captured flow.
@@ -187,8 +192,12 @@ def create_finding_from_verdict(
         target_role_id  — target role UUID (BAC only).
         module_id       — access module UUID (BAC only).
         attack_type     — BAC job type constant (e.g. 'bac_session_swap').
-        variant         — BAC variant label (e.g. 'GET_to_POST').
+        variant         — technique / test_id label for timeline context.
         diff_verdict    — SAME | DIFFERENT | ERROR; may be None.
+        title           — optional full title override (auth_session Appendix B).
+                          When omitted, uses default "{ATTACK_DISPLAY} — {verdict}
+                          ({variant})" builder.
+        auth_type       — auth_session only (jwt, …) for cluster key.
 
     Output:
         Finding UUID if a finding was created; None if verdict is not a trigger.
@@ -204,12 +213,13 @@ def create_finding_from_verdict(
     if verdict not in triggers:
         return None
 
-    # Build a readable title for the finding.
+    # Build a readable title for the finding (caller may override fully).
     attack_label = ATTACK_DISPLAY.get(attack_module, attack_module.upper())
-    title_parts = [attack_label, f"— {verdict}"]
-    if variant:
-        title_parts.append(f"({variant})")
-    title = " ".join(title_parts)
+    if not title:
+        title_parts = [attack_label, f"— {verdict}"]
+        if variant:
+            title_parts.append(f"({variant})")
+        title = " ".join(title_parts)
 
     # Cluster identity — attack-specific; mutations/variants are intentionally
     # excluded so multiple bypass techniques for the same endpoint cluster.
@@ -218,6 +228,7 @@ def create_finding_from_verdict(
         endpoint_id=endpoint_id,
         attacker_role_id=attacker_role_id,
         target_role_id=target_role_id,
+        auth_type=auth_type,
     )
 
     try:
@@ -496,6 +507,16 @@ def _attach_evidence(
                 "Unauthenticated-execution attack result"
                 + (f" — variant: {variant}" if variant else ""),
                 {"variant": variant},
+            )
+
+    elif attack_module == "auth_session":
+        if replayed_flow_id_for_result:
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_AUTH_SESSION_RESULT, replayed_flow_id_for_result,
+                "Authentication & Session Testing result"
+                + (f" — test: {variant}" if variant else ""),
+                {"variant": variant, "test_id": variant},
             )
 
 

@@ -186,6 +186,29 @@ def test_unknown_2xx_different_body(db_path: Path) -> None:
     assert outcome.diff_verdict == "DIFFERENT"
 
 
+def test_decision_filter_soft_fail_body_secure(db_path: Path) -> None:
+    """Default filter body keywords force SECURE even on 2xx soft-fail."""
+    from talos.auth_session.decision_filter import write_default_filter
+
+    write_default_filter(db_path.parent)
+    binding_id, cand_id = _seed_candidate(db_path)
+    # Body similar length to baseline but contains soft-fail keyword.
+    soft = b'{"error":"Invalid token"}'  # ~24 bytes; baseline BODY is small too
+    with _mock_httpx(200, soft):
+        outcome = asyncio.run(
+            execute_auth_session_job(
+                FLOW, _meta(binding_id, cand_id), db_path, PROJECT_ID
+            )
+        )
+    assert outcome.failure_reason is None
+    assert outcome.auth_session_verdict == VERDICT_SECURE
+    assert outcome.matched_section == "passed_detection"
+    assert outcome.replayed_flow_id is not None
+    result = as_db.get_result(db_path, outcome.replayed_flow_id)
+    assert result is not None
+    assert result.matched_section == "passed_detection"
+
+
 def test_one_outbound_request_per_job(db_path: Path) -> None:
     binding_id, cand_id = _seed_candidate(db_path, "jwt.invalid_signature")
     with _mock_httpx(200, BODY) as mock_cls:

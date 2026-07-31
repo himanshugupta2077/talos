@@ -1549,9 +1549,10 @@ talos attack unauth config --auto-run off
 
 ## Attack — Authentication & Session Testing (`auth-session`)
 
-**Status (Phase 3):** bind → generate → approve → **run** (scheduler or
-`--right-now`) → **results**. Heuristic verdicts only; decision filter +
-findings land in Phase 4.
+**Status (Phase 4):** bind → generate → approve → **run** (scheduler or
+`--right-now`) → **results** + **findings** on `WEAK_VALIDATION`. Optional
+decision filter (`auth-session-decision-filter.yaml`) scores before heuristic
+fallback. Phase 5: full alg-degradation matrix + polish.
 
 Probes whether a *presented* credential is validated (signature, algorithm,
 claims, structure). Distinct from Unauth (auth removed/garbled) and BAC
@@ -1630,8 +1631,23 @@ talos attack auth-session results list [--endpoint UUID] [--verdict WEAK_VALIDAT
 talos attack auth-session results show <replay_flow_id>
 ```
 
-Verdicts (heuristic, Phase 3): `WEAK_VALIDATION` (2xx + diff SAME), `SECURE`
-(401/403/407/3xx), `UNKNOWN` (else). Decision filter + findings: Phase 4.
+Verdicts: filter match first when `auth-session-decision-filter.yaml` exists;
+else heuristic — `WEAK_VALIDATION` (2xx + diff SAME), `SECURE` (401/403/407/3xx
+or filter soft-fail body), `UNKNOWN` (else). Findings on `WEAK_VALIDATION`
+only (`talos finding list`); cluster `AUTH_SESSION:<endpoint_id>:<auth_type>`.
+
+### Decision filter
+
+```bash
+talos attack auth-session filter init      # write default YAML (SECURE soft-fail patterns)
+talos attack auth-session filter show
+talos attack auth-session filter validate
+```
+
+File: `<project_data_dir>/auth-session-decision-filter.yaml`. Sections:
+`failed_detection` → `WEAK_VALIDATION`, `passed_detection` → `SECURE`; no match
+falls through to status+diff heuristic. **No `filter apply`/reclassify in v1**
+— re-run candidates after filter edits.
 
 ### Suite catalog
 
@@ -1640,11 +1656,12 @@ talos attack auth-session suite list --type jwt
 talos attack auth-session suite list --type jwt --alg RS256   # + Phase-1 degrade rows
 ```
 
-### Later phases (not wired)
+### Findings
 
-| Command | Phase |
-|---------|-------|
-| `talos attack auth-session filter` | 4 — decision filter + WEAK_VALIDATION findings |
+```bash
+talos finding list
+# Titles: "Authentication & Session Testing — jwt.alg_none on GET /api/me"
+```
 
 Design: `docs/design-auth-session-testing-engine.md`.
 

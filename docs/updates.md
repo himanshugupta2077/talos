@@ -2,6 +2,48 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 4 decision filter & findings
+
+**Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
+
+Phase 4 completes the operator loop: **filter-then-heuristic scoring** and
+**WEAK_VALIDATION findings** from scheduler settle (and `--right-now`).
+
+| Deliverable | Detail |
+|-------------|--------|
+| **Decision filter** | `talos/auth_session/decision_filter.py` — `auth-session-decision-filter.yaml`; `failed_detection`→WEAK_VALIDATION; `passed_detection`→SECURE; empty/no-match → heuristic fallback (not unauth UNKNOWN-only) |
+| **Default YAML** | SECURE soft-fail body keywords (invalid token, unauthorized, signature, jwt, …) + 401/403/407; empty failed_detection groups |
+| **Scoring** | `verdict.score_verdict` — error → filter match → heuristic; engine stores matched_section/group/rules |
+| **CLI filter** | `talos attack auth-session filter init\|show\|validate` (no apply/reclassify in v1) |
+| **Findings model** | `VERDICT_TRIGGERS["auth_session"]`; `ATTACK_DISPLAY`; `EVIDENCE_TYPE_AUTH_SESSION_RESULT` |
+| **Cluster key** | `AUTH_SESSION:<endpoint_id>:<auth_type>` via `build_cluster_key(..., auth_type=)` |
+| **Creator** | `create_finding_from_verdict(..., title=, auth_type=)` + auth_session evidence branch |
+| **Bridge** | `findings_bridge.maybe_create_auth_session_finding` — Appendix B title formula |
+| **Settle** | `_maybe_create_finding_auth_session` on success; `--right-now` also creates findings |
+| **Report** | `finding show` / report resolves `auth_session_result` |
+
+```bash
+talos attack auth-session filter init
+talos attack auth-session run --endpoint <uuid>
+# or:
+talos attack auth-session run --candidate <id> --right-now
+talos attack auth-session results list --verdict WEAK_VALIDATION
+talos finding list
+# Title example: Authentication & Session Testing — jwt.alg_none on GET /api/me
+```
+
+**Not in Phase 4:** full algorithm-degradation matrix polish, `filter apply`
+reclassify (Phase 5 / later).
+
+**Tests:** `tests/test_auth_session_decision_filter.py`,
+`test_auth_session_findings.py` (+ engine filter path + CLI filter).
+
+**Files:** `talos/auth_session/{decision_filter,verdict,engine,findings_bridge,cli}.py`,
+`talos/findings/{model,db,creator,report}.py`, `talos/scheduler/scheduler.py`,
+`talos/__main__.py`, docs.
+
+---
+
 ## Auth-session engine — Phase 3 execution engine & scheduler
 
 **Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.

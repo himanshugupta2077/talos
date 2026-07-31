@@ -2,7 +2,7 @@
 Module: talos.auth_session.cli
 
 Purpose:
-    Operator CLI for Authentication & Session Testing (Phases 2–3).
+    Operator CLI for Authentication & Session Testing (Phases 2–4).
     Entry point: ``talos attack auth-session <subcommand>``
 
     Subcommands:
@@ -16,13 +16,12 @@ Purpose:
         unapprove         approved → pending
         run               Enqueue approved candidates (or --right-now)
         results list|show
+        filter init|show|validate
         suite list        List catalog test_ids for an auth type
-
-    Phase 4 adds: filter
 
 Dependencies: argparse, asyncio, json, uuid; db, candidates, engine; scheduler
 Data flow: attack_cli → run_auth_session_cli → handlers → DB / scheduler / HTTP
-Side effects: DB writes; optional outbound HTTP for --right-now.
+Side effects: DB writes; optional outbound HTTP for --right-now; filter init writes YAML.
 """
 
 from __future__ import annotations
@@ -77,7 +76,8 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         "auth-session",
         help=(
             "Authentication & Session Testing — bind JWT fields, generate "
-            "mutation candidates, approve, run (one job per test_id)."
+            "mutation candidates, approve, run (one job per test_id); "
+            "decision filter + WEAK_VALIDATION findings."
         ),
         description=(
             "Probe whether a *presented* credential is validated "
@@ -500,6 +500,26 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     )
     add_format_argument(p_slist)
     p_slist.set_defaults(_as_handler=cmd_suite_list)
+
+    # ---- filter ---- #
+    p_filter = as_sub.add_parser(
+        "filter",
+        help="Manage auth-session-decision-filter.yaml (init | show | validate).",
+        description=(
+            "Project-tunable SECURE / WEAK_VALIDATION patterns for mutated-token "
+            "replays. No reclassify/apply in v1 — edit filter then re-run candidates."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    fsub = p_filter.add_subparsers(dest="auth_session_filter_cmd", metavar="<subcommand>")
+    fsub.required = True
+    fsub.add_parser(
+        "init",
+        help="Write default auth-session-decision-filter.yaml (no-op if exists).",
+    )
+    fsub.add_parser("show", help="Print the current filter file.")
+    fsub.add_parser("validate", help="Parse and validate the filter file structure.")
+    p_filter.set_defaults(_as_handler=cmd_filter)
 
 
 def run_auth_session_cli(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -1112,21 +1132,21 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         "\nRun 'talos scheduler status' to monitor. "
         "Inspect: talos attack auth-session results list"
     )
-    print(
-        "Findings for WEAK_VALIDATION arrive in Phase 4 "
-        "(decision filter + findings bridge)."
-    )
+    print("WEAK_VALIDATION findings appear under: talos finding list")
 
 
 def _run_right_now(db_path, project_id: str, rows: list) -> None:
     """Execute approved candidates immediately (one HTTP request each)."""
     from talos.auth_session.engine import execute_auth_session_job
+    from talos.auth_session.findings_bridge import maybe_create_auth_session_finding
+    from talos.auth_session.models import VERDICT_WEAK_VALIDATION
 
     print(f"Auth-session --right-now: {len(rows)} candidate(s)")
     print()
 
     done = 0
     failed = 0
+    findings = 0
     for cand in rows:
         as_db.mark_candidate_running(db_path, cand.id)
         meta = {
@@ -1166,16 +1186,118 @@ def _run_right_now(db_path, project_id: str, rows: list) -> None:
             failed += 1
         else:
             as_db.mark_candidate_done(db_path, cand.id)
+            finding_note = ""
+            if outcome.auth_session_verdict == VERDICT_WEAK_VALIDATION:
+                fid = maybe_create_auth_session_finding(
+                    db_path=db_path,
+                    project_id=project_id,
+                    verdict=outcome.auth_session_verdict,
+                    endpoint_id=outcome.endpoint_id or cand.endpoint_id,
+                    original_flow_id=outcome.original_flow_id,
+                    replayed_flow_id=outcome.replayed_flow_id,
+                    test_id=outcome.test_id,
+                    auth_type=outcome.auth_type or cand.auth_type,
+                    job_id=None,
+                    diff_verdict=outcome.diff_verdict,
+                    risk_hint=cand.risk_hint,
+                    mutation_summary=cand.mutation_summary,
+                    candidate_id=cand.id,
+                    binding_id=cand.binding_id,
+                )
+                if fid:
+                    findings += 1
+                    finding_note = f"  finding={fid[:8]}"
             print(
                 f"  {outcome.auth_session_verdict:<16}  {cand.test_id}  "
                 f"status={outcome.replay_status}  diff={outcome.diff_verdict}  "
                 f"replay={outcome.replayed_flow_id or '—'}"
+                f"{finding_note}"
             )
             done += 1
 
     print()
-    print(f"Done: {done}  Failed/skipped: {failed}")
+    print(f"Done: {done}  Failed/skipped: {failed}  Findings: {findings}")
     print("Inspect: talos attack auth-session results list")
+    print("Findings: talos finding list")
+
+
+def cmd_filter(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """Dispatch filter init | show | validate."""
+    sub = getattr(args, "auth_session_filter_cmd", None)
+    if sub == "init":
+        cmd_filter_init(manager, args)
+    elif sub == "show":
+        cmd_filter_show(manager, args)
+    elif sub == "validate":
+        cmd_filter_validate(manager, args)
+    else:
+        cli_usage_error(f"Unknown auth-session filter subcommand: {sub!r}")
+
+
+def cmd_filter_init(manager: ProjectManager, _args: argparse.Namespace) -> None:
+    """Write default auth-session-decision-filter.yaml (no-op if exists)."""
+    from talos.auth_session.decision_filter import (
+        FILTER_FILENAME,
+        write_default_filter,
+    )
+
+    project = _require_active(manager)
+    data_dir = project.db_path.parent
+    written = write_default_filter(data_dir)
+    if written:
+        print(f"Created: {data_dir / FILTER_FILENAME}")
+        print(
+            "Edit the file to customise WEAK_VALIDATION / SECURE patterns. "
+            "Re-run candidates after edits (no filter apply in v1)."
+        )
+    else:
+        print(f"Already exists: {data_dir / FILTER_FILENAME}")
+        print("Delete it and re-run 'init' to reset to defaults.")
+
+
+def cmd_filter_show(manager: ProjectManager, _args: argparse.Namespace) -> None:
+    """Print current filter file to stdout."""
+    from talos.auth_session.decision_filter import FILTER_FILENAME
+
+    project = _require_active(manager)
+    filter_path = project.db_path.parent / FILTER_FILENAME
+    if not filter_path.exists():
+        cli_error(
+            f"No filter file found at: {filter_path}\n"
+            "Run 'talos attack auth-session filter init' to create one."
+        )
+    print(filter_path.read_text(encoding="utf-8"))
+
+
+def cmd_filter_validate(manager: ProjectManager, _args: argparse.Namespace) -> None:
+    """Parse filter YAML and report structural OK or errors."""
+    from talos.auth_session.decision_filter import FILTER_FILENAME, load_filter
+
+    project = _require_active(manager)
+    data_dir = project.db_path.parent
+    filter_path = data_dir / FILTER_FILENAME
+    if not filter_path.exists():
+        cli_error(
+            f"No filter file found at: {filter_path}\n"
+            "Run 'talos attack auth-session filter init' to create one."
+        )
+    result = load_filter(data_dir)
+    if result is None:
+        cli_error(
+            f"{filter_path} could not be parsed.\n"
+            "Check the YAML syntax and structure."
+        )
+    passed_groups = (
+        len(result.passed_detection.groups) if result.passed_detection else 0
+    )
+    failed_groups = (
+        len(result.failed_detection.groups) if result.failed_detection else 0
+    )
+    print(f"OK — {filter_path.name}")
+    print(f"  Version             : {result.version}")
+    print(f"  passed_detection    : {passed_groups} group(s)  → SECURE")
+    print(f"  failed_detection    : {failed_groups} group(s)  → WEAK_VALIDATION")
+    print("  No match            : falls through to status+diff heuristic")
 
 
 def cmd_results_list(manager: ProjectManager, args: argparse.Namespace) -> None:

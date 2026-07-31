@@ -474,6 +474,8 @@ def _print_usage() -> None:
         "                    [--right-now]\n"
         "    auth-session results list|show\n"
         "                    Inspect WEAK_VALIDATION / SECURE / UNKNOWN\n"
+        "    auth-session filter init|show|validate\n"
+        "                    auth-session-decision-filter.yaml\n"
         "    auth-session suite list\n"
         "                    Catalog test_ids [--type jwt] [--alg RS256]\n"
         "    bac session-swap|method-fuzz|content-type|url-fuzz|\n"

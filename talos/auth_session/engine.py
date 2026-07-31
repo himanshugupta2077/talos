@@ -13,7 +13,7 @@ Purpose:
         Engine  — load, mutate, send, persist flow/diff/result, score verdict.
                   Does **not** create findings or mark scheduler_jobs terminal.
         Scheduler settle — candidate running→done|failed; job terminal state;
-                           findings land in Phase 4 from settle only.
+                           findings from settle via findings_bridge.
 
 Pipeline:
     1. Load candidate + baseline flow
@@ -24,7 +24,7 @@ Pipeline:
     6. Apply mutation to request headers/cookies only
     7. httpx send (no redirects, no retries, 30s timeout, project upstream)
     8. insert_replayed_flow + insert_replay_diff
-    9. heuristic verdict (decision filter is Phase 4)
+    9. score: decision filter (if present) then heuristic fallback
    10. insert_auth_session_result (1:1 with replay_flow_id)
    11. return AuthSessionOutcome
 
@@ -41,7 +41,7 @@ Meta dict keys (from run enqueue):
     baseline_flow_id, endpoint_id (optional)
 
 Dependencies:
-    talos.auth_session.db / extract / types / verdict
+    talos.auth_session.db / extract / types / verdict / decision_filter
     talos.projects.proxy_config / endpoint_policy
     talos.replay.db / diff
     httpx
@@ -72,8 +72,13 @@ from talos.auth_session.models import (
     AuthSessionOutcome,
     MutatedToken,
 )
+from talos.auth_session.decision_filter import (
+    ResponseData,
+    evaluate_response,
+    load_filter,
+)
 from talos.auth_session.types import get_analyzer
-from talos.auth_session.verdict import heuristic_verdict
+from talos.auth_session.verdict import score_verdict
 from talos.projects.proxy_config import get_upstream_url
 from talos.replay.diff import DiffResult, compute_diff
 
@@ -660,11 +665,10 @@ async def _send_and_store(
             exc,
         )
 
-    # Phase 3: heuristic only. Phase 4 adds decision-filter-first then fallback.
-    verdict = heuristic_verdict(
-        replay_status=replayed.get("status_code"),
+    scored = _score_replay(
+        db_path=db_path,
+        replayed=replayed,
         diff_verdict=diff.verdict,
-        replay_error=replayed.get("replay_error"),
     )
 
     try:
@@ -676,16 +680,16 @@ async def _send_and_store(
             binding_id=binding_id,
             auth_type=auth_type,
             test_id=test_id,
-            verdict=verdict,
+            verdict=scored.verdict,
             endpoint_id=endpoint_id,
             test_family=test_family,
             mutation_summary=mutation_summary,
             original_status=original_flow.get("status_code"),
             replay_status=replayed.get("status_code"),
             diff_verdict=diff.verdict,
-            matched_section=None,  # Phase 4 filter
-            matched_group=None,
-            matched_rules=None,
+            matched_section=scored.matched_section,
+            matched_group=scored.matched_group,
+            matched_rules=scored.matched_rules,
             failure_reason=failure_reason,
         )
     except Exception as exc:  # noqa: BLE001
@@ -701,17 +705,91 @@ async def _send_and_store(
         original_status=original_flow.get("status_code"),
         replay_status=replayed.get("status_code"),
         diff_verdict=diff.verdict,
-        auth_session_verdict=verdict,
+        auth_session_verdict=scored.verdict,
         test_id=test_id,
         binding_id=binding_id,
         candidate_id=candidate_id,
         auth_type=auth_type,
         endpoint_id=endpoint_id,
         failure_reason=failure_reason,
-        matched_section=None,
-        matched_group=None,
-        matched_rules=None,
+        matched_section=scored.matched_section,
+        matched_group=scored.matched_group,
+        matched_rules=scored.matched_rules,
     )
+
+
+def _score_replay(
+    *,
+    db_path: Path,
+    replayed: dict,
+    diff_verdict: Optional[str],
+):
+    """
+    Load decision filter (if any) and score: filter match → else heuristic.
+    Does not create findings.
+    """
+    from talos.auth_session.verdict import VerdictScore
+
+    replay_error = replayed.get("replay_error")
+    replay_status = replayed.get("status_code")
+
+    filter_verdict: Optional[str] = None
+    filter_section: Optional[str] = None
+    filter_group: Optional[str] = None
+    filter_rules: Optional[list[str]] = None
+
+    # Only attempt filter when we have a status (score_verdict also guards).
+    if not replay_error and replay_status is not None:
+        try:
+            decision_filter = load_filter(db_path.parent)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[auth_session] decision filter load error: %s", exc)
+            decision_filter = None
+
+        if decision_filter is not None:
+            headers_raw = replayed.get("response_headers") or "{}"
+            if isinstance(headers_raw, str):
+                try:
+                    headers = json.loads(headers_raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    headers = {}
+            else:
+                headers = dict(headers_raw or {})
+            if not isinstance(headers, dict):
+                headers = {}
+
+            body = replayed.get("response_body")
+            if isinstance(body, str):
+                body_bytes: Optional[bytes] = body.encode("utf-8", errors="replace")
+            else:
+                body_bytes = body if isinstance(body, (bytes, bytearray)) else None
+
+            length = int(replayed.get("response_body_truncated") or 0)
+            if not length and body_bytes is not None:
+                length = len(body_bytes)
+
+            resp_data = ResponseData(
+                status=int(replay_status) if replay_status is not None else None,
+                headers=headers,
+                body=bytes(body_bytes) if body_bytes is not None else None,
+                response_length=length,
+            )
+            decision = evaluate_response(decision_filter, resp_data)
+            filter_verdict = decision.verdict
+            filter_section = decision.matched_section
+            filter_group = decision.matched_group_id
+            filter_rules = list(decision.matched_rules or [])
+
+    scored: VerdictScore = score_verdict(
+        replay_status=replay_status,
+        diff_verdict=diff_verdict,
+        replay_error=replay_error,
+        filter_verdict=filter_verdict,
+        filter_matched_section=filter_section,
+        filter_matched_group=filter_group,
+        filter_matched_rules=filter_rules,
+    )
+    return scored
 
 
 # ------------------------------------------------------------------ #

@@ -24,14 +24,16 @@ Phase 1 (foundation): models, JWT codec/mutators, suite catalog, schema v54.
 Phase 2 (bindings & candidates): db, extract, candidates generate, CLI
     (bind / generate / approve / reject / suite list).
 Phase 3 (engine & scheduler): heuristic verdict, execute_auth_session_job,
-    auth_session_attack jobs, run / results CLI. No findings yet (Phase 4).
+    auth_session_attack jobs, run / results CLI.
+Phase 4 (filter & findings): auth-session-decision-filter.yaml, score with
+    filter-then-heuristic, WEAK_VALIDATION findings from settle / right-now.
 
-Later phases: decision filter, findings, full alg-degradation matrix.
+Later phases: full alg-degradation matrix + docs polish (Phase 5).
 
 Dependencies: stdlib only for JWT mutations (base64, json); url_sink.jwt_claims
     for extract_jwt_token / decode_jwt_payload reuse; httpx for replay.
-Data flow: binding → candidates → approve → run → engine → results → (Phase 4 findings)
-Side effects: Phase 3 may send outbound HTTP and write results / replay flows.
+Data flow: binding → candidates → approve → run → engine → results → findings
+Side effects: Outbound HTTP; results / replay flows; findings on WEAK_VALIDATION.
 """
 
 from __future__ import annotations

@@ -925,7 +925,7 @@ class ReplayScheduler:
         """
         Purpose:
             Map AuthSessionOutcome to job terminal state + candidate done/failed.
-            Findings (WEAK_VALIDATION) land in Phase 4 — not here yet.
+            On successful WEAK_VALIDATION, create a finding (KD16 settle only).
         """
         from talos.auth_session import db as as_db
 
@@ -1006,8 +1006,57 @@ class ReplayScheduler:
             outcome.test_id,
         )
 
-        # Phase 4: _maybe_create_finding_auth_session for WEAK_VALIDATION.
-        # Intentionally omitted in Phase 3 (KD16 — settle only, no findings yet).
+        self._maybe_create_finding_auth_session(job, outcome)
+
+    def _maybe_create_finding_auth_session(
+        self, job: ReplayJob, outcome: "AuthSessionOutcome"
+    ) -> None:
+        """
+        Purpose:
+            Create a finding when an auth-session job produces WEAK_VALIDATION.
+            Non-fatal — errors are logged and suppressed (KD16 settle path).
+        """
+        from talos.auth_session.findings_bridge import maybe_create_auth_session_finding
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        endpoint_id = outcome.endpoint_id or job.endpoint_id
+        risk_hint = None
+        mutation_summary = None
+        if outcome.candidate_id:
+            try:
+                from talos.auth_session import db as as_db
+
+                cand = as_db.get_candidate(db_path, outcome.candidate_id)
+                if cand is not None:
+                    risk_hint = cand.risk_hint
+                    mutation_summary = cand.mutation_summary
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            maybe_create_auth_session_finding(
+                db_path=db_path,
+                project_id=project_id,
+                verdict=outcome.auth_session_verdict,
+                endpoint_id=endpoint_id,
+                original_flow_id=outcome.original_flow_id,
+                replayed_flow_id=outcome.replayed_flow_id,
+                test_id=outcome.test_id,
+                auth_type=outcome.auth_type or "jwt",
+                job_id=job.job_id,
+                diff_verdict=outcome.diff_verdict,
+                risk_hint=risk_hint,
+                mutation_summary=mutation_summary,
+                candidate_id=outcome.candidate_id,
+                binding_id=outcome.binding_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "[findings] Auth-session finding creation error (non-fatal): %s",
+                exc,
+            )
 
     def _maybe_create_finding_unauth(
         self, job: ReplayJob, outcome: "UnauthOutcome"

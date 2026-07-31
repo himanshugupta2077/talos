@@ -87,6 +87,7 @@ def build_cluster_key(
     endpoint_id: Optional[str],
     attacker_role_id: Optional[str] = None,
     target_role_id: Optional[str] = None,
+    auth_type: Optional[str] = None,
 ) -> Optional[str]:
     """
     Purpose:
@@ -95,10 +96,11 @@ def build_cluster_key(
         only stores and enforces PRIMARY uniqueness on the key.
 
     Cluster shapes:
-        unauth     → UNAUTH:<endpoint_id>
-        auth_test  → AUTH_TEST:<endpoint_id>
-        bac        → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
-        other      → <MODULE>:<endpoint_id>
+        unauth       → UNAUTH:<endpoint_id>
+        auth_test    → AUTH_TEST:<endpoint_id>
+        bac          → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
+        auth_session → AUTH_SESSION:<endpoint_id>:<auth_type>
+        other        → <MODULE>:<endpoint_id>
 
     Passive secret findings do **not** use this helper.  They supply their
     own cluster_key ``PASSIVE_SECRET:<value_fingerprint>`` via
@@ -106,11 +108,12 @@ def build_cluster_key(
     clustering is by secret fingerprint, not endpoint.
 
     Input:
-        attack_module    — 'bac' | 'auth_test' | 'unauth' | …
+        attack_module    — 'bac' | 'auth_test' | 'unauth' | 'auth_session' | …
         endpoint_id      — target endpoint UUID; if missing, returns None
                            (finding is created as standalone PRIMARY).
         attacker_role_id — BAC only.
         target_role_id   — BAC only.
+        auth_type        — auth_session only (jwt, …); defaults to 'unknown'.
     Output:
         cluster_key string, or None when clustering is not possible.
     """
@@ -126,6 +129,8 @@ def build_cluster_key(
         ar = attacker_role_id or "-"
         tr = target_role_id or "-"
         return f"BAC:{endpoint_id}:{ar}:{tr}"
+    if module == "auth_session":
+        return f"AUTH_SESSION:{endpoint_id}:{auth_type or 'unknown'}"
     return f"{module.upper()}:{endpoint_id}"
 
 

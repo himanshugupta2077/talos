@@ -46,6 +46,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_BAC_RESULT,
     EVIDENCE_TYPE_AUTH_TEST_RESULT,
     EVIDENCE_TYPE_UNAUTH_RESULT,
+    EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
     EVIDENCE_TYPE_ANALYST_NOTE,
@@ -208,6 +209,35 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
                 sections.append(f"- **Request Mutation:** `{ur['request_mutation']}`")
         sections.append("")
 
+    # --- Auth-session attack result ---
+    as_ev = _find_evidence(evidence, EVIDENCE_TYPE_AUTH_SESSION_RESULT)
+    if as_ev and as_ev.get("reference_id"):
+        sections.append("## Authentication & Session Testing Result\n")
+        ar = _fetch_auth_session_result(db_path, as_ev["reference_id"])
+        if ar:
+            sections.append(f"- **Verdict:** `{ar.get('verdict', '?')}`")
+            sections.append(f"- **Test ID:** `{ar.get('test_id', '?')}`")
+            if ar.get("auth_type"):
+                sections.append(f"- **Auth Type:** `{ar['auth_type']}`")
+            if ar.get("test_family"):
+                sections.append(f"- **Family:** `{ar['test_family']}`")
+            if ar.get("mutation_summary"):
+                sections.append(f"- **Mutation:** `{ar['mutation_summary']}`")
+            if ar.get("diff_verdict"):
+                sections.append(f"- **Diff:** `{ar['diff_verdict']}`")
+            if ar.get("matched_section"):
+                sections.append(
+                    f"- **Filter Match:** `{ar['matched_section']}`"
+                    + (f" / `{ar.get('matched_group')}`" if ar.get("matched_group") else "")
+                )
+        else:
+            as_data = _parse_json(as_ev.get("data", "{}"))
+            if as_data.get("test_id") or as_data.get("variant"):
+                sections.append(
+                    f"- **Test ID:** `{as_data.get('test_id') or as_data.get('variant')}`"
+                )
+        sections.append("")
+
     # --- All Evidence References ---
     sections.append("## Evidence References\n")
     sections.append("| # | Type | Label | Reference ID |")
@@ -367,6 +397,21 @@ def _fetch_unauth_result(db_path: Path, replay_flow_id: str) -> Optional[dict]:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM unauth_results WHERE replay_flow_id = ?", (replay_flow_id,)
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fetch_auth_session_result(db_path: Path, replay_flow_id: str) -> Optional[dict]:
+    """Fetch an auth_session_results row."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM auth_session_results WHERE replay_flow_id = ?",
+            (replay_flow_id,),
         ).fetchone()
         conn.close()
         return dict(row) if row else None

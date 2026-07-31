@@ -2209,8 +2209,9 @@ Auth-session engine (v54): `auth_session_bindings`,
 Session Testing package (`talos.auth_session` — attack engine; distinct from
 `data_dir/auth_sessions/` manual role session files). Phase 1: schema + JWT
 library. Phase 2: bind/generate/approve/reject CLI. Phase 3: engine +
-`auth_session_attack` scheduler jobs + `run` / `results` (heuristic verdict;
-one job per test_id). Decision filter + findings in Phase 4.
+`auth_session_attack` scheduler jobs + `run` / `results` (one job per test_id).
+Phase 4: `auth-session-decision-filter.yaml` (filter-then-heuristic) +
+`WEAK_VALIDATION` findings (`AUTH_SESSION:<endpoint>:<auth_type>`).
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2293,7 +2294,7 @@ From `talos.scheduler.job`:
 | Authentication Bypass | `auth_test` |
 | BAC | `bac_session_swap`, `bac_method_fuzz`, `bac_content_type`, `bac_url_fuzz`, `bac_header_inject`, `bac_host_fuzz`, `bac_role_inject`, `bac_parser_confuse` |
 | Unauthenticated Execution | `unauth_attack` |
-| Auth-session (Phase 3) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed; findings Phase 4) |
+| Auth-session (Phase 4) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed + WEAK_VALIDATION findings) |
 | Input Validation | `iv_baseline`, `iv_multiprobe`, `iv_identifier`, `iv_characters`, `iv_length`, `iv_types`, `iv_transformations`, `iv_reflection`, `iv_validation`, `iv_parser` |
 
 Statuses: `pending`, `running`, `done`, `failed`, `skipped`, `paused`, `cancelled`.
@@ -2467,7 +2468,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip BYPASS→SECURE (`talos attack unauth filter apply [--dry-run] [--force]`, `talos.projects.unauth.reclassify`); exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
 - [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with Phase-1 algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry (`docs/design-auth-session-testing-engine.md`)
 - [x] Auth-session bindings & candidates (Phase 2) — `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list`; insert-if-absent generate; operator approve lifecycle
-- [x] Auth-session engine & scheduler (Phase 3) — heuristic verdict; `execute_auth_session_job` (one mutation / one flow); `auth_session_attack` job type + settle; `run` / `results` CLI; meta-aware dedupe; no findings yet (Phase 4)
+- [x] Auth-session engine & scheduler (Phase 3) — heuristic verdict; `execute_auth_session_job` (one mutation / one flow); `auth_session_attack` job type + settle; `run` / `results` CLI; meta-aware dedupe
+- [x] Auth-session filter & findings (Phase 4) — `auth-session-decision-filter.yaml` (filter init|show|validate); score filter-then-heuristic; `WEAK_VALIDATION` → TRIAGING findings from settle/`--right-now` via findings_bridge; cluster `AUTH_SESSION:<endpoint>:<auth_type>`
 - [x] Broken Access Control (BAC) — access-matrix candidate generation, eight attack modules + parser-confuse, decision filter, scoped `--endpoint`/`--module NAME|UUID`/`--role NAME|UUID`, results in `bac_results`, findings on `POSSIBLE_BAC`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip POSSIBLE_BAC→SECURE (`talos attack bac filter apply [--dry-run] [--force]`, `talos.projects.bac.reclassify`) (`talos.projects.bac`)
 - [x] Input Validation Engine — eight analysis phases via scheduler job types `iv_*`; disabled by default; parameter cache tables; CLI `talos input-validation` (`talos.input_validation`)
 - [x] IV Evidence Foundations (Module 1) — `ResponseFingerprint` + `compare_fingerprints` + `classify_outcome` + `IV_PROFILE_SCHEMA_VERSION` / `profile_envelope`; pure helpers only (no change to default probe matrix / request volume); tests in `tests/test_iv_fingerprint.py` (`talos.input_validation.fingerprint`, `talos.input_validation.outcomes`)

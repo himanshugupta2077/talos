@@ -104,6 +104,9 @@ EVIDENCE_TYPE_BAC_RESULT             = "bac_result"
 EVIDENCE_TYPE_UNAUTH_RESULT           = "unauth_result"
 """Unauthenticated-execution attack result row reference."""
 
+EVIDENCE_TYPE_AUTH_SESSION_RESULT     = "auth_session_result"
+"""Authentication & Session Testing result row reference."""
+
 EVIDENCE_TYPE_MODULE                  = "module"
 """The application module (feature area) the target endpoint belongs to."""
 
@@ -139,9 +142,10 @@ TIMELINE_ACTOR_ANALYST = "analyst"
 # ------------------------------------------------------------------ #
 
 VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
-    "bac":       frozenset({"POSSIBLE_BAC"}),
-    "auth_test": frozenset({"BYPASS"}),
-    "unauth":    frozenset({"BYPASS"}),
+    "bac":          frozenset({"POSSIBLE_BAC"}),
+    "auth_test":    frozenset({"BYPASS"}),
+    "unauth":       frozenset({"BYPASS"}),
+    "auth_session": frozenset({"WEAK_VALIDATION"}),
 }
 
 # ------------------------------------------------------------------ #
@@ -152,6 +156,7 @@ ATTACK_DISPLAY: dict[str, str] = {
     "bac":            "Broken Access Control",
     "auth_test":      "Authentication Bypass",
     "unauth":         "Unauthenticated Execution",
+    "auth_session":   "Authentication & Session Testing",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
     "ai_draft":       "AI Draft (promoted)",

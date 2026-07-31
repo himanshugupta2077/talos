@@ -771,7 +771,7 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
 
 -- ------------------------------------------------------------------ --
 -- findings: one row per discovered vulnerability instance             --
--- attack_type   : 'bac' | 'auth_test' | 'unauth' (VERDICT_TRIGGERS)  --
+-- attack_type   : 'bac' | 'auth_test' | 'unauth' | 'auth_session'   --
 -- verdict       : the verdict string that triggered creation           --
 -- status        : TRIAGING | CONFIRMED | REJECTED | DUPLICATE         --
 -- duplicate_of  : FK to findings.id when status = DUPLICATE          --
