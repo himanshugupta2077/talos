@@ -12,12 +12,18 @@ generate deterministic mutation candidates, approve/reject. **No HTTP** and
 
 | Deliverable | Detail |
 |-------------|--------|
-| **DB CRUD** | `talos/auth_session/db.py` — bindings + candidates; fingerprint helper; approve/reject transitions |
+| **DB CRUD** | `talos/auth_session/db.py` — bindings + candidates; fingerprint helper; approve/reject/unapprove transitions |
 | **Config** | `config.py` — safe methods, claim-elevation defaults, binding `config_json` parse |
 | **Extract** | `extract.py` — header/cookie field locate + `TokenContext` via analyzer |
-| **Generate** | `candidates.py` — insert-if-absent; `--force-refresh` pending/rejected only; safe-method default; baseline order (`--flow` → policy baseline → JWT-bearing prefer) |
-| **CLI** | `talos attack auth-session bind\|unbind\|show-bindings\|generate\|candidates\|approve\|reject\|suite list` |
+| **Generate** | `candidates.py` — insert-if-absent; `--force-refresh` pending/rejected only; safe-method default; role preference before baseline JWT |
+| **CLI** | `talos attack auth-session bind\|unbind\|show-bindings\|generate\|candidates\|approve\|reject\|unapprove\|suite list` |
 | **Wiring** | `attack_cli.py`, Talos Helper (`talos --help`) |
+
+**QA fixes (same phase):**
+- Header binding lookup case-insensitive; bind stores `auth_config` spelling
+- Generate `--role` / binding `role_id` wins when that role has a JWT
+- Never select a non-JWT baseline (fall through or skip)
+- `unapprove` (approved → pending) so unbind works after accidental approve
 
 ```bash
 talos auth set --header Authorization
@@ -25,12 +31,13 @@ talos attack auth-session bind --type jwt --header Authorization
 talos attack auth-session generate --endpoint <uuid>
 talos attack auth-session candidates list --status pending
 talos attack auth-session approve --all-pending --test-id jwt.alg_none
+talos attack auth-session unapprove --all-approved   # optional re-review / unbind
 # Phase 3: talos attack auth-session run …
 talos attack auth-session suite list --type jwt --alg RS256
 ```
 
-**Lifecycle:** `pending` → `approved`/`rejected` (CLI); re-approve `failed`/`done` for re-test.
-`run` / results / findings arrive in Phases 3–4.
+**Lifecycle:** `pending` → `approved`/`rejected`; `approved` → `pending` via unapprove;
+re-approve `failed`/`done` for re-test. `run` / results / findings arrive in Phases 3–4.
 
 **Tests:** `tests/test_auth_session_db.py`, `test_auth_session_candidates.py`,
 `test_auth_session_cli.py` (+ Phase 1 suite).
