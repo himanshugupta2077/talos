@@ -2,6 +2,44 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 3 execution engine & scheduler
+
+**Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
+
+End-to-end Authentication & Session Testing: **one approved candidate → one
+scheduler job → one JWT mutation → one new outbound flow → heuristic verdict**.
+Findings and decision filter remain Phase 4.
+
+| Deliverable | Detail |
+|-------------|--------|
+| **Verdict** | `verdict.py` — pure KD7 heuristic (2xx+SAME→WEAK_VALIDATION; 401/403/407/3xx→SECURE; else UNKNOWN); documents `compute_diff` coarseness |
+| **Results CRUD** | `db.insert_result` / `list_results` / `get_result`; candidate `mark_running` / `done` / `failed` |
+| **Engine** | `engine.py` — `execute_auth_session_job`; auth invariant; endpoint policy re-check; httpx no-redirect/no-retry; persist flow+diff+result; **no findings** |
+| **Job type** | `AUTH_SESSION_ATTACK` / `auth_session_attack` in `scheduler.job` + `JOB_TYPES` |
+| **Scheduler** | dispatch + `_settle_auth_session_outcome` (candidate + job terminal; findings deferred) |
+| **Dedupe** | `has_pending_auth_session_duplicate` — meta-aware `(flow_id, test_id, binding_id)` |
+| **CLI** | `talos attack auth-session run` / `results list\|show` (`--right-now`, filters) |
+
+```bash
+talos attack auth-session approve --all-pending --test-id jwt.alg_none
+talos attack auth-session run --endpoint <uuid>
+# or debug:
+talos attack auth-session run --candidate <id> --right-now
+talos attack auth-session results list --verdict WEAK_VALIDATION
+talos scheduler jobs list   # type auth_session_attack
+```
+
+**Not in Phase 3:** `auth-session-decision-filter.yaml`, WEAK_VALIDATION findings,
+full alg-degradation matrix polish (Phases 4–5).
+
+**Tests:** `tests/test_auth_session_verdict.py`, `test_auth_session_engine.py`,
+`test_auth_session_run.py` (+ prior phase suites).
+
+**Files:** `talos/auth_session/{verdict,engine,db,cli}.py`,
+`talos/scheduler/{job,scheduler}.py`, `talos/__main__.py`, docs.
+
+---
+
 ## Auth-session engine — Phase 2 bindings & candidate lifecycle
 
 **Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.

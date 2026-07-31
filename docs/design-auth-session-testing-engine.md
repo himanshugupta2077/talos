@@ -5,7 +5,7 @@
 | **Document** | Design: Authentication & Session Testing Engine |
 | **Author** | Talos Engineering |
 | **Date** | 2026-07-31 |
-| **Status** | Phases 1–2 implemented (foundation + bindings/candidates CLI); Phases 3–5 remaining |
+| **Status** | Phases 1–3 implemented (foundation + bindings/candidates + engine/scheduler/run); Phases 4–5 remaining |
 | **Audience** | Senior engineers familiar with Talos attack modules |
 | **Related** | `docs/architecture.md`, `docs/cli-cheat-sheet.md`, `AGENTS.md` |
 
@@ -1333,36 +1333,36 @@ When told **“implement Phase N”**, an AI implementer should deliver **all PR
 
 ---
 
-### Phase 3: Execution engine & scheduler
+### Phase 3: Execution engine & scheduler — **DONE**
 
 **Goal:** Approved candidates execute end-to-end: **one job → one mutation → one new outbound flow** → store flow/diff/result → heuristic verdict. Operator can `run` (enqueue) or `--right-now`.
 
 **Exit criteria:**
-- Job type `auth_session_attack` defined and dispatched in `ReplayScheduler`.
-- **One scheduler job / engine invocation per candidate `test_id`**; engine does not batch multiple mutations into one HTTP request.
-- `execute_auth_session_job` returns outcome only (persists result); **scheduler settle** updates job + candidate status (no findings yet).
-- `has_pending_auth_session_duplicate` meta-aware skip works.
-- Results include denormalized `endpoint_id`; 1:1 `replay_flow_id` ↔ candidate.
-- Heuristic verdict per Detection section (filter is Phase 4).
-- Engine tests with httpx mocked; settle path covered.
+- [x] Job type `auth_session_attack` defined and dispatched in `ReplayScheduler`.
+- [x] **One scheduler job / engine invocation per candidate `test_id`**; engine does not batch multiple mutations into one HTTP request.
+- [x] `execute_auth_session_job` returns outcome only (persists result); **scheduler settle** updates job + candidate status (no findings yet).
+- [x] `has_pending_auth_session_duplicate` meta-aware skip works.
+- [x] Results include denormalized `endpoint_id`; 1:1 `replay_flow_id` ↔ candidate.
+- [x] Heuristic verdict per Detection section (filter is Phase 4).
+- [x] Engine tests with httpx mocked; settle path covered.
 
 **Depends on:** Phase 2
 
 **AI implementer scope:** PR 3.1 → 3.3. No findings; decision filter Phase 4.
 
-#### PR 3.1: Heuristic verdict + results persistence
+#### PR 3.1: Heuristic verdict + results persistence — **DONE**
 
 - **Files/components:** `talos/auth_session/verdict.py`; `talos/auth_session/db.py` (insert result with `endpoint_id`, update candidate); `tests/test_auth_session_verdict.py`.
 - **Dependencies:** Phase 2
 - **Description:** Pure verdict (status × diff); document SAME coarseness in module docstring.
 
-#### PR 3.2: Execution engine
+#### PR 3.2: Execution engine — **DONE**
 
 - **Files/components:** `talos/auth_session/engine.py`; `tests/test_auth_session_engine.py` (httpx mocked).
 - **Dependencies:** PR 3.1
 - **Description:** One test_id, one new request, persist flow/diff/result; return `AuthSessionOutcome`. **No findings.** Auth invariant on original token.
 
-#### PR 3.3: Scheduler job type + `run` CLI
+#### PR 3.3: Scheduler job type + `run` CLI — **DONE**
 
 - **Files/components:** `talos/scheduler/job.py`; `talos/scheduler/scheduler.py` (dispatch + `_settle_auth_session_outcome` without finding yet); `has_pending_auth_session_duplicate`; CLI `run` / results; tests one-job-per-candidate + meta dedupe.
 - **Dependencies:** PR 3.2

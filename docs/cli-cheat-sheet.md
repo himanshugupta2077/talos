@@ -1549,8 +1549,9 @@ talos attack unauth config --auto-run off
 
 ## Attack — Authentication & Session Testing (`auth-session`)
 
-**Status (Phase 2):** bindings + candidate lifecycle wired. **No HTTP / run /
-results / findings yet** (Phases 3–4).
+**Status (Phase 3):** bind → generate → approve → **run** (scheduler or
+`--right-now`) → **results**. Heuristic verdicts only; decision filter +
+findings land in Phase 4.
 
 Probes whether a *presented* credential is validated (signature, algorithm,
 claims, structure). Distinct from Unauth (auth removed/garbled) and BAC
@@ -1601,16 +1602,36 @@ talos attack auth-session approve --all-pending [--endpoint UUID] [--test-id …
 talos attack auth-session approve --retry-failed   # failed → approved (re-test)
 talos attack auth-session reject <id>… [--reason "…"]
 talos attack auth-session reject --all-pending
+talos attack auth-session unapprove --all-approved
+talos attack auth-session unapprove <id>…
 ```
 
 Statuses: `pending` → `approved` | `rejected`. Re-approve `failed`/`done` for
 re-test. Unapprove (`approved` → `pending`) to re-review or unbind.
-`running`/`done`/`failed` after jobs are Phase 3.
+Scheduler: `approved` → `running` → `done` | `failed`.
+
+### Run (one job per approved test_id)
 
 ```bash
-talos attack auth-session unapprove --all-approved
-talos attack auth-session unapprove <id>…
+talos attack auth-session run [--endpoint UUID] [--candidate UUID] \
+  [--test-id ID] [--family FAM] [--binding UUID]
+talos attack auth-session run --test-id jwt.alg_none --right-now
 ```
+
+Enqueues `auth_session_attack` jobs (PRIORITY_MANUAL). Meta-aware dedupe on
+`(flow_id, test_id, binding_id)`. `--right-now` executes in-process (one HTTP
+request per candidate). Each test_id = one new outbound flow.
+
+### Results
+
+```bash
+talos attack auth-session results list [--endpoint UUID] [--verdict WEAK_VALIDATION] \
+  [--test-id ID] [--format table|json]
+talos attack auth-session results show <replay_flow_id>
+```
+
+Verdicts (heuristic, Phase 3): `WEAK_VALIDATION` (2xx + diff SAME), `SECURE`
+(401/403/407/3xx), `UNKNOWN` (else). Decision filter + findings: Phase 4.
 
 ### Suite catalog
 
@@ -1623,9 +1644,7 @@ talos attack auth-session suite list --type jwt --alg RS256   # + Phase-1 degrad
 
 | Command | Phase |
 |---------|-------|
-| `talos attack auth-session run` | 3 — one job per approved test_id |
-| `talos attack auth-session results` | 3 |
-| `talos attack auth-session filter` | 4 |
+| `talos attack auth-session filter` | 4 — decision filter + WEAK_VALIDATION findings |
 
 Design: `docs/design-auth-session-testing-engine.md`.
 

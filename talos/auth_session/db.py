@@ -2,17 +2,17 @@
 Module: talos.auth_session.db
 
 Purpose:
-    CRUD for ``auth_session_bindings`` and ``auth_session_candidates``
-    (Phase 2). Results write path arrives in Phase 3.
+    CRUD for ``auth_session_bindings``, ``auth_session_candidates``, and
+    ``auth_session_results`` (Phases 2–3).
 
     Status ownership (design):
         pending → approved|rejected   — CLI
         failed|done → approved        — CLI re-test
-        approved → running            — scheduler (Phase 3)
-        running → done|failed         — scheduler settle (Phase 3)
+        approved → running            — scheduler (or run --right-now)
+        running → done|failed         — scheduler settle (or right-now settle)
 
 Dependencies: hashlib, json, sqlite3, uuid, datetime; models; projects.db
-Data flow: CLI / candidates → functions here → project SQLite
+Data flow: CLI / candidates / engine / scheduler → functions here → project SQLite
 Side effects: DB reads and writes; migrate_project_db on entry for writes.
 """
 
@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from talos.auth_session.models import (
+    AUTH_SESSION_VERDICTS,
     CANDIDATE_STATUSES,
     KNOWN_AUTH_TYPES,
     KNOWN_LOCATIONS,
@@ -35,8 +36,10 @@ from talos.auth_session.models import (
     STATUS_FAILED,
     STATUS_PENDING,
     STATUS_REJECTED,
+    STATUS_RUNNING,
     AuthSessionBinding,
     AuthSessionCandidate,
+    AuthSessionResult,
 )
 from talos.projects.db import migrate_project_db
 
@@ -47,6 +50,13 @@ APPROVE_SOURCE_STATUSES: frozenset[str] = frozenset({
     STATUS_DONE,
 })
 REJECT_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_PENDING})
+# Scheduler claims approved candidates before engine runs.
+RUN_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED})
+# Settle always from running (or approved for right-now race safety).
+SETTLE_SOURCE_STATUSES: frozenset[str] = frozenset({
+    STATUS_RUNNING,
+    STATUS_APPROVED,
+})
 
 
 def _now_utc() -> str:
@@ -115,6 +125,29 @@ def _row_to_candidate(row: sqlite3.Row) -> AuthSessionCandidate:
         meta_json=row["meta_json"] or "{}",
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
+    )
+
+
+def _row_to_result(row: sqlite3.Row) -> AuthSessionResult:
+    return AuthSessionResult(
+        replay_flow_id=row["replay_flow_id"],
+        original_flow_id=row["original_flow_id"],
+        candidate_id=row["candidate_id"],
+        binding_id=row["binding_id"],
+        auth_type=row["auth_type"],
+        test_id=row["test_id"],
+        verdict=row["verdict"],
+        endpoint_id=row["endpoint_id"],
+        test_family=row["test_family"],
+        mutation_summary=row["mutation_summary"],
+        original_status=row["original_status"],
+        replay_status=row["replay_status"],
+        diff_verdict=row["diff_verdict"],
+        matched_section=row["matched_section"],
+        matched_group=row["matched_group"],
+        matched_rules=row["matched_rules"],
+        failure_reason=row["failure_reason"],
+        created_at=row["created_at"] or "",
     )
 
 
@@ -798,3 +831,278 @@ def unapprove_candidates(
         else:
             skipped.append(cid)
     return done, skipped
+
+
+def mark_candidate_running(
+    db_path: Path,
+    candidate_id: str,
+) -> Optional[AuthSessionCandidate]:
+    """
+    Purpose:
+        Transition candidate approved → running (scheduler claim / right-now).
+    Output:
+        Updated candidate, or None if missing / wrong source status.
+    Side effects: DB write.
+    """
+    return set_candidate_status(
+        db_path,
+        candidate_id,
+        STATUS_RUNNING,
+        allowed_from=RUN_SOURCE_STATUSES,
+    )
+
+
+def mark_candidate_done(
+    db_path: Path,
+    candidate_id: str,
+) -> Optional[AuthSessionCandidate]:
+    """
+    Purpose:
+        Transition candidate running (or approved) → done after successful settle.
+    Side effects: DB write.
+    """
+    return set_candidate_status(
+        db_path,
+        candidate_id,
+        STATUS_DONE,
+        allowed_from=SETTLE_SOURCE_STATUSES,
+    )
+
+
+def mark_candidate_failed(
+    db_path: Path,
+    candidate_id: str,
+    *,
+    skip_reason: Optional[str] = None,
+) -> Optional[AuthSessionCandidate]:
+    """
+    Purpose:
+        Transition candidate running (or approved) → failed after settle error
+        or pre-execution skip. Optional skip_reason stored for operator display.
+    Side effects: DB write.
+    """
+    migrate_project_db(db_path)
+    cand = get_candidate(db_path, candidate_id)
+    if cand is None:
+        return None
+    if cand.status not in SETTLE_SOURCE_STATUSES:
+        return None
+    now = _now_utc()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE auth_session_candidates
+            SET status = ?,
+                skip_reason = COALESCE(?, skip_reason),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (STATUS_FAILED, skip_reason, now, candidate_id),
+        )
+        conn.commit()
+    return get_candidate(db_path, candidate_id)
+
+
+# ------------------------------------------------------------------ #
+# Results                                                              #
+# ------------------------------------------------------------------ #
+
+
+def insert_result(
+    db_path: Path,
+    *,
+    replay_flow_id: str,
+    original_flow_id: str,
+    candidate_id: str,
+    binding_id: str,
+    auth_type: str,
+    test_id: str,
+    verdict: str,
+    endpoint_id: Optional[str] = None,
+    test_family: Optional[str] = None,
+    mutation_summary: Optional[str] = None,
+    original_status: Optional[int] = None,
+    replay_status: Optional[int] = None,
+    diff_verdict: Optional[str] = None,
+    matched_section: Optional[str] = None,
+    matched_group: Optional[str] = None,
+    matched_rules: Optional[str] = None,
+    failure_reason: Optional[str] = None,
+    created_at: Optional[str] = None,
+) -> AuthSessionResult:
+    """
+    Purpose:
+        Persist one auth_session_results row (1:1 with replay_flow_id).
+        Called from the engine after mutate → send → diff (not findings).
+    Side effects: DB write.
+    Raises:
+        ValueError on invalid verdict
+        sqlite3.Error on write failure (caller handles)
+    """
+    migrate_project_db(db_path)
+    if verdict not in AUTH_SESSION_VERDICTS:
+        raise ValueError(
+            f"verdict must be one of {sorted(AUTH_SESSION_VERDICTS)}; got {verdict!r}"
+        )
+    now = created_at or _now_utc()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO auth_session_results (
+                replay_flow_id, original_flow_id, endpoint_id,
+                candidate_id, binding_id, auth_type, test_id, test_family,
+                mutation_summary, original_status, replay_status,
+                diff_verdict, verdict, matched_section, matched_group,
+                matched_rules, failure_reason, created_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                replay_flow_id,
+                original_flow_id,
+                endpoint_id,
+                candidate_id,
+                binding_id,
+                auth_type,
+                test_id,
+                test_family,
+                mutation_summary,
+                original_status,
+                replay_status,
+                diff_verdict,
+                verdict,
+                matched_section,
+                matched_group,
+                matched_rules,
+                failure_reason,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM auth_session_results WHERE replay_flow_id = ?",
+            (replay_flow_id,),
+        ).fetchone()
+    assert row is not None
+    return _row_to_result(row)
+
+
+def get_result(
+    db_path: Path,
+    replay_flow_id: str,
+) -> Optional[AuthSessionResult]:
+    """Fetch one result by replay_flow_id PK."""
+    if not db_path.exists():
+        return None
+    migrate_project_db(db_path)
+    with _connect(db_path, rw=False) as conn:
+        row = conn.execute(
+            "SELECT * FROM auth_session_results WHERE replay_flow_id = ?",
+            (replay_flow_id,),
+        ).fetchone()
+    return _row_to_result(row) if row else None
+
+
+def list_results(
+    db_path: Path,
+    *,
+    endpoint_id: Optional[str] = None,
+    candidate_id: Optional[str] = None,
+    binding_id: Optional[str] = None,
+    test_ids: Optional[list[str]] = None,
+    families: Optional[list[str]] = None,
+    verdict: Optional[str] = None,
+    original_flow_id: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> list[AuthSessionResult]:
+    """
+    Purpose:
+        List results with optional filters (AND across dimensions).
+    Side effects: Read-only after migrate.
+    """
+    if not db_path.exists():
+        return []
+    migrate_project_db(db_path)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if endpoint_id:
+        clauses.append("endpoint_id = ?")
+        params.append(endpoint_id)
+    if candidate_id:
+        clauses.append("candidate_id = ?")
+        params.append(candidate_id)
+    if binding_id:
+        clauses.append("binding_id = ?")
+        params.append(binding_id)
+    if original_flow_id:
+        clauses.append("original_flow_id = ?")
+        params.append(original_flow_id)
+    if verdict:
+        clauses.append("verdict = ?")
+        params.append(verdict)
+    if test_ids:
+        placeholders = ",".join("?" for _ in test_ids)
+        clauses.append(f"test_id IN ({placeholders})")
+        params.extend(test_ids)
+    if families:
+        placeholders = ",".join("?" for _ in families)
+        clauses.append(f"test_family IN ({placeholders})")
+        params.extend(families)
+
+    sql = "SELECT * FROM auth_session_results"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY created_at DESC, test_id ASC"
+    if limit is not None and limit > 0:
+        sql += f" LIMIT {int(limit)}"
+
+    with _connect(db_path, rw=False) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_result(r) for r in rows]
+
+
+# ------------------------------------------------------------------ #
+# Scheduler job dedupe (KD17)                                          #
+# ------------------------------------------------------------------ #
+
+
+def has_pending_auth_session_duplicate(
+    db_path: Path,
+    *,
+    flow_id: str,
+    test_id: str,
+    binding_id: str,
+) -> bool:
+    """
+    Purpose:
+        True if a pending/running ``auth_session_attack`` job already exists
+        with the same flow_id + meta.test_id + meta.binding_id (json_extract).
+
+        Do **not** use ``sched_db.has_pending_duplicate`` alone — it ignores
+        meta and would collapse distinct test_ids on the same baseline flow.
+    Side effects: None (read-only after migrate).
+    """
+    if not db_path.exists():
+        return False
+    migrate_project_db(db_path)
+    # Import constant locally to avoid hard dependency cycle at module load.
+    from talos.scheduler.job import AUTH_SESSION_ATTACK
+
+    with _connect(db_path, rw=False) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM scheduler_jobs
+            WHERE job_type = ?
+              AND flow_id = ?
+              AND status IN ('pending', 'running')
+              AND json_extract(meta, '$.test_id') = ?
+              AND json_extract(meta, '$.binding_id') = ?
+            LIMIT 1
+            """,
+            (AUTH_SESSION_ATTACK, flow_id, test_id, binding_id),
+        ).fetchone()
+    return row is not None
+

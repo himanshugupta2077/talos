@@ -83,6 +83,16 @@ Each job encodes one (auth_mutation, request_mutation) composition in its meta."
 UNAUTH_JOB_TYPES: tuple[str, ...] = (UNAUTH_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# Auth-session attack job type constant                                #
+# ------------------------------------------------------------------ #
+
+AUTH_SESSION_ATTACK = "auth_session_attack"
+"""Authentication & Session Testing: one JWT (or future type) mutation per job.
+Meta encodes candidate_id, binding_id, test_id, auth_type; one outbound flow."""
+
+AUTH_SESSION_JOB_TYPES: tuple[str, ...] = (AUTH_SESSION_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # Input Validation job type constants                                  #
 # ------------------------------------------------------------------ #
 
@@ -146,6 +156,7 @@ JOB_TYPES: tuple[str, ...] = (
     (REPLAY_FLOW, REPLAY_ENDPOINT, AUTH_TEST)
     + BAC_JOB_TYPES
     + UNAUTH_JOB_TYPES
+    + AUTH_SESSION_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
 )

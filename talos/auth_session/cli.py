@@ -2,10 +2,10 @@
 Module: talos.auth_session.cli
 
 Purpose:
-    Operator CLI for Authentication & Session Testing (Phase 2).
+    Operator CLI for Authentication & Session Testing (Phases 2–3).
     Entry point: ``talos attack auth-session <subcommand>``
 
-    Subcommands (Phase 2):
+    Subcommands:
         bind              Bind auth_config field → auth type (jwt)
         unbind            Remove binding (RESTRICT / --force cascade)
         show-bindings     List bindings
@@ -13,21 +13,24 @@ Purpose:
         candidates list|show
         approve           pending|failed|done → approved
         reject            pending → rejected
+        unapprove         approved → pending
+        run               Enqueue approved candidates (or --right-now)
+        results list|show
         suite list        List catalog test_ids for an auth type
 
-    Phase 3 adds: run, results
     Phase 4 adds: filter
 
-Dependencies: argparse, sys, json; db, candidates, config, suite; cli_output
-Data flow: attack_cli → run_auth_session_cli → handlers → DB
-Side effects: DB writes for bind/generate/approve/reject; stdout/stderr.
+Dependencies: argparse, asyncio, json, uuid; db, candidates, engine; scheduler
+Data flow: attack_cli → run_auth_session_cli → handlers → DB / scheduler / HTTP
+Side effects: DB writes; optional outbound HTTP for --right-now.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import sys
+import uuid
 from typing import Any, Optional
 
 from talos.cli_output import (
@@ -55,6 +58,8 @@ from talos.auth_session.suite_jwt import CORE_JWT_TEST_CASES, alg_degradation_te
 from talos.auth_session.types import ANALYZERS
 from talos.projects.auth import get_auth_config
 from talos.projects.manager import ProjectManager
+from talos.scheduler.job import AUTH_SESSION_ATTACK, PRIORITY_MANUAL
+import talos.scheduler.db as sched_db
 
 
 # ------------------------------------------------------------------ #
@@ -71,8 +76,8 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
         "auth-session",
         help=(
-            "Authentication & Session Testing — bind auth fields to JWT, "
-            "generate mutation candidates, approve/reject (run in Phase 3)."
+            "Authentication & Session Testing — bind JWT fields, generate "
+            "mutation candidates, approve, run (one job per test_id)."
         ),
         description=(
             "Probe whether a *presented* credential is validated "
@@ -372,6 +377,96 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         metavar="FAM",
     )
     p_unap.set_defaults(_as_handler=cmd_unapprove)
+
+    # ---- run ---- #
+    p_run = as_sub.add_parser(
+        "run",
+        help="Enqueue approved candidates as auth_session_attack jobs (one per test_id).",
+    )
+    p_run.add_argument(
+        "--candidate",
+        dest="candidate_ids",
+        action="append",
+        default=None,
+        metavar="UUID",
+        help="Repeatable: only these approved candidate UUIDs.",
+    )
+    p_run.add_argument("--endpoint", dest="endpoint_id", metavar="UUID")
+    p_run.add_argument(
+        "--test-id",
+        dest="test_ids",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="Repeatable: filter by test_id.",
+    )
+    p_run.add_argument(
+        "--family",
+        dest="families",
+        action="append",
+        default=None,
+        metavar="FAM",
+        help="Repeatable: filter by test_family.",
+    )
+    p_run.add_argument(
+        "--binding",
+        dest="binding_id",
+        metavar="UUID",
+        help="Limit to one binding.",
+    )
+    p_run.add_argument(
+        "--right-now",
+        action="store_true",
+        help="Execute immediately in-process (bypass scheduler queue).",
+    )
+    p_run.set_defaults(_as_handler=cmd_run)
+
+    # ---- results ---- #
+    p_res = as_sub.add_parser(
+        "results",
+        help="List or show auth-session results (one row per mutated replay).",
+    )
+    res_sub = p_res.add_subparsers(dest="results_cmd", metavar="<action>")
+    res_sub.required = True
+
+    p_rlist = res_sub.add_parser("list", help="List results.")
+    p_rlist.add_argument("--endpoint", dest="endpoint_id", metavar="UUID")
+    p_rlist.add_argument("--candidate", dest="candidate_id", metavar="UUID")
+    p_rlist.add_argument("--binding", dest="binding_id", metavar="UUID")
+    p_rlist.add_argument(
+        "--test-id",
+        dest="test_ids",
+        action="append",
+        default=None,
+        metavar="ID",
+    )
+    p_rlist.add_argument(
+        "--family",
+        dest="families",
+        action="append",
+        default=None,
+        metavar="FAM",
+    )
+    p_rlist.add_argument(
+        "--verdict",
+        dest="verdict",
+        metavar="V",
+        help="WEAK_VALIDATION | SECURE | UNKNOWN",
+    )
+    p_rlist.add_argument(
+        "--limit",
+        dest="limit",
+        type=int,
+        default=None,
+        metavar="N",
+    )
+    add_format_argument(p_rlist)
+    p_rlist.set_defaults(_as_handler=cmd_results_list)
+
+    p_rshow = res_sub.add_parser("show", help="Show one result by replay flow UUID.")
+    p_rshow.add_argument("replay_flow_id", metavar="UUID")
+    add_format_argument(p_rshow)
+    p_rshow.set_defaults(_as_handler=cmd_results_show)
 
     # ---- suite list ---- #
     p_suite = as_sub.add_parser(
@@ -879,10 +974,7 @@ def cmd_approve(manager: ProjectManager, args: argparse.Namespace) -> None:
         print(f"Skipped : {len(skipped)} (wrong status or missing)")
     if approved:
         print()
-        print(
-            "Run is Phase 3 — not wired yet. "
-            "After Phase 3: talos attack auth-session run …"
-        )
+        print("Next: talos attack auth-session run [--endpoint UUID] [--right-now]")
 
 
 def cmd_reject(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -921,6 +1013,252 @@ def cmd_unapprove(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(f"Unapproved (→ pending): {len(moved)}")
     if skipped:
         print(f"Skipped : {len(skipped)} (not approved or missing)")
+
+
+def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Enqueue one auth_session_attack job per approved candidate, or
+        execute immediately with --right-now.
+    Side effects:
+        Scheduler job rows and/or outbound HTTP + result rows.
+    """
+    project = _require_active(manager)
+    db_path = project.db_path
+    project_id = project.id
+
+    families = getattr(args, "families", None)
+    if families:
+        bad = [f for f in families if f not in KNOWN_FAMILIES]
+        if bad:
+            cli_usage_error(
+                f"Unknown family {bad!r}; known: {sorted(KNOWN_FAMILIES)}"
+            )
+
+    candidate_ids = getattr(args, "candidate_ids", None)
+    rows = as_db.list_candidates(
+        db_path,
+        status=STATUS_APPROVED,
+        endpoint_id=getattr(args, "endpoint_id", None),
+        binding_id=getattr(args, "binding_id", None),
+        test_ids=getattr(args, "test_ids", None),
+        families=families,
+        candidate_ids=candidate_ids,
+    )
+
+    if not rows:
+        cli_error(
+            "No approved candidates match filters. "
+            "Approve first: talos attack auth-session approve --all-pending"
+        )
+
+    right_now = bool(getattr(args, "right_now", False))
+
+    if right_now:
+        _run_right_now(db_path, project_id, rows)
+        return
+
+    enqueued = 0
+    dedup_skipped = 0
+    for cand in rows:
+        if as_db.has_pending_auth_session_duplicate(
+            db_path,
+            flow_id=cand.baseline_flow_id,
+            test_id=cand.test_id,
+            binding_id=cand.binding_id,
+        ):
+            dedup_skipped += 1
+            continue
+
+        meta_dict = {
+            "candidate_id": cand.id,
+            "binding_id": cand.binding_id,
+            "auth_type": cand.auth_type,
+            "test_id": cand.test_id,
+            "test_family": cand.test_family,
+            "baseline_flow_id": cand.baseline_flow_id,
+            "endpoint_id": cand.endpoint_id,
+        }
+        job_id = str(uuid.uuid4())
+        sched_db.enqueue_job(
+            db_path=db_path,
+            job_id=job_id,
+            job_type=AUTH_SESSION_ATTACK,
+            project_id=project_id,
+            flow_id=cand.baseline_flow_id,
+            endpoint_id=cand.endpoint_id,
+            priority=PRIORITY_MANUAL,
+            meta=json.dumps(meta_dict, separators=(",", ":")),
+        )
+        enqueued += 1
+
+    print("Auth-session run complete")
+    print()
+    print(f"  Approved matched   : {len(rows)}")
+    print(f"  Jobs enqueued      : {enqueued}")
+    if dedup_skipped:
+        print(f"  Skipped (dup)      : {dedup_skipped}")
+
+    if enqueued == 0:
+        if dedup_skipped:
+            print(
+                "\nAll matching jobs are already pending or running. "
+                "Check 'talos scheduler status' for progress."
+            )
+            return
+        cli_error("No jobs were enqueued.")
+
+    print(
+        "\nRun 'talos scheduler status' to monitor. "
+        "Inspect: talos attack auth-session results list"
+    )
+    print(
+        "Findings for WEAK_VALIDATION arrive in Phase 4 "
+        "(decision filter + findings bridge)."
+    )
+
+
+def _run_right_now(db_path, project_id: str, rows: list) -> None:
+    """Execute approved candidates immediately (one HTTP request each)."""
+    from talos.auth_session.engine import execute_auth_session_job
+
+    print(f"Auth-session --right-now: {len(rows)} candidate(s)")
+    print()
+
+    done = 0
+    failed = 0
+    for cand in rows:
+        as_db.mark_candidate_running(db_path, cand.id)
+        meta = {
+            "candidate_id": cand.id,
+            "binding_id": cand.binding_id,
+            "auth_type": cand.auth_type,
+            "test_id": cand.test_id,
+            "test_family": cand.test_family,
+            "baseline_flow_id": cand.baseline_flow_id,
+            "endpoint_id": cand.endpoint_id,
+        }
+        try:
+            outcome = asyncio.run(
+                execute_auth_session_job(
+                    flow_id=cand.baseline_flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            as_db.mark_candidate_failed(
+                db_path, cand.id, skip_reason=f"unexpected_error: {exc}"
+            )
+            print(f"  FAIL  {cand.test_id}: unexpected_error: {exc}")
+            failed += 1
+            continue
+
+        if outcome.failure_reason:
+            as_db.mark_candidate_failed(
+                db_path, cand.id, skip_reason=outcome.failure_reason
+            )
+            print(
+                f"  FAIL  {cand.test_id}: {outcome.failure_reason} "
+                f"(verdict={outcome.auth_session_verdict})"
+            )
+            failed += 1
+        else:
+            as_db.mark_candidate_done(db_path, cand.id)
+            print(
+                f"  {outcome.auth_session_verdict:<16}  {cand.test_id}  "
+                f"status={outcome.replay_status}  diff={outcome.diff_verdict}  "
+                f"replay={outcome.replayed_flow_id or '—'}"
+            )
+            done += 1
+
+    print()
+    print(f"Done: {done}  Failed/skipped: {failed}")
+    print("Inspect: talos attack auth-session results list")
+
+
+def cmd_results_list(manager: ProjectManager, args: argparse.Namespace) -> None:
+    project = _require_active(manager)
+    rows = as_db.list_results(
+        project.db_path,
+        endpoint_id=getattr(args, "endpoint_id", None),
+        candidate_id=getattr(args, "candidate_id", None),
+        binding_id=getattr(args, "binding_id", None),
+        test_ids=getattr(args, "test_ids", None),
+        families=getattr(args, "families", None),
+        verdict=getattr(args, "verdict", None),
+        limit=getattr(args, "limit", None),
+    )
+    if wants_json(args):
+        cli_json([_result_to_dict(r) for r in rows])
+        return
+    if not rows:
+        print("No auth-session results.")
+        return
+    print(
+        f"{'REPLAY_FLOW':<36}  {'VERDICT':<16}  {'DIFF':<10}  "
+        f"{'HTTP':<6}  {'TEST_ID':<36}"
+    )
+    print("-" * 120)
+    for r in rows:
+        http = str(r.replay_status) if r.replay_status is not None else "—"
+        diff = r.diff_verdict or "—"
+        print(
+            f"{r.replay_flow_id:<36}  {r.verdict:<16}  {diff:<10}  "
+            f"{http:<6}  {r.test_id}"
+        )
+    print()
+    print(f"Total: {len(rows)}")
+
+
+def cmd_results_show(manager: ProjectManager, args: argparse.Namespace) -> None:
+    project = _require_active(manager)
+    result = as_db.get_result(project.db_path, args.replay_flow_id)
+    if result is None:
+        cli_error(f"Result for replay '{args.replay_flow_id}' not found.")
+    if wants_json(args):
+        cli_json(_result_to_dict(result))
+        return
+    print(f"Auth-session result {result.replay_flow_id}")
+    print(f"  Verdict           : {result.verdict}")
+    print(f"  Diff verdict      : {result.diff_verdict or '-'}")
+    print(f"  Original status   : {result.original_status if result.original_status is not None else '-'}")
+    print(f"  Replay status     : {result.replay_status if result.replay_status is not None else '-'}")
+    print(f"  Test id           : {result.test_id}")
+    print(f"  Family            : {result.test_family or '-'}")
+    print(f"  Mutation summary  : {result.mutation_summary or '-'}")
+    print(f"  Candidate         : {result.candidate_id}")
+    print(f"  Binding           : {result.binding_id}")
+    print(f"  Auth type         : {result.auth_type}")
+    print(f"  Endpoint          : {result.endpoint_id or '-'}")
+    print(f"  Original flow     : {result.original_flow_id}")
+    print(f"  Failure reason    : {result.failure_reason or '-'}")
+    print(f"  Matched section   : {result.matched_section or '-'}")
+    print(f"  Created           : {result.created_at}")
+
+
+def _result_to_dict(r) -> dict[str, Any]:
+    return {
+        "replay_flow_id": r.replay_flow_id,
+        "original_flow_id": r.original_flow_id,
+        "endpoint_id": r.endpoint_id,
+        "candidate_id": r.candidate_id,
+        "binding_id": r.binding_id,
+        "auth_type": r.auth_type,
+        "test_id": r.test_id,
+        "test_family": r.test_family,
+        "mutation_summary": r.mutation_summary,
+        "original_status": r.original_status,
+        "replay_status": r.replay_status,
+        "diff_verdict": r.diff_verdict,
+        "verdict": r.verdict,
+        "matched_section": r.matched_section,
+        "matched_group": r.matched_group,
+        "matched_rules": r.matched_rules,
+        "failure_reason": r.failure_reason,
+        "created_at": r.created_at,
+    }
 
 
 def cmd_suite_list(manager: ProjectManager, args: argparse.Namespace) -> None:

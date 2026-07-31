@@ -22,14 +22,16 @@ Naming note (KD1):
 
 Phase 1 (foundation): models, JWT codec/mutators, suite catalog, schema v54.
 Phase 2 (bindings & candidates): db, extract, candidates generate, CLI
-    (bind / generate / approve / reject / suite list). No HTTP / scheduler.
+    (bind / generate / approve / reject / suite list).
+Phase 3 (engine & scheduler): heuristic verdict, execute_auth_session_job,
+    auth_session_attack jobs, run / results CLI. No findings yet (Phase 4).
 
-Later phases: engine, scheduler job type, decision filter, findings.
+Later phases: decision filter, findings, full alg-degradation matrix.
 
 Dependencies: stdlib only for JWT mutations (base64, json); url_sink.jwt_claims
-    for extract_jwt_token / decode_jwt_payload reuse.
-Data flow: binding → suite list_test_cases → candidates → (later) engine → results
-Side effects: Phase 2 writes bindings/candidates tables; no network.
+    for extract_jwt_token / decode_jwt_payload reuse; httpx for replay.
+Data flow: binding → candidates → approve → run → engine → results → (Phase 4 findings)
+Side effects: Phase 3 may send outbound HTTP and write results / replay flows.
 """
 
 from __future__ import annotations

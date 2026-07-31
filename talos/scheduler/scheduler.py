@@ -87,6 +87,8 @@ from talos.scheduler.db import (
 )
 from talos.scheduler.job import (
     AUTH_TEST,
+    AUTH_SESSION_ATTACK,
+    AUTH_SESSION_JOB_TYPES,
     BAC_SESSION_SWAP, BAC_METHOD_FUZZ, BAC_CONTENT_TYPE,
     BAC_URL_FUZZ, BAC_HEADER_INJECT, BAC_HOST_FUZZ, BAC_ROLE_INJECT,
     BAC_PARSER_CONFUSE,
@@ -448,6 +450,9 @@ class ReplayScheduler:
 
             elif job.job_type in UNAUTH_JOB_TYPES:
                 self._execute_unauth_job(job)
+
+            elif job.job_type in AUTH_SESSION_JOB_TYPES:
+                self._execute_auth_session_job(job)
 
             elif job.job_type in IV_JOB_TYPES:
                 self._execute_iv_job(job)
@@ -836,6 +841,173 @@ class ReplayScheduler:
         # Trigger finding creation for BYPASS verdicts.
         if outcome.unauth_verdict == "BYPASS":
             self._maybe_create_finding_unauth(job, outcome)
+
+    # ------------------------------------------------------------------ #
+    # Auth-session job execution                                           #
+    # ------------------------------------------------------------------ #
+
+    def _execute_auth_session_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute an AUTH_SESSION_ATTACK job: deserialise meta, mark
+            candidate running, call auth_session.engine, settle job + candidate.
+        Input:   job — ReplayJob with AUTH_SESSION_ATTACK type and meta JSON.
+        Side effects:
+            - Candidate status approved→running→done|failed
+            - Outbound HTTP; replay flow + diff + auth_session_results
+            - Job done/failed/skipped
+            - Findings intentionally deferred to Phase 4
+        """
+        import json as _json
+        from talos.auth_session import db as as_db
+        from talos.auth_session.engine import execute_auth_session_job
+        from talos.auth_session.models import AuthSessionOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "auth_session_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "auth_session_meta_parse_error")
+                return
+
+        candidate_id = str(meta.get("candidate_id") or "")
+        if candidate_id:
+            try:
+                as_db.mark_candidate_running(db_path, candidate_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "[scheduler] auth_session mark running failed for %s: %s",
+                    candidate_id[:8],
+                    exc,
+                )
+
+        try:
+            outcome: AuthSessionOutcome = asyncio.run(
+                execute_auth_session_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in auth_session job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            if candidate_id:
+                try:
+                    as_db.mark_candidate_failed(
+                        db_path, candidate_id, skip_reason=f"unexpected_error: {exc}"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_auth_session_outcome(job, outcome)
+
+    def _settle_auth_session_outcome(
+        self, job: ReplayJob, outcome: "AuthSessionOutcome"
+    ) -> None:
+        """
+        Purpose:
+            Map AuthSessionOutcome to job terminal state + candidate done/failed.
+            Findings (WEAK_VALIDATION) land in Phase 4 — not here yet.
+        """
+        from talos.auth_session import db as as_db
+
+        db_path = self._project.db_path
+        candidate_id = outcome.candidate_id
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "auth_session_job_missing_flow_id",
+            "candidate_not_found",
+            "binding_not_found",
+            "mutation_noop_same_token",
+            "auth_field_absent",
+            "token_not_detectable",
+            "auth_session_meta_incomplete",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            if candidate_id:
+                try:
+                    as_db.mark_candidate_failed(
+                        db_path,
+                        candidate_id,
+                        skip_reason=outcome.failure_reason,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug(
+                        "[scheduler] auth_session candidate fail mark error: %s", exc
+                    )
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            if candidate_id:
+                try:
+                    as_db.mark_candidate_failed(
+                        db_path,
+                        candidate_id,
+                        skip_reason=outcome.failure_reason,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug(
+                        "[scheduler] auth_session candidate fail mark error: %s", exc
+                    )
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if candidate_id:
+            try:
+                as_db.mark_candidate_done(db_path, candidate_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "[scheduler] auth_session mark done failed for %s: %s",
+                    candidate_id[:8],
+                    exc,
+                )
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.auth_session_verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  auth_session=%s  diff=%s  test=%s",
+            job.job_id[:8],
+            outcome.auth_session_verdict,
+            outcome.diff_verdict,
+            outcome.test_id,
+        )
+
+        # Phase 4: _maybe_create_finding_auth_session for WEAK_VALIDATION.
+        # Intentionally omitted in Phase 3 (KD16 — settle only, no findings yet).
 
     def _maybe_create_finding_unauth(
         self, job: ReplayJob, outcome: "UnauthOutcome"

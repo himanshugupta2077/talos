@@ -239,6 +239,8 @@ def test_talos_helper_documents_auth_session() -> None:
     assert "auth-session generate" in text
     assert "auth-session candidates" in text
     assert "auth-session approve|reject|unapprove" in text
+    assert "auth-session run" in text
+    assert "auth-session results" in text
     assert "auth-session suite list" in text
 
 
