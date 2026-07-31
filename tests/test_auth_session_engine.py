@@ -209,6 +209,40 @@ def test_decision_filter_soft_fail_body_secure(db_path: Path) -> None:
     assert result.matched_section == "passed_detection"
 
 
+def test_default_filter_does_not_hide_true_weak_with_jwt_in_body(
+    db_path: Path,
+) -> None:
+    """
+    2xx + SAME authorized body that happens to contain the word 'jwt'
+    must still score WEAK_VALIDATION after filter init (QA fix).
+    """
+    from talos.auth_session.decision_filter import write_default_filter
+
+    write_default_filter(db_path.parent)
+    # Replace baseline body with one that echoes 'jwt' (common API shape).
+    import sqlite3
+
+    jwt_body = b'{"user":"admin","token_type":"jwt"}'
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE flows SET response_body = ? WHERE id = ?",
+            (jwt_body, FLOW),
+        )
+        conn.commit()
+
+    binding_id, cand_id = _seed_candidate(db_path)
+    with _mock_httpx(200, jwt_body):
+        outcome = asyncio.run(
+            execute_auth_session_job(
+                FLOW, _meta(binding_id, cand_id), db_path, PROJECT_ID
+            )
+        )
+    assert outcome.failure_reason is None
+    assert outcome.diff_verdict == "SAME"
+    assert outcome.auth_session_verdict == VERDICT_WEAK_VALIDATION
+    assert outcome.matched_section is None
+
+
 def test_one_outbound_request_per_job(db_path: Path) -> None:
     binding_id, cand_id = _seed_candidate(db_path, "jwt.invalid_signature")
     with _mock_httpx(200, BODY) as mock_cls:

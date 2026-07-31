@@ -218,3 +218,67 @@ failed_detection:
     )
     assert result.verdict == VERDICT_WEAK_VALIDATION
     assert result.matched_group_id == "status_200_weak"
+
+
+def test_default_filter_does_not_match_bare_jwt_or_signature(tmp_path: Path) -> None:
+    """
+    Authorized APIs often echo 'jwt' / 'signature' in success JSON.
+    Bare tokens must not force SECURE (would hide true WEAK_VALIDATION).
+    """
+    write_default_filter(tmp_path)
+    flt = load_filter(tmp_path)
+    assert flt is not None
+
+    for body in (
+        b'{"user":"admin","token_type":"jwt","role":"user"}',
+        b'{"alg":"RS256","signature_verified":true}',
+        b'{"ok":true,"typ":"JWT"}',
+    ):
+        result = evaluate_response(
+            flt,
+            ResponseData(
+                status=200,
+                headers={},
+                body=body,
+                response_length=len(body),
+            ),
+        )
+        assert result.verdict == VERDICT_UNKNOWN, body
+        assert result.matched_section is None
+
+
+def test_default_filter_still_matches_soft_fail_phrases(tmp_path: Path) -> None:
+    write_default_filter(tmp_path)
+    flt = load_filter(tmp_path)
+    assert flt is not None
+    for phrase in (
+        b'{"error":"Invalid token"}',
+        b"signature verification failed",
+        b"JWT expired please login",
+        b"Authentication required",
+    ):
+        result = evaluate_response(
+            flt,
+            ResponseData(status=200, headers={}, body=phrase, response_length=len(phrase)),
+        )
+        assert result.verdict == VERDICT_SECURE, phrase
+        assert result.matched_section == "passed_detection"
+
+
+def test_load_filter_never_raises_on_bad_yaml_or_version(tmp_path: Path) -> None:
+    (tmp_path / FILTER_FILENAME).write_text(
+        "version: not-a-number\npassed_detection: {}\n", encoding="utf-8"
+    )
+    flt = load_filter(tmp_path)
+    assert flt is not None  # version coerced to 1
+    assert flt.version == 1
+
+    (tmp_path / FILTER_FILENAME).write_text("version: [1]\n", encoding="utf-8")
+    flt2 = load_filter(tmp_path)  # must not raise
+    assert flt2 is not None
+    assert flt2.version == 1
+
+    (tmp_path / FILTER_FILENAME).write_text(
+        "not: [valid: yaml: {", encoding="utf-8"
+    )
+    assert load_filter(tmp_path) is None

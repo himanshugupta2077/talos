@@ -183,6 +183,13 @@ def test_maybe_create_finding_weak(db_path: Path) -> None:
     assert EVIDENCE_TYPE_AUTH_SESSION_RESULT in types
     assert "original_flow" in types
     assert "replay_flow" in types
+    # System context must not pollute Analyst Notes.
+    assert "analyst_note" not in types
+    as_ev = next(e for e in evidence if e["evidence_type"] == EVIDENCE_TYPE_AUTH_SESSION_RESULT)
+    as_data = json.loads(as_ev.get("data") or "{}")
+    assert as_data.get("risk_hint") == "critical"
+    assert as_data.get("mutation_summary") == "alg=none"
+    assert as_data.get("auth_type") == "jwt"
 
 
 def test_maybe_create_finding_secure_noop(db_path: Path) -> None:

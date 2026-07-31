@@ -214,6 +214,7 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
     if as_ev and as_ev.get("reference_id"):
         sections.append("## Authentication & Session Testing Result\n")
         ar = _fetch_auth_session_result(db_path, as_ev["reference_id"])
+        as_data = _parse_json(as_ev.get("data", "{}"))
         if ar:
             sections.append(f"- **Verdict:** `{ar.get('verdict', '?')}`")
             sections.append(f"- **Test ID:** `{ar.get('test_id', '?')}`")
@@ -221,8 +222,9 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
                 sections.append(f"- **Auth Type:** `{ar['auth_type']}`")
             if ar.get("test_family"):
                 sections.append(f"- **Family:** `{ar['test_family']}`")
-            if ar.get("mutation_summary"):
-                sections.append(f"- **Mutation:** `{ar['mutation_summary']}`")
+            mut = ar.get("mutation_summary") or as_data.get("mutation_summary")
+            if mut:
+                sections.append(f"- **Mutation:** `{mut}`")
             if ar.get("diff_verdict"):
                 sections.append(f"- **Diff:** `{ar['diff_verdict']}`")
             if ar.get("matched_section"):
@@ -231,11 +233,13 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
                     + (f" / `{ar.get('matched_group')}`" if ar.get("matched_group") else "")
                 )
         else:
-            as_data = _parse_json(as_ev.get("data", "{}"))
             if as_data.get("test_id") or as_data.get("variant"):
                 sections.append(
                     f"- **Test ID:** `{as_data.get('test_id') or as_data.get('variant')}`"
                 )
+        # risk_hint lives in evidence JSON only (no severity column).
+        if as_data.get("risk_hint"):
+            sections.append(f"- **Risk hint:** `{as_data['risk_hint']}`")
         sections.append("")
 
     # --- All Evidence References ---

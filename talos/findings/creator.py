@@ -161,6 +161,7 @@ def create_finding_from_verdict(
     diff_verdict: Optional[str] = None,
     title: Optional[str] = None,
     auth_type: Optional[str] = None,
+    result_evidence_data: Optional[dict] = None,
 ) -> Optional[str]:
     """
     Purpose:
@@ -198,6 +199,9 @@ def create_finding_from_verdict(
                           When omitted, uses default "{ATTACK_DISPLAY} — {verdict}
                           ({variant})" builder.
         auth_type       — auth_session only (jwt, …) for cluster key.
+        result_evidence_data — optional extra keys merged into the attack-result
+                          evidence JSON (e.g. risk_hint, mutation_summary for
+                          auth_session). No severity column on findings.
 
     Output:
         Finding UUID if a finding was created; None if verdict is not a trigger.
@@ -275,6 +279,7 @@ def create_finding_from_verdict(
         variant=variant,
         diff_verdict=diff_verdict,
         replayed_flow_id_for_result=replayed_flow_id,
+        result_evidence_data=result_evidence_data,
     )
 
     # --------------------------------------------------------------- #
@@ -404,6 +409,7 @@ def _attach_evidence(
     variant: Optional[str],
     diff_verdict: Optional[str],
     replayed_flow_id_for_result: Optional[str],
+    result_evidence_data: Optional[dict] = None,
 ) -> None:
     """
     Purpose:
@@ -511,12 +517,15 @@ def _attach_evidence(
 
     elif attack_module == "auth_session":
         if replayed_flow_id_for_result:
+            as_data: dict = {"variant": variant, "test_id": variant}
+            if result_evidence_data:
+                as_data.update(result_evidence_data)
             _safe_add(
                 db_path, finding_id,
                 EVIDENCE_TYPE_AUTH_SESSION_RESULT, replayed_flow_id_for_result,
                 "Authentication & Session Testing result"
                 + (f" — test: {variant}" if variant else ""),
-                {"variant": variant, "test_id": variant},
+                as_data,
             )
 
 

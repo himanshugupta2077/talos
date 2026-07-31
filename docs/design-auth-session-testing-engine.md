@@ -746,7 +746,7 @@ Decision filter file name: `auth-session-decision-filter.yaml` in project data d
 - `failed_detection` → `WEAK_VALIDATION`
 - `passed_detection` → `SECURE`
 
-**Phase 4 default YAML** (shipped by `filter init`) should include common **SECURE** soft-fail patterns (body contains `invalid token`, `jwt`, `unauthorized`, `signature`, status 401/403 groups) so operators get fewer false WEAKs without re-running when they init the filter early.
+**Phase 4 default YAML** (shipped by `filter init`) should include common **SECURE** soft-fail patterns (body phrases like `invalid token`, `invalid signature`, `unauthorized`, status 401/403 groups) so operators get fewer false WEAKs without re-running when they init the filter early. **Do not** use bare tokens like `jwt` or `signature` alone — authorized success bodies often echo those words and would force false SECURE on true WEAK (2xx + SAME).
 
 CLI: `talos attack auth-session filter init|show|validate`.  
 **No `filter apply` / reclassify in v1** (non-goal; re-run required after filter edits).

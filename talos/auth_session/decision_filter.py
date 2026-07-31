@@ -92,6 +92,9 @@ passed_detection:
         - location: header
           field: WWW-Authenticate
           operator: exists
+    # Soft-fail body phrases only — do NOT use bare tokens like "jwt" or
+    # "signature" alone; authorized APIs often echo those words and would
+    # force false SECURE on true WEAK_VALIDATION (2xx + SAME body).
     - group_id: body_auth_keywords
       operator: OR
       rules:
@@ -100,43 +103,52 @@ passed_detection:
           value: invalid token
         - location: body
           operator: contains
-          value: Invalid token
+          value: invalid jwt
         - location: body
           operator: contains
-          value: unauthorized
+          value: malformed token
         - location: body
           operator: contains
-          value: Unauthorized
+          value: malformed jwt
         - location: body
           operator: contains
-          value: signature
-        - location: body
-          operator: contains
-          value: Signature
-        - location: body
-          operator: contains
-          value: jwt
-        - location: body
-          operator: contains
-          value: JWT
-        - location: body
-          operator: contains
-          value: Access Denied
-        - location: body
-          operator: contains
-          value: Forbidden
-        - location: body
-          operator: contains
-          value: Authentication required
-        - location: body
-          operator: contains
-          value: Session expired
+          value: jwt expired
         - location: body
           operator: contains
           value: token expired
         - location: body
           operator: contains
-          value: malformed
+          value: invalid signature
+        - location: body
+          operator: contains
+          value: signature verification failed
+        - location: body
+          operator: contains
+          value: signature invalid
+        - location: body
+          operator: contains
+          value: unauthorized
+        - location: body
+          operator: contains
+          value: access denied
+        - location: body
+          operator: contains
+          value: forbidden
+        - location: body
+          operator: contains
+          value: authentication required
+        - location: body
+          operator: contains
+          value: login required
+        - location: body
+          operator: contains
+          value: session expired
+        - location: body
+          operator: contains
+          value: not authenticated
+        - location: body
+          operator: contains
+          value: authentication failed
 
 # WEAK_VALIDATION: optional explicit weak signals (heuristic also covers
 # 2xx + structural SAME). Add groups here when soft-fail envelopes still
@@ -227,7 +239,8 @@ def load_filter(project_data_dir: Path) -> Optional[AuthSessionDecisionFilter]:
     Purpose:
         Load and parse auth-session-decision-filter.yaml from the project
         data directory. Returns None if absent or unparseable (engine then
-        uses heuristic only).
+        uses heuristic only). **Never raises** — callers (engine, CLI validate)
+        rely on None for soft failure.
     Input:
         project_data_dir — project data dir (typically db_path.parent)
     Output:
@@ -259,7 +272,15 @@ def load_filter(project_data_dir: Path) -> Optional[AuthSessionDecisionFilter]:
         )
         return None
 
-    return _parse_filter(raw)
+    try:
+        return _parse_filter(raw)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "Failed to parse %s: %s. Using heuristic verdict.",
+            FILTER_FILENAME,
+            exc,
+        )
+        return None
 
 
 def _parse_filter(raw: object) -> Optional[AuthSessionDecisionFilter]:
@@ -268,7 +289,12 @@ def _parse_filter(raw: object) -> Optional[AuthSessionDecisionFilter]:
         _log.warning("%s: root must be a mapping.", FILTER_FILENAME)
         return None
 
-    version = int(raw.get("version", 1) or 1)
+    try:
+        version = int(raw.get("version", 1) or 1)
+    except (TypeError, ValueError):
+        _log.warning("%s: invalid version field; defaulting to 1.", FILTER_FILENAME)
+        version = 1
+
     passed = _parse_section(raw.get("passed_detection"), "passed_detection")
     failed = _parse_section(raw.get("failed_detection"), "failed_detection")
 

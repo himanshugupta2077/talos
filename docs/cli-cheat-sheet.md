@@ -1646,7 +1646,10 @@ talos attack auth-session filter validate
 
 File: `<project_data_dir>/auth-session-decision-filter.yaml`. Sections:
 `failed_detection` → `WEAK_VALIDATION`, `passed_detection` → `SECURE`; no match
-falls through to status+diff heuristic. **No `filter apply`/reclassify in v1**
+falls through to status+diff heuristic. Default SECURE body patterns use
+**specific soft-fail phrases** (`invalid token`, `invalid signature`, …) —
+not bare words like `jwt`/`signature` alone (those appear in authorized APIs
+and would hide true weak validation). **No `filter apply`/reclassify in v1**
 — re-run candidates after filter edits.
 
 ### Suite catalog
