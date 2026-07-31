@@ -106,19 +106,17 @@ async def execute_auth_session_job(
         Outbound HTTP; writes replay flow, diff, result row.
     """
     candidate_id: str = str(meta.get("candidate_id") or "")
-    binding_id: str = str(meta.get("binding_id") or "")
-    test_id: str = str(meta.get("test_id") or "")
-    auth_type: str = str(meta.get("auth_type") or "jwt")
-    test_family: Optional[str] = meta.get("test_family")
     endpoint_id_meta: Optional[str] = meta.get("endpoint_id")
 
-    if not candidate_id or not binding_id or not test_id:
+    # candidate_id is the sole required meta key — binding/test_id/family are
+    # authoritative on the candidate row (meta may be partial after requeue).
+    if not candidate_id:
         return _fail(
             flow_id=flow_id,
-            test_id=test_id or "unknown",
-            binding_id=binding_id or "",
-            candidate_id=candidate_id or "",
-            auth_type=auth_type,
+            test_id=str(meta.get("test_id") or "unknown"),
+            binding_id=str(meta.get("binding_id") or ""),
+            candidate_id="",
+            auth_type=str(meta.get("auth_type") or "jwt"),
             endpoint_id=endpoint_id_meta,
             reason="auth_session_meta_incomplete",
         )
@@ -127,10 +125,10 @@ async def execute_auth_session_job(
     if candidate is None:
         return _fail(
             flow_id=flow_id,
-            test_id=test_id,
-            binding_id=binding_id,
+            test_id=str(meta.get("test_id") or "unknown"),
+            binding_id=str(meta.get("binding_id") or ""),
             candidate_id=candidate_id,
-            auth_type=auth_type,
+            auth_type=str(meta.get("auth_type") or "jwt"),
             endpoint_id=endpoint_id_meta,
             reason="candidate_not_found",
         )
@@ -360,6 +358,49 @@ def _set_cookie(
     return out
 
 
+def _parse_cookie_header_pairs(cookie_header: str) -> dict[str, str]:
+    """Parse a Cookie request header into name→value (first occurrence wins)."""
+    out: dict[str, str] = {}
+    for part in str(cookie_header).split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, _, value = part.partition("=")
+        key = key.strip()
+        if not key or key in out:
+            continue
+        out[key] = value.strip()
+    return out
+
+
+def _merge_cookies_from_header(
+    headers: dict[str, Any],
+    cookies: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Merge Cookie header pairs into the cookies dict.
+
+    Captures often store cookies only on the Cookie header (empty
+    ``request_cookies``). Without this merge, mutating one bound cookie and
+    rebuilding the header would drop sibling cookies.
+    """
+    cookie_raw: Any = None
+    for key, value in headers.items():
+        if str(key).lower() == "cookie":
+            cookie_raw = value
+            break
+    if cookie_raw is None:
+        return dict(cookies)
+    if isinstance(cookie_raw, list):
+        cookie_raw = "; ".join(str(item) for item in cookie_raw if item is not None)
+    parsed = _parse_cookie_header_pairs(str(cookie_raw))
+    # request_cookies win on key collision (structured store is authoritative).
+    merged: dict[str, Any] = dict(parsed)
+    for key, value in cookies.items():
+        merged[key] = value
+    return merged
+
+
 def _rebuild_cookie_header(headers: dict[str, Any], cookies: dict[str, Any]) -> None:
     """Rebuild Cookie request header from cookies dict (in-place on headers)."""
     # Drop existing Cookie header keys (any casing).
@@ -381,6 +422,8 @@ def _apply_token_mutation(
     """
     Purpose:
         Copy flow and replace only the bound auth field with the mutated value.
+        Cookie mutations preserve sibling cookies (including those that lived
+        only on the Cookie header).
     Side effects: None (returns new dict).
     """
     m = dict(flow)
@@ -392,6 +435,7 @@ def _apply_token_mutation(
     if loc == LOCATION_HEADER:
         headers = _set_header_case_preserving(headers, field_name, value)
     elif loc == LOCATION_COOKIE:
+        cookies = _merge_cookies_from_header(headers, cookies)
         cookies = _set_cookie(cookies, field_name, value)
         _rebuild_cookie_header(headers, cookies)
     else:
@@ -481,19 +525,14 @@ async def _send_and_store(
     replay_time: str = datetime.now(timezone.utc).isoformat()
 
     stored_headers = _load_headers(modified)
-    send_headers = [
-        (str(name), str(value) if not isinstance(value, list) else str(value[0]))
-        for name, value in stored_headers.items()
-    ]
-    # Multi-value headers: expand lists for httpx.
-    expanded: list[tuple[str, str]] = []
+    # Multi-value headers: expand lists for httpx (list of (name, value) pairs).
+    send_headers: list[tuple[str, str]] = []
     for name, value in stored_headers.items():
         if isinstance(value, list):
             for item in value:
-                expanded.append((str(name), str(item)))
+                send_headers.append((str(name), str(item)))
         else:
-            expanded.append((str(name), str(value)))
-    send_headers = expanded
+            send_headers.append((str(name), str(value)))
 
     body: Optional[bytes] = modified.get("request_body")
     if isinstance(body, str):

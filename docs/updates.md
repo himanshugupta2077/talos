@@ -10,6 +10,13 @@ End-to-end Authentication & Session Testing: **one approved candidate → one
 scheduler job → one JWT mutation → one new outbound flow → heuristic verdict**.
 Findings and decision filter remain Phase 4.
 
+**QA fixes (same phase):**
+- Cookie mutations merge the Cookie header into the cookie map first so sibling
+  cookies survive when the bound token lived only on the Cookie header (empty
+  `request_cookies`).
+- Engine accepts meta with only `candidate_id` (loads binding/test_id from the
+  candidate row) instead of requiring full meta keys.
+
 | Deliverable | Detail |
 |-------------|--------|
 | **Verdict** | `verdict.py` — pure KD7 heuristic (2xx+SAME→WEAK_VALIDATION; 401/403/407/3xx→SECURE; else UNKNOWN); documents `compute_diff` coarseness |

@@ -217,6 +217,122 @@ def test_incomplete_meta_fails(db_path: Path) -> None:
     assert outcome.replayed_flow_id is None
 
 
+def test_meta_only_candidate_id_loads_from_db(db_path: Path) -> None:
+    """candidate_id alone is enough — binding/test_id come from the row."""
+    _binding_id, cand_id = _seed_candidate(db_path)
+    with _mock_httpx(200, BODY):
+        outcome = asyncio.run(
+            execute_auth_session_job(
+                FLOW,
+                {"candidate_id": cand_id},
+                db_path,
+                PROJECT_ID,
+            )
+        )
+    assert outcome.failure_reason is None
+    assert outcome.auth_session_verdict == VERDICT_WEAK_VALIDATION
+    assert outcome.test_id == "jwt.alg_none"
+    assert outcome.candidate_id == cand_id
+
+
+def test_cookie_header_only_preserves_sibling_cookies(tmp_path: Path) -> None:
+    """
+    When access_token lives only on the Cookie header (empty request_cookies),
+    mutating it must not drop sibling cookies (e.g. other=keepme).
+    """
+    path = tmp_path / "cookie-hdr.db"
+    init_project_db(path)
+    token = _jwt()
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO endpoints
+                (id, project_id, method, host, path, normalized_path,
+                 content_type, auth_required, roles_seen, first_seen, last_seen)
+            VALUES (?, ?, 'GET', 'api.example.com', '/api/me', '/api/me',
+                    'application/json', 1, '[]', ?, ?)
+            """,
+            (EP, PROJECT_ID, NOW, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, excluded,
+                 dangerous, logout, qualified, qualification_reason,
+                 baseline_flow_id, baseline_status, updated_at)
+            VALUES (?, 'HIGH', 50, 0, 0, 0, 1, 'flow_2xx', ?, 200, ?)
+            """,
+            (EP, FLOW, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO flows
+                (id, project_id, captured_at, method, url, host, path,
+                 query, request_headers, request_cookies, status_code,
+                 response_headers, response_body, content_type,
+                 endpoint_id, role_id, module_id, tags, source)
+            VALUES (?, ?, ?, 'GET', 'https://api.example.com/api/me',
+                    'api.example.com', '/api/me', '', ?, '{}', 200,
+                    ?, ?, 'application/json', ?, '', '', '[]', 'proxy_capture')
+            """,
+            (
+                FLOW,
+                PROJECT_ID,
+                NOW,
+                json.dumps({
+                    "Cookie": f"access_token={token}; other=keepme",
+                    "Host": "api.example.com",
+                }),
+                json.dumps({"content-type": "application/json"}),
+                BODY,
+                EP,
+            ),
+        )
+        conn.commit()
+    set_auth_fields(path, cookies=["access_token"], headers=[])
+
+    binding = as_db.insert_binding(
+        path, location="cookie", name="access_token", auth_type="jwt"
+    )
+    cand = as_db.insert_candidate(
+        path,
+        binding_id=binding.id,
+        baseline_flow_id=FLOW,
+        auth_type="jwt",
+        test_id="jwt.alg_none",
+        test_family="algorithm",
+        title="t",
+        mutation_summary="m",
+        endpoint_id=EP,
+        status=STATUS_APPROVED,
+    )
+    with _mock_httpx(200, BODY) as mock_cls:
+        outcome = asyncio.run(
+            execute_auth_session_job(
+                FLOW,
+                {
+                    "candidate_id": cand.id,
+                    "binding_id": binding.id,
+                    "test_id": "jwt.alg_none",
+                    "auth_type": "jwt",
+                },
+                path,
+                PROJECT_ID,
+            )
+        )
+        call_headers = dict(mock_cls.return_value.request.await_args.kwargs["headers"])
+    assert outcome.failure_reason is None
+    cookie_hdr = next(
+        (v for k, v in call_headers.items() if str(k).lower() == "cookie"),
+        None,
+    )
+    assert cookie_hdr is not None
+    assert "other=keepme" in str(cookie_hdr)
+    assert "access_token=" in str(cookie_hdr)
+    # Mutated JWT must not contain the original signature segment.
+    assert "sig-original" not in str(cookie_hdr)
+
+
 def test_candidate_not_found(db_path: Path) -> None:
     outcome = asyncio.run(
         execute_auth_session_job(
