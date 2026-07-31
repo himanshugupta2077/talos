@@ -30,6 +30,8 @@ flowchart TD
     SI[SecretDetection]
     SID[DetectionDetail]
     SIDO[DocumentDetail]
+    EI[ErrorIntelligence]
+    US[UrlSinkDiscovery]
     IV[InputValidation]
     IVP[IvParamDetail]
     IVE[IvEndpointIntel]
@@ -49,6 +51,8 @@ flowchart TD
   AT --> ATU
   AT --> ATB
   AT --> SI
+  AT --> EI
+  AT --> US
   SI --> SID
   SI --> SIDO
   IV --> IVP
@@ -57,6 +61,7 @@ flowchart TD
   SID -.-> FI
   SID -.-> F
   SIDO -.-> F
+  US -.-> IV
   TC -.-> X
   TC -.-> S
   TC -.-> M
@@ -470,6 +475,7 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | `/testing/secrets/documents/:id` | Document dossier |
 | `/testing/errors` | Error Intelligence (Passive) — cluster triage workspace |
 | `/testing/errors/:id` | Error cluster dossier |
+| `/testing/url-sinks` | URL Sink Discovery (Passive) — inventory triage workspace |
 | `/attack/*` | Legacy redirect → `/testing/*` |
 | `/secret-detection/*` | Legacy redirect → `/testing/secrets/*` |
 | `/input-validation/*` | Legacy redirect → `/testing/input-validation/*` |
@@ -552,7 +558,40 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 
 Candidate scores are always labeled **prioritization only**, not confirmed vulnerabilities. **Stored / cross-page reflection** is data-flow evidence (source→sink), not XSS confirmation; candidates expand shows `reflection_modes` and sink reasons when present.
 
-**URL sink (PR1–PR2):** Dossier shows passive `url_features` and active `observed.url_sink` canary characterization. Candidates capability datalist includes `network_resource_sink` / `redirect_sink` / `fetch_sink` / `webhook_sink`. Run on dossier uses parameter **name** scope (CLI `--parameter`); inventory-only surfaces (`response` / `jwt.*`) disable Run. Dedicated `/testing/url-sinks` workspace is PR4.
+**URL sink (PR1–PR2):** Dossier shows passive `url_features` and active `observed.url_sink` canary characterization. Candidates capability datalist includes `network_resource_sink` / `redirect_sink` / `fetch_sink` / `webhook_sink`. Run on dossier uses parameter **name** scope (CLI `--parameter`); inventory-only surfaces (`response` / `jwt.*`) disable Run. Dedicated workspace: **URL Sink Discovery** below.
+
+---
+
+## URL Sink Discovery (`/testing/url-sinks`)
+
+**Files:** `UrlSinkDiscovery.tsx` + `pages/url-sinks/*`  
+**IA:** Passive module under **Testing** hub (peer of Secret Detection / Error Intelligence).  
+**Design:** `docs/URL-Sink-Discovery-Control-Panel-Design.md` (PR4 — Overview + Inventory; Rollups/Settings = PR5).
+
+Passive inventory of parameters with `url_features` for network-resource prioritization.
+**Not confirmed SSRF / open-redirect Findings.** Active canaries remain on Input Validation.
+
+| Route | Purpose |
+|-------|---------|
+| `/testing/url-sinks?tab=overview` | Status knobs, NRS/score KPIs, distributions, top sinks, empty-state CTAs, optional IV URL-family candidates |
+| `?tab=inventory` | Filterable passive inventory (default `min_score=45`, `nrs_only=true`) + row drawer |
+| Rollups / Settings tabs | Deferred to PR5 |
+
+| Aspect | Detail |
+|--------|--------|
+| **Purpose** | Post-capture “find sinks fast” triage before / alongside IV characterization |
+| **Backend** | `GET /api/url-sink/{status,overview,inventory,params,…}` — parameters-only by default; `include_iv` page-bounded |
+| **CLI** | Read path mirrors `talos endpoint params`; config via `talos config set url_sink.*` / Talos Config section `url_sink` |
+| **DB** | `parameters.url_features` + endpoints join; optional slim IV profile slice |
+| **Components** | `ModuleShell`, `UrlSinkDisclaimer`, `UrlFeaturesPanel`, shared `components/url-sink/*` chips, inventory `SideDrawer` |
+| **Hub KPI** | `nrs`, `score≥70` (warn tone, never danger), `score≥thr`; statusLine `Passive disabled` when `enabled_passive=false` |
+| **Workflow** | Capture → Overview / Inventory (NRS) → open row → IV dossier → candidates / canaries |
+| **Deep-links (K13)** | Same query keys as API: `min_score`, `nrs_only`, `category`, `looks_like`, `location`, `host`, `endpoint_id`, `search`, `sort`, `limit`, `offset`, `include_iv` |
+| **Safety** | Visible disclaimer; scores prioritization-only; no bulk Run IV from inventory; inventory-only badge for `response` / `jwt.*` |
+
+**Inventory drawer links:** IV dossier (primary), IV candidates (`capability=network_resource_sink`), Endpoint detail, Flows for endpoint.
+
+**Overview candidates strip (K19):** `GET /api/input-validation/candidates?capability=network_resource_sink&min_score=60&limit=20` (server-side filter). Hide on empty/error; do not FE-filter a global top-N.
 
 ---
 

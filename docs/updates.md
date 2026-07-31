@@ -2,6 +2,34 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel: URL Sink Discovery PR4 — workspace
+
+**Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.
+
+Dedicated Testing hub module **`/testing/url-sinks`** (Passive, risk=none) for post-capture
+sink inventory triage. Prioritization only — not confirmed SSRF Findings.
+
+| Surface | Behavior |
+|---------|----------|
+| **Hub card** | KPI chips from `/api/url-sink/status`: `nrs`, `score≥70` (warn), `score≥thr`; statusLine when passive disabled |
+| **Overview** | Config strip, NRS/score KPIs, by_category / looks_like / location, top sinks, empty-state CTAs, URL-family candidates via server-side `capability=network_resource_sink` |
+| **Inventory** | K13 filters (`min_score=45`, `nrs_only=true` defaults), table + SideDrawer, dossier-first handoff |
+| **Not in PR4** | Rollups / Settings tabs, Flow cross-links (PR5) |
+
+```bash
+# Open in Control Panel (with project selected)
+# http://127.0.0.1:5173/testing/url-sinks
+# http://127.0.0.1:5173/testing/url-sinks?tab=inventory&min_score=45&nrs_only=true
+
+curl -s "http://127.0.0.1:8420/api/url-sink/overview?project_id=<id>&top_n=10"
+curl -s "http://127.0.0.1:8420/api/url-sink/inventory?project_id=<id>&min_score=45&nrs_only=true"
+```
+
+**Files:** `frontend/src/pages/{UrlSinkDiscovery.tsx,url-sinks/*,attack/{registry,AttackHub}.tsx,App.tsx}`,
+docs (`control-panel/pages.md`, updates, cheat sheet).
+
+---
+
 ## Control Panel: URL Sink Discovery PR1–PR3
 
 **Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.
@@ -28,7 +56,7 @@ curl -s "http://127.0.0.1:8420/api/configuration/effective?project_id=<id>&secti
 `url_sink_reads.py`, frontend `components/url-sink/*`, EndpointDetail, IV workspace pages,
 tests, `docs/control-panel/{routing,pages,backend}.md`.
 
-Workspace Overview + Inventory UI (`/testing/url-sinks`) is **PR4** (not this slice).
+Workspace Overview + Inventory UI (`/testing/url-sinks`) shipped as **PR4**.
 
 ---
 

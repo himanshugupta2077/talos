@@ -340,7 +340,7 @@ All routes require `project_id`. Implementation: `talos_ui/routers/url_sink.py` 
 | Method | URL | Purpose | Request | Response | CLI / DB |
 |--------|-----|---------|---------|----------|----------|
 | GET | `/status` | Aggregates + knobs | `project_id`, `include_iv_stats?` | enabled_*, score_threshold, nrs_count, score_ge_*, by_category/looks_like/location, disclaimer | parameters parse; config project-scoped |
-| GET | `/overview` | Status + top sinks + empty_state | `project_id`, `top_n?` | `{ status, top_sinks, empty_state, disclaimer }` | DB |
+| GET | `/overview` | Status + top sinks + empty_state (CP Overview tab) | `project_id`, `top_n?` | `{ status, top_sinks, empty_state, disclaimer }` | DB |
 | GET | `/inventory` | Filterable inventory (K13 keys) | `min_score` (45), `nrs_only` (true), `category`, `looks_like`, `location`, `host` (contains), `endpoint_id`, `search`, `sort`, `limit`, `offset`, `include_iv` | `{ items, count, total_matched, filters_applied, note, disclaimer }` | parameters JOIN endpoints |
 | GET | `/params/{parameter_id}` | One sink row + IV slice | `project_id` | `{ item, disclaimer }` | DB |
 | GET | `/params` | By param_uuid | `project_id`, `param_uuid` | same | DB |

@@ -7,7 +7,7 @@
 | **Document** | Design: URL Sink Discovery Control Panel surfaces |
 | **Author** | Grok Design (Control Panel) |
 | **Date** | 2026-07-31 |
-| **Status** | **Approved** (rev 3 — design review consensus) |
+| **Status** | **Approved** (rev 3 — design review consensus). **PR1–PR4 implemented** on main; PR5 remaining. |
 | **Workspace** | `talos-v2` |
 | **Audience** | Senior engineers implementing Control Panel + reviewing product IA |
 

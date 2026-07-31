@@ -189,6 +189,45 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // URL Sink Discovery (passive inventory — prioritization only; K18 warn not danger)
+    api
+      .get<{
+        nrs_count?: number;
+        score_ge_70?: number;
+        score_ge_threshold?: number;
+        enabled_passive?: boolean;
+      }>("/api/url-sink/status", { project_id: pid })
+      .then((s) => {
+        const nrs = s.nrs_count ?? 0;
+        const hot = s.score_ge_70 ?? 0;
+        const thr = s.score_ge_threshold ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          url_sinks: {
+            chips: [
+              {
+                label: "nrs",
+                value: nrs,
+                tone: nrs > 0 ? "warn" : "muted",
+              },
+              {
+                label: "score≥70",
+                value: hot,
+                tone: hot > 0 ? "warn" : "muted",
+              },
+              {
+                label: "score≥thr",
+                value: thr,
+                tone: "muted",
+              },
+            ],
+            statusLine:
+              s.enabled_passive === false ? "Passive disabled" : undefined,
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Input Validation (active)
     api
       .get<{
@@ -374,7 +413,7 @@ export default function AttackHub() {
           <input
             type="search"
             className="grow bg-transparent outline-none text-sm"
-            placeholder="Search modules (bac, secret, error, unauth, iv…)"
+            placeholder="Search modules (bac, secret, error, url, unauth, iv…)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             aria-label="Search testing modules"

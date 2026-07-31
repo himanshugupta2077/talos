@@ -21,7 +21,8 @@ export type AttackKpiSource =
   | "secrets"
   | "iv"
   | "errors"
-  | "intruder";
+  | "intruder"
+  | "url_sinks";
 
 export interface AttackModuleDef {
   id: string;
@@ -48,6 +49,9 @@ export const IV_BASE = "/testing/input-validation";
 
 /** Base path for Error Intelligence workspace. */
 export const ERRORS_BASE = "/testing/errors";
+
+/** Base path for URL Sink Discovery workspace (passive inventory). */
+export const URL_SINKS_BASE = "/testing/url-sinks";
 
 /** @deprecated Use TESTING_BASE — kept for transitional imports. */
 export const ATTACK_BASE = TESTING_BASE;
@@ -93,6 +97,29 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "whitelabel",
     ],
     kpi: "errors",
+  },
+  {
+    id: "url-sinks",
+    class: "passive",
+    name: "URL Sink Discovery",
+    description:
+      "Find parameters treated as URLs, hostnames, IPs, or network resources—regardless of name. Prioritization intelligence only.",
+    risk: "none",
+    status: "available",
+    path: URL_SINKS_BASE,
+    keywords: [
+      "url",
+      "ssrf",
+      "redirect",
+      "webhook",
+      "oauth",
+      "hostname",
+      "sink",
+      "network_resource",
+      "url_features",
+      "passive",
+    ],
+    kpi: "url_sinks",
   },
   {
     id: "unauth",

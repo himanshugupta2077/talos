@@ -1822,9 +1822,9 @@ talos endpoint export <endpoint_id>   # params table: score / NRS / categories
 talos input-validation show <parameter_uuid>
 talos input-validation export parameter <parameter_uuid>
 
-# Control Panel (PR1–PR3): Endpoint Parameters chips; IV dossier cards;
-# GET /api/url-sink/inventory|status; Talos Config section=url_sink
-# Dedicated /testing/url-sinks workspace is PR4.
+# Control Panel (PR1–PR4): Endpoint Parameters chips; IV dossier cards;
+# GET /api/url-sink/inventory|status|overview; Talos Config section=url_sink
+# Dedicated workspace: /testing/url-sinks (Overview + Inventory; hub KPI)
 ```
 
 ### IV capabilities & attack candidates (Module 11)

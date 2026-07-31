@@ -32,6 +32,7 @@ import DetectionDetail from "./pages/secret-detection/DetectionDetail";
 import DocumentDetail from "./pages/secret-detection/DocumentDetail";
 import ErrorIntelligence from "./pages/ErrorIntelligence";
 import ErrorClusterDetail from "./pages/error-intelligence/ErrorClusterDetail";
+import UrlSinkDiscovery from "./pages/UrlSinkDiscovery";
 import Findings from "./pages/Findings";
 import FindingDetail from "./pages/FindingDetail";
 import Console from "./pages/Console";
@@ -79,6 +80,7 @@ export default function App() {
                 path="/testing/errors/:errorId"
                 element={<ErrorClusterDetail />}
               />
+              <Route path="/testing/url-sinks" element={<UrlSinkDiscovery />} />
               <Route path="/testing/input-validation" element={<InputValidation />} />
               <Route
                 path="/testing/input-validation/params/:paramUuid"
