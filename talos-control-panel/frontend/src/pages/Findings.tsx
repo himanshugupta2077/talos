@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
 import { useAction } from "../hooks/useAction";
 import { NoProjectNotice, Section, ConfirmButton } from "../components/Common";
 import DataTable, { Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { attackTypeLabel } from "../lib/attackDisplay";
 import { formatIST } from "../lib/time";
 import { Finding, FindingGroup } from "../types";
 
@@ -15,16 +16,29 @@ type RelationView = "primary" | "linked" | "all";
 
 export default function Findings() {
   const { selected } = useProject();
+  const [searchParams] = useSearchParams();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [status, setStatus] = useState("");
   const [view, setView] = useState<RelationView>("primary");
-  const [attackType, setAttackType] = useState("");
-  const [verdict, setVerdict] = useState("");
+  const [attackType, setAttackType] = useState(
+    () => searchParams.get("attack_type") || ""
+  );
+  const [verdict, setVerdict] = useState(
+    () => searchParams.get("verdict") || ""
+  );
   const [role, setRole] = useState("");
   const [module, setModule] = useState("");
   const [groups, setGroups] = useState<FindingGroup[]>([]);
   const [groupName, setGroupName] = useState("");
   const navigate = useNavigate();
+
+  // Hydrate filters when deep-link query changes (K18)
+  useEffect(() => {
+    const at = searchParams.get("attack_type");
+    const vd = searchParams.get("verdict");
+    if (at !== null) setAttackType(at);
+    if (vd !== null) setVerdict(vd);
+  }, [searchParams]);
 
   const load = () => {
     if (!selected) return;
@@ -85,12 +99,11 @@ export default function Findings() {
     {
       key: "attack_type",
       header: "Type",
-      render: (f) =>
-        f.attack_type === "passive_secret" ? (
-          <span title="passive_secret">Client-Side Secret</span>
-        ) : (
-          f.attack_type
-        ),
+      render: (f) => (
+        <span title={f.attack_type || undefined}>
+          {attackTypeLabel(f.attack_type)}
+        </span>
+      ),
     },
     { key: "verdict", header: "Verdict", render: (f) => <StatusBadge value={f.verdict} /> },
     { key: "status", header: "Status", render: (f) => <StatusBadge value={f.status} /> },
@@ -139,7 +152,7 @@ export default function Findings() {
           <option value="">type: any</option>
           {attackTypes.map((t) => (
             <option key={t} value={t}>
-              {t === "passive_secret" ? "Client-Side Secret Exposure" : t}
+              {attackTypeLabel(t)}
             </option>
           ))}
         </select>
@@ -172,7 +185,7 @@ export default function Findings() {
         rowKey={(f) => f.id}
         storageKey="findings"
         onRowClick={(f) => navigate(`/findings/${f.id}`)}
-        emptyLabel="No findings yet — they're created automatically from POSSIBLE_BAC / BYPASS verdicts."
+        emptyLabel="No findings yet — created from POSSIBLE_BAC / BYPASS / WEAK_VALIDATION (and other attack modules)."
       />
 
       <Section title="Groups" action={

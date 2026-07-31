@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import { useAction } from "../hooks/useAction";
 import { Section, UuidChip, ConfirmButton } from "../components/Common";
 import StatusBadge from "../components/StatusBadge";
+import { attackTypeLabel } from "../lib/attackDisplay";
 import { formatIST } from "../lib/time";
 import { Finding, FindingGroup } from "../types";
 import { SECRETS_BASE } from "./attack/registry";
@@ -86,7 +87,12 @@ export default function FindingDetail() {
             {(finding.relation_type || "PRIMARY").toUpperCase()}
             {isPrimary && linkedCount > 0 ? ` · ${linkedCount} linked` : ""}
           </span>
-          <span className="text-xs text-base-content/50">{finding.attack_type}</span>
+          <span
+            className="text-xs text-base-content/50"
+            title={finding.attack_type || undefined}
+          >
+            {attackTypeLabel(finding.attack_type)}
+          </span>
           {finding.role_name && <span className="badge badge-outline badge-sm">role: {finding.role_name}</span>}
           {finding.module_name && <span className="badge badge-outline badge-sm">module: {finding.module_name}</span>}
           {finding.endpoint_id && <Link to={`/endpoints/${finding.endpoint_id}`} className="link text-xs">endpoint</Link>}

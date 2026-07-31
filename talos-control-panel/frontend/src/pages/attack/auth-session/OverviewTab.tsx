@@ -5,7 +5,6 @@ import { formatIST } from "../../../lib/time";
 import type { AuthSessionOverview, AuthSessionTab } from "./shared";
 import AuthSessionDisclaimer from "./components/AuthSessionDisclaimer";
 import DistinctionBanner from "./components/DistinctionBanner";
-import PartialLifecycleBanner from "./components/PartialLifecycleBanner";
 
 export default function OverviewTab({
   overview,
@@ -33,7 +32,6 @@ export default function OverviewTab({
     <div>
       <AuthSessionDisclaimer />
       <DistinctionBanner />
-      <PartialLifecycleBanner />
 
       <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
         <span className="badge badge-outline">
@@ -84,7 +82,28 @@ export default function OverviewTab({
           className="btn btn-xs btn-outline"
           onClick={() => onGoTab("candidates")}
         >
-          Candidates / Generate
+          Candidates / Approve
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs btn-outline"
+          onClick={() => onGoTab("run")}
+        >
+          Run
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs btn-outline"
+          onClick={() => onGoTab("results")}
+        >
+          Results
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs btn-ghost"
+          onClick={() => onGoTab("config")}
+        >
+          Filter & Suite
         </button>
         <Link to="/auth" className="btn btn-xs btn-ghost">
           Auth page (prereq)
@@ -92,7 +111,10 @@ export default function OverviewTab({
         <Link to="/scheduler" className="btn btn-xs btn-ghost">
           Scheduler
         </Link>
-        <Link to="/findings" className="btn btn-xs btn-ghost">
+        <Link
+          to="/findings?attack_type=auth_session"
+          className="btn btn-xs btn-ghost"
+        >
           Findings
         </Link>
         <button type="button" className="btn btn-xs btn-ghost" onClick={onRefresh}>
@@ -141,17 +163,27 @@ export default function OverviewTab({
       {pending > 0 && (
         <div className="alert alert-warning text-xs py-2 mb-4">
           {pending} pending candidate{pending === 1 ? "" : "s"} need approval
-          before run. Approve via CLI for now:{" "}
-          <span className="mono">talos attack auth-session approve --all-pending</span>
-          . Bulk approve UI lands in Phase 3.
+          before run.{" "}
+          <button
+            type="button"
+            className="link link-primary"
+            onClick={() => onGoTab("candidates")}
+          >
+            Open Candidates → approve
+          </button>
         </div>
       )}
 
       {approved > 0 && (
         <div className="alert alert-info text-xs py-2 mb-4">
-          {approved} approved candidate{approved === 1 ? "" : "s"} ready to run.
-          Run tab lands in Phase 4 — use{" "}
-          <span className="mono">talos attack auth-session run</span> or wait.
+          {approved} approved candidate{approved === 1 ? "" : "s"} ready to run.{" "}
+          <button
+            type="button"
+            className="link link-primary"
+            onClick={() => onGoTab("run")}
+          >
+            Open Run →
+          </button>
         </div>
       )}
 
@@ -162,6 +194,14 @@ export default function OverviewTab({
           <Link className="link" to="/scheduler">
             Open Scheduler
           </Link>
+          {" · "}
+          <button
+            type="button"
+            className="link"
+            onClick={() => onGoTab("results")}
+          >
+            Results
+          </button>
         </div>
       )}
 
@@ -184,8 +224,12 @@ export default function OverviewTab({
           </div>
           {weak > 0 && (
             <p className="text-[11px] text-base-content/50 mt-2">
-              Filter Findings Type → auth_session / Verdict → WEAK_VALIDATION
-              (URL hydration lands Phase 5).
+              <Link
+                className="link"
+                to="/findings?attack_type=auth_session&verdict=WEAK_VALIDATION"
+              >
+                Open WEAK_VALIDATION findings →
+              </Link>
             </p>
           )}
         </div>
@@ -227,6 +271,14 @@ export default function OverviewTab({
               <span className="tabular-nums font-medium">
                 {overview?.estimated_jobs_approved ?? 0}
               </span>
+            </li>
+            <li>
+              Decision filter:{" "}
+              {overview?.filter_exists ? (
+                <span className="text-success">present</span>
+              ) : (
+                <span className="text-base-content/50">not initialized</span>
+              )}
             </li>
           </ul>
         </div>

@@ -1,25 +1,35 @@
 /**
  * Shared types and constants for Auth-Session Testing workspace.
  *
- * Progressive tabs (K3 / K15): only ship interactive tabs for the current phase.
- * Phase 2 exit: overview | bindings | candidates.
+ * Progressive tabs (K3 / K15): full six-tab ship at Phase 5 exit.
+ * Overview | Bindings | Candidates | Run | Results | Filter & Suite
  */
 
-export type AuthSessionTab = "overview" | "bindings" | "candidates" | "run" | "results" | "config";
+export type AuthSessionTab =
+  | "overview"
+  | "bindings"
+  | "candidates"
+  | "run"
+  | "results"
+  | "config";
 
-/** Progressive ship set — Phase 2. */
+/** Full CLI-parity ship set (Phase 5). */
 export const SHIPPED_TABS: readonly AuthSessionTab[] = [
   "overview",
   "bindings",
   "candidates",
+  "run",
+  "results",
+  "config",
 ] as const;
 
 const ALL_TAB_DEFS: { id: AuthSessionTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "bindings", label: "Bindings" },
   { id: "candidates", label: "Candidates" },
-  // Phase 4+: { id: "run", label: "Run" }, { id: "results", label: "Results" }
-  // Phase 5: { id: "config", label: "Filter & Suite" }
+  { id: "run", label: "Run" },
+  { id: "results", label: "Results" },
+  { id: "config", label: "Filter & Suite" },
 ];
 
 export const AUTH_SESSION_TABS: { id: AuthSessionTab; label: string }[] =
@@ -28,9 +38,7 @@ export const AUTH_SESSION_TABS: { id: AuthSessionTab; label: string }[] =
   );
 
 export function isAuthSessionTab(v: string | null): v is AuthSessionTab {
-  return (
-    !!v && (SHIPPED_TABS as readonly string[]).includes(v)
-  );
+  return !!v && (SHIPPED_TABS as readonly string[]).includes(v);
 }
 
 export const selectClass = "select select-xs select-bordered";
@@ -56,8 +64,8 @@ export const KNOWN_FAMILIES = [
   "kid",
 ] as const;
 
-/** Hub status line for Phase 2. */
-export const HUB_STATUS_LINE = "Inventory — generate OK; approve next";
+/** Hub status line — cleared at full parity (Phase 5). */
+export const HUB_STATUS_LINE: string | undefined = undefined;
 
 export interface AuthSessionBinding {
   id: string;
@@ -104,6 +112,11 @@ export interface AuthSessionResultRow {
   verdict?: string;
   endpoint_id?: string | null;
   mutation_summary?: string;
+  original_status?: number | null;
+  replay_status?: number | null;
+  matched_section?: string | null;
+  matched_group?: string | null;
+  matched_rules?: string | null;
   method?: string;
   path?: string;
   host?: string;
@@ -111,6 +124,7 @@ export interface AuthSessionResultRow {
   captured_at?: string;
   created_at?: string;
   failure_reason?: string | null;
+  finding_id?: string | null;
 }
 
 export interface AuthSessionOverview {
@@ -148,4 +162,20 @@ export interface AuthSessionOverview {
   disclaimer?: string;
 }
 
+export interface AuthSessionSuiteCase {
+  test_id: string;
+  title: string;
+  family: string;
+  description?: string;
+  risk_hint?: string;
+  source: string;
+  requires_claims?: string[];
+  observed_alg?: string;
+}
+
 export type GenerateScopeMode = "project" | "endpoint" | "module" | "flow";
+
+/** Right-now hard refuse threshold (K11). */
+export const RIGHT_NOW_MAX = 20;
+/** Confirm when estimate exceeds this (K11 FE). */
+export const CONFIRM_ESTIMATE_THRESHOLD = 5;

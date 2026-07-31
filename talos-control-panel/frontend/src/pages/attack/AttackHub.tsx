@@ -106,8 +106,7 @@ export default function AttackHub() {
                 tone: approved > 0 ? "ok" : "muted",
               },
             ],
-            // Phase 2 posture (K15)
-            statusLine: "Inventory — generate OK; approve next",
+            // Full parity (Phase 5) — no inventory statusLine
           },
         }));
       })

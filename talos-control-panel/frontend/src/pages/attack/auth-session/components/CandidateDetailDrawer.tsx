@@ -6,11 +6,24 @@ import type { AuthSessionCandidate } from "../shared";
 export default function CandidateDetailDrawer({
   candidate,
   onClose,
+  onApprove,
+  onReject,
+  busy,
 }: {
   candidate: AuthSessionCandidate | null;
   onClose: () => void;
+  onApprove?: (id: string) => void;
+  onReject?: (id: string) => void;
+  busy?: boolean;
 }) {
   if (!candidate) return null;
+
+  const canApprove =
+    candidate.status === "pending" ||
+    candidate.status === "failed" ||
+    candidate.status === "done";
+  const canReject = candidate.status === "pending";
+  const canUnapprove = candidate.status === "approved";
 
   return (
     <Modal
@@ -58,7 +71,8 @@ export default function CandidateDetailDrawer({
                 className="link link-primary mono"
                 to={`/endpoints/${candidate.endpoint_id}`}
               >
-                {candidate.endpoint_method || ""} {candidate.endpoint_path || candidate.endpoint_id.slice(0, 8)}
+                {candidate.endpoint_method || ""}{" "}
+                {candidate.endpoint_path || candidate.endpoint_id.slice(0, 8)}
               </Link>
             ) : (
               "—"
@@ -111,12 +125,39 @@ export default function CandidateDetailDrawer({
           </div>
         )}
 
-        <div className="alert alert-ghost text-xs py-2 mt-2">
-          Approve / reject from the UI lands in Phase 3. Until then:{" "}
-          <span className="mono">
-            talos attack auth-session approve {candidate.id}
-          </span>
+        <div className="flex flex-wrap gap-2 mt-3">
+          {canApprove && onApprove && (
+            <button
+              type="button"
+              className="btn btn-xs btn-primary"
+              disabled={busy}
+              onClick={() => onApprove(candidate.id)}
+            >
+              Approve
+            </button>
+          )}
+          {canReject && onReject && (
+            <button
+              type="button"
+              className="btn btn-xs btn-outline"
+              disabled={busy}
+              onClick={() => onReject(candidate.id)}
+            >
+              Reject
+            </button>
+          )}
+          {canUnapprove && (
+            <p className="text-[11px] text-base-content/50 self-center">
+              Unapprove from the bulk bar (or CLI) to return to pending.
+            </p>
+          )}
         </div>
+
+        <p className="text-[11px] text-base-content/45 mt-1">
+          Status transitions: pending → approved → running → done|failed.
+          Rejected stays rejected until re-generated. Only{" "}
+          <strong>approved</strong> candidates enqueue on Run.
+        </p>
       </div>
     </Modal>
   );

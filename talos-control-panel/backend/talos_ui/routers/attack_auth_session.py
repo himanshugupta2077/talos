@@ -3,6 +3,9 @@ Auth-Session Testing Control Panel routes under ``/api/attack/auth-session/*``.
 
 Phase 1: summary / overview / bindings (read-only SQL).
 Phase 2: bind / unbind / generate mutations (CLI argv) + candidates list/detail.
+Phase 3: approve / reject / unapprove (CLI argv; K19 binding expand).
+Phase 4: run (+ right-now timeout contract) + results list/detail.
+Phase 5: decision filter init/show/validate + suite catalog.
 
 Mutations always go through ``cli.run_scoped``; reads prefer read-only SQLite.
 Included from ``attack.py`` so the public URL prefix stays ``/api/attack``.
@@ -627,3 +630,807 @@ def auth_session_generate(project_id: str, body: AuthSessionGenerateBody):
     args = _generate_args(body)
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Phase 3: approve / reject / unapprove (CLI argv + K19 expand)        #
+# ------------------------------------------------------------------ #
+
+
+class AuthSessionApproveBody(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+    all_pending: bool = False
+    retry_failed: bool = False
+    endpoint_id: Optional[str] = None
+    test_ids: Optional[list[str]] = None
+    families: Optional[list[str]] = None
+    # CP-only: expand full matching ID set (limit=None); never invent CLI --binding
+    binding_id: Optional[str] = None
+
+
+class AuthSessionRejectBody(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+    all_pending: bool = False
+    reason: Optional[str] = None
+    endpoint_id: Optional[str] = None
+    test_ids: Optional[list[str]] = None
+    families: Optional[list[str]] = None
+    binding_id: Optional[str] = None
+
+
+class AuthSessionUnapproveBody(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+    all_approved: bool = False
+    endpoint_id: Optional[str] = None
+    test_ids: Optional[list[str]] = None
+    families: Optional[list[str]] = None
+    binding_id: Optional[str] = None
+
+
+def _clean_ids(ids: Optional[list[str]]) -> list[str]:
+    out: list[str] = []
+    for raw in ids or []:
+        s = (raw or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _expand_candidate_ids(
+    db_path: Path,
+    *,
+    statuses: list[str],
+    binding_id: Optional[str] = None,
+    endpoint_id: Optional[str] = None,
+    test_ids: Optional[list[str]] = None,
+    families: Optional[list[str]] = None,
+) -> list[str]:
+    """
+    Unbounded candidate ID expand for bulk lifecycle (K19).
+
+    Never applies list-API default limit. Used when binding-scoped bulk
+    cannot use CLI ``--all-pending`` alone (CLI has no ``--binding`` on approve).
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        clauses.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    if binding_id:
+        clauses.append("binding_id = ?")
+        params.append(binding_id.strip())
+    if endpoint_id:
+        clauses.append("endpoint_id = ?")
+        params.append(endpoint_id.strip())
+    if test_ids:
+        placeholders = ",".join("?" for _ in test_ids)
+        clauses.append(f"test_id IN ({placeholders})")
+        params.extend(test_ids)
+    if families:
+        placeholders = ",".join("?" for _ in families)
+        clauses.append(f"test_family IN ({placeholders})")
+        params.extend(families)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT id FROM auth_session_candidates{where} ORDER BY created_at ASC, test_id ASC"
+    try:
+        rows = db.query_all(db_path, sql, tuple(params))
+    except Exception:
+        return []
+    return [str(r["id"]) for r in rows if r.get("id")]
+
+
+def _lifecycle_scope_filters(
+    endpoint_id: Optional[str],
+    test_ids: Optional[list[str]],
+    families: Optional[list[str]],
+) -> tuple[Optional[str], list[str], list[str]]:
+    ep = (endpoint_id or "").strip() or None
+    tids = _clean_ids(test_ids)
+    fams = _clean_ids(families)
+    _validate_families(fams)
+    return ep, tids, fams
+
+
+def _append_lifecycle_filters(
+    args: list[str],
+    *,
+    endpoint_id: Optional[str],
+    test_ids: list[str],
+    families: list[str],
+) -> None:
+    if endpoint_id:
+        args += ["--endpoint", endpoint_id]
+    for tid in test_ids:
+        args += ["--test-id", tid]
+    for fam in families:
+        args += ["--family", fam]
+
+
+def _approve_args(project_id: str, body: AuthSessionApproveBody) -> list[str]:
+    endpoint_id, test_ids, families = _lifecycle_scope_filters(
+        body.endpoint_id, body.test_ids, body.families
+    )
+    binding_id = (body.binding_id or "").strip() or None
+    explicit_ids = _clean_ids(body.candidate_ids)
+    bulk = body.all_pending or body.retry_failed
+
+    if not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "approve requires candidate_ids and/or all_pending / retry_failed",
+        )
+
+    args = ["attack", "auth-session", "approve"]
+
+    if binding_id and bulk:
+        # K19: expand full set; never pass --binding to approve CLI
+        statuses: list[str] = []
+        if body.all_pending:
+            statuses.append("pending")
+        if body.retry_failed:
+            statuses.append("failed")
+        expanded = _expand_candidate_ids(
+            _db_path(project_id),
+            statuses=statuses,
+            binding_id=binding_id,
+            endpoint_id=endpoint_id,
+            test_ids=test_ids or None,
+            families=families or None,
+        )
+        if not expanded:
+            raise HTTPException(
+                400,
+                "no matching candidates to approve under binding scope",
+            )
+        args.extend(expanded)
+        return args
+
+    if binding_id and explicit_ids and not bulk:
+        # Operator multi-select under binding filter — only those IDs
+        args.extend(explicit_ids)
+        return args
+
+    if binding_id and not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "binding_id without bulk flags requires candidate_ids",
+        )
+
+    # CLI-native bulk (no binding) or positional IDs
+    if explicit_ids:
+        args.extend(explicit_ids)
+    if body.all_pending:
+        args.append("--all-pending")
+    if body.retry_failed:
+        args.append("--retry-failed")
+    _append_lifecycle_filters(
+        args, endpoint_id=endpoint_id, test_ids=test_ids, families=families
+    )
+    return args
+
+
+def _reject_args(project_id: str, body: AuthSessionRejectBody) -> list[str]:
+    endpoint_id, test_ids, families = _lifecycle_scope_filters(
+        body.endpoint_id, body.test_ids, body.families
+    )
+    binding_id = (body.binding_id or "").strip() or None
+    explicit_ids = _clean_ids(body.candidate_ids)
+    bulk = body.all_pending
+
+    if not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "reject requires candidate_ids and/or all_pending",
+        )
+
+    args = ["attack", "auth-session", "reject"]
+
+    if binding_id and bulk:
+        expanded = _expand_candidate_ids(
+            _db_path(project_id),
+            statuses=["pending"],
+            binding_id=binding_id,
+            endpoint_id=endpoint_id,
+            test_ids=test_ids or None,
+            families=families or None,
+        )
+        if not expanded:
+            raise HTTPException(
+                400,
+                "no matching pending candidates to reject under binding scope",
+            )
+        args.extend(expanded)
+        if body.reason and body.reason.strip():
+            args += ["--reason", body.reason.strip()]
+        return args
+
+    if binding_id and explicit_ids and not bulk:
+        args.extend(explicit_ids)
+        if body.reason and body.reason.strip():
+            args += ["--reason", body.reason.strip()]
+        return args
+
+    if binding_id and not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "binding_id without all_pending requires candidate_ids",
+        )
+
+    if explicit_ids:
+        args.extend(explicit_ids)
+    if body.all_pending:
+        args.append("--all-pending")
+    if body.reason and body.reason.strip():
+        args += ["--reason", body.reason.strip()]
+    _append_lifecycle_filters(
+        args, endpoint_id=endpoint_id, test_ids=test_ids, families=families
+    )
+    return args
+
+
+def _unapprove_args(project_id: str, body: AuthSessionUnapproveBody) -> list[str]:
+    endpoint_id, test_ids, families = _lifecycle_scope_filters(
+        body.endpoint_id, body.test_ids, body.families
+    )
+    binding_id = (body.binding_id or "").strip() or None
+    explicit_ids = _clean_ids(body.candidate_ids)
+    bulk = body.all_approved
+
+    if not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "unapprove requires candidate_ids and/or all_approved",
+        )
+
+    args = ["attack", "auth-session", "unapprove"]
+
+    if binding_id and bulk:
+        expanded = _expand_candidate_ids(
+            _db_path(project_id),
+            statuses=["approved"],
+            binding_id=binding_id,
+            endpoint_id=endpoint_id,
+            test_ids=test_ids or None,
+            families=families or None,
+        )
+        if not expanded:
+            raise HTTPException(
+                400,
+                "no matching approved candidates to unapprove under binding scope",
+            )
+        args.extend(expanded)
+        return args
+
+    if binding_id and explicit_ids and not bulk:
+        args.extend(explicit_ids)
+        return args
+
+    if binding_id and not bulk and not explicit_ids:
+        raise HTTPException(
+            400,
+            "binding_id without all_approved requires candidate_ids",
+        )
+
+    if explicit_ids:
+        args.extend(explicit_ids)
+    if body.all_approved:
+        args.append("--all-approved")
+    _append_lifecycle_filters(
+        args, endpoint_id=endpoint_id, test_ids=test_ids, families=families
+    )
+    return args
+
+
+@router.post("/auth-session/approve")
+def auth_session_approve(project_id: str, body: AuthSessionApproveBody):
+    args = _approve_args(project_id, body)
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+@router.post("/auth-session/reject")
+def auth_session_reject(project_id: str, body: AuthSessionRejectBody):
+    args = _reject_args(project_id, body)
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+@router.post("/auth-session/unapprove")
+def auth_session_unapprove(project_id: str, body: AuthSessionUnapproveBody):
+    args = _unapprove_args(project_id, body)
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Phase 4: run + results                                               #
+# ------------------------------------------------------------------ #
+
+
+class AuthSessionRunBody(BaseModel):
+    candidate_ids: Optional[list[str]] = None
+    endpoint_id: Optional[str] = None
+    test_ids: Optional[list[str]] = None
+    families: Optional[list[str]] = None
+    binding_id: Optional[str] = None
+    right_now: bool = False
+
+
+def _count_approved_matching(
+    db_path: Path,
+    *,
+    candidate_ids: Optional[list[str]] = None,
+    endpoint_id: Optional[str] = None,
+    test_ids: Optional[list[str]] = None,
+    families: Optional[list[str]] = None,
+    binding_id: Optional[str] = None,
+) -> int:
+    clauses = ["status = 'approved'"]
+    params: list[Any] = []
+    ids = _clean_ids(candidate_ids)
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        clauses.append(f"id IN ({placeholders})")
+        params.extend(ids)
+    if endpoint_id:
+        clauses.append("endpoint_id = ?")
+        params.append(endpoint_id.strip())
+    if binding_id:
+        clauses.append("binding_id = ?")
+        params.append(binding_id.strip())
+    if test_ids:
+        tids = _clean_ids(test_ids)
+        if tids:
+            placeholders = ",".join("?" for _ in tids)
+            clauses.append(f"test_id IN ({placeholders})")
+            params.extend(tids)
+    if families:
+        fams = _clean_ids(families)
+        if fams:
+            placeholders = ",".join("?" for _ in fams)
+            clauses.append(f"test_family IN ({placeholders})")
+            params.extend(fams)
+    where = " WHERE " + " AND ".join(clauses)
+    try:
+        row = db.query_one(
+            db_path,
+            f"SELECT COUNT(*) AS n FROM auth_session_candidates{where}",
+            tuple(params),
+        )
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _run_args(body: AuthSessionRunBody) -> list[str]:
+    endpoint_id, test_ids, families = _lifecycle_scope_filters(
+        body.endpoint_id, body.test_ids, body.families
+    )
+    args = ["attack", "auth-session", "run"]
+    for cid in _clean_ids(body.candidate_ids):
+        args += ["--candidate", cid]
+    if endpoint_id:
+        args += ["--endpoint", endpoint_id]
+    for tid in test_ids:
+        args += ["--test-id", tid]
+    for fam in families:
+        args += ["--family", fam]
+    binding = (body.binding_id or "").strip() or None
+    if binding:
+        args += ["--binding", binding]
+    if body.right_now:
+        args.append("--right-now")
+    return args
+
+
+def _right_now_timeout(estimate: int) -> int:
+    """K11: max(CLI_TIMEOUT, min(600, 30 * E))."""
+    base = int(config.CLI_TIMEOUT)
+    return max(base, min(600, 30 * max(estimate, 1)))
+
+
+@router.get("/auth-session/run-estimate")
+def auth_session_run_estimate(
+    project_id: str,
+    endpoint_id: Optional[str] = None,
+    binding_id: Optional[str] = None,
+    test_id: Optional[list[str]] = Query(default=None),
+    family: Optional[list[str]] = Query(default=None),
+    candidate: Optional[list[str]] = Query(default=None),
+):
+    """Count approved candidates matching run filters (K10)."""
+    db_path = _db_path(project_id)
+    test_ids = _parse_csv_or_list(test_id)
+    families = _parse_csv_or_list(family)
+    _validate_families(families)
+    candidate_ids = _parse_csv_or_list(candidate)
+    n = _count_approved_matching(
+        db_path,
+        candidate_ids=candidate_ids or None,
+        endpoint_id=(endpoint_id or "").strip() or None,
+        test_ids=test_ids or None,
+        families=families or None,
+        binding_id=(binding_id or "").strip() or None,
+    )
+    return {
+        "approved_matching": n,
+        "filters": {
+            "endpoint_id": endpoint_id,
+            "binding_id": binding_id,
+            "test_ids": test_ids or None,
+            "families": families or None,
+            "candidate_ids": candidate_ids or None,
+        },
+    }
+
+
+@router.post("/auth-session/run")
+def auth_session_run(project_id: str, body: AuthSessionRunBody):
+    """
+    Enqueue or right-now run approved candidates.
+
+    right_now contract (K11):
+      E == 0 → 400
+      E > 20  → 400 (use enqueue)
+      1..20   → elevated timeout
+    """
+    db_path = _db_path(project_id)
+    endpoint_id, test_ids, families = _lifecycle_scope_filters(
+        body.endpoint_id, body.test_ids, body.families
+    )
+    binding_id = (body.binding_id or "").strip() or None
+    candidate_ids = _clean_ids(body.candidate_ids)
+
+    estimate = _count_approved_matching(
+        db_path,
+        candidate_ids=candidate_ids or None,
+        endpoint_id=endpoint_id,
+        test_ids=test_ids or None,
+        families=families or None,
+        binding_id=binding_id,
+    )
+
+    args = _run_args(body)
+
+    if body.right_now:
+        if estimate == 0:
+            raise HTTPException(
+                400,
+                "no approved candidates in scope for --right-now",
+            )
+        if estimate > 20:
+            raise HTTPException(
+                400,
+                f"right-now refused: {estimate} approved candidates in scope "
+                f"(limit 20). Enqueue without right_now for large batches.",
+            )
+        timeout = _right_now_timeout(estimate)
+        results = cli.run_scoped(project_id, args, timeout=timeout)
+        return {
+            "steps": [r.to_dict() for r in results],
+            "estimate": estimate,
+            "timeout_seconds": timeout,
+            "right_now": True,
+        }
+
+    results = cli.run_scoped(project_id, args)
+    return {
+        "steps": [r.to_dict() for r in results],
+        "estimate": estimate,
+        "right_now": False,
+    }
+
+
+@router.get("/auth-session/results")
+def auth_session_results(
+    project_id: str,
+    verdict: Optional[str] = None,
+    endpoint_id: Optional[str] = None,
+    binding_id: Optional[str] = None,
+    candidate_id: Optional[str] = None,
+    test_id: Optional[list[str]] = Query(default=None),
+    family: Optional[list[str]] = Query(default=None),
+    limit: int = 200,
+):
+    """List auth_session_results with flow join. No offset (K21 parity)."""
+    db_path = _db_path(project_id)
+    limit = min(max(int(limit or 200), 1), 1000)
+    test_ids = _parse_csv_or_list(test_id)
+    families = _parse_csv_or_list(family)
+    _validate_families(families)
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if verdict:
+        clauses.append("r.verdict = ?")
+        params.append(verdict.strip())
+    if endpoint_id:
+        clauses.append("r.endpoint_id = ?")
+        params.append(endpoint_id.strip())
+    if binding_id:
+        clauses.append("r.binding_id = ?")
+        params.append(binding_id.strip())
+    if candidate_id:
+        clauses.append("r.candidate_id = ?")
+        params.append(candidate_id.strip())
+    if test_ids:
+        placeholders = ",".join("?" for _ in test_ids)
+        clauses.append(f"r.test_id IN ({placeholders})")
+        params.extend(test_ids)
+    if families:
+        placeholders = ",".join("?" for _ in families)
+        clauses.append(f"r.test_family IN ({placeholders})")
+        params.extend(families)
+
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"""
+        SELECT r.replay_flow_id, r.original_flow_id, r.candidate_id,
+               r.binding_id, r.auth_type, r.test_id, r.verdict,
+               r.endpoint_id, r.test_family, r.mutation_summary,
+               r.original_status, r.replay_status, r.diff_verdict,
+               r.matched_section, r.matched_group, r.matched_rules,
+               r.failure_reason, r.created_at,
+               f.method, f.path, f.host, f.status_code, f.captured_at
+        FROM auth_session_results r
+        LEFT JOIN flows f ON f.id = r.replay_flow_id
+        {where}
+        ORDER BY r.created_at DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    try:
+        items = db.query_all(db_path, sql, tuple(params))
+    except Exception:
+        items = []
+
+    return {
+        "items": items,
+        "count": len(items),
+        "filters_applied": {
+            "verdict": verdict,
+            "endpoint_id": endpoint_id,
+            "binding_id": binding_id,
+            "candidate_id": candidate_id,
+            "test_ids": test_ids or None,
+            "families": families or None,
+            "limit": limit,
+        },
+    }
+
+
+def _finding_for_replay(db_path: Path, replay_flow_id: str) -> Optional[dict]:
+    try:
+        row = db.query_one(
+            db_path,
+            """
+            SELECT f.id AS finding_id, f.title, f.status, f.verdict
+            FROM finding_evidence fe
+            JOIN findings f ON f.id = fe.finding_id
+            WHERE fe.evidence_type = 'auth_session_result'
+              AND fe.reference_id = ?
+            LIMIT 1
+            """,
+            (replay_flow_id,),
+        )
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+@router.get("/auth-session/results/{replay_flow_id}")
+def auth_session_result_detail(project_id: str, replay_flow_id: str):
+    """Single result for drawer + optional finding link."""
+    db_path = _db_path(project_id)
+    try:
+        row = db.query_one(
+            db_path,
+            """
+            SELECT r.*, f.method, f.path, f.host, f.status_code, f.captured_at
+            FROM auth_session_results r
+            LEFT JOIN flows f ON f.id = r.replay_flow_id
+            WHERE r.replay_flow_id = ?
+            """,
+            (replay_flow_id,),
+        )
+    except Exception:
+        row = None
+    if not row:
+        raise HTTPException(404, f"result not found: {replay_flow_id}")
+    item = dict(row)
+    finding = _finding_for_replay(db_path, replay_flow_id)
+    return {
+        "item": item,
+        "finding": finding,
+    }
+
+
+# ------------------------------------------------------------------ #
+# Phase 5: filter + suite catalog                                      #
+# ------------------------------------------------------------------ #
+
+
+@router.post("/auth-session/filter/init")
+def auth_session_filter_init(project_id: str):
+    results = cli.run_scoped(
+        project_id, ["attack", "auth-session", "filter", "init"]
+    )
+    fmeta = _filter_meta(project_id)
+    return {
+        "steps": [r.to_dict() for r in results],
+        **fmeta,
+    }
+
+
+@router.post("/auth-session/filter/show")
+def auth_session_filter_show(project_id: str):
+    results = cli.run_scoped(
+        project_id, ["attack", "auth-session", "filter", "show"]
+    )
+    fmeta = _filter_meta(project_id)
+    stdout = ""
+    if results:
+        last = results[-1]
+        stdout = getattr(last, "stdout", "") or ""
+        if not stdout and hasattr(last, "to_dict"):
+            stdout = (last.to_dict().get("stdout") or "")
+    return {
+        "steps": [r.to_dict() for r in results],
+        "stdout": stdout,
+        "filter_filename": fmeta["filter_filename"],
+        "filter_path": fmeta["filter_path"],
+        "exists": fmeta["filter_exists"],
+        "filter_exists": fmeta["filter_exists"],
+    }
+
+
+@router.post("/auth-session/filter/validate")
+def auth_session_filter_validate(project_id: str):
+    results = cli.run_scoped(
+        project_id, ["attack", "auth-session", "filter", "validate"]
+    )
+    fmeta = _filter_meta(project_id)
+    return {
+        "steps": [r.to_dict() for r in results],
+        **fmeta,
+    }
+
+
+def _import_suite_jwt():
+    """
+    Import suite_jwt from core package.
+
+    CP backend may run from its own venv without ``talos`` installed; ensure
+    monorepo ``TALOS_ROOT`` is on ``sys.path`` (same layout as attack.py unauth
+    imports), then fall back to CLI JSON if import still fails.
+    """
+    import sys
+
+    root = str(config.TALOS_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from talos.auth_session.suite_jwt import (  # type: ignore
+        CORE_JWT_TEST_CASES,
+        alg_degradation_tests,
+    )
+    return CORE_JWT_TEST_CASES, alg_degradation_tests
+
+
+@router.get("/auth-session/suite")
+def auth_session_suite(
+    auth_type: str = "jwt",
+    alg: Optional[str] = None,
+    family: Optional[list[str]] = Query(default=None),
+    project_id: Optional[str] = None,
+):
+    """
+    Read-only JWT suite catalog (in-process; pure catalog).
+
+    Mirrors CLI ``suite list --type jwt [--alg …] [--family …]``.
+    """
+    at = (auth_type or "jwt").strip().lower() or "jwt"
+    if at != "jwt":
+        raise HTTPException(400, f"unsupported auth_type {at!r}; v1 supports jwt only")
+
+    families = _parse_csv_or_list(family)
+    _validate_families(families)
+    family_set = set(families) if families else None
+    observed = (alg or "").strip() or None
+
+    items: list[dict[str, Any]] = []
+    try:
+        CORE_JWT_TEST_CASES, alg_degradation_tests = _import_suite_jwt()
+    except Exception:
+        # Fallback: CLI suite list --format json (design K)
+        args = ["attack", "auth-session", "suite", "list", "--type", "jwt", "--format", "json"]
+        if observed:
+            args += ["--alg", observed]
+        for fam in families:
+            args += ["--family", fam]
+        if project_id:
+            results = cli.run_scoped(project_id, args)
+        else:
+            results = cli.run(args)
+        stdout = ""
+        if results:
+            last = results[-1]
+            stdout = getattr(last, "stdout", "") or ""
+            if not stdout and hasattr(last, "to_dict"):
+                stdout = last.to_dict().get("stdout") or ""
+        import json as _json
+
+        try:
+            payload = _json.loads(stdout) if stdout.strip() else []
+        except Exception as exc:
+            raise HTTPException(
+                500,
+                f"suite catalog unavailable (import and CLI parse failed): {exc}",
+            ) from exc
+        if isinstance(payload, dict):
+            payload = payload.get("items") or payload.get("cases") or []
+        for row in payload or []:
+            if not isinstance(row, dict):
+                continue
+            items.append(
+                {
+                    "test_id": row.get("test_id") or row.get("id"),
+                    "title": row.get("title") or "",
+                    "family": row.get("family") or row.get("test_family") or "",
+                    "description": row.get("description") or "",
+                    "risk_hint": row.get("risk_hint") or row.get("risk") or "",
+                    "source": row.get("source") or "core",
+                    "requires_claims": row.get("requires_claims") or [],
+                }
+            )
+        return {
+            "auth_type": at,
+            "alg": observed,
+            "items": items,
+            "count": len(items),
+            "families_filter": families or None,
+            "source": "cli",
+        }
+
+    for case in CORE_JWT_TEST_CASES:
+        if family_set and case.family not in family_set:
+            continue
+        items.append(
+            {
+                "test_id": case.test_id,
+                "title": case.title,
+                "family": case.family,
+                "description": case.description,
+                "risk_hint": case.risk_hint,
+                "source": "core",
+                "requires_claims": list(case.requires_claims or ()),
+            }
+        )
+
+    if observed:
+        try:
+            for case in alg_degradation_tests(observed):
+                if family_set and case.family not in family_set:
+                    continue
+                items.append(
+                    {
+                        "test_id": case.test_id,
+                        "title": case.title,
+                        "family": case.family,
+                        "description": case.description,
+                        "risk_hint": case.risk_hint,
+                        "source": "algorithm_degrade",
+                        "requires_claims": list(case.requires_claims or ()),
+                        "observed_alg": observed,
+                    }
+                )
+        except Exception:
+            pass
+
+    return {
+        "auth_type": at,
+        "alg": observed,
+        "items": items,
+        "count": len(items),
+        "families_filter": families or None,
+        "source": "in-process",
+    }

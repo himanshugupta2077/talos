@@ -1553,9 +1553,9 @@ talos attack unauth config --auto-run off
 (scheduler or `--right-now`) → **results** + **findings** on `WEAK_VALIDATION`.
 Optional decision filter (`auth-session-decision-filter.yaml`) scores before
 heuristic fallback. Full JWT algorithm-degradation matrix (same-family
-downgrades + cross-family HS/RS/ES/PS edges). Control Panel: Phase 1–2 at
-`/testing/auth-session` (inventory + bind/generate; approve/run UI later —
-see `docs/Auth-Session-Testing-Control-Panel-Design.md`).
+downgrades + cross-family HS/RS/ES/PS edges). Control Panel: **full CLI parity**
+at `/testing/auth-session` (six tabs: Overview / Bindings / Candidates / Run /
+Results / Filter & Suite — see `docs/Auth-Session-Testing-Control-Panel-Design.md`).
 
 Probes whether a *presented* credential is validated (signature, algorithm,
 claims, structure). Distinct from Unauth (auth removed/garbled) and BAC

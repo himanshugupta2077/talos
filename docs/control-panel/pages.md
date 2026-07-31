@@ -469,7 +469,7 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | `/testing` | Hub — Passive \| Active columns, class filter, search, compact KPI cards |
 | `/testing/unauth` | Unauthenticated Execution (Active) — full unauth workspace |
 | `/testing/bac` | BAC (Active) — Overview / Run / Results / Filter workspace |
-| `/testing/auth-session` | Auth-Session Testing (Active) — JWT mutation inventory (progressive phases) |
+| `/testing/auth-session` | Auth-Session Testing (Active) — full JWT mutation lifecycle (CLI parity) |
 | `/testing/input-validation` | Input Validation (Active) — characterization workspace |
 | `/testing/input-validation/params/:id` | Parameter dossier |
 | `/testing/input-validation/endpoints/:id` | Endpoint intelligence dossier |
@@ -487,7 +487,7 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Discover and launch security tests; module-specific run + results |
-| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, bind/unbind/generate — progressive); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
+| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
 | **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `talos input-validation …`; `talos passive …` for secrets |
 | **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
 | **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
@@ -532,19 +532,20 @@ Pipeline: access-matrix candidates → auth prereqs per attacker role → jobs p
 **Design:** `docs/Auth-Session-Testing-Control-Panel-Design.md`  
 **Backend:** `talos_ui/routers/attack_auth_session.py` (included under `/api/attack`)
 
-JWT mutation testing workspace (active, medium risk). **Distinct from** Unauth (strip), BAC (role swap), Auth page (auth_config / role sessions), and classic `auth test` / BYPASS.
-
-**Phase 2 progressive tabs** (only interactive tabs registered):
+JWT mutation testing workspace (active, medium risk) with **full CLI parity**. **Distinct from** Unauth (strip), BAC (role swap), Auth page (auth_config / role sessions), and classic `auth test` / BYPASS.
 
 | Tab | Role |
 |-----|------|
-| **Overview** | Readiness, candidate/verdict KPIs, job pressure, recent WEAK_VALIDATION, CTAs; partial-lifecycle banner until Run lands |
+| **Overview** | Readiness, candidate/verdict KPIs, job pressure, recent WEAK_VALIDATION, deep-links to Findings/Run/Candidates |
 | **Bindings** | List + bind JWT field from auth_config picker; unbind / unbind `--force` (ConfirmButton) |
-| **Candidates** | Generate (project / endpoint / module / flow scope) + filterable inventory + detail drawer; bulk approve **not** in UI yet (Phase 3) |
+| **Candidates** | Generate (project / endpoint / module / flow) + inventory + multi-select bulk approve/reject/unapprove (K19 binding expand) + detail drawer |
+| **Run** | Scope filters, approved estimate, enqueue or right-now (K11: refuse E>20; elevated timeout ≤20) |
+| **Results** | Filterable WEAK_VALIDATION / SECURE / UNKNOWN table; drawer with flow + finding links; poll while jobs in flight |
+| **Filter & Suite** | Decision filter init/show/validate + open data dir (no apply in v1); JWT suite catalog (+ alg degrade expansion) |
 
-Later phases add approve lifecycle (3), Run + Results (4), Filter & Suite (5). Hub card chips: weak / pending / approved; statusLine **“Inventory — generate OK; approve next”** until Phase 3.
+Hub card chips: weak / pending / approved (no inventory statusLine). Findings list maps `auth_session` → “Authentication & Session Testing” and hydrates `?attack_type=` / `?verdict=`.
 
-Pipeline: auth_config → bind → generate (pending, no HTTP) → approve → run (`auth_session_attack`, one job per approved test_id) → WEAK_VALIDATION \| SECURE \| UNKNOWN. Mutations via `cli.run_scoped`; inventory via read-only SQLite.
+Pipeline: auth_config → bind → generate (pending, no HTTP) → **approve** → run (`auth_session_attack`, one job per approved test_id) → WEAK_VALIDATION \| SECURE \| UNKNOWN. Mutations via `cli.run_scoped`; inventory via read-only SQLite.
 
 **Adding a module:** append to `ATTACK_MODULES` in `registry.ts`, add route + panel under `pages/attack/modules/`, optionally wire hub KPIs.
 

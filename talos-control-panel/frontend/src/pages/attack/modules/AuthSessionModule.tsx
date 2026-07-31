@@ -1,8 +1,7 @@
 /**
- * Auth-Session Testing workspace — progressive tabs (Phase 2):
- * Overview | Bindings | Candidates
+ * Auth-Session Testing workspace — full CLI parity (Phases 1–5):
+ * Overview | Bindings | Candidates | Run | Results | Filter & Suite
  *
- * Full CLI parity for `talos attack auth-session …` grows across phases.
  * Mutations go through CP API → CLI; inventory is read-only SQL.
  */
 
@@ -16,6 +15,9 @@ import { getAttackModule } from "../registry";
 import OverviewTab from "../auth-session/OverviewTab";
 import BindingsTab from "../auth-session/BindingsTab";
 import CandidatesTab from "../auth-session/CandidatesTab";
+import RunTab from "../auth-session/RunTab";
+import ResultsTab from "../auth-session/ResultsTab";
+import ConfigTab from "../auth-session/ConfigTab";
 import {
   AUTH_SESSION_TABS,
   isAuthSessionTab,
@@ -67,6 +69,9 @@ export default function AuthSessionModule() {
 
   if (!selected) return <NoProjectNotice />;
 
+  const jobsInFlight =
+    (overview?.jobs_pending ?? 0) + (overview?.jobs_running ?? 0) > 0;
+
   return (
     <ModuleShell
       module={module}
@@ -81,8 +86,9 @@ export default function AuthSessionModule() {
           </p>
           <p>
             <strong>Workflow:</strong> Auth page (header/cookie names) → Bind →
-            Generate candidates → Approve (CLI until Phase 3) → Run (Phase 4) →
-            triage WEAK_VALIDATION.
+            Generate candidates → <strong>Approve</strong> → Run → triage{" "}
+            <span className="mono">WEAK_VALIDATION</span> → tune decision filter
+            / suite and re-run.
           </p>
           <p>
             <strong>Overview</strong> — readiness KPIs and recent weak results.
@@ -91,8 +97,18 @@ export default function AuthSessionModule() {
             <strong>Bindings</strong> — map auth_config fields to jwt mutator.
           </p>
           <p>
-            <strong>Candidates</strong> — generate pending tests and browse
-            inventory (approve UI Phase 3).
+            <strong>Candidates</strong> — generate pending tests; approve /
+            reject / unapprove (operator gate before HTTP).
+          </p>
+          <p>
+            <strong>Run</strong> — enqueue approved tests (or right-now for ≤20).
+          </p>
+          <p>
+            <strong>Results</strong> — WEAK_VALIDATION / SECURE / UNKNOWN triage.
+          </p>
+          <p>
+            <strong>Filter & Suite</strong> — decision filter init/show/validate
+            and JWT suite catalog (no apply in v1).
           </p>
           <p>
             Example: bind <span className="mono">Authorization</span>, generate
@@ -102,7 +118,7 @@ export default function AuthSessionModule() {
           <p>
             CLI:{" "}
             <span className="mono">
-              talos attack auth-session bind|generate|approve|run …
+              talos attack auth-session bind|generate|approve|run|results|filter|suite …
             </span>
           </p>
         </>
@@ -135,6 +151,23 @@ export default function AuthSessionModule() {
       )}
       {tab === "candidates" && (
         <CandidatesTab projectId={selected.id} onChanged={load} />
+      )}
+      {tab === "run" && (
+        <RunTab
+          projectId={selected.id}
+          overview={overview}
+          onRefresh={load}
+        />
+      )}
+      {tab === "results" && (
+        <ResultsTab projectId={selected.id} jobsInFlight={jobsInFlight} />
+      )}
+      {tab === "config" && (
+        <ConfigTab
+          projectId={selected.id}
+          overview={overview}
+          onRefresh={load}
+        />
       )}
     </ModuleShell>
   );

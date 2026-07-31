@@ -5,7 +5,7 @@
 | **Document** | Design: Authentication & Session Testing Engine |
 | **Author** | Talos Engineering |
 | **Date** | 2026-07-31 |
-| **Status** | Phases 1–5 complete (v1 CLI + full JWT suite). Control Panel: Phases 1–2 shipped (`docs/Auth-Session-Testing-Control-Panel-Design.md`) |
+| **Status** | Phases 1–5 complete (v1 CLI + full JWT suite). Control Panel: Phases 1–5 full CLI parity shipped (`docs/Auth-Session-Testing-Control-Panel-Design.md`) |
 | **Audience** | Senior engineers familiar with Talos attack modules |
 | **Related** | `docs/architecture.md`, `docs/cli-cheat-sheet.md`, `docs/Auth-Session-Testing-Control-Panel-Design.md`, `AGENTS.md` |
 

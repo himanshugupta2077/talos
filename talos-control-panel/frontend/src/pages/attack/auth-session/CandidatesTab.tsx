@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAction } from "../../../hooks/useAction";
 import { api } from "../../../api/client";
-import { Section } from "../../../components/Common";
+import { ConfirmButton, Section } from "../../../components/Common";
 import DataTable, { Column } from "../../../components/DataTable";
 import StatusBadge from "../../../components/StatusBadge";
 import { formatIST } from "../../../lib/time";
@@ -38,6 +39,8 @@ export default function CandidatesTab({
   const [testId, setTestId] = useState("");
   const [limit, setLimit] = useState(200);
   const [selected, setSelected] = useState<AuthSessionCandidate | null>(null);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [rejectReason, setRejectReason] = useState("");
 
   const loadBindings = useCallback(() => {
     api
@@ -75,13 +78,118 @@ export default function CandidatesTab({
     load();
   }, [load]);
 
+  // Clear selection when filters change
+  useEffect(() => {
+    setChecked(new Set());
+  }, [status, bindingId, endpointId, family, testId, limit]);
+
   const onGenerated = () => {
     load();
     loadBindings();
     onChanged?.();
   };
 
+  const afterLifecycle = () => {
+    setChecked(new Set());
+    setSelected(null);
+    load();
+    onChanged?.();
+  };
+
+  const scopeBody = useMemo(
+    () => ({
+      endpoint_id: endpointId.trim() || undefined,
+      test_ids: testId.trim() ? [testId.trim()] : undefined,
+      families: family ? [family] : undefined,
+      binding_id: bindingId || undefined,
+    }),
+    [endpointId, testId, family, bindingId]
+  );
+
+  const approve = useAction(
+    "Approve auth-session candidates",
+    (body: Record<string, unknown>) =>
+      api.post("/api/attack/auth-session/approve", body, {
+        project_id: projectId,
+      })
+  );
+  const reject = useAction(
+    "Reject auth-session candidates",
+    (body: Record<string, unknown>) =>
+      api.post("/api/attack/auth-session/reject", body, {
+        project_id: projectId,
+      })
+  );
+  const unapprove = useAction(
+    "Unapprove auth-session candidates",
+    (body: Record<string, unknown>) =>
+      api.post("/api/attack/auth-session/unapprove", body, {
+        project_id: projectId,
+      })
+  );
+
+  const busy = approve.running || reject.running || unapprove.running;
+
+  const runLifecycle = async (
+    action: typeof approve,
+    body: Record<string, unknown>
+  ) => {
+    try {
+      await action.run(body);
+      afterLifecycle();
+    } catch {
+      /* logged by useAction */
+    }
+  };
+
+  const selectedIds = useMemo(() => Array.from(checked), [checked]);
+  const allVisibleChecked =
+    items.length > 0 && items.every((r) => checked.has(r.id));
+
+  const toggleAll = () => {
+    if (allVisibleChecked) {
+      setChecked(new Set());
+    } else {
+      setChecked(new Set(items.map((r) => r.id)));
+    }
+  };
+
+  const toggleOne = (id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const columns: Column<AuthSessionCandidate>[] = [
+    {
+      key: "_sel",
+      header: (
+        <input
+          type="checkbox"
+          className="checkbox checkbox-xs"
+          checked={allVisibleChecked}
+          onChange={toggleAll}
+          aria-label="Select all visible"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+      sortable: false,
+      alwaysVisible: true,
+      defaultWidth: 36,
+      render: (r) => (
+        <input
+          type="checkbox"
+          className="checkbox checkbox-xs"
+          checked={checked.has(r.id)}
+          onChange={() => toggleOne(r.id)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Select ${r.test_id}`}
+        />
+      ),
+    },
     {
       key: "status",
       header: "Status",
@@ -166,12 +274,11 @@ export default function CandidatesTab({
       >
         <div className="alert text-xs py-2 mb-3 bg-base-200 border border-base-300">
           <span>
-            <strong>Approve lifecycle (Phase 3).</strong> Bulk approve / reject /
-            unapprove is not enabled in the UI yet. Use CLI:{" "}
-            <span className="mono">
-              talos attack auth-session approve --all-pending
-            </span>
-            . Selecting rows here is for review only.
+            <strong>Approve-first gate.</strong> Only{" "}
+            <span className="mono">approved</span> candidates enqueue on Run.
+            Pending never auto-fires. Select rows for subset actions, or use bulk
+            scope (respects table filters). Binding-scoped bulk expands fully on
+            the server (not just the visible page).
           </span>
         </div>
 
@@ -271,9 +378,145 @@ export default function CandidatesTab({
         </p>
       </Section>
 
+      {/* Sticky bulk bar */}
+      <div className="sticky bottom-3 z-20 mt-4">
+        <div className="panel border border-primary/30 shadow-lg px-3 py-2 flex flex-wrap items-center gap-2 bg-base-100">
+          <span className="text-xs font-medium shrink-0">
+            {selectedIds.length > 0
+              ? `${selectedIds.length} selected`
+              : "Bulk lifecycle"}
+          </span>
+
+          <div className="flex flex-wrap items-center gap-1 border-l border-base-300 pl-2">
+            <button
+              type="button"
+              className="btn btn-xs btn-primary"
+              disabled={busy || selectedIds.length === 0}
+              onClick={() =>
+                runLifecycle(approve, { candidate_ids: selectedIds })
+              }
+            >
+              Approve selected
+            </button>
+            {!busy && (
+              <ConfirmButton
+                className="btn btn-xs btn-outline"
+                confirmText="Approve all pending in current filter scope?"
+                onConfirm={() =>
+                  runLifecycle(approve, {
+                    all_pending: true,
+                    ...scopeBody,
+                  })
+                }
+              >
+                Approve all pending
+              </ConfirmButton>
+            )}
+            <button
+              type="button"
+              className="btn btn-xs"
+              disabled={busy}
+              onClick={() =>
+                runLifecycle(approve, {
+                  retry_failed: true,
+                  ...scopeBody,
+                })
+              }
+            >
+              Retry failed
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 border-l border-base-300 pl-2">
+            <input
+              className={`${inputClass} w-36`}
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="reject reason"
+              title="Optional --reason for reject"
+            />
+            <button
+              type="button"
+              className="btn btn-xs btn-outline"
+              disabled={busy || selectedIds.length === 0}
+              onClick={() =>
+                runLifecycle(reject, {
+                  candidate_ids: selectedIds,
+                  reason: rejectReason.trim() || undefined,
+                })
+              }
+            >
+              Reject selected
+            </button>
+            {!busy && (
+              <ConfirmButton
+                className="btn btn-xs btn-ghost"
+                confirmText="Reject all pending in current filter scope?"
+                onConfirm={() =>
+                  runLifecycle(reject, {
+                    all_pending: true,
+                    reason: rejectReason.trim() || undefined,
+                    ...scopeBody,
+                  })
+                }
+              >
+                Reject all pending
+              </ConfirmButton>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 border-l border-base-300 pl-2">
+            <button
+              type="button"
+              className="btn btn-xs"
+              disabled={busy || selectedIds.length === 0}
+              onClick={() =>
+                runLifecycle(unapprove, { candidate_ids: selectedIds })
+              }
+            >
+              Unapprove selected
+            </button>
+            {!busy && (
+              <ConfirmButton
+                className="btn btn-xs btn-ghost"
+                confirmText="Unapprove all approved in current filter scope?"
+                onConfirm={() =>
+                  runLifecycle(unapprove, {
+                    all_approved: true,
+                    ...scopeBody,
+                  })
+                }
+              >
+                Unapprove all approved
+              </ConfirmButton>
+            )}
+          </div>
+
+          {selectedIds.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost ml-auto"
+              onClick={() => setChecked(new Set())}
+            >
+              Clear selection
+            </button>
+          )}
+        </div>
+      </div>
+
       <CandidateDetailDrawer
         candidate={selected}
         onClose={() => setSelected(null)}
+        busy={busy}
+        onApprove={(id) =>
+          runLifecycle(approve, { candidate_ids: [id] }) as unknown as void
+        }
+        onReject={(id) =>
+          runLifecycle(reject, {
+            candidate_ids: [id],
+            reason: rejectReason.trim() || undefined,
+          }) as unknown as void
+        }
       />
     </div>
   );

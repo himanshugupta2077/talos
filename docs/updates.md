@@ -2,6 +2,41 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-Session Testing Control Panel — Phases 3–5 (full CLI parity)
+
+**Shipped:** 2026-07-31 · design `docs/Auth-Session-Testing-Control-Panel-Design.md`.
+
+Completes Auth-Session Testing in the Control Panel: approve lifecycle, run /
+results, decision filter + suite catalog, Findings polish. Core engine/schema
+unchanged; mutations remain CLI argv via `cli.run_scoped`.
+
+| Phase | Deliverable |
+|-------|-------------|
+| **3** | Candidates bulk approve / reject / unapprove; K19 binding expand (unbounded server-side); drawer actions |
+| **4** | Run tab (enqueue + right-now K11 timeout/refuse) + Results list/detail + finding join |
+| **5** | Filter & Suite tab (init/show/validate, open data dir, suite catalog); Findings `?attack_type=`/`?verdict=` hydration + display map (K18/K18b) |
+
+| Area | Detail |
+|------|--------|
+| **API** | POST `approve`/`reject`/`unapprove`/`run`; GET `run-estimate`/`results`/`results/{id}`/`suite`; POST `filter/init|show|validate` |
+| **Console** | Full `attack.auth-session.*` tree: lifecycle, run, filter.*, suite.list |
+| **UI** | Six tabs: Overview \| Bindings \| Candidates \| Run \| Results \| Filter & Suite; hub statusLine cleared |
+| **Findings** | `auth_session` → “Authentication & Session Testing”; empty-state includes WEAK_VALIDATION |
+| **Tests** | 38 cases in `test_attack_auth_session_routes.py` |
+
+```bash
+# Full CP workflow (same as CLI):
+talos attack auth-session bind --type jwt --header Authorization
+talos attack auth-session generate --endpoint <uuid>
+talos attack auth-session approve --all-pending
+talos attack auth-session run
+talos attack auth-session results list --verdict WEAK_VALIDATION
+talos attack auth-session filter init|show|validate
+talos attack auth-session suite list --type jwt --alg RS256
+```
+
+---
+
 ## Auth-Session Testing Control Panel — Phase 1 & 2
 
 **Shipped:** 2026-07-31 · design `docs/Auth-Session-Testing-Control-Panel-Design.md`.
@@ -25,9 +60,7 @@ mutation / weak token validation). Progressive tabs; core engine unchanged.
 # CP mutations map to:
 talos attack auth-session bind --type jwt --header Authorization
 talos attack auth-session generate --endpoint <uuid>
-# Approve/run still CLI until Phase 3–4 UI:
-talos attack auth-session approve --all-pending
-talos attack auth-session run
+# Phases 3–5 complete approve/run/filter/suite in CP (see entry above)
 ```
 
 ---

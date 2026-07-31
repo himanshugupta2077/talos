@@ -7,7 +7,7 @@
 | **Document** | Design: Auth-Session Testing Engine Control Panel surfaces |
 | **Author** | Grok Design (Control Panel) |
 | **Date** | 2026-07-31 |
-| **Status** | **Approved** (rev 3 — design review consensus, 0 open issues). Control Panel design; core engine already shipped. |
+| **Status** | **Implemented** (rev 3 design; Phases 1–5 shipped on `main` — full CLI parity in Control Panel). |
 | **Workspace** | `talos-v2` |
 | **Audience** | Senior engineers implementing Control Panel + reviewing product IA |
 | **Core design** | `docs/design-auth-session-testing-engine.md` (CLI/engine; CP was out of scope there) |
