@@ -2,6 +2,36 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel: URL Sink Discovery PR1–PR3
+
+**Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.
+
+Control Panel surfaces for URL Sink Discovery (characterization / prioritization only —
+never confirmed SSRF Findings from sink intelligence alone).
+
+| PR | Scope |
+|----|--------|
+| **PR1** | Endpoint Parameters tab: parse `url_features`; `url_score` / NRS / category chips; name → IV dossier via `param_uuid`; Reflection column; shared `components/url-sink/*` |
+| **PR2** | IV dossier Passive URL features + Active URL sink cards; slim profile fields; capability datalist/presets; ParameterDetail Run uses parameter **name** (not UUID); inventory-only Run disabled for `response` / `jwt.*` |
+| **PR3** | `GET /api/url-sink/*` inventory API; CP config `_SECTIONS` + Talos Config filters register `url_sink` (+ `parameter_intel`); per-project config load (K20) |
+
+```bash
+# Inventory API (after capture)
+curl -s "http://127.0.0.1:8420/api/url-sink/status?project_id=<id>"
+curl -s "http://127.0.0.1:8420/api/url-sink/inventory?project_id=<id>&min_score=45&nrs_only=true"
+
+# Config section (no longer 400)
+curl -s "http://127.0.0.1:8420/api/configuration/effective?project_id=<id>&section=url_sink"
+```
+
+**Files:** `talos-control-panel/backend/talos_ui/routers/{endpoints,input_validation,url_sink,configuration}.py`,
+`url_sink_reads.py`, frontend `components/url-sink/*`, EndpointDetail, IV workspace pages,
+tests, `docs/control-panel/{routing,pages,backend}.md`.
+
+Workspace Overview + Inventory UI (`/testing/url-sinks`) is **PR4** (not this slice).
+
+---
+
 ## URL Sink Discovery Phase 5 + QA fix-up — operator polish & surface gates
 
 **Shipped:** 2026-07-31 · schema remains **v53**.

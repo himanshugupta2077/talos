@@ -76,6 +76,8 @@ const SECTION_FILTERS = [
   { id: "scheduler", label: "Scheduler" },
   { id: "attack", label: "Attack" },
   { id: "http", label: "HTTP" },
+  { id: "parameter_intel", label: "Parameter intel" },
+  { id: "url_sink", label: "URL Sink" },
 ];
 
 /** Complex keys managed on dedicated workspaces (not generic leaf table). */

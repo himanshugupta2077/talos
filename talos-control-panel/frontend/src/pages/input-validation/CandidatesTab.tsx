@@ -6,6 +6,7 @@ import CandidateScore from "./components/CandidateScore";
 import IvDisclaimer from "./components/IvDisclaimer";
 import {
   ATTACKS,
+  CAPABILITY_HINTS,
   CandidateRow,
   downloadJson,
   inputClass,
@@ -109,18 +110,53 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
             className={`${inputClass} w-44 mono`}
             value={capability}
             onChange={(e) => setCapability(e.target.value)}
-            placeholder="capability (e.g. stored_reflection)"
+            placeholder="capability (e.g. network_resource_sink)"
             list="iv-capability-hints"
-            title="Filter by capability flag"
+            title="Filter by capability flag (server-side). Sink caps are prioritization only."
           />
           <datalist id="iv-capability-hints">
-            <option value="stored_reflection" />
-            <option value="reflective_input" />
-            <option value="html_context" />
-            <option value="js_context" />
-            <option value="json_context" />
-            <option value="url_context" />
+            {CAPABILITY_HINTS.map((h) => (
+              <option key={h} value={h} />
+            ))}
           </datalist>
+          <div className="flex flex-wrap gap-1 text-[10px]">
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              title="Preset: SSRF candidates ≥60"
+              onClick={() => {
+                setAttack("ssrf");
+                setMinScore("60");
+                setCapability("");
+              }}
+            >
+              ssrf≥60
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              title="Preset: open redirect candidates ≥60"
+              onClick={() => {
+                setAttack("open_redirect");
+                setMinScore("60");
+                setCapability("");
+              }}
+            >
+              redirect≥60
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              title="Preset: network_resource_sink capability"
+              onClick={() => {
+                setAttack("");
+                setCapability("network_resource_sink");
+                setMinScore("60");
+              }}
+            >
+              NRS cap
+            </button>
+          </div>
           <input
             className={`${inputClass} w-40`}
             value={search}

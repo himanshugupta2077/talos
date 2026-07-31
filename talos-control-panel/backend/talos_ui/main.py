@@ -5,7 +5,7 @@ from . import config
 from .routers import (
     access, attack, auth, auth_config, configuration, console, endpoints,
     error_intel, findings, flows, input_validation, intruder, mutations, modules,
-    passive, projects, proxy, replay, roles, scheduler, send,
+    passive, projects, proxy, replay, roles, scheduler, send, url_sink,
 )
 
 app = FastAPI(title="Talos Control Panel API", version="1.0.0")
@@ -23,8 +23,8 @@ for router in (
     access.router, auth.router, auth_config.router, endpoints.router,
     flows.router, replay.router, send.router, scheduler.router, mutations.router,
     attack.router, input_validation.router, passive.router,
-    error_intel.router, findings.router, console.router, configuration.router,
-    intruder.router,
+    error_intel.router, url_sink.router, findings.router, console.router,
+    configuration.router, intruder.router,
 ):
     app.include_router(router)
 

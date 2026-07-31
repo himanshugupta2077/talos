@@ -2,10 +2,16 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { Section } from "../../components/Common";
+import {
+  InventoryOnlyBadge,
+  NrsBadge,
+  UrlScoreChip,
+} from "../../components/url-sink";
 import CapabilityBadges from "./components/CapabilityBadges";
 import CandidateScore from "./components/CandidateScore";
 import StateChip from "./components/StateChip";
 import {
+  CAPABILITY_HINTS,
   LOCATIONS,
   ProfileRow,
   inputClass,
@@ -89,7 +95,14 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
           value={capability}
           onChange={(e) => setCapability(e.target.value)}
           placeholder="capability"
+          list="iv-param-capability-hints"
+          title="Filter by capability (e.g. network_resource_sink)"
         />
+        <datalist id="iv-param-capability-hints">
+          {CAPABILITY_HINTS.map((h) => (
+            <option key={h} value={h} />
+          ))}
+        </datalist>
         <select className={selectClass} value={hasCands} onChange={(e) => setHasCands(e.target.value)}>
           <option value="">candidates: any</option>
           <option value="1">has candidates</option>
@@ -116,6 +129,8 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
               <th>Host</th>
               <th>Name</th>
               <th>Loc</th>
+              <th title="Passive URL sink score">URL</th>
+              <th title="possible_network_resource">NRS</th>
               <th>Reflection</th>
               <th>Type</th>
               <th>Length</th>
@@ -137,8 +152,19 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
                 }}
               >
                 <td className="mono text-xs">{p.host}</td>
-                <td className="mono">{p.name}</td>
+                <td className="mono">
+                  <span className="inline-flex items-center gap-1">
+                    {p.name}
+                    {p.inventory_only && <InventoryOnlyBadge />}
+                  </span>
+                </td>
                 <td>{p.location}</td>
+                <td>
+                  <UrlScoreChip score={p.url_score} />
+                </td>
+                <td>
+                  <NrsBadge nrs={p.possible_network_resource} />
+                </td>
                 <td>
                   <StateChip state={p.reflection_state} kind="reflection" />
                   <span className="text-base-content/40 ml-1">
@@ -174,7 +200,7 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
             ))}
             {profiles.length === 0 && (
               <tr>
-                <td colSpan={10} className="text-center text-base-content/40 py-6">
+                <td colSpan={12} className="text-center text-base-content/40 py-6">
                   No profiles yet. Run IV then Synthesize.
                 </td>
               </tr>

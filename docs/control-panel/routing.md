@@ -96,7 +96,7 @@ Thin surface over Talos layered configuration (`talos config …`). Never merges
 |--------|-----|---------|---------|----------|-----|
 | GET | `/api/configuration/context` | Paths + binding | query `project_id?` | talos_home, global/project paths, precedence | `--project?` `config show --format json` |
 | GET | `/api/configuration/schema` | Types/defaults catalog | — | sections + settings metadata | `config schema --format json` |
-| GET | `/api/configuration/effective` | Merged leaves + sources | query `project_id?`, `section?` | values, sources, source_counts, section_cards | `--project?` `config effective --format json` |
+| GET | `/api/configuration/effective` | Merged leaves + sources | query `project_id?`, `section?` (`proxy`\|`capture`\|`scheduler`\|`attack`\|`http`\|`parameter_intel`\|`url_sink`) | values, sources, source_counts, section_cards | `--project?` `config effective --format json` |
 | GET | `/api/configuration/settings` | Normalized rows for UI table | query `project_id?`, `section?` | settings[] (key, type, effective_value, source, …) | effective + schema |
 | GET | `/api/configuration/get` | One key | query `key`, `project_id?` | `{ key, value, source }` | `--project?` `config get --format json` |
 | POST | `/api/configuration/value` | Set override | body `key`, `value`, `scope` (`project`\|`global`); query `project_id` when project | `{ steps }` | project: `run_scoped` `config set`; global: `cli.run` `config set --global` |
@@ -328,6 +328,26 @@ Legacy path prefix; UI label is **HTTP Rules**. All writes via `talos config htt
 | GET | `/export` | Export JSON | `project_id`, `layer` | `{ payload, steps }` | `config http export --format json` | — |
 | POST | `/import` | Import JSON | body content, replace?, global_scope? | steps | temp file + `config http import` | — |
 | POST | `/reorder` | Rewrite layer priorities 100,200,… | body `global_scope?` | steps | `config http reorder` | — |
+
+---
+
+## URL Sink Discovery (`/api/url-sink`)
+
+Passive inventory of parameters with `url_features` (score, NRS, name category, looks_like). **Prioritization intelligence only** — not confirmed SSRF/open-redirect Findings. No mutations; config via `/api/configuration` (`url_sink.*` section). Default paths do **not** join `iv_param_profiles` (`include_iv=true` is page-bounded). Config flags use per-project `load_url_sink_config_for_project` — never process-level cache.
+
+All routes require `project_id`. Implementation: `talos_ui/routers/url_sink.py` + `talos_ui/url_sink_reads.py`.
+
+| Method | URL | Purpose | Request | Response | CLI / DB |
+|--------|-----|---------|---------|----------|----------|
+| GET | `/status` | Aggregates + knobs | `project_id`, `include_iv_stats?` | enabled_*, score_threshold, nrs_count, score_ge_*, by_category/looks_like/location, disclaimer | parameters parse; config project-scoped |
+| GET | `/overview` | Status + top sinks + empty_state | `project_id`, `top_n?` | `{ status, top_sinks, empty_state, disclaimer }` | DB |
+| GET | `/inventory` | Filterable inventory (K13 keys) | `min_score` (45), `nrs_only` (true), `category`, `looks_like`, `location`, `host` (contains), `endpoint_id`, `search`, `sort`, `limit`, `offset`, `include_iv` | `{ items, count, total_matched, filters_applied, note, disclaimer }` | parameters JOIN endpoints |
+| GET | `/params/{parameter_id}` | One sink row + IV slice | `project_id` | `{ item, disclaimer }` | DB |
+| GET | `/params` | By param_uuid | `project_id`, `param_uuid` | same | DB |
+| GET | `/by-endpoint/{endpoint_id}` | Endpoint strip counts | `project_id`, `limit?` | count, nrs_count, max_score, items | DB |
+| GET | `/rollups/host` · `/endpoint` · `/category` | Aggregate rollups | min_score, nrs_only, limit | `{ rollup, disclaimer }` | in-process from inventory |
+
+**SinkRow fields:** `parameter_id`, `param_uuid` (`make_param_uuid` raw host), `url_score`, `possible_network_resource`, `name_category`, `inventory_only` (response / `jwt.*`), full `url_features`, optional `iv` when `include_iv=true`.
 
 ---
 

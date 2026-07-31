@@ -136,7 +136,30 @@ export interface ProfileRow {
   max_accepted_length?: number | null;
   primary_type?: string | null;
   top_candidate?: { attack?: string; score?: number; confidence?: number } | null;
+  /** Passive URL sink score from observed.url_features */
+  url_score?: number;
+  possible_network_resource?: boolean;
+  name_category?: string | null;
+  url_sink_confidence?: number | null;
+  has_network_resource_sink?: boolean;
+  inventory_only?: boolean;
 }
+
+/** Capability datalist hints for Candidates / Parameters filters (server-side match). */
+export const CAPABILITY_HINTS = [
+  "stored_reflection",
+  "reflective_input",
+  "html_context",
+  "js_context",
+  "json_context",
+  "url_context",
+  "network_resource_sink",
+  "redirect_sink",
+  "fetch_sink",
+  "webhook_sink",
+  "protocol_support",
+  "url_like_value",
+] as const;
 
 export interface IvStatus {
   total_params?: number;

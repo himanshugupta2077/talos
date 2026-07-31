@@ -3,7 +3,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useProject } from "../../state/ProjectContext";
 import { api } from "../../api/client";
 import { useAction } from "../../hooks/useAction";
-import { NoProjectNotice, Section, UuidChip } from "../../components/Common";
+import { ModuleHelp, NoProjectNotice, Section, UuidChip } from "../../components/Common";
+import {
+  InventoryOnlyBadge,
+  isInventoryOnlySurface,
+} from "../../components/url-sink";
 import CapabilityBadges from "./components/CapabilityBadges";
 import IvDisclaimer from "./components/IvDisclaimer";
 import ProbeEvidenceTable from "./components/ProbeEvidenceTable";
@@ -88,6 +92,13 @@ export default function ParameterDetail() {
 
   useEffect(load, [selected, paramUuid]);
 
+  const name = profile?.name || profile?.param_name || "";
+  const host = profile?.host || "—";
+  const location = profile?.location || "—";
+  const inventoryOnly =
+    profile?.inventory_only === true ||
+    isInventoryOnlySurface(profile?.location, name);
+
   const synthesize = useAction("Synthesize parameter", () =>
     api.post(
       "/api/input-validation/synthesize",
@@ -95,10 +106,14 @@ export default function ParameterDetail() {
       { project_id: selected!.id },
     ),
   );
+  // Run scopes by parameter *name* (CLI --parameter), never param_uuid as name.
   const runScoped = useAction("Run IV for parameter", () =>
     api.post(
       "/api/input-validation/run",
-      { parameter: paramUuid, budget: "standard" },
+      {
+        parameter: name || undefined,
+        budget: "standard",
+      },
       { project_id: selected!.id },
     ),
   );
@@ -120,9 +135,9 @@ export default function ParameterDetail() {
 
   if (!selected) return <NoProjectNotice />;
 
-  const name = profile?.name || profile?.param_name || "…";
-  const host = profile?.host || "—";
-  const location = profile?.location || "—";
+  const displayName = name || "…";
+  const runDisabled =
+    runScoped.running || inventoryOnly || !name || loading;
 
   return (
     <div>
@@ -132,10 +147,15 @@ export default function ParameterDetail() {
             ← Parameters
           </button>
           <h1 className="text-xl font-semibold mono">
-            {name}{" "}
+            {displayName}{" "}
             <span className="text-base-content/50 font-normal text-sm">
               {location} · {host}
             </span>
+            {inventoryOnly && (
+              <span className="ml-2 align-middle">
+                <InventoryOnlyBadge />
+              </span>
+            )}
           </h1>
           <div className="flex flex-wrap items-center gap-2 mt-1 text-xs">
             <span className="text-base-content/50">param_uuid</span>
@@ -165,17 +185,27 @@ export default function ParameterDetail() {
             <CapabilityBadges caps={capabilities} />
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="btn btn-xs"
-            disabled={runScoped.running}
-            onClick={async () => {
-              await runScoped.run();
-              load();
-            }}
+        <div className="flex flex-wrap gap-2 items-start">
+          <span
+            className="tooltip tooltip-left"
+            data-tip={
+              inventoryOnly
+                ? "Inventory-only surface (response or jwt.*) — not a normal injectable input. Run is disabled."
+                : "Runs IV for this parameter name on all matching surfaces (CLI --parameter). Not scoped to this UUID alone."
+            }
           >
-            Run scoped
-          </button>
+            <button
+              className="btn btn-xs"
+              disabled={runDisabled}
+              onClick={async () => {
+                if (!name || inventoryOnly) return;
+                await runScoped.run();
+                load();
+              }}
+            >
+              Run scoped
+            </button>
+          </span>
           <button
             className="btn btn-xs"
             disabled={synthesize.running}
@@ -197,6 +227,38 @@ export default function ParameterDetail() {
           </button>
         </div>
       </div>
+
+      <div className="mb-3">
+        <ModuleHelp title="How the parameter dossier works">
+          <p>
+            This dossier is the home for active Input Validation characterization
+            of one parameter surface (host + location + name → param UUID).
+          </p>
+          <p>
+            <strong>Run scoped</strong> uses the parameter <em>name</em> (CLI{" "}
+            <span className="mono">--parameter</span>), matching all hosts/locations
+            with that name — not the UUID alone. <strong>Synthesize</strong> is
+            offline and correctly uses this param UUID.
+          </p>
+          <p>
+            Passive URL features and active URL-sink canary cards are prioritization
+            intelligence only. Canaries use benign{" "}
+            <span className="mono">talos-canary.invalid</span> values — never
+            confirmed SSRF.
+          </p>
+        </ModuleHelp>
+      </div>
+
+      {inventoryOnly && (
+        <div className="alert alert-warning text-xs mb-3">
+          <span>
+            Inventory-only surface (<span className="mono">location=response</span> or{" "}
+            <span className="mono">jwt.*</span> name). Characterization may exist
+            from capture, but this is not a normal injectable input — Run is disabled.
+            Synthesize remains available if probes already exist.
+          </span>
+        </div>
+      )}
 
       <IvDisclaimer />
 

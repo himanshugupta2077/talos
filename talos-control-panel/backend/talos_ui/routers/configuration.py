@@ -31,7 +31,15 @@ router = APIRouter(prefix="/api/configuration", tags=["configuration"])
 ConfigScope = Literal["project", "global"]
 
 # Presentation-only section order (mirrors core CONFIG_SECTIONS).
-_SECTIONS = ("proxy", "capture", "scheduler", "attack", "http")
+_SECTIONS = (
+    "proxy",
+    "capture",
+    "scheduler",
+    "attack",
+    "http",
+    "parameter_intel",
+    "url_sink",
+)
 
 
 def _parse_json_stdout(stdout: str) -> Any:
@@ -182,6 +190,33 @@ def _section_summaries(values: dict[str, Any], sources: dict[str, str]) -> list[
                 f"{'' if n_rules == 1 else 's'}"
             ),
             "source": _dominant_source(sources, "http"),
+        }
+    )
+
+    # Parameter intelligence (cross-flow value index)
+    cf_on = values.get("parameter_intel.cross_flow.enabled", True)
+    cards.append(
+        {
+            "section": "parameter_intel",
+            "label": "Parameter intel",
+            "summary": f"Cross-flow {'on' if cf_on else 'off'}",
+            "source": _dominant_source(sources, "parameter_intel"),
+        }
+    )
+
+    # URL Sink Discovery
+    us_passive = values.get("url_sink.passive.enabled", True)
+    us_thr = values.get("url_sink.score_threshold", 45)
+    us_iv = values.get("url_sink.iv_probes.enabled", True)
+    cards.append(
+        {
+            "section": "url_sink",
+            "label": "URL Sink",
+            "summary": (
+                f"Passive {'on' if us_passive else 'off'} · thr {us_thr}"
+                f" · IV probes {'on' if us_iv else 'off'}"
+            ),
+            "source": _dominant_source(sources, "url_sink"),
         }
     )
 

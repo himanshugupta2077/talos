@@ -331,6 +331,14 @@ export interface Parameter {
   reflection_count: number;
   reflection_locations: string[];
   reflection_encoding: string;
+  /** URL Sink Discovery (parameters.url_features) — prioritization only */
+  url_features?: Record<string, unknown> | null;
+  url_score?: number;
+  possible_network_resource?: boolean;
+  name_category?: string | null;
+  param_uuid?: string;
+  /** location=response or jwt.* name — inventory characterization only */
+  inventory_only?: boolean;
 }
 
 export interface FlowRow {

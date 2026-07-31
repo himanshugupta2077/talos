@@ -8,6 +8,7 @@ through multi-ID Talos CLI commands in a single invocation (atomic bulk).
 
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,38 @@ from pydantic import BaseModel, Field
 from .. import cli, config, db, endpoint_reads
 
 router = APIRouter(prefix="/api/endpoints", tags=["endpoints"])
+
+
+def _ensure_talos_on_path() -> None:
+    root = str(config.TALOS_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def _enrich_parameter_url_sink(p: dict, host_raw: str) -> None:
+    """
+    Parse parameters.url_features and attach URL Sink Discovery fields for CP UI.
+
+    Uses make_param_uuid with the raw endpoints.host value (including origin form
+    with ://) — same contract as CLI cmd_endpoint_params.
+    """
+    _ensure_talos_on_path()
+    from talos.input_validation.db import make_param_uuid
+
+    uf = db.safe_json(p.get("url_features"), {})
+    if not isinstance(uf, dict):
+        uf = {}
+    p["url_features"] = uf
+    try:
+        p["url_score"] = int(uf.get("score") or 0)
+    except (TypeError, ValueError):
+        p["url_score"] = 0
+    p["possible_network_resource"] = bool(uf.get("possible_network_resource"))
+    p["name_category"] = uf.get("name_category")
+    name = p.get("name") or ""
+    location = p.get("location") or ""
+    p["param_uuid"] = make_param_uuid(host_raw or "", location, name)
+    p["inventory_only"] = location == "response" or str(name).startswith("jwt.")
 
 
 # ------------------------------------------------------------------ #
@@ -182,7 +215,7 @@ def search_parameters(project_id: str, search: str = "", limit: int = 200):
         db_path,
         f"""
         SELECT p.id, p.name, p.location, p.param_type, p.endpoint_id,
-               e.method, e.host, e.normalized_path
+               p.url_features, e.method, e.host, e.normalized_path
         FROM parameters p
         JOIN endpoints e ON e.id = p.endpoint_id
         {where}
@@ -191,6 +224,19 @@ def search_parameters(project_id: str, search: str = "", limit: int = 200):
         """,
         params,
     )
+    for row in rows:
+        host = row.get("host") or ""
+        try:
+            _enrich_parameter_url_sink(row, host)
+        except Exception:
+            # Older DBs without url_features column still return rows.
+            uf = db.safe_json(row.get("url_features"), {})
+            row["url_features"] = uf if isinstance(uf, dict) else {}
+            row["url_score"] = int((row["url_features"] or {}).get("score") or 0)
+            row["possible_network_resource"] = bool(
+                (row["url_features"] or {}).get("possible_network_resource")
+            )
+            row["name_category"] = (row["url_features"] or {}).get("name_category")
     return {"parameters": rows}
 
 
@@ -598,15 +644,17 @@ def endpoint_detail(project_id: str, endpoint_id: str):
         """,
         (endpoint_id,),
     )
+    host_raw = endpoint.get("host") or ""
     for p in parameters:
         p["example_values"] = db.safe_json(p.get("example_values"), [])
         p["appears_in_roles"] = db.safe_json(p.get("appears_in_roles"), [])
         p["appears_in_modules"] = db.safe_json(p.get("appears_in_modules"), [])
         p["reflection_locations"] = db.safe_json(p.get("reflection_locations"), [])
+        _enrich_parameter_url_sink(p, host_raw)
 
     explanation = endpoint_reads.explain_policy(project_id, endpoint_id)
     pol = endpoint_reads.policy_mod()
-    origin, host_display = pol.split_origin_identity(endpoint.get("host") or "")
+    origin, host_display = pol.split_origin_identity(host_raw)
     hit_count = db.scalar(
         db_path, "SELECT COUNT(*) FROM flows WHERE endpoint_id=?", (endpoint_id,)
     )

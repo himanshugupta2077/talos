@@ -81,6 +81,14 @@ def _slim_param_profile(p: dict[str, Any]) -> dict[str, Any]:
     reflection = observed.get("reflection") if isinstance(observed.get("reflection"), dict) else {}
     length = observed.get("length") if isinstance(observed.get("length"), dict) else {}
     types = observed.get("types") if isinstance(observed.get("types"), dict) else {}
+    url_features = (
+        observed.get("url_features")
+        if isinstance(observed.get("url_features"), dict)
+        else {}
+    )
+    url_sink = (
+        observed.get("url_sink") if isinstance(observed.get("url_sink"), dict) else {}
+    )
     primary_type = ""
     if isinstance(types.get("_summary"), dict):
         primary_type = str(types["_summary"].get("primary") or "")
@@ -93,11 +101,21 @@ def _slim_param_profile(p: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cands, list):
         cands = []
     top = _top_candidate(cands)
+    name = p.get("name") or p.get("param_name")
+    location = p.get("location")
+    try:
+        url_score = int(url_features.get("score") or 0)
+    except (TypeError, ValueError):
+        url_score = 0
+    try:
+        us_conf = int(url_sink.get("confidence") or 0)
+    except (TypeError, ValueError):
+        us_conf = 0
     return {
         "param_uuid": p.get("param_uuid"),
         "host": p.get("host"),
-        "location": p.get("location"),
-        "name": p.get("name") or p.get("param_name"),
+        "location": location,
+        "name": name,
         "schema_version": p.get("schema_version"),
         "engine_version": p.get("engine_version"),
         "profile_version": p.get("profile_version"),
@@ -121,6 +139,16 @@ def _slim_param_profile(p: dict[str, Any]) -> dict[str, Any]:
             }
             if top
             else None
+        ),
+        # URL Sink Discovery (passive + active characterization) — prioritization only
+        "url_score": url_score,
+        "possible_network_resource": bool(url_features.get("possible_network_resource")),
+        "name_category": url_features.get("name_category"),
+        "url_sink_confidence": us_conf if us_conf > 0 else None,
+        "has_network_resource_sink": "network_resource_sink" in caps,
+        "inventory_only": (
+            str(location or "") == "response"
+            or str(name or "").startswith("jwt.")
         ),
     }
 

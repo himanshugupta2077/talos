@@ -189,10 +189,33 @@ export default function OverviewTab({
           <button className="btn btn-xs" onClick={() => onGoTab("candidates")}>
             Open candidates
           </button>
+          <Link
+            className="btn btn-xs"
+            to={`${IV_BASE}?tab=candidates&capability=network_resource_sink&min_score=60`}
+            title="Server-filtered URL-family prioritization (not confirmed SSRF)"
+          >
+            NRS candidates ≥60
+          </Link>
+          <Link
+            className="btn btn-xs"
+            to={`${IV_BASE}?tab=candidates&attack=ssrf&min_score=60`}
+          >
+            SSRF ≥60
+          </Link>
+          <Link
+            className="btn btn-xs"
+            to={`${IV_BASE}?tab=candidates&attack=open_redirect&min_score=60`}
+          >
+            Open redirect ≥60
+          </Link>
           <Link className="btn btn-xs" to="/scheduler">
             Scheduler
           </Link>
         </div>
+        <p className="text-xs text-base-content/50 mb-2">
+          Candidate scores are prioritization only. NRS / SSRF / redirect presets use
+          server-side filters — they do not confirm vulnerabilities.
+        </p>
 
         <div className="overflow-x-auto panel">
           <table className="table table-tight table-xs">

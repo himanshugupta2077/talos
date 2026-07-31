@@ -10,9 +10,15 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
 import { useAction } from "../hooks/useAction";
-import { Section, UuidChip } from "../components/Common";
+import { ModuleHelp, Section, UuidChip } from "../components/Common";
 import PolicyExplain from "../components/PolicyExplain";
 import StatusBadge from "../components/StatusBadge";
+import {
+  InventoryOnlyBadge,
+  NrsBadge,
+  SinkCategoryBadge,
+  UrlScoreChip,
+} from "../components/url-sink";
 import { formatIST } from "../lib/time";
 import {
   BulkMutationResult,
@@ -506,6 +512,33 @@ export default function EndpointDetail() {
 
       {tab === "parameters" && (
         <Section title={`Parameters (${parameters.length})`}>
+          <div className="mb-3">
+            <ModuleHelp title="How endpoint parameters and URL sinks work">
+              <p>
+                Each row is a parameter Talos extracted from captured traffic.{" "}
+                <strong>URL score</strong>, <strong>NRS</strong>, and{" "}
+                <strong>sink category</strong> come from passive URL Sink Discovery
+                on stored values and names — prioritization only, not confirmed SSRF
+                or open redirect.
+              </p>
+              <p>
+                Click a parameter name to open its Input Validation dossier (when a
+                param UUID is available). Reflection shows same-request value echo;
+                it is not IV profile state.{" "}
+                <span className="mono">inv-only</span> marks response-body or{" "}
+                <span className="mono">jwt.*</span> surfaces that are inventory-only
+                (not normal injectable inputs).
+              </p>
+              <p>
+                Example: <span className="mono">callback=https://cdn…</span> often
+                scores high with NRS even if the name is not in a URL catalog.
+              </p>
+            </ModuleHelp>
+          </div>
+          <p className="text-xs text-base-content/50 mb-2">
+            Scores and NRS are prioritization signals from captured values — not
+            Findings. Name links open the IV parameter dossier.
+          </p>
           <div className="overflow-x-auto panel">
             <table className="table table-tight table-xs">
               <thead>
@@ -513,8 +546,11 @@ export default function EndpointDetail() {
                   <th>Location</th>
                   <th>Name</th>
                   <th>Type / Shape</th>
+                  <th title="Passive URL sink score (0–100)">URL score</th>
+                  <th title="possible_network_resource">NRS</th>
+                  <th title="Primary name category">Sink cat</th>
                   <th>Observed values</th>
-                  <th>IV state</th>
+                  <th>Reflection</th>
                 </tr>
               </thead>
               <tbody>
@@ -523,10 +559,34 @@ export default function EndpointDetail() {
                     <td>
                       <span className="badge badge-ghost badge-xs">{p.location}</span>
                     </td>
-                    <td className="mono">{p.name}</td>
+                    <td className="mono">
+                      <span className="inline-flex items-center gap-1 flex-wrap">
+                        {p.param_uuid ? (
+                          <Link
+                            className="link link-hover"
+                            to={`${IV_BASE}/params/${p.param_uuid}`}
+                            title="Open IV parameter dossier"
+                          >
+                            {p.name}
+                          </Link>
+                        ) : (
+                          p.name
+                        )}
+                        {p.inventory_only && <InventoryOnlyBadge />}
+                      </span>
+                    </td>
                     <td className="text-xs">
                       {p.param_type}
                       {p.semantic_type ? ` · ${p.semantic_type}` : ""}
+                    </td>
+                    <td>
+                      <UrlScoreChip score={p.url_score} />
+                    </td>
+                    <td>
+                      <NrsBadge nrs={p.possible_network_resource} />
+                    </td>
+                    <td>
+                      <SinkCategoryBadge category={p.name_category} />
                     </td>
                     <td className="mono max-w-xs truncate text-xs">
                       {(p.example_values || []).join(", ") || "—"}
@@ -537,19 +597,14 @@ export default function EndpointDetail() {
                           reflected ({p.reflection_count})
                         </span>
                       ) : (
-                        <Link
-                          className="link link-hover"
-                          to={`${IV_BASE}?tab=parameters`}
-                        >
-                          open IV
-                        </Link>
+                        "—"
                       )}
                     </td>
                   </tr>
                 ))}
                 {parameters.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="text-center text-base-content/40 py-4">
+                    <td colSpan={8} className="text-center text-base-content/40 py-4">
                       No parameters observed.
                     </td>
                   </tr>

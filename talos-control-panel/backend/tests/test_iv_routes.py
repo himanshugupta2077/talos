@@ -117,12 +117,19 @@ def _init_iv_db(db_path: Path):
               '{"schema_version":1,"engine_version":"test","profile_version":1,
                 "param_uuid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "host":"api.example.com","location":"query","name":"q",
-                "capabilities":["reflective_input"],
+                "capabilities":["reflective_input","network_resource_sink","fetch_sink"],
                 "candidates":[{"attack":"xss","score":90,"confidence":80,
-                  "reasons":["test"],"evidence_flow_ids":[]}],
+                  "reasons":["test"],"evidence_flow_ids":[]},
+                  {"attack":"ssrf","score":72,"confidence":60,"reasons":["url sink"]}],
                 "observed":{"reflection":{"state":"reflected","confidence":90},
                   "length":{"state":"bounded","max_accepted":64},
                   "types":{"_summary":{"primary":"string"}},
+                  "url_features":{"score":95,"possible_network_resource":true,
+                    "name_category":"remote_fetch","looks_like":["url"]},
+                  "url_sink":{"confidence":92,"accepts_url":true,"accepts_hostname":false,
+                    "redirect_behavior":false,"fetch_behavior":true,
+                    "dns_resolution_detected":false,"accepted_protocols":["https"],
+                    "error_classes":[]},
                   "acceptance":{"classes":{"quote":{"outcome":"accepted","confidence":80}}}},
                 "inferred":{},"tested":{"unicode":{"outcome":"rejected","confidence":88}},
                 "requests_used":6,"budget_tier":"standard"}',
@@ -228,6 +235,13 @@ def test_iv_profiles_route(client):
     # Extended summary fields for Parameters tab
     assert "reflection_state" in row
     assert "top_candidate" in row
+    # URL Sink Discovery slim fields (PR2)
+    assert row.get("url_score") == 95
+    assert row.get("possible_network_resource") is True
+    assert row.get("name_category") == "remote_fetch"
+    assert row.get("url_sink_confidence") == 92
+    assert row.get("has_network_resource_sink") is True
+    assert row.get("inventory_only") is False
 
 
 def test_iv_profiles_filter_capability(client):

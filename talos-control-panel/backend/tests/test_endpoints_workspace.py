@@ -185,3 +185,148 @@ def test_suggest_path_not_in_backend():
         with patch.object(endpoint_reads.db, "db_exists", return_value=False):
             assert endpoint_reads.list_resolved("missing") == []
             assert endpoint_reads.inventory_summary("missing")["total"] == 0
+
+
+def test_enrich_parameter_url_sink_uuid_parity():
+    """param_uuid must match make_param_uuid(raw host, location, name) — K10."""
+    import json
+
+    from talos.input_validation.db import make_param_uuid
+    from talos_ui.routers.endpoints import _enrich_parameter_url_sink
+
+    host_raw = "https://api.example.com"
+    p = {
+        "name": "callback",
+        "location": "query",
+        "url_features": json.dumps(
+            {
+                "score": 95,
+                "possible_network_resource": True,
+                "name_category": "redirect",
+                "looks_like": ["url"],
+            }
+        ),
+    }
+    _enrich_parameter_url_sink(p, host_raw)
+    assert p["url_score"] == 95
+    assert p["possible_network_resource"] is True
+    assert p["name_category"] == "redirect"
+    assert p["param_uuid"] == make_param_uuid(host_raw, "query", "callback")
+    assert p["inventory_only"] is False
+
+    jwt_p = {
+        "name": "jwt.jku",
+        "location": "header",
+        "url_features": {"score": 90, "possible_network_resource": True},
+    }
+    _enrich_parameter_url_sink(jwt_p, "api.example.com")
+    assert jwt_p["inventory_only"] is True
+
+    resp_p = {
+        "name": "href",
+        "location": "response",
+        "url_features": {},
+    }
+    _enrich_parameter_url_sink(resp_p, "api.example.com")
+    assert resp_p["inventory_only"] is True
+    assert resp_p["url_score"] == 0
+
+
+def test_endpoint_detail_parses_url_features(tmp_path, monkeypatch):
+    """GET /api/endpoints/{id} exposes url_score / param_uuid from url_features."""
+    import json
+    import sqlite3
+
+    from talos.input_validation.db import make_param_uuid
+
+    talos_home = tmp_path / "talos-home"
+    projects = talos_home / "projects"
+    data_dir = projects / "demo"
+    data_dir.mkdir(parents=True)
+    db_path = data_dir / "talos.db"
+    registry = projects / "registry.json"
+    monkeypatch.setenv("TALOS_HOME", str(talos_home))
+
+    host = "https://api.example.com"
+    uf = {
+        "score": 95,
+        "possible_network_resource": True,
+        "name_category": None,
+        "looks_like": ["url"],
+        "evidence": ["value_scheme:https"],
+    }
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        f"""
+        CREATE TABLE endpoints (
+          id TEXT PRIMARY KEY, host TEXT, method TEXT, path TEXT,
+          normalized_path TEXT, first_seen TEXT, last_seen TEXT
+        );
+        CREATE TABLE endpoint_policy (endpoint_id TEXT PRIMARY KEY, tags TEXT);
+        CREATE TABLE endpoint_annotations (endpoint_id TEXT, tag TEXT, created_at TEXT);
+        CREATE TABLE endpoint_roles (endpoint_id TEXT, role_id TEXT, first_seen TEXT, last_seen TEXT);
+        CREATE TABLE roles (id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE flows (
+          id TEXT PRIMARY KEY, endpoint_id TEXT, method TEXT, path TEXT,
+          status_code INTEGER, captured_at TEXT, source TEXT, role_id TEXT, module_id TEXT
+        );
+        CREATE TABLE parameters (
+          id TEXT PRIMARY KEY, endpoint_id TEXT, name TEXT, location TEXT,
+          param_type TEXT, semantic_type TEXT, example_values TEXT,
+          seen_count INTEGER, appears_in_roles TEXT, appears_in_modules TEXT,
+          reflection_locations TEXT, is_reflected INTEGER, reflection_count INTEGER,
+          url_features TEXT
+        );
+        INSERT INTO endpoints (id, host, method, path, normalized_path)
+        VALUES ('ep1', '{host}', 'GET', '/avatar', '/avatar');
+        INSERT INTO parameters (
+          id, endpoint_id, name, location, param_type, semantic_type,
+          example_values, seen_count, appears_in_roles, appears_in_modules,
+          reflection_locations, is_reflected, reflection_count, url_features
+        ) VALUES (
+          'p1', 'ep1', 'callback', 'query', 'string', 'url',
+          '["https://cdn.example/x"]', 2, '[]', '[]', '[]', 0, 0,
+          '{json.dumps(uf)}'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    registry.write_text(
+        json.dumps(
+            {
+                "demo": {
+                    "id": "demo",
+                    "name": "demo",
+                    "status": "active",
+                    "data_dir": str(data_dir),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import talos_ui.config as cfg
+
+    monkeypatch.setattr(cfg, "TALOS_HOME", talos_home)
+    monkeypatch.setattr(cfg, "PROJECTS_ROOT", projects)
+    monkeypatch.setattr(cfg, "REGISTRY_PATH", registry)
+    monorepo = Path(__file__).resolve().parents[3]
+    monkeypatch.setattr(cfg, "TALOS_ROOT", monorepo)
+
+    from talos_ui.main import app
+
+    tc = TestClient(app)
+    with patch("talos_ui.endpoint_reads.explain_policy", return_value=None):
+        res = tc.get("/api/endpoints/ep1", params={"project_id": "demo"})
+    assert res.status_code == 200
+    body = res.json()
+    params = body["parameters"]
+    assert len(params) == 1
+    p = params[0]
+    assert p["url_score"] == 95
+    assert p["possible_network_resource"] is True
+    assert p["param_uuid"] == make_param_uuid(host, "query", "callback")
+    assert p["inventory_only"] is False
+    assert isinstance(p["url_features"], dict)

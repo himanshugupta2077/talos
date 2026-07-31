@@ -307,11 +307,28 @@ Inspector with tabs: **Overview | Policy | Parameters | Flows | Activity**.
 | **Purpose** | Inspect one endpoint; mutate safety/priority/exclusion/tags; replay/enqueue; view parameters and flows |
 | **Backend** | detail (includes `policy_explanation`), adjacent, mark/unmark, priority, exclude/include, tags; replay; scheduler enqueue |
 | **CLI** | Same endpoint/replay/scheduler commands as workspace bulk (single-ID) |
-| **DB** | endpoint (+ canonical origin from `endpoints.host`), policy, parameters, roles, modules, flows |
-| **Components** | Header status strip, action dropdowns, `PolicyExplain` (same as Policy tab), parameter/flow tables |
+| **DB** | endpoint (+ canonical origin from `endpoints.host`), policy, parameters (incl. `url_features`), roles, modules, flows |
+| **Components** | Header status strip, action dropdowns, `PolicyExplain` (same as Policy tab), parameter/flow tables, `components/url-sink/*` chips, `ModuleHelp` |
 | **Workflow** | Overview → Policy explain → Parameters / Flows; Activity reserved until core audit history exists (not faked from `updated_at`) |
 
+**Parameters tab (URL Sink enrichment):** columns Location | Name (link → IV dossier via `param_uuid`) | Type | URL score | NRS | Sink cat | Observed values | Reflection (formerly “IV state”). Scores/NRS/categories are prioritization only. `inv-only` badge when `location=response` or name starts with `jwt.`. Backend parses `url_features` and computes `param_uuid = make_param_uuid(raw endpoints.host, location, name)`.
+
 **Flows** link uses `/flows?endpoint=<id>` (flows list accepts endpoint filter).
+
+---
+
+## Input Validation — URL sink surfaces
+
+**Files:** `input-validation/ParameterDetail.tsx`, `ProfileCards.tsx`, `CapabilityBadges.tsx`, `CandidatesTab.tsx`, `ParametersTab.tsx`, `OverviewTab.tsx`
+
+| Surface | Behavior |
+|---------|----------|
+| Parameter dossier | Passive URL features + Active URL sink (canary) cards; `InventoryOnlyBadge` + **Run disabled** for response/`jwt.*`; Run posts `{ parameter: profile.name }` (CLI name scope — never UUID as `--parameter`) |
+| Slim profiles API | `url_score`, `possible_network_resource`, `name_category`, `url_sink_confidence`, `has_network_resource_sink`, `inventory_only` |
+| Candidates | Datalist hints include `network_resource_sink`, `redirect_sink`, `fetch_sink`, `webhook_sink`, `protocol_support`, `url_like_value`; presets for ssrf/redirect/NRS |
+| Overview | Preset deep-links to candidates with server-side `capability=network_resource_sink` / attack filters |
+
+Capability badge tooltips use prioritization language only (never “vulnerable” / “confirmed SSRF”).
 
 ---
 
@@ -529,11 +546,13 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 | **Backend** | `/api/input-validation/*` status, overview, profiles, candidates, endpoints, hosts, show, export JSON, config/run CLI wrappers |
 | **CLI** | Full `talos input-validation *` parity for config/run/synthesize/candidates/reflections/show/export/exclude |
 | **DB** | `input_validation_config`, `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`, `iv_probe_results`, caches; cross-flow via `value_index` / `cross_flow_reflections` when `parameter_intel.cross_flow.enabled` |
-| **Components** | `ModuleShell`, tabs (Endpoints-style), `CapabilityBadges` (highlights `stored_reflection`), `CandidateScore`, `ProfileCards` (dual reflection modes + sinks), `ProbeEvidenceTable`, `ScopeBar` |
+| **Components** | `ModuleShell`, tabs (Endpoints-style), `CapabilityBadges` (reflection + URL sink family), `CandidateScore`, `ProfileCards` (dual reflection modes + passive URL features + active url_sink cards), `ProbeEvidenceTable`, `ScopeBar`, `components/url-sink/*` chips |
 | **Workflow** | Enable → Run standard → wait (auto-refresh) → Synthesize → Candidates → open parameter dossier → evidence flows |
 | **Polling** | Overview/status every 5s while `running+queued > 0` |
 
 Candidate scores are always labeled **prioritization only**, not confirmed vulnerabilities. **Stored / cross-page reflection** is data-flow evidence (source→sink), not XSS confirmation; candidates expand shows `reflection_modes` and sink reasons when present.
+
+**URL sink (PR1–PR2):** Dossier shows passive `url_features` and active `observed.url_sink` canary characterization. Candidates capability datalist includes `network_resource_sink` / `redirect_sink` / `fetch_sink` / `webhook_sink`. Run on dossier uses parameter **name** scope (CLI `--parameter`); inventory-only surfaces (`response` / `jwt.*`) disable Run. Dedicated `/testing/url-sinks` workspace is PR4.
 
 ---
 

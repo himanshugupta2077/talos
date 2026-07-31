@@ -161,6 +161,49 @@ def test_effective_includes_source_counts(client):
         assert body["section_cards"]
 
 
+def test_effective_section_url_sink_accepted(client):
+    """CP _SECTIONS includes url_sink so section filter is not 400 (PR3b / K6)."""
+    with patch("talos_ui.routers.configuration.cli.run") as run:
+        run.return_value = _ok_result(
+            json.dumps(
+                {
+                    "values": {
+                        "url_sink.passive.enabled": True,
+                        "url_sink.score_threshold": 45,
+                        "url_sink.iv_probes.enabled": True,
+                        "url_sink.html_js.enabled": True,
+                    },
+                    "sources": {
+                        "url_sink.passive.enabled": "default",
+                        "url_sink.score_threshold": "default",
+                        "url_sink.iv_probes.enabled": "default",
+                        "url_sink.html_js.enabled": "default",
+                    },
+                }
+            )
+        )
+        res = client.get(
+            "/api/configuration/effective",
+            params={"project_id": "demo", "section": "url_sink"},
+        )
+        assert res.status_code == 200
+        argv = run.call_args[0][0]
+        assert "--section" in argv and "url_sink" in argv
+        body = res.json()
+        assert "url_sink.passive.enabled" in body["values"]
+        # Section cards should include URL Sink when values present
+        labels = {c.get("section") for c in body.get("section_cards") or []}
+        assert "url_sink" in labels
+
+
+def test_effective_section_unknown_still_400(client):
+    res = client.get(
+        "/api/configuration/effective",
+        params={"project_id": "demo", "section": "not_a_real_section"},
+    )
+    assert res.status_code == 400
+
+
 def test_settings_merges_schema(client):
     with patch("talos_ui.routers.configuration.cli.run") as run:
 

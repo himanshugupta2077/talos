@@ -3,6 +3,11 @@ import StateChip from "./StateChip";
 import TaxonomyChips from "./TaxonomyChips";
 import CandidateScore from "./CandidateScore";
 import { Link } from "react-router-dom";
+import {
+  NrsBadge,
+  SinkCategoryBadge,
+  UrlScoreChip,
+} from "../../../components/url-sink";
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -16,9 +21,22 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 function field(label: string, value: React.ReactNode) {
   return (
     <div className="flex gap-2 mb-1">
-      <span className="text-base-content/50 w-24 shrink-0">{label}</span>
+      <span className="text-base-content/50 w-28 shrink-0">{label}</span>
       <span className="min-w-0 break-words">{value ?? "—"}</span>
     </div>
+  );
+}
+
+function boolDot(v: boolean | null | undefined, label: string) {
+  const on = v === true;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 mr-2 ${on ? "text-base-content" : "text-base-content/35"}`}
+      title={label}
+    >
+      <span className={on ? "text-success" : "text-base-content/25"}>{on ? "●" : "○"}</span>
+      {label}
+    </span>
   );
 }
 
@@ -37,6 +55,18 @@ export default function ProfileCards({ profile }: { profile: any }) {
   const types = observed.types || {};
   const acceptance = observed.acceptance || {};
   const classes = acceptance.classes || {};
+  const urlFeatures =
+    (observed.url_features && typeof observed.url_features === "object"
+      ? observed.url_features
+      : null) ||
+    (profile.url_features && typeof profile.url_features === "object"
+      ? profile.url_features
+      : {}) ||
+    {};
+  const urlSink =
+    (observed.url_sink && typeof observed.url_sink === "object"
+      ? observed.url_sink
+      : {}) || {};
   const parser =
     observed.parser ||
     profile.parser ||
@@ -57,11 +87,139 @@ export default function ProfileCards({ profile }: { profile: any }) {
     types?.primary?.outcome ||
     "—";
 
+  const hasUrlFeatures =
+    Object.keys(urlFeatures).length > 0 &&
+    (Number(urlFeatures.score) > 0 ||
+      urlFeatures.possible_network_resource ||
+      urlFeatures.name_category ||
+      (Array.isArray(urlFeatures.looks_like) && urlFeatures.looks_like.length > 0));
+  const hasUrlSink =
+    Object.keys(urlSink).length > 0 &&
+    (Number(urlSink.confidence) > 0 ||
+      urlSink.accepts_url ||
+      urlSink.redirect_behavior ||
+      urlSink.fetch_behavior ||
+      (Array.isArray(urlSink.per_probe) && urlSink.per_probe.length) ||
+      (urlSink.per_probe && typeof urlSink.per_probe === "object" && Object.keys(urlSink.per_probe).length > 0));
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 items-center">
         <span className="text-xs text-base-content/50">Capabilities</span>
         <CapabilityBadges caps={caps} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Card title="Passive URL features">
+          <p className="text-base-content/50 mb-2">
+            From captured values/names — prioritization only, not a Finding.
+          </p>
+          {hasUrlFeatures ? (
+            <>
+              {field("Score", <UrlScoreChip score={urlFeatures.score as number} />)}
+              {field("NRS", <NrsBadge nrs={!!urlFeatures.possible_network_resource} />)}
+              {field(
+                "Category",
+                <SinkCategoryBadge
+                  category={
+                    (urlFeatures.name_category as string) ||
+                    (Array.isArray(urlFeatures.name_categories)
+                      ? (urlFeatures.name_categories[0] as string)
+                      : null)
+                  }
+                />,
+              )}
+              {field(
+                "Looks like",
+                Array.isArray(urlFeatures.looks_like) && urlFeatures.looks_like.length
+                  ? (urlFeatures.looks_like as string[]).join(", ")
+                  : "—",
+              )}
+              {field(
+                "Protocols",
+                Array.isArray(urlFeatures.protocols_seen) && urlFeatures.protocols_seen.length
+                  ? (urlFeatures.protocols_seen as string[]).join(", ")
+                  : "—",
+              )}
+              {field(
+                "Evidence",
+                Array.isArray(urlFeatures.evidence) && urlFeatures.evidence.length
+                  ? (urlFeatures.evidence as string[]).slice(0, 8).join(", ")
+                  : "—",
+              )}
+            </>
+          ) : (
+            <span className="text-base-content/40">
+              No passive URL features on this profile yet (older capture or score 0).
+            </span>
+          )}
+        </Card>
+
+        <Card title="Active URL sink (canaries)">
+          <p className="text-base-content/50 mb-2">
+            Benign characterization probes (<span className="mono">talos-canary.invalid</span>).
+            Accept/redirect/fetch/DNS signals are behavioral evidence for prioritization, not
+            confirmed SSRF.
+          </p>
+          {hasUrlSink ? (
+            <>
+              {field("Confidence", urlSink.confidence ?? "—")}
+              {field(
+                "Accepts",
+                <span className="flex flex-wrap gap-y-1">
+                  {boolDot(urlSink.accepts_url, "url")}
+                  {boolDot(urlSink.accepts_hostname, "hostname")}
+                  {boolDot(urlSink.accepts_ip, "ip")}
+                  {boolDot(urlSink.accepts_path, "path")}
+                  {boolDot(urlSink.accepts_unc, "unc")}
+                  {boolDot(urlSink.accepts_protocol, "protocol")}
+                </span>,
+              )}
+              {field(
+                "Accepted protocols",
+                Array.isArray(urlSink.accepted_protocols) && urlSink.accepted_protocols.length
+                  ? (urlSink.accepted_protocols as string[]).join(", ")
+                  : "—",
+              )}
+              {field(
+                "Redirect",
+                urlSink.redirect_behavior === true
+                  ? "yes"
+                  : urlSink.redirect_behavior === false
+                    ? "no"
+                    : "—",
+              )}
+              {field(
+                "Fetch",
+                urlSink.fetch_behavior === true
+                  ? "yes"
+                  : urlSink.fetch_behavior === false
+                    ? "no"
+                    : "—",
+              )}
+              {field(
+                "DNS detected",
+                urlSink.dns_resolution_detected === true
+                  ? "yes"
+                  : urlSink.dns_resolution_detected === false
+                    ? "no"
+                    : "—",
+              )}
+              {field("Validation", urlSink.validation_behavior || "—")}
+              {field(
+                "Error classes",
+                Array.isArray(urlSink.error_classes) && urlSink.error_classes.length
+                  ? (urlSink.error_classes as string[]).join(", ")
+                  : "—",
+              )}
+            </>
+          ) : (
+            <span className="text-base-content/40">
+              No active URL-sink characterization yet. Run IV (types + url_sink probes) then
+              Synthesize.
+            </span>
+          )}
+        </Card>
       </div>
 
       {candidates.length > 0 && (
