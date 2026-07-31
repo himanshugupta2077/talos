@@ -146,6 +146,20 @@ def test_hostname_not_filename() -> None:
     assert feat["possible_hostname"] is True
 
 
+def test_pdf_filename_not_hostname_or_url_sink() -> None:
+    """QA: report.pdf must stay semantic_type=filename, not network resource."""
+    params = extract_flow_params(
+        query="file=report.pdf",
+        request_body=None,
+        request_headers={},
+    )
+    p = params[0]
+    assert p.semantic_type == "filename"
+    feat = json.loads(p.url_features)
+    assert feat["possible_hostname"] is False
+    assert feat["possible_network_resource"] is False
+
+
 def test_ftp_scheme_semantic_url() -> None:
     params = extract_flow_params(
         query="src=ftp://files.example/a",
@@ -240,6 +254,32 @@ def test_upsert_upgrades_url_features_score(project_db: Path) -> None:
     assert feat["score"] >= 90
     assert row["semantic_type"] == "url"
     assert row["seen_count"] == 2
+
+
+def test_upsert_works_without_caller_row_factory(project_db: Path) -> None:
+    """QA: upsert must not require callers to set sqlite3.Row."""
+    params = extract_flow_params(
+        query="abc=https%3A%2F%2Fcdn.example%2Fx",
+        request_body=None,
+        request_headers={},
+    )
+    with sqlite3.connect(str(project_db)) as conn:
+        # Default tuple rows — no row_factory.
+        assert conn.row_factory is None
+        endpoint_id = _seed_endpoint(conn)
+        upsert_endpoint_params(conn, endpoint_id, params)
+        # Second call exercises UPDATE path.
+        upsert_endpoint_params(conn, endpoint_id, params)
+        conn.commit()
+        row = conn.execute(
+            "SELECT seen_count, url_features, semantic_type FROM parameters "
+            "WHERE endpoint_id = ? AND name = 'abc'",
+            (endpoint_id,),
+        ).fetchone()
+    assert row[0] == 2
+    assert row[2] == "url"
+    feat = json.loads(row[1])
+    assert feat["score"] >= 90
 
 
 def test_migrate_adds_url_features_column(tmp_path: Path) -> None:

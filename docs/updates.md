@@ -33,6 +33,12 @@ IV URL canary probes, `network_resource_sink` capabilities, candidate rewrite
 `talos/projects/parameters.py`, `talos/projects/db.py` (v53),
 `tests/test_url_sink_*.py`, docs.
 
+**QA follow-up (same phase):** filename/hostname collision fixed (`report.pdf` is
+no longer a network resource); `upsert_endpoint_params` sets `sqlite3.Row`
+internally so callers need not configure row_factory; catalog gaps filled
+(`preview`, `reset`, …); multi-word token name match (`HTTPSRedirect` → redirect);
+shared value classify in extract path.
+
 ---
 
 ## AI Layer Phase E — markdown KB + draft findings + session export (core CLI)

@@ -206,3 +206,15 @@ def test_to_dict_shape() -> None:
     assert "name_categories" in d
     assert "normalized" in d
     assert isinstance(d["name_categories"], list)
+
+
+def test_multi_word_token_match_redirect() -> None:
+    """https_redirect / HTTPSRedirect should hit redirect via token membership."""
+    c = classify_name("HTTPSRedirect")
+    assert CATEGORY_REDIRECT in c.name_categories
+
+
+@pytest.mark.parametrize("name", ["preview", "preview_url", "reset", "previewUrl"])
+def test_preview_reset_in_catalog(name: str) -> None:
+    c = classify_name(name)
+    assert c.name_categories, f"{name!r} should match a catalog category"

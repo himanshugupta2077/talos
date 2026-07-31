@@ -112,6 +112,20 @@ _IPV4_RE = re.compile(
     r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$",
 )
 
+# Last-label "TLDs" that are almost always file extensions, not domains.
+# Prevents report.pdf / photo.png / script.js from scoring as hostnames.
+_FILE_EXTENSIONS: frozenset[str] = frozenset({
+    "7z", "apk", "avi", "bat", "bmp", "bz2", "c", "cfg", "conf", "cpp",
+    "css", "csv", "dat", "db", "dll", "doc", "docx", "dmg", "eot", "env",
+    "exe", "gif", "go", "gz", "h", "htm", "html", "ico", "ini", "jar",
+    "java", "jpeg", "jpg", "js", "json", "jsx", "key", "less", "lock",
+    "log", "m3u8", "map", "md", "mjs", "mov", "mp3", "mp4", "otf", "pdf",
+    "pem", "php", "pkg", "png", "ppt", "pptx", "ps1", "py", "rar", "rb",
+    "rs", "scss", "sh", "so", "svg", "tar", "tgz", "toml", "ts", "tsx",
+    "ttf", "txt", "vue", "wasm", "wav", "webm", "webp", "woff", "woff2",
+    "xhtml", "xls", "xlsx", "xml", "xz", "yaml", "yml", "zip",
+})
+
 # Score threshold for inventory flag possible_network_resource
 NETWORK_RESOURCE_SCORE_THRESHOLD: int = 45
 
@@ -501,6 +515,35 @@ def _try_path(
     return 0
 
 
+def _is_likely_filename(value: str) -> bool:
+    """
+    Purpose:
+        True when value looks like a basename with a common file extension
+        (e.g. report.pdf, jquery.min.js) rather than a network hostname.
+    Input:
+        value — candidate string (no path separators expected).
+    Output:
+        bool
+    Side effects: None.
+    """
+    if not value or "/" in value or "\\" in value or " " in value:
+        return False
+    if "." not in value:
+        return False
+    # Reject scheme-like prefixes
+    if "://" in value:
+        return False
+    ext = value.rsplit(".", 1)[-1].lower()
+    if not ext or ext not in _FILE_EXTENSIONS:
+        return False
+    # Must have a non-empty stem; multi-dot (a.b.js) still filename when
+    # last label is a known extension.
+    stem = value[: -(len(ext) + 1)]
+    if not stem or stem.startswith("."):
+        return False
+    return True
+
+
 def _try_hostname(
     raw: str,
     flags: dict[str, bool],
@@ -512,11 +555,18 @@ def _try_hostname(
     # Strip trailing path from hostname/path form: example.com/path
     if "/" in raw and not raw.startswith("/"):
         host_part = raw.split("/", 1)[0]
-        if _HOSTNAME_RE.match(host_part) or host_part.lower() == "localhost":
+        if (
+            not _is_likely_filename(host_part)
+            and (_HOSTNAME_RE.match(host_part) or host_part.lower() == "localhost")
+        ):
             candidate = host_part
             flags["possible_path"] = True
             if "path" not in looks:
                 looks.append("path")
+
+    # Filenames like report.pdf must not score as hostnames (TLD collision).
+    if _is_likely_filename(candidate):
+        return 0
 
     if candidate.lower() == "localhost":
         flags["possible_hostname"] = True

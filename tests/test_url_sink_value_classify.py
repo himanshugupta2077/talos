@@ -233,3 +233,36 @@ def test_url_enriches_hostname_flags() -> None:
     assert feat.possible_url_value is True
     assert feat.possible_ip is True
     assert feat.score >= 90
+
+
+# ---------------------------------------------------------------------------
+# Filename vs hostname (QA regression)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "report.pdf",
+        "photo.png",
+        "script.js",
+        "style.css",
+        "data.json",
+        "index.html",
+        "archive.zip",
+        "jquery.min.js",
+        "bundle.min.css",
+    ],
+)
+def test_filenames_are_not_hostnames(value: str) -> None:
+    """Common basenames must not score as domains (TLD/extension collision)."""
+    feat = classify_value(value)
+    assert feat.possible_hostname is False
+    assert feat.possible_domain is False
+    assert feat.possible_network_resource is False
+    assert feat.score < NETWORK_RESOURCE_SCORE_THRESHOLD
+
+
+def test_real_hostname_still_detected() -> None:
+    feat = classify_value("cdn.example.com")
+    assert feat.possible_hostname is True
+    assert feat.possible_network_resource is True

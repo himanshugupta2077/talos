@@ -41,7 +41,8 @@ from urllib.parse import parse_qsl, quote
 from xml.etree import ElementTree
 
 from talos.url_sink.features import compose_url_features
-from talos.url_sink.value_classify import classify_value
+from talos.url_sink.name_classify import classify_name
+from talos.url_sink.value_classify import UrlValueFeatures, classify_value
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +288,8 @@ def upsert_endpoint_params(
     Purpose:
         Persist a batch of parameter observations for one endpoint.
         Inserts on first observation; updates on subsequent flows with type
-        upgrades, example accumulation, role/module tracking, and reflection
-        intelligence.
+        upgrades, example accumulation, role/module tracking, reflection
+        intelligence, and url_features merge.
     Input:
         conn        - Open SQLite connection; caller manages the transaction.
         endpoint_id - UUID of the resolved endpoint.
@@ -297,12 +298,32 @@ def upsert_endpoint_params(
     Side effects:
         - Inserts or updates rows in the parameters table.
         - Never deletes existing rows.
+        - Temporarily sets conn.row_factory = sqlite3.Row for named column
+          access, then restores the previous factory (callers need not
+          configure Row themselves).
     """
     refl_map: dict[tuple[str, str], ReflectionObservation] = {}
     if reflections:
         for obs in reflections:
             refl_map[(obs.param_name, obs.location)] = obs
 
+    # Named column access regardless of caller's row_factory (local single-user
+    # callers sometimes use default tuple rows).
+    previous_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        _upsert_endpoint_params_rows(conn, endpoint_id, params, refl_map)
+    finally:
+        conn.row_factory = previous_factory
+
+
+def _upsert_endpoint_params_rows(
+    conn: sqlite3.Connection,
+    endpoint_id: str,
+    params: list[ExtractedParam],
+    refl_map: dict[tuple[str, str], ReflectionObservation],
+) -> None:
+    """Inner upsert loop requiring conn.row_factory = sqlite3.Row."""
     for param in params:
         row = conn.execute(
             """
@@ -498,12 +519,17 @@ def _make_param(
     """
     value = sample_value if sample_value is not None else ""
     ptype = param_type if param_type is not None else _scalar_type(value)
+    # Classify once; share between semantic_type and url_features.
+    vf = classify_value(value)
+    nf = classify_name(name)
     stype = (
         semantic_type
         if semantic_type is not None
-        else _semantic_type(name, value)
+        else _semantic_type(name, value, value_features=vf)
     )
-    features = compose_url_features(name=name, value=value)
+    features = compose_url_features(
+        name=name, value=value, value_features=vf, name_features=nf,
+    )
     return ExtractedParam(
         name=name,
         location=location,
@@ -889,7 +915,12 @@ def _scalar_type(value: str) -> str:
     return "string"
 
 
-def _semantic_type(name: str, value: str) -> str:
+def _semantic_type(
+    name: str,
+    value: str,
+    *,
+    value_features: UrlValueFeatures | None = None,
+) -> str:
     """
     Classify a parameter by its security-relevant semantic type using
     both value patterns and name heuristics.
@@ -898,6 +929,10 @@ def _semantic_type(name: str, value: str) -> str:
     map to semantic_type=url even without a name hint. Hostnames that score as
     network resources stay string (not filename). IPs remain ip.
 
+    Input:
+        name / value — parameter identity.
+        value_features — optional precomputed classify_value result (avoids
+                         double work when called from _make_param).
     Returns one of: uuid | jwt | email | objectid | url | ip | hash |
                     timestamp | filename | boolean | integer | float |
                     array | string | unknown
@@ -927,7 +962,12 @@ def _semantic_type(name: str, value: str) -> str:
         return "ip"
 
     # Value-first URL detection via url_sink classifier (broader than https?://).
-    vf = classify_value(check_value)
+    # Recompute only when the stripped check_value differs from raw value
+    # (auth prefixes) or when no precomputed features were supplied.
+    if value_features is not None and check_value == value:
+        vf = value_features
+    else:
+        vf = classify_value(check_value)
     if vf.possible_ip and not vf.possible_url_value:
         return "ip"
     if vf.possible_url_value or (
@@ -944,13 +984,21 @@ def _semantic_type(name: str, value: str) -> str:
         return "timestamp"
     if _ISO_DATE_RE.match(check_value):
         return "timestamp"
-    # Hostname / domain: never misclassify as filename (network resource shape).
-    if vf.possible_hostname or vf.possible_domain or _HOSTNAME_RE.match(check_value):
+    # Hostname / domain from url_sink first (excludes file-extension collisions
+    # like report.pdf; keeps real multi-label hosts like cdn.example.com).
+    if vf.possible_hostname or vf.possible_domain:
         return "string"
-    if _FILENAME_RE.match(check_value) and "." in check_value:
-        # Skip filename when the leaf name is a known URL-ish sink category
-        # with a value that is only weakly path-like — still allow real files.
+    # File basenames (report.pdf, photo.png) — after hostname so multi-label
+    # domains are not swallowed by the broad _FILENAME_RE (ends with .com etc.).
+    if (
+        _FILENAME_RE.match(check_value)
+        and "." in check_value
+        and not vf.possible_url_value
+        and not vf.possible_ip
+    ):
         return "filename"
+    if _HOSTNAME_RE.match(check_value):
+        return "string"
     # Only treat 'true'/'false'/'yes'/'no' as boolean — not '1'/'0' which are
     # more often integers in API contexts.
     if check_value.lower() in {"true", "false", "yes", "no"}:

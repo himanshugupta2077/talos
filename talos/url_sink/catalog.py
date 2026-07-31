@@ -271,6 +271,14 @@ _REMOTE_FETCH_NAMES: frozenset[str] = frozenset({
     "asset",
     "asset_url",
     "asseturl",
+    "preview",
+    "preview_url",
+    "previewurl",
+    "reset",
+    "reset_url",
+    "reseturl",
+    "fetch_url",
+    "fetchurl",
     "canonical",
     "website",
     "site",
@@ -416,6 +424,9 @@ _REMOTE_ASSET_NAMES: frozenset[str] = frozenset({
     "script",
     "script_url",
     "scripturl",
+    "preview",
+    "preview_url",
+    "previewurl",
 })
 
 _IMPORT_METADATA_NAMES: frozenset[str] = frozenset({

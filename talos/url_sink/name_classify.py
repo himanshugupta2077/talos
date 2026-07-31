@@ -146,6 +146,11 @@ def classify_name(name: str | None) -> NameClassification:
         )
 
     matches: list[str] = []
+    # Underscore tokens (len>=3) for multi-word names e.g. https_redirect → redirect.
+    # Skip very short tokens (id, to, go) to limit over-matching inside compounds;
+    # exact full-name match below still covers short catalog keys.
+    tokens = [t for t in normalized.split("_") if len(t) >= 3]
+
     # Exact normalized match against each category set.
     for category, names in NAME_CATEGORIES.items():
         if normalized in names:
@@ -156,9 +161,11 @@ def classify_name(name: str | None) -> NameClassification:
         if compact and compact in names:
             matches.append(category)
             continue
-        # Token-contains for multi-word: image_url matches via exact image_url
-        # already; also match when normalized equals a catalog key after
-        # stripping trailing _url / _uri / _href.
+        # Token membership: post_login → login; https_redirect → redirect.
+        if any(tok in names for tok in tokens):
+            matches.append(category)
+            continue
+        # Stem after stripping trailing _url / _uri / _href / _link / _path.
         for suffix in ("_url", "_uri", "_href", "_link", "_path"):
             if normalized.endswith(suffix):
                 stem = normalized[: -len(suffix)]
