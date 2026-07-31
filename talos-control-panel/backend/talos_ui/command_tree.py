@@ -627,6 +627,91 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.auth-session",
+        "label": "Attack — Auth-Session Testing",
+        "commands": [
+            cmd(
+                "attack.auth-session.bind",
+                ["attack", "auth-session", "bind"],
+                "Bind an auth_config header/cookie to jwt auth type",
+                [
+                    arg(
+                        "type",
+                        flag="--type",
+                        kind="select",
+                        options=["jwt"],
+                        default="jwt",
+                        help="Auth type (v1: jwt only)",
+                    ),
+                    arg("header", flag="--header", help="Header name already in auth_config"),
+                    arg("cookie", flag="--cookie", help="Cookie name already in auth_config"),
+                    arg("role", flag="--role", help="Optional preferred role name or UUID"),
+                    arg(
+                        "config_json",
+                        flag="--config-json",
+                        help="Optional binding config JSON string",
+                    ),
+                ],
+            ),
+            cmd(
+                "attack.auth-session.unbind",
+                ["attack", "auth-session", "unbind"],
+                "Remove a binding (refuses protected candidate states)",
+                [
+                    arg("header", flag="--header", help="Header field name"),
+                    arg("cookie", flag="--cookie", help="Cookie field name"),
+                    arg("id", flag="--id", help="Binding UUID"),
+                    arg(
+                        "force",
+                        flag="--force",
+                        kind="boolean",
+                        help="Cascade-delete pending/rejected candidates first",
+                    ),
+                ],
+            ),
+            cmd(
+                "attack.auth-session.generate",
+                ["attack", "auth-session", "generate"],
+                "Create pending JWT mutation candidates (no HTTP)",
+                [
+                    arg("binding", flag="--binding", help="Limit to one binding UUID"),
+                    arg("flow", flag="--flow", help="Explicit baseline flow UUID"),
+                    arg("endpoint", flag="--endpoint", help="One testable endpoint UUID"),
+                    arg(
+                        "module",
+                        flag="--module",
+                        help="Module name/UUID (mutex with endpoint)",
+                    ),
+                    arg("role", flag="--role", help="Prefer role-tagged flows"),
+                    arg(
+                        "test_id",
+                        flag="--test-id",
+                        kind="multi",
+                        help="Repeatable: only these test_ids",
+                    ),
+                    arg(
+                        "family",
+                        flag="--family",
+                        kind="multi",
+                        help="Repeatable: signature, algorithm, claims, …",
+                    ),
+                    arg(
+                        "force_refresh",
+                        flag="--force-refresh",
+                        kind="boolean",
+                        help="Refresh pending/rejected metadata only",
+                    ),
+                    arg(
+                        "include_unsafe_methods",
+                        flag="--include-unsafe-methods",
+                        kind="boolean",
+                        help="Allow POST/PUT/PATCH/DELETE baselines",
+                    ),
+                ],
+            ),
+        ],
+    },
+    {
         "group": "attack.bac",
         "label": "Attack — BAC",
         "commands": [

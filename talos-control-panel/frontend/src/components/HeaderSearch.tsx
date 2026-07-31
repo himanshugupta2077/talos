@@ -25,7 +25,13 @@ const JUMP_ITEMS: JumpItem[] = [
     group: "Model",
     keywords: "access matrix coverage signals client server bac idor allow deny",
   },
-  { id: "auth", label: "Authentication", path: "/auth", group: "Model", keywords: "session cookie" },
+  {
+    id: "auth",
+    label: "Authentication",
+    path: "/auth",
+    group: "Model",
+    keywords: "session cookie role session auth_config not jwt mutation",
+  },
   {
     id: "repeater",
     label: "Repeater",
@@ -42,7 +48,7 @@ const JUMP_ITEMS: JumpItem[] = [
     label: "Testing modules",
     path: "/testing",
     group: "Testing",
-    keywords: "unauth bac secret passive active input validation modules attack",
+    keywords: "unauth bac auth-session jwt secret passive active input validation modules attack",
   },
   {
     id: "testing-unauth",
@@ -57,6 +63,14 @@ const JUMP_ITEMS: JumpItem[] = [
     path: "/testing/bac",
     group: "Testing",
     keywords: "broken access control attack active idor",
+  },
+  {
+    id: "testing-auth-session",
+    label: "Auth-Session Testing",
+    path: "/testing/auth-session",
+    group: "Testing",
+    keywords:
+      "jwt mutation weak validation alg none token auth-session attack active not auth page",
   },
   {
     id: "testing-secrets",

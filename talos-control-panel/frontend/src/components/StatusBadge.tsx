@@ -4,6 +4,7 @@ const COLOR_MAP: Record<string, string> = {
   SAME: "badge-success",
   POSSIBLE_BAC: "badge-error",
   BYPASS: "badge-error",
+  WEAK_VALIDATION: "badge-error",
   DIFFERENT: "badge-warning",
   UNKNOWN: "badge-ghost",
   ERROR: "badge-error",
@@ -12,8 +13,10 @@ const COLOR_MAP: Record<string, string> = {
   CONFIRMED: "badge-error",
   REJECTED: "badge-ghost",
   DUPLICATE: "badge-ghost",
-  // scheduler / job status
+  // scheduler / job / candidate status
   pending: "badge-warning",
+  approved: "badge-info",
+  rejected: "badge-ghost",
   running: "badge-info",
   done: "badge-success",
   failed: "badge-error",

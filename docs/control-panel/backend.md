@@ -33,7 +33,8 @@ backend/
         ├── send.py              # Repeater / Mode 2 send (in-process engine)
         ├── scheduler.py
         ├── mutations.py
-        ├── attack.py
+        ├── attack.py                 # Unauth/BAC + includes attack_auth_session
+        ├── attack_auth_session.py    # Auth-Session Testing routes (under /api/attack)
         ├── input_validation.py
         ├── findings.py
         ├── console.py

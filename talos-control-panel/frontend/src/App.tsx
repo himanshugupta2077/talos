@@ -19,6 +19,7 @@ import Scheduler from "./pages/Scheduler";
 import Attack from "./pages/Attack";
 import UnauthModule from "./pages/attack/modules/UnauthModule";
 import BacModule from "./pages/attack/modules/BacModule";
+import AuthSessionModule from "./pages/attack/modules/AuthSessionModule";
 import IntruderModule from "./pages/attack/modules/IntruderModule";
 import LegacySecretRedirect from "./pages/attack/LegacySecretRedirect";
 import LegacyIvRedirect from "./pages/attack/LegacyIvRedirect";
@@ -65,6 +66,7 @@ export default function App() {
               <Route path="/testing" element={<Attack />} />
               <Route path="/testing/unauth" element={<UnauthModule />} />
               <Route path="/testing/bac" element={<BacModule />} />
+              <Route path="/testing/auth-session" element={<AuthSessionModule />} />
               <Route path="/testing/intruder" element={<IntruderModule />} />
               <Route path="/testing/secrets" element={<SecretDetection />} />
               <Route

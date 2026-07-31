@@ -18,6 +18,7 @@ export type AttackRisk = "none" | "low" | "medium" | "high";
 export type AttackKpiSource =
   | "unauth"
   | "bac"
+  | "auth_session"
   | "secrets"
   | "iv"
   | "errors"
@@ -159,6 +160,28 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "parser-confuse",
     ],
     kpi: "bac",
+  },
+  {
+    id: "auth-session",
+    class: "active",
+    name: "Auth-Session Testing",
+    description:
+      "Mutate presented JWTs (alg, signature, claims, structure) to detect weak validation. Approve-first; one HTTP request per approved test.",
+    risk: "medium",
+    status: "available",
+    path: `${TESTING_BASE}/auth-session`,
+    keywords: [
+      "auth-session",
+      "jwt",
+      "alg none",
+      "token validation",
+      "signature",
+      "claims",
+      "kid",
+      "WEAK_VALIDATION",
+      "jwt mutation",
+    ],
+    kpi: "auth_session",
   },
   {
     id: "iv",

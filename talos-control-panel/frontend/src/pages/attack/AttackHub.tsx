@@ -78,6 +78,41 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // Auth-Session Testing (active JWT mutation — K7 chips)
+    api
+      .get<{
+        counts: Record<string, number>;
+        candidates_by_status: Record<string, number>;
+      }>("/api/attack/auth-session/summary", { project_id: pid })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const by = summary.candidates_by_status || {};
+        const weak = c.WEAK_VALIDATION ?? 0;
+        const pending = by.pending ?? 0;
+        const approved = by.approved ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          auth_session: {
+            chips: [
+              { label: "weak", value: weak, tone: weak > 0 ? "danger" : "muted" },
+              {
+                label: "pending",
+                value: pending,
+                tone: pending > 0 ? "warn" : "muted",
+              },
+              {
+                label: "approved",
+                value: approved,
+                tone: approved > 0 ? "ok" : "muted",
+              },
+            ],
+            // Phase 2 posture (K15)
+            statusLine: "Inventory — generate OK; approve next",
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Secrets (passive)
     api
       .get<{

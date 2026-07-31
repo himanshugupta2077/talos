@@ -2,6 +2,36 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-Session Testing Control Panel — Phase 1 & 2
+
+**Shipped:** 2026-07-31 · design `docs/Auth-Session-Testing-Control-Panel-Design.md`.
+
+Control Panel surfaces for the shipped `talos attack auth-session` engine (JWT
+mutation / weak token validation). Progressive tabs; core engine unchanged.
+
+| Phase | Deliverable |
+|-------|-------------|
+| **1** | Hub card + KPIs (weak/pending/approved), Overview + Bindings read inventory, route `/testing/auth-session` |
+| **2** | Bind / unbind / generate mutations (CLI SoT), Candidates generate + list/detail; bulk approve still Phase 3 |
+
+| Area | Detail |
+|------|--------|
+| **API** | `/api/attack/auth-session/summary\|overview\|bindings\|candidates` + POST bind/unbind/generate (`attack_auth_session.py`) |
+| **Console** | `command_tree` group `attack.auth-session` (bind, unbind, generate) |
+| **UI** | Tabs Overview \| Bindings \| Candidates; hub statusLine “Inventory — generate OK; approve next” |
+| **Docs** | `docs/control-panel/pages.md` Auth-Session module section |
+
+```bash
+# CP mutations map to:
+talos attack auth-session bind --type jwt --header Authorization
+talos attack auth-session generate --endpoint <uuid>
+# Approve/run still CLI until Phase 3–4 UI:
+talos attack auth-session approve --all-pending
+talos attack auth-session run
+```
+
+---
+
 ## Auth-session engine — Phase 5 QA fixes
 
 **Shipped:** 2026-07-31 · follow-up to Phase 5 polish.

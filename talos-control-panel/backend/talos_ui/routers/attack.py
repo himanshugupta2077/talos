@@ -2,8 +2,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import cli, config, db
+from . import attack_auth_session
 
 router = APIRouter(prefix="/api/attack", tags=["attack"])
+
+# Auth-Session Testing (helpers live in attack_auth_session.py — K20).
+router.include_router(attack_auth_session.router)
 
 BAC_TECHNIQUES = [
     "session-swap", "method-fuzz", "content-type", "url-fuzz",
