@@ -2204,11 +2204,12 @@ name classification via `talos.url_sink`).
 URL Sink Discovery Phase 2 (still v53): structure discovery expands inventory —
 encoded JSON dotted paths, JWT virtual claims, expanded/value-first headers,
 HTML/JS response params (`location=response`); no schema bump.
-Auth-session engine foundation (v54): `auth_session_bindings`,
+Auth-session engine (v54): `auth_session_bindings`,
 `auth_session_candidates`, `auth_session_results` for the Authentication &
 Session Testing package (`talos.auth_session` — attack engine; distinct from
-`data_dir/auth_sessions/` manual role session files). Phase 1 lands schema +
-JWT library only; CLI/engine in later phases.
+`data_dir/auth_sessions/` manual role session files). Phase 1: schema + JWT
+library. Phase 2: bind/generate/approve/reject CLI (no HTTP). Engine +
+scheduler job type in Phase 3; decision filter + findings in Phase 4.
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
@@ -2463,7 +2464,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Out-of-scope domain list — per-project block list that overrides the scope allow-list; enforced at proxy capture and worker persist; CLI via `talos project outscope` (`talos.projects.outscope`, `talos.projects.outscope_cli`)
 - [x] HTTP Manipulation Engine — single declarative rule engine for request **and** response modification; replaces former `capture.header_rules` + `request_mutations` / `talos mutation`; rules in layered `http.rules` (global + project concatenated, priority-sorted); match conditions (host/path/method/status/headers/endpoint/context); actions (headers, cookies, query, URL/method, body, status, delay/drop/abort); master switch `http.enabled`; CLI `talos config http` (list/show/create/delete/enable/disable/set-priority/set-match/add-action/export/import/…); proxy `request()` + `response()` hooks (`talos.configuration.http_engine`, `talos.configuration.http_rules`, `talos.configuration.http_cli`)
 - [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip BYPASS→SECURE (`talos attack unauth filter apply [--dry-run] [--force]`, `talos.projects.unauth.reclassify`); exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
-- [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with Phase-1 algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry. CLI / engine / findings in Phases 2–4 (`docs/design-auth-session-testing-engine.md`)
+- [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with Phase-1 algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry (`docs/design-auth-session-testing-engine.md`)
+- [x] Auth-session bindings & candidates (Phase 2) — `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list`; insert-if-absent generate; operator approve lifecycle; no HTTP/scheduler yet (Phases 3–4)
 - [x] Broken Access Control (BAC) — access-matrix candidate generation, eight attack modules + parser-confuse, decision filter, scoped `--endpoint`/`--module NAME|UUID`/`--role NAME|UUID`, results in `bac_results`, findings on `POSSIBLE_BAC`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip POSSIBLE_BAC→SECURE (`talos attack bac filter apply [--dry-run] [--force]`, `talos.projects.bac.reclassify`) (`talos.projects.bac`)
 - [x] Input Validation Engine — eight analysis phases via scheduler job types `iv_*`; disabled by default; parameter cache tables; CLI `talos input-validation` (`talos.input_validation`)
 - [x] IV Evidence Foundations (Module 1) — `ResponseFingerprint` + `compare_fingerprints` + `classify_outcome` + `IV_PROFILE_SCHEMA_VERSION` / `profile_envelope`; pure helpers only (no change to default probe matrix / request volume); tests in `tests/test_iv_fingerprint.py` (`talos.input_validation.fingerprint`, `talos.input_validation.outcomes`)

@@ -2,6 +2,44 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 2 bindings & candidate lifecycle
+
+**Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
+
+Operator path for Authentication & Session Testing: bind auth fields to JWT,
+generate deterministic mutation candidates, approve/reject. **No HTTP** and
+**no scheduler** yet (Phase 3).
+
+| Deliverable | Detail |
+|-------------|--------|
+| **DB CRUD** | `talos/auth_session/db.py` — bindings + candidates; fingerprint helper; approve/reject transitions |
+| **Config** | `config.py` — safe methods, claim-elevation defaults, binding `config_json` parse |
+| **Extract** | `extract.py` — header/cookie field locate + `TokenContext` via analyzer |
+| **Generate** | `candidates.py` — insert-if-absent; `--force-refresh` pending/rejected only; safe-method default; baseline order (`--flow` → policy baseline → JWT-bearing prefer) |
+| **CLI** | `talos attack auth-session bind\|unbind\|show-bindings\|generate\|candidates\|approve\|reject\|suite list` |
+| **Wiring** | `attack_cli.py`, Talos Helper (`talos --help`) |
+
+```bash
+talos auth set --header Authorization
+talos attack auth-session bind --type jwt --header Authorization
+talos attack auth-session generate --endpoint <uuid>
+talos attack auth-session candidates list --status pending
+talos attack auth-session approve --all-pending --test-id jwt.alg_none
+# Phase 3: talos attack auth-session run …
+talos attack auth-session suite list --type jwt --alg RS256
+```
+
+**Lifecycle:** `pending` → `approved`/`rejected` (CLI); re-approve `failed`/`done` for re-test.
+`run` / results / findings arrive in Phases 3–4.
+
+**Tests:** `tests/test_auth_session_db.py`, `test_auth_session_candidates.py`,
+`test_auth_session_cli.py` (+ Phase 1 suite).
+
+**Files:** `talos/auth_session/{db,config,extract,candidates,cli}.py`,
+`talos/projects/attack_cli.py`, `talos/__main__.py`, docs.
+
+---
+
 ## Auth-session engine — Phase 1 foundation (schema + JWT library)
 
 **Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.

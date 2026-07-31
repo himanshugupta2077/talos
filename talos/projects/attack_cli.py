@@ -5,12 +5,18 @@ Purpose:
     Command-line interface for the attack module root.
     Entry point for: talos attack unauth <subcommand>
                      talos attack bac <module>
+                     talos attack auth-session <subcommand>
 
     Unauth commands (talos attack unauth):
       run     — Generate UNAUTH_ATTACK jobs for all testable endpoints using
                 auth mutations × request mutations composition.
       config  — Show or set unauth auto-run (scheduler auth_test auto-enqueue).
       filter  — Manage unauth-decision-filter.yaml (init | show | validate).
+
+    Auth-session commands (talos attack auth-session) — Phase 2+:
+      bind | unbind | show-bindings | generate | candidates | approve | reject
+      suite list
+      (run / results / filter land in Phases 3–4)
 
     BAC modules (talos attack bac):
       session-swap   — Direct session swap (replace target-role token).
@@ -35,13 +41,15 @@ Purpose:
     exclusion logic exists here.
 
 Dependencies: argparse, sys, talos.projects.manager,
-              talos.projects.unauth.cli, talos.projects.bac.cli
+              talos.projects.unauth.cli, talos.projects.bac.cli,
+              talos.auth_session.cli
 Data flow:
-    CLI args → active project lookup → unauth.cli / bac.cli → stdout
+    CLI args → active project lookup → unauth / bac / auth_session cli → stdout
 Side effects:
     - unauth run: inserts into scheduler_jobs.
     - unauth config: reads/writes attack_config.unauth_auto_run.
     - bac modules: inserts into scheduler_jobs.
+    - auth-session: bindings/candidates DB writes (no HTTP in Phase 2).
 """
 
 import argparse
@@ -59,11 +67,15 @@ def _build_parser() -> argparse.ArgumentParser:
     Purpose:
         Build the top-level 'talos attack' argument parser.
     Output:  Configured ArgumentParser.
-    Side effects: Imports bac.cli and unauth.cli for subparser registration.
+    Side effects: Imports bac/unauth/auth_session cli for subparser registration.
     """
     parser = argparse.ArgumentParser(
         prog="talos attack",
-        description="Attack modules: unauth (unauthenticated access) and bac (broken access control).",
+        description=(
+            "Attack modules: unauth (unauthenticated access), "
+            "auth-session (token validation mutations), "
+            "bac (broken access control)."
+        ),
     )
     sub = parser.add_subparsers(dest="attack_type", metavar="<attack>")
     sub.required = True
@@ -71,6 +83,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- unauth ---- #
     from talos.projects.unauth.cli import build_unauth_parser
     build_unauth_parser(sub)
+
+    # ---- auth-session ---- #
+    from talos.auth_session.cli import build_auth_session_parser
+    build_auth_session_parser(sub)
 
     # ---- bac ---- #
     from talos.projects.bac.cli import build_bac_parser
@@ -99,6 +115,10 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     if args.attack_type == "unauth":
         from talos.projects.unauth.cli import run_unauth_cli
         run_unauth_cli(manager, args)
+
+    elif args.attack_type == "auth-session":
+        from talos.auth_session.cli import run_auth_session_cli
+        run_auth_session_cli(manager, args)
 
     elif args.attack_type == "bac":
         from talos.projects.bac.cli import run_bac_cli

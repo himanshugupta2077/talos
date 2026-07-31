@@ -21,12 +21,15 @@ Naming note (KD1):
     which store manual role session files for ``auth-config``.
 
 Phase 1 (foundation): models, JWT codec/mutators, suite catalog, schema v54.
-Later phases: bindings CLI, candidate lifecycle, engine, scheduler, findings.
+Phase 2 (bindings & candidates): db, extract, candidates generate, CLI
+    (bind / generate / approve / reject / suite list). No HTTP / scheduler.
+
+Later phases: engine, scheduler job type, decision filter, findings.
 
 Dependencies: stdlib only for JWT mutations (base64, json); url_sink.jwt_claims
     for extract_jwt_token / decode_jwt_payload reuse.
 Data flow: binding → suite list_test_cases → candidates → (later) engine → results
-Side effects: Phase 1 modules are pure (no network, no DB writes except schema).
+Side effects: Phase 2 writes bindings/candidates tables; no network.
 """
 
 from __future__ import annotations

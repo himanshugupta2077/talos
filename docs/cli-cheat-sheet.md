@@ -1549,19 +1549,77 @@ talos attack unauth config --auto-run off
 
 ## Attack — Authentication & Session Testing (`auth-session`)
 
-**Status (Phase 1):** foundation only — package `talos.auth_session`, schema v54,
-JWT suite catalog / mutators. **Operator CLI is not wired yet** (Phase 2+).
+**Status (Phase 2):** bindings + candidate lifecycle wired. **No HTTP / run /
+results / findings yet** (Phases 3–4).
 
-| Future command surface | Purpose |
-|------------------------|---------|
-| `talos attack auth-session bind\|unbind\|show-bindings` | Map `auth_config` header/cookie → auth type (JWT first) |
-| `talos attack auth-session generate` | Create pending mutation candidates |
-| `talos attack auth-session candidates / approve / reject` | Review lifecycle |
-| `talos attack auth-session run` | Enqueue one job per approved test_id (Phase 3) |
-| `talos attack auth-session results / filter / suite list` | Results + decision filter (Phase 4) |
+Probes whether a *presented* credential is validated (signature, algorithm,
+claims, structure). Distinct from Unauth (auth removed/garbled) and BAC
+(valid other-role session).
 
-**Differentiation:** Unauth strips/garbles auth (presence); auth-session
-*mutates* token structure (validation); BAC swaps valid other-role sessions.
+### Prerequisites
+
+```bash
+talos auth set --header Authorization   # or --cookie name
+# Capture 2xx proxy traffic; qualify endpoints (endpoint policy)
+```
+
+### Bind auth field → type
+
+```bash
+talos attack auth-session bind --type jwt --header Authorization
+talos attack auth-session bind --type jwt --cookie access_token [--role admin]
+talos attack auth-session show-bindings [--format json]
+talos attack auth-session unbind --header Authorization [--force]
+```
+
+Binding field must already exist in `auth_config`. Unbind refuses when
+approved/running/done/failed candidates or result rows exist; `--force`
+cascade-deletes pending/rejected only.
+
+### Generate candidates (no HTTP)
+
+```bash
+talos attack auth-session generate --endpoint <uuid>
+talos attack auth-session generate --flow <uuid>
+talos attack auth-session generate --module <name|uuid>
+talos attack auth-session generate --test-id jwt.alg_none --family algorithm
+talos attack auth-session generate --force-refresh   # pending|rejected only
+talos attack auth-session generate --include-unsafe-methods  # allow POST/PUT/…
+```
+
+Default baselines: safe methods only (GET/HEAD/OPTIONS). Insert-if-absent on
+`(binding_id, test_id, baseline_flow_id)`.
+
+### Review / approve / reject
+
+```bash
+talos attack auth-session candidates list [--status pending] [--endpoint UUID] \
+  [--test-id ID] [--family FAM] [--format table|json]
+talos attack auth-session candidates show <candidate_id>
+talos attack auth-session approve <id> [<id>…]
+talos attack auth-session approve --all-pending [--endpoint UUID] [--test-id …]
+talos attack auth-session approve --retry-failed   # failed → approved (re-test)
+talos attack auth-session reject <id>… [--reason "…"]
+talos attack auth-session reject --all-pending
+```
+
+Statuses: `pending` → `approved` | `rejected`. Re-approve `failed`/`done` for
+re-test. `running`/`done`/`failed` after jobs are Phase 3.
+
+### Suite catalog
+
+```bash
+talos attack auth-session suite list --type jwt
+talos attack auth-session suite list --type jwt --alg RS256   # + Phase-1 degrade rows
+```
+
+### Later phases (not wired)
+
+| Command | Phase |
+|---------|-------|
+| `talos attack auth-session run` | 3 — one job per approved test_id |
+| `talos attack auth-session results` | 3 |
+| `talos attack auth-session filter` | 4 |
 
 Design: `docs/design-auth-session-testing-engine.md`.
 

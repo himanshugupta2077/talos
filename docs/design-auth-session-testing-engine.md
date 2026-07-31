@@ -5,7 +5,7 @@
 | **Document** | Design: Authentication & Session Testing Engine |
 | **Author** | Talos Engineering |
 | **Date** | 2026-07-31 |
-| **Status** | Phase 1 implemented (foundation); Phases 2–5 remaining |
+| **Status** | Phases 1–2 implemented (foundation + bindings/candidates CLI); Phases 3–5 remaining |
 | **Audience** | Senior engineers familiar with Talos attack modules |
 | **Related** | `docs/architecture.md`, `docs/cli-cheat-sheet.md`, `AGENTS.md` |
 
@@ -1299,33 +1299,33 @@ When told **“implement Phase N”**, an AI implementer should deliver **all PR
 
 ---
 
-### Phase 2: Bindings & candidate lifecycle (CLI, no HTTP)
+### Phase 2: Bindings & candidate lifecycle (CLI, no HTTP) — **DONE**
 
 **Goal:** Operators can bind auth fields to JWT, generate pending candidates from a flow/endpoint, list/show them, and approve/reject. Still **no** replay or scheduler execution.
 
 **Exit criteria:**
-- `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list` work against an active project.
-- Candidates persisted with status lifecycle; unique on `(binding_id, test_id, baseline_flow_id)`.
-- Generate respects endpoint policy / baseline selection order from design; skips when token not detectable.
-- Unit/integration tests for generate + approve transitions; no outbound HTTP in this phase.
+- [x] `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list` work against an active project.
+- [x] Candidates persisted with status lifecycle; unique on `(binding_id, test_id, baseline_flow_id)`.
+- [x] Generate respects endpoint policy / baseline selection order from design; skips when token not detectable.
+- [x] Unit/integration tests for generate + approve transitions; no outbound HTTP in this phase.
 
 **Depends on:** Phase 1
 
 **AI implementer scope:** PR 2.1 → 2.3. Wire CLI into `attack_cli` / help text. Do not implement `run` beyond a stub that errors with “not implemented” if needed—prefer omitting `run` until Phase 3.
 
-#### PR 2.1: Bindings + auth_session DB CRUD
+#### PR 2.1: Bindings + auth_session DB CRUD — **DONE**
 
 - **Files/components:** `talos/auth_session/db.py` (bindings + candidates CRUD); `talos/auth_session/config.py` (defaults, claim_elevation map); `tests/test_auth_session_db.py`.
 - **Dependencies:** Phase 1
 - **Description:** Read/write bindings and candidates; status transitions (`pending` → `approved`/`rejected`); fingerprint helpers (no full token storage).
 
-#### PR 2.2: Extract + candidate generation
+#### PR 2.2: Extract + candidate generation — **DONE**
 
 - **Files/components:** `talos/auth_session/extract.py`; `talos/auth_session/candidates.py`; `tests/test_auth_session_candidates.py`.
 - **Dependencies:** PR 2.1
 - **Description:** Locate JWT; **insert-if-absent** generate rules; `--force-refresh` only pending/rejected; safe-method default; baseline selection order.
 
-#### PR 2.3: Operator CLI (bind / generate / approve)
+#### PR 2.3: Operator CLI (bind / generate / approve) — **DONE**
 
 - **Files/components:** `talos/auth_session/cli.py`; `attack_cli.py`; `__main__.py`; tests.
 - **Dependencies:** PR 2.2
