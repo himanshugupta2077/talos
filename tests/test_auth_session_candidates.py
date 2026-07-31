@@ -288,3 +288,91 @@ def test_select_baselines_explicit_flow(db_path: Path) -> None:
     assert len(sels) == 1
     assert sels[0].source == "explicit_flow"
     assert sels[0].flow_id == FLOW_GET
+
+
+def test_prefer_role_over_baseline_when_role_has_jwt(db_path: Path) -> None:
+    """CLI/binding --role must prefer that role's JWT flow over baseline."""
+    from talos.auth_session.candidates import _prefer_jwt_bearing_flow
+    from talos.replay import db as replay_db
+
+    ROLE_A = "role-pref-a"
+    ROLE_B = "role-pref-b"
+    FLOW_ROLE_A = "flow-role-a-jwt"
+    jwt_a = _make_jwt(role="admin")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO roles (id, name) VALUES (?, ?)",
+            (ROLE_A, "pref-admin"),
+        )
+        conn.execute(
+            "INSERT INTO roles (id, name) VALUES (?, ?)",
+            (ROLE_B, "pref-user"),
+        )
+        # Extra flow for preferred role on EP_GET (baseline is FLOW_GET).
+        conn.execute(
+            """
+            INSERT INTO flows
+                (id, project_id, captured_at, method, url, host, path,
+                 query, request_headers, request_cookies, status_code,
+                 response_headers, content_type, endpoint_id, role_id,
+                 module_id, tags, source)
+            VALUES (?, ?, ?, 'GET', 'https://api.example.com/api/x',
+                    'api.example.com', '/api/x', '', ?, '{}', 200, '{}',
+                    'application/json', ?, ?, '', '[]', 'proxy_capture')
+            """,
+            (
+                FLOW_ROLE_A,
+                PROJECT_ID,
+                NOW,
+                json.dumps({"Authorization": f"Bearer {jwt_a}"}),
+                EP_GET,
+                ROLE_A,
+            ),
+        )
+        # Stamp baseline as ROLE_B so roles differ.
+        conn.execute(
+            "UPDATE flows SET role_id = ? WHERE id = ?",
+            (ROLE_B, FLOW_GET),
+        )
+        conn.commit()
+
+    binding = _bind(db_path)
+    primary = replay_db.get_flow_for_replay(db_path, FLOW_GET)
+    assert primary is not None
+    primary = dict(primary)
+    primary["_baseline_source"] = "baseline_policy"
+
+    chosen, source = _prefer_jwt_bearing_flow(
+        db_path, PROJECT_ID, EP_GET, binding, ROLE_A, primary
+    )
+    assert chosen is not None
+    assert chosen["id"] == FLOW_ROLE_A
+    assert source == "role_preferred"
+
+
+def test_prefer_does_not_return_non_jwt_primary(db_path: Path) -> None:
+    """If no JWT-bearing flow exists, return None (not a garbage baseline)."""
+    from talos.auth_session.candidates import _prefer_jwt_bearing_flow
+    from talos.replay import db as replay_db
+
+    binding = _bind(db_path)
+    primary = replay_db.get_flow_for_replay(db_path, FLOW_NO_JWT)
+    assert primary is not None
+    # Only FLOW_NO_JWT on a dedicated endpoint would be ideal; here primary
+    # is non-JWT but EP_GET still has FLOW_GET with JWT → falls to that.
+    # Use preferred role with only non-JWT, and no other JWT on endpoint
+    # by scanning a fake endpoint id that only has FLOW_NO_JWT.
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE flows SET endpoint_id = ? WHERE id = ?",
+            ("ep-orphan", FLOW_NO_JWT),
+        )
+        conn.commit()
+
+    primary = dict(primary)
+    primary["endpoint_id"] = "ep-orphan"
+    chosen, source = _prefer_jwt_bearing_flow(
+        db_path, PROJECT_ID, "ep-orphan", binding, None, primary
+    )
+    assert chosen is None
+    assert source == "none"

@@ -1604,7 +1604,13 @@ talos attack auth-session reject --all-pending
 ```
 
 Statuses: `pending` → `approved` | `rejected`. Re-approve `failed`/`done` for
-re-test. `running`/`done`/`failed` after jobs are Phase 3.
+re-test. Unapprove (`approved` → `pending`) to re-review or unbind.
+`running`/`done`/`failed` after jobs are Phase 3.
+
+```bash
+talos attack auth-session unapprove --all-approved
+talos attack auth-session unapprove <id>…
+```
 
 ### Suite catalog
 

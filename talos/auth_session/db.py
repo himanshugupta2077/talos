@@ -161,6 +161,16 @@ def insert_binding(
         raise ValueError(
             f"auth_type must be one of {sorted(KNOWN_AUTH_TYPES)}; got {auth_type!r}"
         )
+    # Headers: refuse case-only duplicates (HTTP names are case-insensitive).
+    # UNIQUE(location, name) alone would allow both Authorization and authorization.
+    if loc == "header":
+        existing = get_binding_by_field(db_path, loc, field)
+        if existing is not None:
+            raise ValueError(
+                f"binding already exists for header {existing.name!r} "
+                f"(case-insensitive match for {field!r})"
+            )
+
     bid = binding_id or str(uuid.uuid4())
     now = _now_utc()
     cfg = config_json if config_json and config_json.strip() else "{}"
@@ -201,20 +211,48 @@ def get_binding_by_field(
     location: str,
     name: str,
 ) -> Optional[AuthSessionBinding]:
-    """Fetch binding by UNIQUE (location, name)."""
+    """
+    Fetch binding by UNIQUE (location, name).
+
+    Headers are matched case-insensitively (HTTP header names are
+    case-insensitive). Cookies use exact name match first, then a
+    case-insensitive fallback for operator typos.
+    """
     if not db_path.exists():
         return None
     migrate_project_db(db_path)
     loc = (location or "").strip().lower()
     field = (name or "").strip()
+    if not field:
+        return None
     with _connect(db_path, rw=False) as conn:
-        row = conn.execute(
-            """
-            SELECT * FROM auth_session_bindings
-            WHERE location = ? AND name = ?
-            """,
-            (loc, field),
-        ).fetchone()
+        if loc == "header":
+            # Case-insensitive header field names.
+            row = conn.execute(
+                """
+                SELECT * FROM auth_session_bindings
+                WHERE location = ? AND lower(name) = lower(?)
+                """,
+                (loc, field),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT * FROM auth_session_bindings
+                WHERE location = ? AND name = ?
+                """,
+                (loc, field),
+            ).fetchone()
+            if row is None:
+                # Soft fallback for operator typos (cookie names are
+                # case-sensitive on the wire; exact match preferred).
+                row = conn.execute(
+                    """
+                    SELECT * FROM auth_session_bindings
+                    WHERE location = ? AND lower(name) = lower(?)
+                    """,
+                    (loc, field),
+                ).fetchone()
     return _row_to_binding(row) if row else None
 
 
@@ -725,3 +763,38 @@ def reject_candidates(
         else:
             skipped.append(cid)
     return rejected, skipped
+
+
+# Unapprove: design lifecycle optional transition approved → pending.
+UNAPPROVE_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED})
+
+
+def unapprove_candidates(
+    db_path: Path,
+    candidate_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    """
+    Purpose:
+        Move approved candidates back to pending so operators can re-review
+        or unbind (without --force cascade of only soft statuses).
+
+        Design state machine: ``approved → pending`` (optional unapprove).
+        Does **not** touch running/done/failed/rejected.
+    Output:
+        (unapproved_ids, skipped_ids)
+    Side effects: DB write.
+    """
+    done: list[str] = []
+    skipped: list[str] = []
+    for cid in candidate_ids:
+        result = set_candidate_status(
+            db_path,
+            cid,
+            STATUS_PENDING,
+            allowed_from=UNAPPROVE_SOURCE_STATUSES,
+        )
+        if result is not None and result.status == STATUS_PENDING:
+            done.append(cid)
+        else:
+            skipped.append(cid)
+    return done, skipped

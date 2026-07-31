@@ -47,6 +47,7 @@ from talos.auth_session.models import (
     KNOWN_FAMILIES,
     LOCATION_COOKIE,
     LOCATION_HEADER,
+    STATUS_APPROVED,
     STATUS_FAILED,
     STATUS_PENDING,
 )
@@ -339,6 +340,39 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     )
     p_rej.set_defaults(_as_handler=cmd_reject)
 
+    # ---- unapprove (optional design transition approved → pending) ---- #
+    p_unap = as_sub.add_parser(
+        "unapprove",
+        help="Move approved candidates back to pending (re-review / unbind).",
+    )
+    p_unap.add_argument(
+        "candidate_ids",
+        nargs="*",
+        metavar="UUID",
+        help="Candidate UUIDs (optional if --all-approved).",
+    )
+    p_unap.add_argument(
+        "--all-approved",
+        action="store_true",
+        help="Unapprove all approved candidates in scope.",
+    )
+    p_unap.add_argument("--endpoint", dest="endpoint_id", metavar="UUID")
+    p_unap.add_argument(
+        "--test-id",
+        dest="test_ids",
+        action="append",
+        default=None,
+        metavar="ID",
+    )
+    p_unap.add_argument(
+        "--family",
+        dest="families",
+        action="append",
+        default=None,
+        metavar="FAM",
+    )
+    p_unap.set_defaults(_as_handler=cmd_unapprove)
+
     # ---- suite list ---- #
     p_suite = as_sub.add_parser(
         "suite",
@@ -431,14 +465,37 @@ def _resolve_module_id(db_path, module: Optional[str]) -> Optional[str]:
 
 
 def _auth_config_has_field(db_path, location: str, name: str) -> bool:
+    return _canonical_auth_field_name(db_path, location, name) is not None
+
+
+def _canonical_auth_field_name(
+    db_path,
+    location: str,
+    name: str,
+) -> Optional[str]:
+    """
+    Return the auth_config spelling of a field, or None if not configured.
+
+    Headers: case-insensitive match (return auth_config's casing).
+    Cookies: exact match preferred, then case-insensitive fallback.
+    """
     cfg = get_auth_config(db_path)
+    field = (name or "").strip()
+    if not field:
+        return None
     if location == LOCATION_HEADER:
-        return any(h.lower() == name.lower() for h in cfg["headers"])
+        for h in cfg["headers"]:
+            if h.lower() == field.lower():
+                return h
+        return None
     if location == LOCATION_COOKIE:
-        return name in cfg["cookies"] or any(
-            c.lower() == name.lower() for c in cfg["cookies"]
-        )
-    return False
+        if field in cfg["cookies"]:
+            return field
+        for c in cfg["cookies"]:
+            if c.lower() == field.lower():
+                return c
+        return None
+    return None
 
 
 def _candidate_to_dict(c) -> dict[str, Any]:
@@ -503,17 +560,20 @@ def cmd_bind(manager: ProjectManager, args: argparse.Namespace) -> None:
     db_path = project.db_path
     location, name = _location_and_name(args)
 
-    if not _auth_config_has_field(db_path, location, name):
+    canonical = _canonical_auth_field_name(db_path, location, name)
+    if canonical is None:
         kind = "--header" if location == LOCATION_HEADER else "--cookie"
         cli_precondition_error(
             f"'{name}' is not in auth_config. "
             f"Add it first: talos auth set {kind} {name}"
         )
+    # Store the auth_config spelling so lookups stay consistent.
+    name = canonical
 
     existing = as_db.get_binding_by_field(db_path, location, name)
     if existing is not None:
         cli_error(
-            f"Binding already exists for {location} '{name}' "
+            f"Binding already exists for {location} '{existing.name}' "
             f"(id={existing.id}, type={existing.auth_type}). "
             "Unbind first or use a different field."
         )
@@ -575,10 +635,15 @@ def cmd_unbind(manager: ProjectManager, args: argparse.Namespace) -> None:
         parts = [f"{s}={n}" for s, n in blocked.items()]
         if has_results:
             parts.append("results_exist=yes")
+        hint = (
+            "Unapprove approved candidates first "
+            "(`talos attack auth-session unapprove --all-approved`), "
+            "then unbind --force for remaining pending/rejected. "
+            "v1 refuses delete when done/failed or result rows exist."
+        )
         cli_precondition_error(
             "Cannot unbind: binding has protected candidates or results "
-            f"({', '.join(parts)}). Reject/cancel approved work first; "
-            "v1 refuses delete when done/failed or result rows exist."
+            f"({', '.join(parts)}). {hint}"
         )
 
     pending = counts.get(STATUS_PENDING, 0)
@@ -735,8 +800,8 @@ def _collect_ids_for_lifecycle(
     mode: str,
 ) -> list[str]:
     """
-    Union of positional IDs and filter matches for approve/reject.
-    mode: approve | reject | approve_retry_failed
+    Union of positional IDs and filter matches for approve/reject/unapprove.
+    mode: approve | reject | unapprove
     """
     ids: list[str] = list(getattr(args, "candidate_ids", None) or [])
     endpoint_id = getattr(args, "endpoint_id", None)
@@ -744,6 +809,7 @@ def _collect_ids_for_lifecycle(
     families = getattr(args, "families", None)
     all_pending = bool(getattr(args, "all_pending", False))
     retry_failed = bool(getattr(args, "retry_failed", False))
+    all_approved = bool(getattr(args, "all_approved", False))
 
     if mode == "approve":
         if all_pending:
@@ -764,14 +830,21 @@ def _collect_ids_for_lifecycle(
                 families=families,
             )
             ids.extend(r.id for r in rows)
-        # Filters without --all-pending: if filters present and no positional,
-        # still need --all-pending or ids (design: union of matches).
-        # When only filters + positional empty and no flags → error.
     elif mode == "reject":
         if all_pending:
             rows = as_db.list_candidates(
                 db_path,
                 status=STATUS_PENDING,
+                endpoint_id=endpoint_id,
+                test_ids=test_ids,
+                families=families,
+            )
+            ids.extend(r.id for r in rows)
+    elif mode == "unapprove":
+        if all_approved:
+            rows = as_db.list_candidates(
+                db_path,
+                status=STATUS_APPROVED,
                 endpoint_id=endpoint_id,
                 test_ids=test_ids,
                 families=families,
@@ -830,6 +903,24 @@ def cmd_reject(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(f"Rejected: {len(rejected)}")
     if skipped:
         print(f"Skipped : {len(skipped)} (not pending or missing)")
+
+
+def cmd_unapprove(manager: ProjectManager, args: argparse.Namespace) -> None:
+    project = _require_active(manager)
+    db_path = project.db_path
+    ids = _collect_ids_for_lifecycle(db_path, args, mode="unapprove")
+    if not ids:
+        if not args.candidate_ids and not args.all_approved:
+            cli_usage_error(
+                "Provide candidate UUID(s) or --all-approved."
+            )
+        print("No matching candidates to unapprove.")
+        return
+
+    moved, skipped = as_db.unapprove_candidates(db_path, ids)
+    print(f"Unapproved (→ pending): {len(moved)}")
+    if skipped:
+        print(f"Skipped : {len(skipped)} (not approved or missing)")
 
 
 def cmd_suite_list(manager: ProjectManager, args: argparse.Namespace) -> None:

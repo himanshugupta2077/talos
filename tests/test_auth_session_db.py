@@ -277,6 +277,48 @@ def test_cascade_reject_and_delete(db_path: Path) -> None:
     assert as_db.delete_binding(db_path, b.id) is True
 
 
+def test_header_binding_lookup_case_insensitive(db_path: Path) -> None:
+    as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    got = as_db.get_binding_by_field(db_path, "header", "authorization")
+    assert got is not None
+    assert got.name == "Authorization"
+
+    with pytest.raises(ValueError, match="case-insensitive"):
+        as_db.insert_binding(
+            db_path, location="header", name="AUTHORIZATION", auth_type="jwt"
+        )
+
+
+def test_unapprove_approved_to_pending(db_path: Path) -> None:
+    b = as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    c = as_db.insert_candidate(
+        db_path,
+        binding_id=b.id,
+        baseline_flow_id="f1",
+        auth_type="jwt",
+        test_id="jwt.alg_none",
+        test_family="algorithm",
+        title="t",
+        mutation_summary="m",
+    )
+    as_db.approve_candidates(db_path, [c.id])
+    assert as_db.get_candidate(db_path, c.id).status == STATUS_APPROVED
+
+    moved, skipped = as_db.unapprove_candidates(db_path, [c.id])
+    assert moved == [c.id]
+    assert skipped == []
+    assert as_db.get_candidate(db_path, c.id).status == STATUS_PENDING
+
+    # pending cannot unapprove again
+    moved2, skipped2 = as_db.unapprove_candidates(db_path, [c.id])
+    assert moved2 == []
+    assert skipped2 == [c.id]
+
+
 def test_list_candidates_filters(db_path: Path) -> None:
     b = as_db.insert_binding(
         db_path, location="header", name="Authorization", auth_type="jwt"

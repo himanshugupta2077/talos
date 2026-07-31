@@ -238,8 +238,51 @@ def test_talos_helper_documents_auth_session() -> None:
     assert re.search(r"^\s+auth-session bind\|unbind\|show-bindings", text, re.M)
     assert "auth-session generate" in text
     assert "auth-session candidates" in text
-    assert "auth-session approve|reject" in text
+    assert "auth-session approve|reject|unapprove" in text
     assert "auth-session suite list" in text
+
+
+def test_bind_normalizes_header_case(manager: MagicMock, db_path: Path) -> None:
+    """auth_config has Authorization; bind --header authorization stores canonical."""
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["bind", "--type", "jwt", "--header", "authorization"]),
+        )
+    bindings = as_db.list_bindings(db_path)
+    assert len(bindings) == 1
+    assert bindings[0].name == "Authorization"
+
+
+def test_unapprove_cli_and_unbind_path(manager: MagicMock, db_path: Path) -> None:
+    run_auth_session_cli(
+        manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
+    )
+    run_auth_session_cli(manager, _parse_as(["generate", "--endpoint", EP]))
+    run_auth_session_cli(manager, _parse_as(["approve", "--all-pending"]))
+    approved = as_db.list_candidates(db_path, status=STATUS_APPROVED)
+    assert approved
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["unapprove", "--all-approved"])
+        )
+    assert "Unapproved" in out.getvalue()
+    assert as_db.list_candidates(db_path, status=STATUS_APPROVED) == []
+    pending = as_db.list_candidates(db_path, status=STATUS_PENDING)
+    assert len(pending) == len(approved)
+
+    # Now unbind --force works (pending only)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["unbind", "--header", "Authorization", "--force"]),
+        )
+    assert "Unbound" in out.getvalue()
+    assert as_db.list_bindings(db_path) == []
 
 
 def test_show_bindings_json(manager: MagicMock, db_path: Path) -> None:

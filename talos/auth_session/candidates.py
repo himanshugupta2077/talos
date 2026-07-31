@@ -98,6 +98,59 @@ def load_flow(db_path: Path, flow_id: str) -> Optional[dict[str, Any]]:
     return replay_db.get_flow_for_replay(db_path, flow_id)
 
 
+def _flow_has_detectable_token(
+    flow: dict[str, Any],
+    binding: AuthSessionBinding,
+) -> bool:
+    """True when binding field on the flow yields a detectible auth token."""
+    ctx, _ = extract_token_context(flow, binding)
+    return ctx is not None
+
+
+def _scan_jwt_bearing_flows(
+    db_path: Path,
+    project_id: str,
+    endpoint_id: str,
+    binding: AuthSessionBinding,
+    *,
+    role_id: Optional[str] = None,
+    limit: int = 25,
+) -> Optional[dict[str, Any]]:
+    """
+    Recent 2xx proxy_capture flows on endpoint; return first with detectable
+    token for the binding. Optional role_id filter (prefer, not require —
+    callers fall back without role).
+    """
+    migrate_project_db(db_path)
+    sql = """
+        SELECT id, method, url, host, path, query,
+               request_headers, request_cookies,
+               status_code, endpoint_id, role_id, module_id, source
+        FROM flows
+        WHERE project_id = ?
+          AND endpoint_id = ?
+          AND source = 'proxy_capture'
+          AND status_code BETWEEN 200 AND 299
+    """
+    params: list[Any] = [project_id, endpoint_id]
+    if role_id:
+        sql += " AND role_id = ?"
+        params.append(role_id)
+    sql += " ORDER BY captured_at DESC LIMIT ?"
+    params.append(int(limit))
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+
+    for row in rows:
+        flow = _flow_row_to_dict(row)
+        full = load_flow(db_path, flow["id"]) or flow
+        if _flow_has_detectable_token(full, binding):
+            return full
+    return None
+
+
 def _prefer_jwt_bearing_flow(
     db_path: Path,
     project_id: str,
@@ -107,64 +160,43 @@ def _prefer_jwt_bearing_flow(
     primary: Optional[dict[str, Any]],
 ) -> tuple[Optional[dict[str, Any]], str]:
     """
-    If primary lacks a detectable token, search recent 2xx proxy_capture
-    flows on the endpoint for one that carries a detectable JWT.
+    Choose a baseline that actually carries a detectable token for the binding.
+
+    Priority (design: role preference is prefer-not-require; never return a
+    flow that fails token detection):
+
+      1. JWT-bearing flow for preferred role (binding.role_id / CLI --role)
+      2. primary baseline when it already has a detectable token
+      3. any recent JWT-bearing 2xx proxy_capture on the endpoint
+      4. None (caller records no_baseline / no_token)
     """
-    if primary is not None:
-        ctx, reason = extract_token_context(primary, binding)
-        if ctx is not None:
-            return primary, "baseline_policy" if primary.get("_baseline_source") else (
-                primary.get("_baseline_source") or "best_flow"
-            )
+    # 1. Preferred role first (even when primary already has a token).
+    if preferred_role_id:
+        found = _scan_jwt_bearing_flows(
+            db_path,
+            project_id,
+            endpoint_id,
+            binding,
+            role_id=preferred_role_id,
+        )
+        if found is not None:
+            return found, "role_preferred"
 
-    migrate_project_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        # Prefer preferred role when set.
-        sql = """
-            SELECT id, method, url, host, path, query,
-                   request_headers, request_cookies,
-                   status_code, endpoint_id, role_id, module_id, source
-            FROM flows
-            WHERE project_id = ?
-              AND endpoint_id = ?
-              AND source = 'proxy_capture'
-              AND status_code BETWEEN 200 AND 299
-        """
-        params: list[Any] = [project_id, endpoint_id]
-        if preferred_role_id:
-            sql += " AND role_id = ?"
-            params.append(preferred_role_id)
-        sql += " ORDER BY captured_at DESC LIMIT 25"
-        rows = conn.execute(sql, params).fetchall()
+    # 2. Policy / best-flow baseline when it is JWT-bearing.
+    if primary is not None and _flow_has_detectable_token(primary, binding):
+        if primary.get("_baseline_source") == "baseline_policy":
+            return primary, "baseline_policy"
+        return primary, primary.get("_baseline_source") or "best_flow"
 
-        if preferred_role_id and not rows:
-            # Fall back without role filter.
-            rows = conn.execute(
-                """
-                SELECT id, method, url, host, path, query,
-                       request_headers, request_cookies,
-                       status_code, endpoint_id, role_id, module_id, source
-                FROM flows
-                WHERE project_id = ?
-                  AND endpoint_id = ?
-                  AND source = 'proxy_capture'
-                  AND status_code BETWEEN 200 AND 299
-                ORDER BY captured_at DESC
-                LIMIT 25
-                """,
-                (project_id, endpoint_id),
-            ).fetchall()
+    # 3. Any role: recent JWT-bearing flow on this endpoint.
+    found = _scan_jwt_bearing_flows(
+        db_path, project_id, endpoint_id, binding, role_id=None
+    )
+    if found is not None:
+        return found, "jwt_bearing_flow"
 
-    for row in rows:
-        flow = _flow_row_to_dict(row)
-        # Enrich with request_body fields if needed via full load.
-        full = load_flow(db_path, flow["id"]) or flow
-        ctx, _ = extract_token_context(full, binding)
-        if ctx is not None:
-            return full, "jwt_bearing_flow"
-
-    return primary, "best_flow" if primary else "none"
+    # 4. Do not return a non-JWT primary — generate would only skip_no_token.
+    return None, "none"
 
 
 def select_baselines_for_binding(
