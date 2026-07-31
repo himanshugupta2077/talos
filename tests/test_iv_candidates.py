@@ -403,6 +403,102 @@ def test_name_only_weak_does_not_spam_ssrf_without_value():
     assert _cand(cands, ATTACK_OPEN_REDIRECT) is None
 
 
+def test_name_only_catalog_hits_do_not_spam_candidates_or_sink_caps():
+    """
+    Phase 4 QA: go/to/next/webhook/redirect_uri name alone must not invent
+    sink capabilities or candidates (plan: name-only weak hits do not spam).
+    """
+    for name in ("go", "to", "next", "from", "webhook", "redirect_uri", "redirect_url"):
+        profile = _profile(name=name)
+        enrich_profile_capabilities_and_candidates(profile)
+        assert CAPABILITY_NETWORK_RESOURCE_SINK not in profile["capabilities"]
+        assert CAPABILITY_REDIRECT_SINK not in profile["capabilities"]
+        assert CAPABILITY_WEBHOOK_SINK not in profile["capabilities"]
+        assert profile["candidates"] == [], (
+            f"name-only {name!r} emitted candidates: {profile['candidates']}"
+        )
+
+
+def test_stale_network_resource_sink_not_sticky_on_rederive():
+    """Prior known caps must not survive re-derive without observed evidence."""
+    profile = _profile(name="q")
+    profile["capabilities"] = [
+        CAPABILITY_NETWORK_RESOURCE_SINK,
+        CAPABILITY_URL_LIKE_VALUE,
+        CAPABILITY_REDIRECT_SINK,
+        CAPABILITY_FETCH_SINK,
+        CAPABILITY_WEBHOOK_SINK,
+    ]
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_NETWORK_RESOURCE_SINK not in caps
+    assert CAPABILITY_URL_LIKE_VALUE not in caps
+    assert CAPABILITY_REDIRECT_SINK not in caps
+    assert CAPABILITY_FETCH_SINK not in caps
+    assert CAPABILITY_WEBHOOK_SINK not in caps
+
+
+def test_passive_value_first_does_not_claim_type_accept():
+    """High url_features.score alone → NRS + SSRF, not false 'accepts URL' reason."""
+    profile = _profile(name="abc")
+    profile["observed"]["url_features"] = {
+        "possible_url_value": True,
+        "possible_network_resource": True,
+        "score": 95,
+        "name_category": None,
+        "name_categories": [],
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in profile["capabilities"]
+    ssrf = _cand(profile["candidates"], ATTACK_SSRF)
+    assert ssrf is not None
+    assert ssrf["score"] >= 45
+    assert not any("accepts URL-shaped input" in r for r in ssrf["reasons"])
+    assert any("value-first" in r.lower() or "network_resource" in r.lower()
+               for r in ssrf["reasons"])
+
+
+def test_url_type_rejected_does_not_apply_high_priority_floor():
+    """High-priority max() must not undo type-url rejection penalty."""
+    profile = _profile(name="resource")
+    profile["observed"]["url_features"] = {
+        "score": 90,
+        "possible_network_resource": True,
+        "name_category": "remote_fetch",
+        "name_categories": ["remote_fetch"],
+    }
+    profile["observed"]["types"] = {
+        "url": {"outcome": "rejected", "confidence": 95},
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    # fetch_sink must not invent from name+NRS without active fetch signals
+    assert CAPABILITY_FETCH_SINK not in profile["capabilities"]
+    ssrf = _cand(profile["candidates"], ATTACK_SSRF)
+    if ssrf is not None:
+        assert "negative evidence: URL type rejected" in " ".join(ssrf["reasons"])
+        assert not any(r.startswith("high-priority:") for r in ssrf["reasons"])
+        # With rejection, score should stay modest (no 78 floor)
+        assert ssrf["score"] < 78
+
+
+def test_redirect_sink_requires_behavior_or_accept_not_name_alone():
+    profile = _profile(name="returnTo")
+    # Name only
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_REDIRECT_SINK not in caps
+    # With redirect behavior + accept
+    profile["observed"]["url_sink"] = {
+        "redirect_behavior": True,
+        "accepts_url": True,
+        "confidence": 80,
+    }
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 85},
+    }
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_REDIRECT_SINK in caps
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in caps
+
+
 def test_list_candidates_filters_new_attacks(db_path: Path):
     pu = make_param_uuid("api.example.com", "query", "webhook")
     profile = empty_param_profile(

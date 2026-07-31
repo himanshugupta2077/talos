@@ -376,7 +376,7 @@ Capabilities are **surface/behaviour flags**, not vulns. Derived from observed r
 | `webhook_sink` | webhook/callback name category (soft) + stronger when fetch/URL accept |
 | `protocol_support` | `accepts_protocol` or non-empty `accepted_protocols` on `url_sink` |
 
-Name alone does **not** invent `network_resource_sink` / `url_like_value` without value or accept evidence. Candidate scorers use **catalog categories** (not flat token lists) + value-first rules.
+Name alone does **not** invent `network_resource_sink` / `url_like_value` without value or accept evidence. `redirect_sink` / `webhook_sink` / `fetch_sink` also require measured signals (behavior, type soft-accept, or canary accepts) — not bare catalog names (`go`/`to`/`webhook`). Candidate scorers use **catalog categories** (not flat token lists) + value-first rules, and **do not emit** open_redirect/ssrf/webhook_abuse/oauth_redirect from name-only hits. High-priority score floors are skipped when type `url` is rejected.
 
 ---
 

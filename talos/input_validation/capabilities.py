@@ -377,19 +377,21 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
     ):
         found.add(CAPABILITY_PROTOCOL_SUPPORT)
 
-    # Preserve any pre-existing known flags already on the profile (e.g. set by
-    # parser_intel apply) that our rules might have missed.
+    # Re-derive from evidence only — do **not** sticky-merge prior known
+    # capabilities (that left stale network_resource_sink / url_like_value
+    # after observed evidence was cleared or corrected).
+    # Unknown custom flags (not in KNOWN_CAPABILITIES) are preserved at the end.
     existing = profile.get("capabilities") or []
-    if isinstance(existing, list):
-        for cap in existing:
-            if isinstance(cap, str) and cap in KNOWN_CAPABILITIES:
-                found.add(cap)
-
     ordered = [c for c in _CAPABILITY_ORDER if c in found]
-    # Append unknown custom flags last (stable).
     if isinstance(existing, list):
         for cap in existing:
-            if isinstance(cap, str) and cap and cap not in found and cap not in ordered:
+            if (
+                isinstance(cap, str)
+                and cap
+                and cap not in KNOWN_CAPABILITIES
+                and cap not in found
+                and cap not in ordered
+            ):
                 ordered.append(cap)
     return ordered
 
@@ -679,22 +681,27 @@ def _is_redirect_sink(
     name_cats: set[str],
     baseline_redirect: bool,
 ) -> bool:
+    """
+    redirect_sink requires measured redirect/URL evidence — name alone is not enough
+    (avoids go/to/next spam as capability flags).
+    """
     if us.get("redirect_behavior") is True:
         return True
-    if "redirect" in name_cats or "oauth" in name_cats:
-        # Category alone is a soft sink label when baseline redirects or
-        # active characterization ran; still allow category-only for operator
-        # prioritization when NRS also present (checked by consumer).
-        if baseline_redirect or us.get("accepts_url") is True or int(us.get("confidence") or 0) > 0:
-            return True
-        # Name category redirect/oauth without behavior: still flag as
-        # redirect_sink for candidate bias (characterization, not vuln).
-        return True
-    if baseline_redirect and (
-        us.get("accepts_url") is True
-        or us.get("accepts_hostname") is True
-        or us.get("accepts_path") is True
+    active_conf = 0
+    try:
+        active_conf = int(us.get("confidence") or 0)
+    except (TypeError, ValueError):
+        active_conf = 0
+    accepts = any(
+        us.get(k) is True
+        for k in ("accepts_url", "accepts_hostname", "accepts_path", "accepts_ip")
+    )
+    # Category + measured evidence (baseline redirect or canary outcomes).
+    if ("redirect" in name_cats or "oauth" in name_cats) and (
+        baseline_redirect or accepts or active_conf > 0
     ):
+        return True
+    if baseline_redirect and accepts:
         return True
     return False
 
@@ -705,6 +712,11 @@ def _is_fetch_sink(
     name_cats: set[str],
     nrs: bool,
 ) -> bool:
+    """
+    fetch_sink requires active server-side processing signals.
+    Name category + passive NRS alone must not invent fetch_sink.
+    """
+    _ = name_cats, nrs  # category bias lives in candidates, not this flag
     if us.get("fetch_behavior") is True:
         return True
     if us.get("dns_resolution_detected") is True:
@@ -718,16 +730,6 @@ def _is_fetch_sink(
         "host_unreachable",
     }:
         return True
-    fetch_cats = {
-        "remote_fetch",
-        "remote_asset",
-        "import_metadata",
-        "infrastructure",
-        "network_probe",
-        "webhook",
-    }
-    if nrs and (name_cats & fetch_cats):
-        return True
     return False
 
 
@@ -738,11 +740,23 @@ def _is_webhook_sink(
     nrs: bool,
     type_url_soft: bool,
 ) -> bool:
+    """
+    webhook_sink: webhook/callback category **and** URL/fetch evidence.
+    Name alone does not invent the flag.
+    """
     if "webhook" not in name_cats:
         return False
     if us.get("fetch_behavior") is True:
         return True
-    if type_url_soft or nrs or us.get("accepts_url") is True:
+    if type_url_soft or us.get("accepts_url") is True:
         return True
-    # Name is webhook/callback — soft flag for candidate family bias.
-    return True
+    # NRS only when backed by value/accept (nrs from passive URL score is OK
+    # with webhook name — e.g. callback=https://… inventory).
+    if nrs and (
+        us.get("accepts_hostname") is True
+        or us.get("accepts_ip") is True
+        or type_url_soft
+        or us.get("accepts_url") is True
+    ):
+        return True
+    return False

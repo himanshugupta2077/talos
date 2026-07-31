@@ -11,6 +11,13 @@ Fourth slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementat
 **value-first** attack candidates. Characterization / prioritization only — still **no
 Findings**, no OAST exploit confirmation.
 
+**QA follow-up (same phase):** name-only catalog hits (`go`/`to`/`webhook`/…) no longer
+invent `redirect_sink`/`webhook_sink` or emit candidates; `fetch_sink` requires active
+fetch/DNS/error signals (not name+NRS); re-derive no longer sticky-merges prior known
+caps (stale `network_resource_sink`); `_url_accept_boost` only scores **measured** type/
+canary accept (passive `url_like_value` alias is not “accepts URL”); high-priority score
+floors do not apply after type `url` rejected.
+
 | Surface | Detail |
 |---------|--------|
 | Capabilities | `network_resource_sink` (umbrella) + `redirect_sink` / `fetch_sink` / `webhook_sink` / `protocol_support`; derived from passive `url_features`, IV `observed.url_sink`, and type soft-accept |
