@@ -195,6 +195,18 @@ Host uses the reserved **`.invalid`** TLD (never a real collaborator). Loopback/
 - `Location` contains canary host → `redirect_behavior`
 - Soft timing delta vs baseline (≥ ~800 ms) → `fetch_behavior`
 
+**`accepts_*` discipline**
+
+`accepts_url` / `accepts_hostname` / … are set only when there is evidence the value was
+**processed** as a network resource:
+
+- soft-accept that implies processing (`modified` / `encoded` / `normalized`), or
+- soft-accept plus canary reflection / Location canary / DNS-or-fetch phrase classes, or
+- any outcome with network-process error classes (DNS lookup failed, connection refused, …)
+
+A pure fingerprint-identical `accepted` with no URL signals is recorded as `weak_accept`
+under `evidence` only — the server may have ignored the mutation.
+
 **Profile output**
 
 Offline synthesis fills:

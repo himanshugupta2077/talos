@@ -17,7 +17,7 @@ no OAST collaborator domains, no `network_resource_sink` capabilities yet (Phase
 | Planner | New action `url_sink_probes` when `possible_network_resource` / score ≥ 45 / warrant category (redirect, webhook, remote_fetch, …) / `semantic_type=url`; still runs under standard early-stop when warranted; gated by types analysis toggle |
 | Canaries | `https://talos-canary.invalid/`, `http://…`, hostname-only, `127.0.0.1`, `/talos-canary`; deep+ adds `ftp` / `gopher` / `file` / UNC — all characterization, not exploit |
 | Job type | `iv_url_sink` (analysis=`url_sink`) |
-| Fingerprint | Phrase map (DNS lookup failed, malformed URL, unsupported protocol, timeout, …) + Location canary reflection + soft timing delta → error classes / redirect / fetch signals |
+| Fingerprint | Phrase map (DNS lookup failed, malformed URL, unsupported protocol, connection timeout, …) + Location canary reflection + soft timing delta → error classes / redirect / fetch signals |
 | Synthesis | `observed.url_sink` (accepts_url/hostname/ip/path, requires_absolute/https, dns/redirect/fetch flags, validation_behavior, error_classes, per_probe) + `tested.url_sink:*` |
 | Budget | quick ~2 · standard ~5 · deep ~8 · exhaustive ~9 |
 
@@ -33,6 +33,12 @@ value-first candidate rewrite (ssrf/open_redirect/webhook_abuse/oauth_redirect),
 **Files:** `talos/input_validation/url_sink_probes.py`, `fingerprint.py` (URL analyzers),
 `planner.py`, `engine.py`, `synthesize.py`, `profile.py`, `talos/scheduler/job.py` (`IV_URL_SINK`),
 `tests/test_iv_url_sink.py`, docs (`input-validation.md`, architecture, about-talos).
+
+**QA follow-up (same phase):** `accepts_*` requires URL processing evidence (canary
+Location/body, or network-error phrases on error-like responses) — not bare
+fingerprint-identical soft-accept; bare `timeout` / loose `only https` phrase
+matches tightened; warrant re-classifies param name via catalog when features
+omit categories.
 
 ---
 

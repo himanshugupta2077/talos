@@ -48,9 +48,25 @@ from talos.input_validation.profile import (
     UNCERTAINTY_HIGH,
     UNCERTAINTY_LOW,
     UNCERTAINTY_NONE,
-    empty_characteristic,
     set_tested,
 )
+
+# Soft-accept outcomes that also imply the value was *processed* (not ignored).
+_PROCESSED_SOFT: frozenset[str] = frozenset({
+    OUTCOME_MODIFIED,
+    "encoded",
+    "normalized",
+})
+
+# Error classes that show the server treated the value as a network resource
+# (attempted resolve/fetch) even when the HTTP outcome is rejected/modified.
+_NETWORK_PROCESS_CLASSES: frozenset[str] = frozenset({
+    "dns_lookup_failed",
+    "unable_to_fetch",
+    "connection_refused",
+    "host_unreachable",
+    "timeout",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -285,25 +301,38 @@ def url_sink_is_warranted(
     for c in uf.get("name_categories") or []:
         if c:
             cats.add(str(c).lower())
+
+    # If passive features omit categories (partial write / pre-compose row),
+    # re-classify the name via the catalog so callback_url etc. still warrant.
+    if param_name and not (cats & URL_SINK_WARRANT_CATEGORIES):
+        try:
+            from talos.url_sink.name_classify import classify_name
+
+            nf = classify_name(param_name)
+            if nf.name_category:
+                cats.add(str(nf.name_category).lower())
+            for c in nf.name_categories or []:
+                if c:
+                    cats.add(str(c).lower())
+        except Exception:
+            # Fall back to light token check when catalog unavailable.
+            low = (param_name or "").lower().replace("-", "_")
+            leaf = low.rsplit(".", 1)[-1]
+            strong = (
+                "url", "uri", "redirect", "callback", "webhook", "avatar",
+                "return_url", "redirect_uri", "base_url", "api_url",
+            )
+            if leaf in strong or any(
+                t in leaf for t in ("url", "uri", "redirect", "webhook", "callback")
+            ):
+                return True
+
     if cats & URL_SINK_WARRANT_CATEGORIES:
         return True
 
     st = (semantic_type or "").strip().lower()
     if st == "url":
         return True
-
-    # Name-only fallback when features missing: light token check.
-    if not uf and param_name:
-        low = (param_name or "").lower().replace("-", "_")
-        leaf = low.rsplit(".", 1)[-1]
-        # Common strong tokens without full catalog import (avoid cycles).
-        strong = (
-            "url", "uri", "redirect", "callback", "webhook", "avatar",
-            "return_url", "redirect_uri", "base_url", "api_url", "endpoint",
-            "fetch", "hook", "metadata", "feed", "import",
-        )
-        if leaf in strong or any(t in leaf for t in ("url", "uri", "redirect", "webhook", "callback")):
-            return True
 
     return False
 
@@ -558,7 +587,11 @@ def synthesize_url_sink_state(
         if signals.canary_in_body:
             evidence.append(f"body_canary:{ptype}")
 
-        if outcome in _SOFT_ACCEPT:
+        # Form acceptance requires evidence the value was *processed* as a
+        # network resource — not a pure fingerprint-identical soft-accept
+        # (server ignored the mutation).  Network error phrases count when the
+        # response is error-like (status ≥ 400 or rejected/modified outcome).
+        if _form_counts_as_accepted(outcome, signals, status_code=status_i):
             accepted_forms.add(form)
             proto = _FORM_PROTOCOL.get(form)
             if proto and proto not in protocols:
@@ -567,6 +600,10 @@ def synthesize_url_sink_state(
         elif outcome == OUTCOME_REJECTED:
             rejected_forms.add(form)
             evidence.append(f"reject:{ptype}")
+        elif outcome in _SOFT_ACCEPT:
+            # Weak soft-accept (identical baseline, no URL signals) — inventory
+            # only under per_probe; do not set accepts_*.
+            evidence.append(f"weak_accept:{ptype}")
 
     # ── Derive accepts_* flags ───────────────────────────────────────────
     result.accepts_url = bool(
@@ -670,6 +707,57 @@ def apply_url_sink_synthesis_to_profile(
             confidence=int(entry.get("confidence") or 0),
             evidence_flow_ids=entry.get("evidence_flow_ids"),
         )
+
+
+def _form_counts_as_accepted(
+    outcome: str,
+    signals: UrlSinkResponseSignals,
+    *,
+    status_code: int | None = None,
+) -> bool:
+    """
+    Purpose:
+        True when a probe outcome is strong enough to set accepts_* for a form.
+
+        Pure ``accepted`` with identical-to-baseline fingerprint and no URL
+        processing signals is **not** enough (server may have ignored the
+        mutation).  Require a strong URL signal:
+
+            - Location / body canary reflection, or
+            - network-process error phrases (DNS/fetch/timeout) on an
+              error-like response (status ≥ 400 or rejected/modified outcome)
+
+        Soft-accept alone (including modified without URL signals) does not
+        set accepts_*.  Timing-only fetch_behavior does not set accepts_*.
+
+    Side effects: None.
+    """
+    classes = set(signals.error_classes or ())
+    network_phrase = bool(classes & _NETWORK_PROCESS_CLASSES) or bool(
+        signals.dns_resolution_detected
+    )
+    try:
+        status_err = status_code is not None and int(status_code) >= 400
+    except (TypeError, ValueError):
+        status_err = False
+
+    canary = bool(
+        signals.redirect_behavior
+        or signals.canary_in_body
+        or signals.canary_in_location
+    )
+    # Phrases in 2xx HTML/docs (e.g. "connection timeout" help text) are noise.
+    network_strong = network_phrase and (
+        status_err
+        or outcome == OUTCOME_REJECTED
+        or outcome in _PROCESSED_SOFT
+    )
+    strong = canary or network_strong
+    if not strong:
+        return False
+    if outcome in _SOFT_ACCEPT or outcome == OUTCOME_REJECTED:
+        return True
+    return False
 
 
 def _infer_form_from_payload(payload: str) -> str:

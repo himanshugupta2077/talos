@@ -803,17 +803,22 @@ _URL_SINK_PHRASE_CLASSES: tuple[tuple[str, str], ...] = (
     ("host unreachable", "host_unreachable"),
     ("network is unreachable", "host_unreachable"),
     ("no route to host", "host_unreachable"),
-    # Timeout
+    # Timeout — avoid bare "timeout" (matches "session timeout" docs/noise).
     ("timed out", "timeout"),
-    ("timeout", "timeout"),
+    ("request timeout", "timeout"),
+    ("connection timeout", "timeout"),
+    ("read timeout", "timeout"),
+    ("gateway timeout", "timeout"),
+    ("operation timed out", "timeout"),
     ("deadline exceeded", "timeout"),
     ("context deadline", "timeout"),
     # Protocol / URL validation
     ("unsupported protocol", "unsupported_protocol"),
     ("protocol not supported", "unsupported_protocol"),
-    ("invalid redirect", "invalid_redirect_uri"),
     ("invalid redirect_uri", "invalid_redirect_uri"),
+    ("invalid redirect uri", "invalid_redirect_uri"),
     ("redirect_uri mismatch", "invalid_redirect_uri"),
+    ("invalid redirect", "invalid_redirect_uri"),
     ("malformed url", "malformed_url"),
     ("invalid url", "malformed_url"),
     ("not a valid url", "malformed_url"),
@@ -824,9 +829,12 @@ _URL_SINK_PHRASE_CLASSES: tuple[tuple[str, str], ...] = (
     ("url is required", "url_required"),
     ("invalid scheme", "unsupported_protocol"),
     ("scheme not allowed", "unsupported_protocol"),
-    ("only https", "requires_https"),
+    # HTTPS requirement — avoid bare "only https" (CDN upgrade copy, etc.).
+    ("https only", "requires_https"),
+    ("only https allowed", "requires_https"),
     ("https required", "requires_https"),
     ("must be https", "requires_https"),
+    ("must use https", "requires_https"),
 )
 
 

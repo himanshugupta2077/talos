@@ -198,6 +198,32 @@ class TestUrlSinkWarrant:
             param_name="id",
         )
 
+    def test_catalog_name_when_features_omit_categories(self) -> None:
+        """Partial/zeroed url_features still warrant via catalog re-classify."""
+        assert url_sink_is_warranted(
+            url_features={
+                "score": 0,
+                "possible_network_resource": False,
+                "name_category": None,
+                "name_categories": [],
+            },
+            semantic_type="string",
+            param_name="callback_url",
+        )
+
+    def test_path_like_alone_not_warranted(self) -> None:
+        # "download" is pure path_like in the catalog (not remote_asset multi-match).
+        assert not url_sink_is_warranted(
+            url_features={
+                "score": 20,
+                "possible_network_resource": False,
+                "name_category": "path_like",
+                "name_categories": ["path_like"],
+            },
+            semantic_type="string",
+            param_name="download",
+        )
+
 
 class TestSelectUrlSinkProbes:
     def test_not_warranted_empty(self) -> None:
@@ -277,6 +303,23 @@ class TestUrlSinkFingerprint:
         classes = classify_url_error_phrases("invalid url: must be absolute URL")
         assert "malformed_url" in classes or "requires_absolute_url" in classes
 
+    def test_session_timeout_not_fetch_timeout(self) -> None:
+        """Bare 'timeout' in UI copy must not fire network timeout class."""
+        classes = classify_url_error_phrases(
+            "Your session timeout is configured to 30 minutes"
+        )
+        assert "timeout" not in classes
+
+    def test_connection_timeout_still_matches(self) -> None:
+        assert "timeout" in classify_url_error_phrases("connection timeout waiting for upstream")
+
+    def test_only_https_cdn_copy_not_requires_https(self) -> None:
+        classes = classify_url_error_phrases("We only https-upgrade assets on CDN")
+        assert "requires_https" not in classes
+
+    def test_must_be_https_matches(self) -> None:
+        assert "requires_https" in classify_url_error_phrases("URL must be https")
+
     def test_location_canary(self) -> None:
         assert location_reflects_canary(
             f"https://{CANARY_HOST}/landing",
@@ -347,6 +390,58 @@ class TestUrlSinkSynthesis:
         assert profile["observed"]["url_sink"]["accepts_url"] is True
         assert "url_sink:https" in (profile.get("tested") or {})
 
+    def test_pure_soft_accept_without_signal_not_accepts_url(self) -> None:
+        """Fingerprint-identical soft-accept is not evidence of URL acceptance."""
+        rows = [
+            {
+                "payload_type": "url_sink:https",
+                "payload": f"https://{CANARY_HOST}/",
+                "outcome": OUTCOME_ACCEPTED,
+                "confidence": 70,
+                "body": '{"ok":true}',
+                "status_code": 200,
+                "flow_id": "f-weak",
+            },
+        ]
+        synth = synthesize_url_sink_state(rows)
+        assert synth.accepts_url is False
+        assert synth.redirect_behavior is False
+        assert "weak_accept:url_sink:https" in synth.evidence
+
+    def test_dns_reject_still_counts_as_url_processed(self) -> None:
+        """Server DNS failure means the value was treated as a network resource."""
+        rows = [
+            {
+                "payload_type": "url_sink:https",
+                "payload": f"https://{CANARY_HOST}/",
+                "outcome": OUTCOME_REJECTED,
+                "confidence": 88,
+                "body": "Error: DNS lookup failed for host",
+                "status_code": 502,
+                "flow_id": "f-dns",
+            },
+        ]
+        synth = synthesize_url_sink_state(rows)
+        assert synth.accepts_url is True
+        assert synth.dns_resolution_detected is True
+
+    def test_connection_timeout_phrase_on_2xx_docs_not_accepts(self) -> None:
+        """Help-text 'connection timeout' on soft-accept 200 must not set accepts_*."""
+        rows = [
+            {
+                "payload_type": "url_sink:ipv4_loopback",
+                "payload": "127.0.0.1",
+                "outcome": OUTCOME_ACCEPTED,
+                "confidence": 90,
+                "body": "connection timeout is 30s in config docs",
+                "status_code": 200,
+                "flow_id": "f-docs",
+            },
+        ]
+        synth = synthesize_url_sink_state(rows)
+        assert synth.accepts_ip is False
+        assert synth.accepts_url is False
+
     def test_dns_and_timeout_classes(self) -> None:
         rows = [
             {
@@ -354,7 +449,7 @@ class TestUrlSinkSynthesis:
                 "payload": f"http://{CANARY_HOST}/",
                 "outcome": OUTCOME_MODIFIED,
                 "confidence": 70,
-                "body": "getaddrinfo ENOTFOUND: timed out waiting for upstream",
+                "body": "getaddrinfo ENOTFOUND: connection timeout waiting for upstream",
                 "status_code": 504,
                 "duration_ms": 5000,
                 "flow_id": "f3",
