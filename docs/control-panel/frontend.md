@@ -116,6 +116,7 @@ Defined in `App.tsx` with React Router v6 nested routes under `Layout`.
 | `/testing/secrets/documents/:documentId` | `DocumentDetail` |
 | `/testing/errors` | `ErrorIntelligence` (tabs: overview/errors/rollups/settings) |
 | `/testing/errors/:errorId` | `ErrorClusterDetail` |
+| `/testing/url-sinks` | `UrlSinkDiscovery` (tabs: overview/inventory/rollups/settings) |
 | `/testing/input-validation` | `InputValidation` (tabs: overview/candidates/parameters/multi-level/run/settings) |
 | `/testing/input-validation/params/:paramUuid` | `ParameterDetail` (IV dossier) |
 | `/testing/input-validation/endpoints/:endpointId` | `IvEndpointIntel` |

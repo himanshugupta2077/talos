@@ -71,6 +71,12 @@ interface Related {
   findings: any[];
   jobs: any[];
   param_count: number;
+  url_sinks?: {
+    nrs_count?: number;
+    max_score?: number;
+    count?: number;
+    endpoint_id?: string | null;
+  } | null;
 }
 
 interface Intelligence {
@@ -510,6 +516,7 @@ export default function FlowDetail() {
             findings={related?.findings || []}
             jobs={related?.jobs || []}
             paramCount={related?.param_count}
+            urlSinks={related?.url_sinks}
           />
         </div>
 

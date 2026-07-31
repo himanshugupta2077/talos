@@ -8,6 +8,7 @@ import {
   SinkCategoryBadge,
   UrlScoreChip,
 } from "../../../components/url-sink";
+import { inventoryHref } from "../../url-sinks/shared";
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -147,10 +148,29 @@ export default function ProfileCards({ profile }: { profile: any }) {
                   ? (urlFeatures.evidence as string[]).slice(0, 8).join(", ")
                   : "—",
               )}
+              <div className="mt-2">
+                <Link
+                  to={inventoryHref({
+                    search: String(profile.name || profile.parameter_name || ""),
+                    host: String(profile.host || ""),
+                    nrs_only: false,
+                    min_score: 0,
+                  })}
+                  className="link text-[11px]"
+                >
+                  Open in URL sink inventory
+                </Link>
+              </div>
             </>
           ) : (
             <span className="text-base-content/40">
-              No passive URL features on this profile yet (older capture or score 0).
+              No passive URL features on this profile yet (older capture or score 0).{" "}
+              <Link
+                to={inventoryHref({ nrs_only: true })}
+                className="link"
+              >
+                URL Sink inventory
+              </Link>
             </span>
           )}
         </Card>

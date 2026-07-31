@@ -1,9 +1,8 @@
 /**
- * URL Sink Discovery workspace — Overview | Inventory (PR4).
+ * URL Sink Discovery workspace — Overview | Inventory | Rollups | Settings.
  *
  * Nested under Testing hub as Passive module (`/testing/url-sinks`).
  * Prioritization intelligence only — not confirmed SSRF Findings.
- * Rollups + Settings tabs deferred to PR5.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -15,6 +14,8 @@ import ModuleShell from "./attack/ModuleShell";
 import { getAttackModule } from "./attack/registry";
 import OverviewTab from "./url-sinks/OverviewTab";
 import InventoryTab from "./url-sinks/InventoryTab";
+import RollupsTab from "./url-sinks/RollupsTab";
+import SettingsTab from "./url-sinks/SettingsTab";
 import {
   URL_SINK_TABS,
   UrlSinkEmptyState,
@@ -116,6 +117,16 @@ export default function UrlSinkDiscovery() {
             drawer; primary next step is the IV parameter dossier.
           </p>
           <p>
+            <strong>Rollups</strong> — host / endpoint / category aggregates;
+            click through to Inventory with the same filters.
+          </p>
+          <p>
+            <strong>Settings</strong> — effective{" "}
+            <span className="mono">url_sink.*</span> kill-switches and score
+            threshold; deep-link to Talos Config section{" "}
+            <span className="mono">url_sink</span>.
+          </p>
+          <p>
             Example: after browsing an app that posts{" "}
             <span className="mono">callback=https://…</span>, open Inventory
             (NRS) and jump to the dossier to run URL-sink canaries if warranted.
@@ -153,6 +164,14 @@ export default function UrlSinkDiscovery() {
         />
       )}
       {tab === "inventory" && <InventoryTab projectId={selected.id} />}
+      {tab === "rollups" && <RollupsTab projectId={selected.id} />}
+      {tab === "settings" && (
+        <SettingsTab
+          projectId={selected.id}
+          status={status}
+          onRefresh={load}
+        />
+      )}
     </ModuleShell>
   );
 }

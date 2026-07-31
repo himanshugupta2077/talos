@@ -2,6 +2,33 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Control Panel: URL Sink Discovery PR5 — rollups, settings, cross-links
+
+**Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.
+
+Completes the dedicated Testing hub workspace for passive URL Sink Discovery.
+
+| Surface | Behavior |
+|---------|----------|
+| **Rollups tab** | By host / endpoint / category aggregates; click → Inventory with filter; full match set (not page-truncated) |
+| **Settings tab** | Effective `url_sink.*` kill-switches + score threshold via `POST /api/configuration/value`; deep-link Talos Config `section=url_sink` |
+| **Inventory** | Optional `has_iv_profile` / `has_url_sink_obs` (capped IV uuid index; default path still parameters-only) |
+| **Flow Related** | `url_sinks` strip from `/api/flows/{id}/related` → inventory by `endpoint_id` |
+| **Endpoint / IV** | Parameters tab + ProfileCards “Open in URL sink inventory” deep-links |
+| **Bugfixes** | Rollups/`by-endpoint` aggregates over all matching rows (not first `MAX_LIMIT` page only) |
+
+```bash
+curl -s "http://127.0.0.1:8420/api/url-sink/rollups/host?project_id=<id>&min_score=45&nrs_only=true"
+curl -s "http://127.0.0.1:8420/api/url-sink/inventory?project_id=<id>&has_iv_profile=true&min_score=0&nrs_only=false"
+# Flow related includes url_sinks when endpoint_id present
+curl -s "http://127.0.0.1:8420/api/flows/<flow_id>/related?project_id=<id>"
+```
+
+**Files:** `url_sink_reads.py`, `routers/{url_sink,flows}.py`, frontend `url-sinks/{Rollups,Settings}Tab.tsx`,
+`UrlSinkDiscovery`, Inventory/Overview, `FlowRelatedPanel`, EndpointDetail, ProfileCards, tests, docs.
+
+---
+
 ## Control Panel: URL Sink Discovery PR4 — workspace
 
 **Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.
@@ -14,7 +41,7 @@ sink inventory triage. Prioritization only — not confirmed SSRF Findings.
 | **Hub card** | KPI chips from `/api/url-sink/status`: `nrs`, `score≥70` (warn), `score≥thr`; statusLine when passive disabled |
 | **Overview** | Config strip, NRS/score KPIs, by_category / looks_like / location, top sinks, empty-state CTAs, URL-family candidates via server-side `capability=network_resource_sink` |
 | **Inventory** | K13 filters (`min_score=45`, `nrs_only=true` defaults), table + SideDrawer, dossier-first handoff |
-| **Not in PR4** | Rollups / Settings tabs, Flow cross-links (PR5) |
+| **Not in PR4** | Rollups / Settings / Flow cross-links — shipped as **PR5** |
 
 ```bash
 # Open in Control Panel (with project selected)

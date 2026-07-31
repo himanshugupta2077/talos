@@ -243,7 +243,7 @@ Bulk mutation responses: `{ steps, bulk, ok }` where `bulk` is the CLI `--format
 | GET | `/api/flows` | List | filters source/method/host/status_code/role/module/search/endpoint; offset/limit; optional `include=flags` | `{ flows, total }` (+ flag columns when requested) | — | `flows` + roles/modules; optional joins to diffs/bac/unauth/evidence |
 | GET | `/api/flows/filters` | Distinct filters | `project_id` | sources, methods, hosts, statuses, roles, modules | — | flows |
 | GET | `/api/flows/{flow_id}` | Detail + derived + attack side data | `project_id` | `flow`, `derived` (duration/sizes/auth/truncation), `results` {diff,bac,unauth,auth_test}, `endpoint_policy`; legacy aliases `diff`/`bac_result`/… kept | — | flows, replay_diffs, bac_results, unauth_results, auth_test_results, endpoint_policy |
-| GET | `/api/flows/{flow_id}/related` | Related objects | `project_id` | original, children (+diff summary), findings evidence, scheduler jobs, param_count | — | flows, replay_diffs, finding_evidence, findings, scheduler_jobs, parameters |
+| GET | `/api/flows/{flow_id}/related` | Related objects | `project_id` | original, children (+diff summary), findings evidence, scheduler jobs, param_count, optional `url_sinks` `{ nrs_count, max_score, count, endpoint_id }` | — | flows, replay_diffs, finding_evidence, findings, scheduler_jobs, parameters + url_sink by-endpoint strip |
 | GET | `/api/flows/{flow_id}/intelligence` | Endpoint + session snapshot | `project_id` | endpoint policy snippet, session (provider/artifacts/TTL/suspicion) for flow’s role | — | endpoints, endpoint_policy, role_auth_*, session_health_*, session_suspicion_state |
 | GET | `/api/flows/{flow_id}/adjacent` | Newer/older by captured_at | `project_id` + same filters as list (optional) | prev/next | — | window functions on filtered flows |
 | POST | `/api/flows/{flow_id}/export` | Export one | `project_id` | steps | `flow export <id>` | — |
@@ -341,13 +341,15 @@ All routes require `project_id`. Implementation: `talos_ui/routers/url_sink.py` 
 |--------|-----|---------|---------|----------|----------|
 | GET | `/status` | Aggregates + knobs | `project_id`, `include_iv_stats?` | enabled_*, score_threshold, nrs_count, score_ge_*, by_category/looks_like/location, disclaimer | parameters parse; config project-scoped |
 | GET | `/overview` | Status + top sinks + empty_state (CP Overview tab) | `project_id`, `top_n?` | `{ status, top_sinks, empty_state, disclaimer }` | DB |
-| GET | `/inventory` | Filterable inventory (K13 keys) | `min_score` (45), `nrs_only` (true), `category`, `looks_like`, `location`, `host` (contains), `endpoint_id`, `search`, `sort`, `limit`, `offset`, `include_iv` | `{ items, count, total_matched, filters_applied, note, disclaimer }` | parameters JOIN endpoints |
+| GET | `/inventory` | Filterable inventory (K13 keys) | `min_score` (45), `nrs_only` (true), `category`, `looks_like`, `location`, `host` (contains), `endpoint_id`, `has_iv_profile?`, `has_url_sink_obs?`, `search`, `sort`, `limit`, `offset`, `include_iv` | `{ items, count, total_matched, filters_applied, iv_index?, note, disclaimer }` | parameters JOIN endpoints; `has_iv_*` capped profile index |
 | GET | `/params/{parameter_id}` | One sink row + IV slice | `project_id` | `{ item, disclaimer }` | DB |
 | GET | `/params` | By param_uuid | `project_id`, `param_uuid` | same | DB |
-| GET | `/by-endpoint/{endpoint_id}` | Endpoint strip counts | `project_id`, `limit?` | count, nrs_count, max_score, items | DB |
-| GET | `/rollups/host` · `/endpoint` · `/category` | Aggregate rollups | min_score, nrs_only, limit | `{ rollup, disclaimer }` | in-process from inventory |
+| GET | `/by-endpoint/{endpoint_id}` | Endpoint strip counts (full-set aggregates) | `project_id`, `limit?` | count, nrs_count, max_score, items (top N) | all matching params, not page-truncated |
+| GET | `/rollups/host` · `/endpoint` · `/category` | Aggregate rollups (full match set) | min_score, nrs_only, limit | `{ rollup, total_buckets, disclaimer }` | in-process over all matches |
 
 **SinkRow fields:** `parameter_id`, `param_uuid` (`make_param_uuid` raw host), `url_score`, `possible_network_resource`, `name_category`, `inventory_only` (response / `jwt.*`), full `url_features`, optional `iv` when `include_iv=true`.
+
+**`has_iv_profile` / `has_url_sink_obs`:** optional; when set, load a capped (`≤5000`) `iv_param_profiles` uuid index once per request. Default inventory path still does **not** open profiles.
 
 ---
 

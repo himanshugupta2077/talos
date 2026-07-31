@@ -9,16 +9,22 @@ import { IV_BASE, URL_SINKS_BASE } from "../attack/registry";
 
 export { IV_BASE, URL_SINKS_BASE };
 
-export type UrlSinkTab = "overview" | "inventory";
+export type UrlSinkTab = "overview" | "inventory" | "rollups" | "settings";
 
-/** PR4 tabs only — rollups/settings land in PR5. */
 export const URL_SINK_TABS: { id: UrlSinkTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "inventory", label: "Inventory" },
+  { id: "rollups", label: "Rollups" },
+  { id: "settings", label: "Settings" },
 ];
 
 export function isUrlSinkTab(v: string | null): v is UrlSinkTab {
-  return v === "overview" || v === "inventory";
+  return (
+    v === "overview" ||
+    v === "inventory" ||
+    v === "rollups" ||
+    v === "settings"
+  );
 }
 
 export const selectClass = "select select-xs select-bordered";
@@ -70,6 +76,9 @@ export const LOCATION_OPTIONS = [
   "response",
 ] as const;
 
+/** Tri-state filter: null = any, true/false = require yes/no. */
+export type TriBool = boolean | null;
+
 /** Canonical inventory filter state (K13). */
 export interface InventoryFilters {
   min_score: number;
@@ -79,6 +88,10 @@ export interface InventoryFilters {
   location: string;
   host: string;
   endpoint_id: string;
+  /** PR5 — require IV profile presence */
+  has_iv_profile: TriBool;
+  /** PR5 — require observed.url_sink.confidence > 0 */
+  has_url_sink_obs: TriBool;
   search: string;
   sort: InventorySort;
   limit: number;
@@ -97,6 +110,8 @@ export function defaultInventoryFilters(
     location: "",
     host: "",
     endpoint_id: "",
+    has_iv_profile: null,
+    has_url_sink_obs: null,
     search: "",
     sort: DEFAULT_SORT,
     limit: DEFAULT_LIMIT,
@@ -116,6 +131,18 @@ export function parseBoolParam(
   if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
   if (s === "0" || s === "false" || s === "no" || s === "off") return false;
   return defaultValue;
+}
+
+/**
+ * Optional tri-state bool: missing/empty → null; true/false when set.
+ * Used for has_iv_profile / has_url_sink_obs.
+ */
+export function parseOptionalBoolParam(raw: string | null): TriBool {
+  if (raw == null || raw === "") return null;
+  const s = raw.trim().toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  return null;
 }
 
 export function parseIntParam(
@@ -160,6 +187,8 @@ export function filtersFromSearchParams(
     location: params.get("location") || "",
     host: params.get("host") || "",
     endpoint_id: params.get("endpoint_id") || "",
+    has_iv_profile: parseOptionalBoolParam(params.get("has_iv_profile")),
+    has_url_sink_obs: parseOptionalBoolParam(params.get("has_url_sink_obs")),
     search: params.get("search") || "",
     sort: parseSortParam(params.get("sort")),
     limit: parseIntParam(params.get("limit"), DEFAULT_LIMIT, 1, 1000),
@@ -200,6 +229,13 @@ export function applyFiltersToSearchParams(
   setOrDelete("endpoint_id", filters.endpoint_id, !filters.endpoint_id);
   setOrDelete("search", filters.search, !filters.search);
 
+  if (filters.has_iv_profile == null) next.delete("has_iv_profile");
+  else next.set("has_iv_profile", filters.has_iv_profile ? "true" : "false");
+
+  if (filters.has_url_sink_obs == null) next.delete("has_url_sink_obs");
+  else
+    next.set("has_url_sink_obs", filters.has_url_sink_obs ? "true" : "false");
+
   if (compact && filters.sort === DEFAULT_SORT) next.delete("sort");
   else next.set("sort", filters.sort);
 
@@ -235,6 +271,9 @@ export function inventoryApiParams(
   if (filters.host) q.host = filters.host;
   if (filters.endpoint_id) q.endpoint_id = filters.endpoint_id;
   if (filters.search) q.search = filters.search;
+  if (filters.has_iv_profile != null) q.has_iv_profile = filters.has_iv_profile;
+  if (filters.has_url_sink_obs != null)
+    q.has_url_sink_obs = filters.has_url_sink_obs;
   return q;
 }
 
@@ -318,6 +357,42 @@ export interface UrlFamilyCandidate {
   [key: string]: unknown;
 }
 
+export interface HostRollupRow {
+  key?: string;
+  count?: number;
+  nrs_count?: number;
+  max_score?: number;
+  categories?: Record<string, number>;
+  top_categories?: string[];
+}
+
+export interface EndpointRollupRow {
+  key?: string;
+  endpoint_id?: string;
+  method?: string | null;
+  host?: string | null;
+  normalized_path?: string | null;
+  count?: number;
+  nrs_count?: number;
+  max_score?: number;
+}
+
+export interface CategoryRollupRow {
+  key?: string;
+  count?: number;
+  max_score?: number;
+  median_score?: number;
+}
+
+export type RollupKind = "host" | "endpoint" | "category";
+
+export const CONFIG_URL_SINK_KEYS = [
+  "url_sink.passive.enabled",
+  "url_sink.html_js.enabled",
+  "url_sink.iv_probes.enabled",
+  "url_sink.score_threshold",
+] as const;
+
 export function shortId(id: string | null | undefined, n = 8): string {
   if (!id) return "—";
   return id.length > n ? id.slice(0, n) : id;
@@ -359,3 +434,7 @@ export function sortedCounts(
   if (!map) return [];
   return Object.entries(map).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
+
+/** Talos Config deep-link for url_sink section. */
+export const TALOS_CONFIG_URL_SINK =
+  "/talos-config?tab=settings&section=url_sink";

@@ -25,6 +25,7 @@ import type {
 } from "./shared";
 import {
   IV_BASE,
+  TALOS_CONFIG_URL_SINK,
   URL_SINKS_BASE,
   endpointLabel,
   inventoryHref,
@@ -106,10 +107,16 @@ export default function OverviewTab({
           iv_probes: {status?.enabled_iv_probes === false ? "off" : "on"}
         </span>
         <Link
-          to="/talos-config?tab=settings&section=url_sink"
+          to={TALOS_CONFIG_URL_SINK}
           className="link link-hover text-base-content/50"
         >
           Talos Config → url_sink
+        </Link>
+        <Link
+          to={`${URL_SINKS_BASE}?tab=settings`}
+          className="link link-hover text-base-content/50"
+        >
+          Module Settings
         </Link>
       </div>
 
@@ -135,6 +142,12 @@ export default function OverviewTab({
         >
           IV candidates (NRS)
         </Link>
+        <Link
+          to={`${URL_SINKS_BASE}?tab=rollups`}
+          className="btn btn-xs btn-ghost"
+        >
+          Rollups
+        </Link>
         <button type="button" className="btn btn-xs btn-ghost" onClick={onRefresh}>
           Refresh
         </button>
@@ -146,11 +159,12 @@ export default function OverviewTab({
           <span>
             Passive URL sink analysis is disabled for this project. Enable{" "}
             <span className="mono">url_sink.passive.enabled</span> via{" "}
-            <Link
-              to="/talos-config?tab=settings&section=url_sink"
-              className="link"
-            >
+            <Link to={TALOS_CONFIG_URL_SINK} className="link">
               Talos Config
+            </Link>
+            {" or "}
+            <Link to={`${URL_SINKS_BASE}?tab=settings`} className="link">
+              Settings
             </Link>
             . Historical parameters remain visible if already captured.
           </span>
@@ -433,9 +447,20 @@ export default function OverviewTab({
       )}
 
       <p className="text-[10px] text-base-content/40 mt-2">
-        Workspace: <span className="mono">{URL_SINKS_BASE}</span> · Rollups &amp;
-        Settings tabs arrive in a later slice. Config changes:{" "}
-        <span className="mono">talos config set url_sink.*</span> / Talos Config.
+        Workspace: <span className="mono">{URL_SINKS_BASE}</span> · Config:{" "}
+        <span className="mono">talos config set url_sink.*</span> /{" "}
+        <Link to={TALOS_CONFIG_URL_SINK} className="link">
+          Talos Config
+        </Link>
+        {" · "}
+        <Link to={`${URL_SINKS_BASE}?tab=settings`} className="link">
+          Settings
+        </Link>
+        {" · "}
+        <Link to={`${URL_SINKS_BASE}?tab=rollups`} className="link">
+          Rollups
+        </Link>
+        .
       </p>
     </div>
   );

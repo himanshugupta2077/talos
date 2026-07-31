@@ -366,11 +366,13 @@ Capability badge tooltips use prioritization language only (never “vulnerable�
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Primary inspection workspace for one HTTP transaction (not a raw DB dump) |
-| **Backend** | `GET /api/flows/{id}` (flow + derived + results + endpoint_policy), `/related`, `/intelligence`, filter-aware `/adjacent`, replay, enqueue, export |
+| **Backend** | `GET /api/flows/{id}` (flow + derived + results + endpoint_policy), `/related` (incl. optional `url_sinks` strip), `/intelligence`, filter-aware `/adjacent`, replay, enqueue, export |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules), replay_diffs, bac/unauth/auth_test results, finding_evidence, scheduler_jobs, endpoint_policy, role_auth_* / session_health_* |
-| **Components** | `HttpInspector` (Pretty default + Raw; request also Params / JWT), `HttpPrettyView`, `FlowActions` bottom panels, health chips, summary + `flow_meta`, Replay/Timeline/Errors/Debug tabs, `FlowErrorsPanel`, Session/Related panels, `ModuleHelp` |
+| **Components** | `HttpInspector` (Pretty default + Raw; request also Params / JWT), `HttpPrettyView`, `FlowActions` bottom panels, health chips, summary + `flow_meta`, Replay/Timeline/Errors/Debug tabs, `FlowErrorsPanel`, Session/Related panels (URL sink inventory cross-link), `ModuleHelp` |
 | **Workflow** | Header + health chips → full-width tabs (Overview / HTTP / Replay / Timeline / Errors / Debug) → operator panels below (Actions / Session / Attack / Related / Source scan); keyboard ←/→ adjacent, Esc → list |
+
+**Related panel (PR5):** when the flow has an `endpoint_id`, `/related` may include `url_sinks` (`nrs_count`, `max_score`, `count`) with a **View inventory** deep-link to `/testing/url-sinks?tab=inventory&endpoint_id=…` (prioritization only).
 
 **Layout:** Full-width main workspace; Request | Response side-by-side under the HTTP tab; Actions / Session / Attack results / Related in a grid **below** the workspace (not a sticky right rail). Footer prev/next.
 
@@ -566,7 +568,7 @@ Candidate scores are always labeled **prioritization only**, not confirmed vulne
 
 **Files:** `UrlSinkDiscovery.tsx` + `pages/url-sinks/*`  
 **IA:** Passive module under **Testing** hub (peer of Secret Detection / Error Intelligence).  
-**Design:** `docs/URL-Sink-Discovery-Control-Panel-Design.md` (PR4 — Overview + Inventory; Rollups/Settings = PR5).
+**Design:** `docs/URL-Sink-Discovery-Control-Panel-Design.md` (PR1–PR5 complete).
 
 Passive inventory of parameters with `url_features` for network-resource prioritization.
 **Not confirmed SSRF / open-redirect Findings.** Active canaries remain on Input Validation.
@@ -574,24 +576,28 @@ Passive inventory of parameters with `url_features` for network-resource priorit
 | Route | Purpose |
 |-------|---------|
 | `/testing/url-sinks?tab=overview` | Status knobs, NRS/score KPIs, distributions, top sinks, empty-state CTAs, optional IV URL-family candidates |
-| `?tab=inventory` | Filterable passive inventory (default `min_score=45`, `nrs_only=true`) + row drawer |
-| Rollups / Settings tabs | Deferred to PR5 |
+| `?tab=inventory` | Filterable passive inventory (default `min_score=45`, `nrs_only=true`) + row drawer; optional `has_iv_profile` / `has_url_sink_obs` |
+| `?tab=rollups` | By host / endpoint / category aggregates → click through to Inventory |
+| `?tab=settings` | Effective `url_sink.*` kill-switches + score threshold; Talos Config deep-link |
 
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Post-capture “find sinks fast” triage before / alongside IV characterization |
-| **Backend** | `GET /api/url-sink/{status,overview,inventory,params,…}` — parameters-only by default; `include_iv` page-bounded |
-| **CLI** | Read path mirrors `talos endpoint params`; config via `talos config set url_sink.*` / Talos Config section `url_sink` |
+| **Backend** | `GET /api/url-sink/{status,overview,inventory,params,rollups/*,by-endpoint}` — parameters-only by default; `include_iv` page-bounded; `has_iv_*` uses capped profile uuid index |
+| **CLI** | Read path mirrors `talos endpoint params`; config via `talos config set url_sink.*` / Talos Config section `url_sink` / module Settings |
 | **DB** | `parameters.url_features` + endpoints join; optional slim IV profile slice |
-| **Components** | `ModuleShell`, `UrlSinkDisclaimer`, `UrlFeaturesPanel`, shared `components/url-sink/*` chips, inventory `SideDrawer` |
+| **Components** | `ModuleShell`, `UrlSinkDisclaimer`, `UrlFeaturesPanel`, `RollupsTab`, `SettingsTab`, shared `components/url-sink/*` chips, inventory `SideDrawer` |
 | **Hub KPI** | `nrs`, `score≥70` (warn tone, never danger), `score≥thr`; statusLine `Passive disabled` when `enabled_passive=false` |
 | **Workflow** | Capture → Overview / Inventory (NRS) → open row → IV dossier → candidates / canaries |
-| **Deep-links (K13)** | Same query keys as API: `min_score`, `nrs_only`, `category`, `looks_like`, `location`, `host`, `endpoint_id`, `search`, `sort`, `limit`, `offset`, `include_iv` |
+| **Deep-links (K13)** | Same query keys as API: `min_score`, `nrs_only`, `category`, `looks_like`, `location`, `host`, `endpoint_id`, `has_iv_profile`, `has_url_sink_obs`, `search`, `sort`, `limit`, `offset`, `include_iv` |
+| **Cross-links** | Endpoint Parameters → inventory; Flow Related → inventory by `endpoint_id`; IV ProfileCards → inventory |
 | **Safety** | Visible disclaimer; scores prioritization-only; no bulk Run IV from inventory; inventory-only badge for `response` / `jwt.*` |
 
 **Inventory drawer links:** IV dossier (primary), IV candidates (`capability=network_resource_sink`), Endpoint detail, Flows for endpoint.
 
 **Overview candidates strip (K19):** `GET /api/input-validation/candidates?capability=network_resource_sink&min_score=60&limit=20` (server-side filter). Hide on empty/error; do not FE-filter a global top-N.
+
+**Settings:** mutations only via `POST /api/configuration/value` (`url_sink.passive.enabled`, `html_js.enabled`, `iv_probes.enabled`, `score_threshold`). No `/api/url-sink/config`.
 
 ---
 

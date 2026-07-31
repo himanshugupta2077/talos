@@ -329,6 +329,12 @@ def test_flow_related(client):
     assert body["children"][0]["diff_verdict"] == "same"
     assert body["jobs"][0]["job_id"] == "job-1"
     assert body["param_count"] == 1
+    # PR5: optional url_sinks strip when endpoint_id present
+    assert "url_sinks" in body
+    if body["url_sinks"] is not None:
+        assert body["url_sinks"]["endpoint_id"]
+        assert "nrs_count" in body["url_sinks"]
+        assert "max_score" in body["url_sinks"]
 
 
 def test_flow_related_findings_on_replay(client):

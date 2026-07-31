@@ -26,9 +26,10 @@ import {
   Parameter,
 } from "../types";
 import { DecisionBadge, formatRelativeAge, PRIORITIES } from "./endpoints/shared";
-import { IV_BASE } from "./attack/registry";
+import { IV_BASE, URL_SINKS_BASE } from "./attack/registry";
 import RelatedErrorsStrip from "./error-intelligence/components/RelatedErrorsStrip";
 import type { EndpointRollupRow } from "./error-intelligence/shared";
+import { inventoryHref } from "./url-sinks/shared";
 
 interface EndpointDetailResponse {
   endpoint: any;
@@ -537,7 +538,23 @@ export default function EndpointDetail() {
           </div>
           <p className="text-xs text-base-content/50 mb-2">
             Scores and NRS are prioritization signals from captured values — not
-            Findings. Name links open the IV parameter dossier.
+            Findings. Name links open the IV parameter dossier.{" "}
+            {endpointId && (
+              <Link
+                to={inventoryHref({
+                  endpoint_id: endpointId,
+                  nrs_only: false,
+                  min_score: 0,
+                })}
+                className="link"
+              >
+                Open URL sink inventory for this endpoint
+              </Link>
+            )}
+            {" · "}
+            <Link to={`${URL_SINKS_BASE}?tab=overview`} className="link">
+              URL Sink Discovery
+            </Link>
           </p>
           <div className="overflow-x-auto panel">
             <table className="table table-tight table-xs">

@@ -1,5 +1,14 @@
 import { Link } from "react-router-dom";
 import { UuidChip } from "../../components/Common";
+import { URL_SINKS_BASE } from "../attack/registry";
+import { inventoryHref } from "../url-sinks/shared";
+
+interface UrlSinksStrip {
+  nrs_count?: number;
+  max_score?: number;
+  count?: number;
+  endpoint_id?: string | null;
+}
 
 interface Props {
   roleName?: string;
@@ -19,6 +28,8 @@ interface Props {
     status: string;
   }[];
   paramCount?: number;
+  /** Passive URL sink strip for this flow's endpoint (PR5). */
+  urlSinks?: UrlSinksStrip | null;
 }
 
 export default function FlowRelatedPanel({
@@ -30,7 +41,14 @@ export default function FlowRelatedPanel({
   findings,
   jobs,
   paramCount,
+  urlSinks,
 }: Props) {
+  const sinkEndpointId = urlSinks?.endpoint_id || endpointId || null;
+  const showSinks =
+    sinkEndpointId &&
+    urlSinks &&
+    ((urlSinks.count ?? 0) > 0 || (urlSinks.nrs_count ?? 0) > 0);
+
   return (
     <div className="space-y-2 text-xs">
       <Item label="Role" value={roleName || "—"} />
@@ -44,6 +62,42 @@ export default function FlowRelatedPanel({
           {paramCount != null && (
             <span className="text-base-content/40 ml-1">· {paramCount} params</span>
           )}
+        </div>
+      )}
+      {showSinks && (
+        <div className="pt-1 border-t border-base-300/60">
+          <div className="text-base-content/50 mb-1">URL sinks on endpoint</div>
+          <div className="mb-1">
+            <span className="mono tabular-nums">{urlSinks!.nrs_count ?? 0}</span>{" "}
+            NRS · max score{" "}
+            <span className="mono tabular-nums">{urlSinks!.max_score ?? 0}</span>
+            {(urlSinks!.count ?? 0) > 0 && (
+              <span className="text-base-content/40 ml-1">
+                · {urlSinks!.count} with features
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] text-base-content/45 mb-1">
+            Prioritization only — not confirmed SSRF.
+          </p>
+          <div className="flex flex-wrap gap-1">
+            <Link
+              to={inventoryHref({
+                endpoint_id: sinkEndpointId!,
+                nrs_only: true,
+                min_score: 45,
+              })}
+              className="btn btn-xs btn-ghost"
+            >
+              View inventory
+            </Link>
+            <Link
+              to={`${URL_SINKS_BASE}?tab=overview`}
+              className="btn btn-xs btn-ghost"
+            >
+              URL sinks hub
+            </Link>
+          </div>
         </div>
       )}
       {originalFlowId && (

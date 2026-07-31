@@ -18,7 +18,7 @@ import {
 } from "../../components/url-sink";
 import UrlFeaturesPanel from "./components/UrlFeaturesPanel";
 import UrlSinkDisclaimer from "./components/UrlSinkDisclaimer";
-import type { InventoryFilters, SinkRow } from "./shared";
+import type { InventoryFilters, SinkRow, TriBool } from "./shared";
 import {
   DEFAULT_LIMIT,
   DEFAULT_MIN_SCORE,
@@ -56,6 +56,10 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
   const [draftLocation, setDraftLocation] = useState(filters.location);
   const [draftSort, setDraftSort] = useState(filters.sort);
   const [draftLimit, setDraftLimit] = useState(filters.limit);
+  const [draftHasIv, setDraftHasIv] = useState<TriBool>(filters.has_iv_profile);
+  const [draftHasObs, setDraftHasObs] = useState<TriBool>(
+    filters.has_url_sink_obs,
+  );
 
   const [rows, setRows] = useState<SinkRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -77,6 +81,8 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
     setDraftLocation(next.location);
     setDraftSort(next.sort);
     setDraftLimit(next.limit);
+    setDraftHasIv(next.has_iv_profile);
+    setDraftHasObs(next.has_url_sink_obs);
   }, [searchParams]);
 
   const load = useCallback(() => {
@@ -114,6 +120,8 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
       location: draftLocation,
       host: draftHost.trim(),
       endpoint_id: filters.endpoint_id,
+      has_iv_profile: draftHasIv,
+      has_url_sink_obs: draftHasObs,
       search: draftSearch.trim(),
       sort: draftSort,
       limit: draftLimit,
@@ -139,6 +147,8 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
     setDraftLocation("");
     setDraftSort(DEFAULT_SORT);
     setDraftLimit(DEFAULT_LIMIT);
+    setDraftHasIv(null);
+    setDraftHasObs(null);
     setSearchParams(
       applyFiltersToSearchParams(new URLSearchParams(), next, {
         tab: "inventory",
@@ -263,9 +273,12 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
       <p className="text-xs text-base-content/55 mb-3">
         Default filters:{" "}
         <span className="mono">min_score=45</span>,{" "}
-        <span className="mono">nrs_only=true</span>. Scores are prioritization
-        only. Open a row for evidence; primary handoff is the IV parameter
-        dossier (characterization), not a bulk Run from this list.
+        <span className="mono">nrs_only=true</span>. Optional{" "}
+        <span className="mono">has_iv_profile</span> /{" "}
+        <span className="mono">has_url_sink_obs</span> load a capped IV uuid
+        index (not used unless set). Scores are prioritization only. Open a row
+        for evidence; primary handoff is the IV parameter dossier
+        (characterization), not a bulk Run from this list.
       </p>
 
       {/* Filters — K13 keys */}
@@ -347,6 +360,38 @@ export default function InventoryTab({ projectId }: { projectId: string }) {
           }}
           aria-label="Search name path host"
         />
+        <select
+          className={selectClass}
+          value={
+            draftHasIv == null ? "" : draftHasIv ? "true" : "false"
+          }
+          onChange={(e) => {
+            const v = e.target.value;
+            setDraftHasIv(v === "" ? null : v === "true");
+          }}
+          aria-label="Has IV profile"
+          title="Requires a capped IV profile index (not on hot path)"
+        >
+          <option value="">has_iv_profile: any</option>
+          <option value="true">has IV profile</option>
+          <option value="false">no IV profile</option>
+        </select>
+        <select
+          className={selectClass}
+          value={
+            draftHasObs == null ? "" : draftHasObs ? "true" : "false"
+          }
+          onChange={(e) => {
+            const v = e.target.value;
+            setDraftHasObs(v === "" ? null : v === "true");
+          }}
+          aria-label="Has URL sink observation"
+          title="observed.url_sink.confidence > 0 (capped profile index)"
+        >
+          <option value="">has_url_sink_obs: any</option>
+          <option value="true">has url_sink obs</option>
+          <option value="false">no url_sink obs</option>
+        </select>
         <select
           className={selectClass}
           value={draftSort}

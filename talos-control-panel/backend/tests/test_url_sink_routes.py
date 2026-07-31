@@ -433,3 +433,83 @@ def test_inventory_search_and_sort(client):
     )
     assert r2.json()["total_matched"] == 1
     assert r2.json()["items"][0]["name"] == "hook_url"
+
+
+def test_has_iv_profile_and_url_sink_obs_filters(client):
+    """PR5: capped IV uuid index filters (not deferred)."""
+    tc, pid, _ = client
+    r = tc.get(
+        "/api/url-sink/inventory",
+        params={
+            "project_id": pid,
+            "min_score": 0,
+            "nrs_only": "false",
+            "has_iv_profile": "true",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    names = {i["name"] for i in body["items"]}
+    assert "callback" in names
+    assert body["filters_applied"]["has_iv_profile"] is True
+    assert body.get("iv_index") is not None
+    assert body["iv_index"]["capped"] is False
+
+    r2 = tc.get(
+        "/api/url-sink/inventory",
+        params={
+            "project_id": pid,
+            "min_score": 0,
+            "nrs_only": "false",
+            "has_url_sink_obs": "true",
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["total_matched"] == 1
+    assert r2.json()["items"][0]["name"] == "callback"
+
+    r3 = tc.get(
+        "/api/url-sink/inventory",
+        params={
+            "project_id": pid,
+            "min_score": 0,
+            "nrs_only": "false",
+            "has_iv_profile": "false",
+        },
+    )
+    names3 = {i["name"] for i in r3.json()["items"]}
+    assert "callback" not in names3
+    assert "hook_url" in names3
+
+
+def test_rollups_host_endpoint_category(client):
+    tc, pid, _ = client
+    rh = tc.get(
+        "/api/url-sink/rollups/host",
+        params={"project_id": pid, "min_score": 0, "nrs_only": "false"},
+    )
+    assert rh.status_code == 200
+    hosts = rh.json()["rollup"]
+    assert len(hosts) >= 2
+    assert all("max_score" in h and "count" in h for h in hosts)
+    assert any(h.get("key") == "https://api.example.com" for h in hosts)
+
+    re_ = tc.get(
+        "/api/url-sink/rollups/endpoint",
+        params={"project_id": pid, "min_score": 45, "nrs_only": "true"},
+    )
+    assert re_.status_code == 200
+    eps = re_.json()["rollup"]
+    assert len(eps) >= 1
+    assert all(e.get("endpoint_id") for e in eps)
+
+    rc = tc.get(
+        "/api/url-sink/rollups/category",
+        params={"project_id": pid, "min_score": 0, "nrs_only": "false"},
+    )
+    assert rc.status_code == 200
+    cats = rc.json()["rollup"]
+    keys = {c["key"] for c in cats}
+    assert "redirect" in keys or "webhook" in keys
+    for c in cats:
+        assert "median_score" in c

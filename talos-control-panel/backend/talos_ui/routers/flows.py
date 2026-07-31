@@ -451,13 +451,28 @@ def flow_related(project_id: str, flow_id: str):
     )
 
     param_count = 0
-    if exists.get("endpoint_id"):
+    url_sinks = None
+    endpoint_id = exists.get("endpoint_id")
+    if endpoint_id:
         cnt = db.scalar(
             db_path,
             "SELECT COUNT(*) FROM parameters WHERE endpoint_id = ?",
-            (exists["endpoint_id"],),
+            (endpoint_id,),
         )
         param_count = int(cnt or 0)
+        # Passive URL sink strip (parameters-only; no IV join — K14)
+        try:
+            from .. import url_sink_reads as us
+
+            strip = us.by_endpoint(project_id, str(endpoint_id), limit=5)
+            url_sinks = {
+                "nrs_count": strip.get("nrs_count") or 0,
+                "max_score": strip.get("max_score") or 0,
+                "count": strip.get("count") or 0,
+                "endpoint_id": endpoint_id,
+            }
+        except Exception:
+            url_sinks = None
 
     return {
         "original": original,
@@ -465,6 +480,7 @@ def flow_related(project_id: str, flow_id: str):
         "findings": findings,
         "jobs": jobs,
         "param_count": param_count,
+        "url_sinks": url_sinks,
     }
 
 

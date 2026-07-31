@@ -79,8 +79,8 @@ def url_sink_inventory(
     """
     Filterable passive inventory. Query keys match FE K13 canon.
 
-    has_iv_profile / has_url_sink_obs are deferred (PR5) — ignored with note
-    when set, not 501 for simple clients.
+    has_iv_profile / has_url_sink_obs (PR5): optional one-shot capped profile
+    uuid index — not used on the default path when both are omitted (K14).
     """
     if sort not in ("score_desc", "score_asc", "name", "host"):
         raise HTTPException(
@@ -89,7 +89,16 @@ def url_sink_inventory(
         )
     nrs = _bool_param(nrs_only, us.DEFAULT_NRS_ONLY)
     inc_iv = _bool_param(include_iv, False)
-    result = us.project_inventory(
+    # None when omitted → filter not applied; true/false when provided
+    has_iv = (
+        None if has_iv_profile is None else _bool_param(has_iv_profile, False)
+    )
+    has_obs = (
+        None
+        if has_url_sink_obs is None
+        else _bool_param(has_url_sink_obs, False)
+    )
+    return us.project_inventory(
         project_id,
         min_score=min_score,
         nrs_only=nrs,
@@ -99,25 +108,13 @@ def url_sink_inventory(
         host=host or None,
         endpoint_id=endpoint_id or None,
         search=search or None,
+        has_iv_profile=has_iv,
+        has_url_sink_obs=has_obs,
         sort=sort,
         limit=limit,
         offset=offset,
         include_iv=inc_iv,
     )
-    deferred = []
-    if has_iv_profile is not None:
-        deferred.append("has_iv_profile")
-    if has_url_sink_obs is not None:
-        deferred.append("has_url_sink_obs")
-    if deferred:
-        result["deferred_filters"] = deferred
-        result["note"] = (
-            result.get("note", "")
-            + " Deferred filters (PR5): "
-            + ", ".join(deferred)
-            + " — not applied."
-        ).strip()
-    return result
 
 
 @router.get("/params/{parameter_id}")
@@ -155,30 +152,13 @@ def url_sink_rollup_host(
     nrs_only: Optional[str] = Query("true"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    inv = us.project_inventory(
+    """Aggregate all matching sinks by host (not page-truncated)."""
+    return us.rollup_by_host(
         project_id,
         min_score=min_score,
         nrs_only=_bool_param(nrs_only, True),
-        sort="score_desc",
-        limit=us.MAX_LIMIT,
-        offset=0,
-        include_iv=False,
+        limit=limit,
     )
-    buckets: dict[str, dict] = {}
-    for item in inv["items"]:
-        key = item.get("host") or ""
-        b = buckets.setdefault(
-            key, {"key": key, "count": 0, "nrs_count": 0, "max_score": 0, "categories": {}}
-        )
-        b["count"] += 1
-        if item.get("possible_network_resource"):
-            b["nrs_count"] += 1
-        b["max_score"] = max(b["max_score"], int(item.get("url_score") or 0))
-        cat = item.get("name_category")
-        if cat:
-            b["categories"][cat] = b["categories"].get(cat, 0) + 1
-    rollup = sorted(buckets.values(), key=lambda x: (-x["max_score"], -x["count"]))
-    return {"rollup": rollup[:limit], "disclaimer": us.DISCLAIMER}
 
 
 @router.get("/rollups/endpoint")
@@ -188,37 +168,13 @@ def url_sink_rollup_endpoint(
     nrs_only: Optional[str] = Query("true"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    inv = us.project_inventory(
+    """Aggregate all matching sinks by endpoint (not page-truncated)."""
+    return us.rollup_by_endpoint(
         project_id,
         min_score=min_score,
         nrs_only=_bool_param(nrs_only, True),
-        sort="score_desc",
-        limit=us.MAX_LIMIT,
-        offset=0,
-        include_iv=False,
+        limit=limit,
     )
-    buckets: dict[str, dict] = {}
-    for item in inv["items"]:
-        eid = item.get("endpoint_id") or ""
-        b = buckets.setdefault(
-            eid,
-            {
-                "key": eid,
-                "endpoint_id": eid,
-                "method": item.get("method"),
-                "host": item.get("host"),
-                "normalized_path": item.get("normalized_path"),
-                "count": 0,
-                "nrs_count": 0,
-                "max_score": 0,
-            },
-        )
-        b["count"] += 1
-        if item.get("possible_network_resource"):
-            b["nrs_count"] += 1
-        b["max_score"] = max(b["max_score"], int(item.get("url_score") or 0))
-    rollup = sorted(buckets.values(), key=lambda x: (-x["max_score"], -x["count"]))
-    return {"rollup": rollup[:limit], "disclaimer": us.DISCLAIMER}
 
 
 @router.get("/rollups/category")
@@ -228,30 +184,10 @@ def url_sink_rollup_category(
     nrs_only: Optional[str] = Query("true"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    inv = us.project_inventory(
+    """Aggregate all matching sinks by name_category (not page-truncated)."""
+    return us.rollup_by_category(
         project_id,
         min_score=min_score,
         nrs_only=_bool_param(nrs_only, True),
-        sort="score_desc",
-        limit=us.MAX_LIMIT,
-        offset=0,
-        include_iv=False,
+        limit=limit,
     )
-    buckets: dict[str, dict] = {}
-    scores: dict[str, list[int]] = {}
-    for item in inv["items"]:
-        cat = item.get("name_category") or "(none)"
-        b = buckets.setdefault(cat, {"key": cat, "count": 0, "max_score": 0})
-        b["count"] += 1
-        sc = int(item.get("url_score") or 0)
-        b["max_score"] = max(b["max_score"], sc)
-        scores.setdefault(cat, []).append(sc)
-    for cat, b in buckets.items():
-        arr = sorted(scores.get(cat) or [])
-        if arr:
-            mid = arr[len(arr) // 2]
-            b["median_score"] = mid
-        else:
-            b["median_score"] = 0
-    rollup = sorted(buckets.values(), key=lambda x: (-x["count"], -x["max_score"]))
-    return {"rollup": rollup[:limit], "disclaimer": us.DISCLAIMER}

@@ -7,7 +7,7 @@
 | **Document** | Design: URL Sink Discovery Control Panel surfaces |
 | **Author** | Grok Design (Control Panel) |
 | **Date** | 2026-07-31 |
-| **Status** | **Approved** (rev 3 — design review consensus). **PR1–PR4 implemented** on main; PR5 remaining. |
+| **Status** | **Approved** (rev 3 — design review consensus). **PR1–PR5 implemented** on main. |
 | **Workspace** | `talos-v2` |
 | **Audience** | Senior engineers implementing Control Panel + reviewing product IA |
 
@@ -1234,7 +1234,7 @@ Ship read APIs + fix CP config gap so `?section=url_sink` works. Config flags vi
 
 - `registry.ts` — module, `URL_SINKS_BASE`, extend `AttackKpiSource` with `url_sinks`
 - `App.tsx` — route `/testing/url-sinks`
-- `UrlSinkDiscovery.tsx` — ModuleShell; tabs overview | inventory only (rollups/settings placeholders disabled or hidden)
+- `UrlSinkDiscovery.tsx` — ModuleShell; tabs overview | inventory (rollups/settings in PR5)
 - `pages/url-sinks/OverviewTab.tsx`, `InventoryTab.tsx`, `shared.ts`
 - `pages/url-sinks/components/UrlSinkDisclaimer.tsx`, `UrlFeaturesPanel.tsx` (import chips from `components/url-sink/`)
 - `AttackHub.tsx` — KPI fetch `/api/url-sink/status`; chip mapping + `statusLine`
@@ -1246,7 +1246,7 @@ Operator-visible passive module without Rollups/Settings bulk. Default filters `
 
 ---
 
-### PR5 — Rollups, Settings, cross-links, IV filter join (optional)
+### PR5 — Rollups, Settings, cross-links, IV filter join — **implemented**
 
 **Title:** `feat(cp): URL sink rollups, settings, and cross-links`
 
@@ -1263,7 +1263,7 @@ Operator-visible passive module without Rollups/Settings bulk. Default filters `
 - **No** Dashboard panel required (hub-only v1)
 
 **Description:**  
-Discoverability + remaining workspace tabs. No new domain concepts.
+Discoverability + remaining workspace tabs. No new domain concepts. **Shipped on main.**
 
 ---
 

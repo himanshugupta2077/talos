@@ -208,7 +208,7 @@ Each router is an `APIRouter` with a `/api/<domain>` prefix and FastAPI tags.
 | `input_validation.py` | `/api/input-validation` | IV engine control + caches + export; slim profiles include URL sink fields |
 | `passive.py` | `/api/passive` | Secret Detection status/docs/detections/rescan |
 | `error_intel.py` | `/api/error-intel` | Error Intelligence clusters/observations/rollups/rescan (reads via `talos.error_intel.db`; config/rescan via CLI) |
-| `url_sink.py` | `/api/url-sink` | URL Sink Discovery inventory/status/overview (read-only; `url_sink_reads.py`) |
+| `url_sink.py` | `/api/url-sink` | URL Sink Discovery inventory/status/overview/rollups/by-endpoint (read-only; `url_sink_reads.py`) |
 | `findings.py` | `/api/findings` | List/detail/lifecycle, groups, reports |
 | `console.py` | `/api/console` | Tree + modeled run + raw run |
 

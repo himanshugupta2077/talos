@@ -39,6 +39,8 @@ DEFAULT_NRS_ONLY = True
 DEFAULT_SORT = "score_desc"
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000
+# Hard cap when building has_iv_* / url_sink_obs uuid sets (K14 / PR5).
+IV_UUID_INDEX_CAP = 5000
 
 
 def _ensure_talos_on_path() -> None:
@@ -156,6 +158,10 @@ def _matches_filters(
     host: str | None,
     endpoint_id: str | None,
     search: str | None,
+    has_iv_profile: bool | None = None,
+    has_url_sink_obs: bool | None = None,
+    profile_uuids: set[str] | None = None,
+    url_sink_obs_uuids: set[str] | None = None,
 ) -> bool:
     if row["url_score"] < min_score:
         return False
@@ -186,6 +192,21 @@ def _matches_filters(
             for k in ("name", "normalized_path", "host", "location")
         ).lower()
         if q not in blob:
+            return False
+    uid = str(row.get("param_uuid") or "")
+    if has_iv_profile is not None:
+        in_set = bool(uid and profile_uuids is not None and uid in profile_uuids)
+        if has_iv_profile and not in_set:
+            return False
+        if not has_iv_profile and in_set:
+            return False
+    if has_url_sink_obs is not None:
+        in_obs = bool(
+            uid and url_sink_obs_uuids is not None and uid in url_sink_obs_uuids
+        )
+        if has_url_sink_obs and not in_obs:
+            return False
+        if not has_url_sink_obs and in_obs:
             return False
     return True
 
@@ -260,10 +281,20 @@ def filter_inventory(
     host: str | None = None,
     endpoint_id: str | None = None,
     search: str | None = None,
+    has_iv_profile: bool | None = None,
+    has_url_sink_obs: bool | None = None,
+    profile_uuids: set[str] | None = None,
+    url_sink_obs_uuids: set[str] | None = None,
     sort: str = DEFAULT_SORT,
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
+    """
+    Filter + sort sink rows.
+
+    When ``limit`` is None, return the full matched set (used by rollups /
+    by-endpoint aggregates so counts are not truncated by MAX_LIMIT pages).
+    """
     matched = [
         r
         for r in rows
@@ -277,13 +308,85 @@ def filter_inventory(
             host=host,
             endpoint_id=endpoint_id,
             search=search,
+            has_iv_profile=has_iv_profile,
+            has_url_sink_obs=has_url_sink_obs,
+            profile_uuids=profile_uuids,
+            url_sink_obs_uuids=url_sink_obs_uuids,
         )
     ]
     matched.sort(key=_sort_key(sort or DEFAULT_SORT))
     total = len(matched)
-    limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
     offset = max(0, int(offset or 0))
-    return matched[offset : offset + limit], total
+    if limit is None:
+        return matched[offset:], total
+    lim = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
+    return matched[offset : offset + lim], total
+
+
+def load_iv_uuid_index(
+    db_path: Path,
+    *,
+    hard_cap: int = IV_UUID_INDEX_CAP,
+) -> dict[str, Any]:
+    """
+    One-shot capped load of param_uuid sets from iv_param_profiles (PR5).
+
+    Used only when has_iv_profile / has_url_sink_obs filters are requested.
+    Does not run on the default inventory/status hot path (K14).
+    """
+    empty: dict[str, Any] = {
+        "profile_uuids": set(),
+        "url_sink_obs_uuids": set(),
+        "scanned": 0,
+        "capped": False,
+        "cap": hard_cap,
+    }
+    if not db.db_exists(db_path):
+        return empty
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT param_uuid, profile FROM iv_param_profiles
+            LIMIT {int(hard_cap) + 1}
+            """,
+        )
+    except Exception:
+        return empty
+    capped = len(rows) > hard_cap
+    if capped:
+        rows = rows[:hard_cap]
+    profile_uuids: set[str] = set()
+    url_sink_obs: set[str] = set()
+    for pr in rows:
+        uid = str(pr.get("param_uuid") or "")
+        if not uid:
+            continue
+        profile_uuids.add(uid)
+        prof = db.safe_json(pr.get("profile"), {})
+        if not isinstance(prof, dict):
+            continue
+        observed = (
+            prof.get("observed") if isinstance(prof.get("observed"), dict) else {}
+        )
+        url_sink = (
+            observed.get("url_sink")
+            if isinstance(observed.get("url_sink"), dict)
+            else {}
+        )
+        try:
+            conf = int(url_sink.get("confidence") or 0)
+        except (TypeError, ValueError):
+            conf = 0
+        if conf > 0:
+            url_sink_obs.add(uid)
+    return {
+        "profile_uuids": profile_uuids,
+        "url_sink_obs_uuids": url_sink_obs,
+        "scanned": len(rows),
+        "capped": capped,
+        "cap": hard_cap,
+    }
 
 
 def compute_status_aggregates(
@@ -505,6 +608,8 @@ def project_inventory(
     host: str | None = None,
     endpoint_id: str | None = None,
     search: str | None = None,
+    has_iv_profile: bool | None = None,
+    has_url_sink_obs: bool | None = None,
     sort: str = DEFAULT_SORT,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
@@ -514,6 +619,15 @@ def project_inventory(
     db_path = config.project_db_path(project_id, record)
     raw = load_parameter_rows(db_path)
     all_rows = build_sink_rows(raw)
+
+    iv_index: dict[str, Any] | None = None
+    profile_uuids: set[str] | None = None
+    url_sink_obs_uuids: set[str] | None = None
+    if has_iv_profile is not None or has_url_sink_obs is not None:
+        iv_index = load_iv_uuid_index(db_path)
+        profile_uuids = iv_index["profile_uuids"]
+        url_sink_obs_uuids = iv_index["url_sink_obs_uuids"]
+
     page, total = filter_inventory(
         all_rows,
         min_score=min_score,
@@ -524,12 +638,24 @@ def project_inventory(
         host=host,
         endpoint_id=endpoint_id,
         search=search,
+        has_iv_profile=has_iv_profile,
+        has_url_sink_obs=has_url_sink_obs,
+        profile_uuids=profile_uuids,
+        url_sink_obs_uuids=url_sink_obs_uuids,
         sort=sort,
         limit=limit,
         offset=offset,
     )
     if include_iv:
         attach_iv_slice(db_path, page)
+
+    note = PRIORITIZATION_NOTE
+    if iv_index and iv_index.get("capped"):
+        note = (
+            f"{PRIORITIZATION_NOTE} "
+            f"has_iv_* filters used a capped profile index "
+            f"({iv_index.get('cap')} rows scanned)."
+        )
 
     return {
         "items": page,
@@ -544,14 +670,59 @@ def project_inventory(
             "host": host,
             "endpoint_id": endpoint_id,
             "search": search,
+            "has_iv_profile": has_iv_profile,
+            "has_url_sink_obs": has_url_sink_obs,
             "sort": sort,
             "limit": limit,
             "offset": offset,
             "include_iv": include_iv,
         },
-        "note": PRIORITIZATION_NOTE,
+        "iv_index": (
+            {
+                "scanned": iv_index.get("scanned"),
+                "capped": iv_index.get("capped"),
+                "cap": iv_index.get("cap"),
+            }
+            if iv_index
+            else None
+        ),
+        "note": note,
         "disclaimer": DISCLAIMER,
     }
+
+
+def matching_sink_rows(
+    project_id: str,
+    *,
+    min_score: int = DEFAULT_MIN_SCORE,
+    nrs_only: bool = DEFAULT_NRS_ONLY,
+    category: str | None = None,
+    looks_like: str | None = None,
+    location: str | None = None,
+    host: str | None = None,
+    endpoint_id: str | None = None,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
+    """All matching sink rows (no pagination) for rollups / endpoint strips."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    raw = load_parameter_rows(db_path)
+    all_rows = build_sink_rows(raw)
+    matched, _ = filter_inventory(
+        all_rows,
+        min_score=min_score,
+        nrs_only=nrs_only,
+        category=category,
+        looks_like=looks_like,
+        location=location,
+        host=host,
+        endpoint_id=endpoint_id,
+        search=search,
+        sort=DEFAULT_SORT,
+        limit=None,
+        offset=0,
+    )
+    return matched
 
 
 def project_overview(project_id: str, *, top_n: int = 10) -> dict[str, Any]:
@@ -590,27 +761,130 @@ def project_overview(project_id: str, *, top_n: int = 10) -> dict[str, Any]:
 
 
 def by_endpoint(project_id: str, endpoint_id: str, *, limit: int = 20) -> dict[str, Any]:
-    inv = project_inventory(
+    """
+    Endpoint strip: aggregate counts over **all** endpoint params, return top items.
+    """
+    matched = matching_sink_rows(
         project_id,
         min_score=0,
         nrs_only=False,
         endpoint_id=endpoint_id,
-        sort="score_desc",
-        limit=limit,
-        offset=0,
-        include_iv=False,
     )
-    items = inv["items"]
-    nrs_count = sum(1 for r in items if r.get("possible_network_resource"))
-    max_score = max((int(r.get("url_score") or 0) for r in items), default=0)
+    # matching_sink_rows already score_desc sorted
+    nrs_count = sum(1 for r in matched if r.get("possible_network_resource"))
+    max_score = max((int(r.get("url_score") or 0) for r in matched), default=0)
+    lim = max(1, min(int(limit or 20), 100))
     return {
         "endpoint_id": endpoint_id,
-        "count": inv["total_matched"],
+        "count": len(matched),
         "nrs_count": nrs_count,
         "max_score": max_score,
-        "items": items,
+        "items": matched[:lim],
         "disclaimer": DISCLAIMER,
     }
+
+
+def rollup_by_host(
+    project_id: str,
+    *,
+    min_score: int = DEFAULT_MIN_SCORE,
+    nrs_only: bool = DEFAULT_NRS_ONLY,
+    limit: int = 50,
+) -> dict[str, Any]:
+    matched = matching_sink_rows(
+        project_id, min_score=min_score, nrs_only=nrs_only
+    )
+    buckets: dict[str, dict[str, Any]] = {}
+    for item in matched:
+        key = item.get("host") or ""
+        b = buckets.setdefault(
+            key,
+            {
+                "key": key,
+                "count": 0,
+                "nrs_count": 0,
+                "max_score": 0,
+                "categories": {},
+            },
+        )
+        b["count"] += 1
+        if item.get("possible_network_resource"):
+            b["nrs_count"] += 1
+        b["max_score"] = max(b["max_score"], int(item.get("url_score") or 0))
+        cat = item.get("name_category")
+        if cat:
+            cats = b["categories"]
+            cats[cat] = cats.get(cat, 0) + 1
+    # Promote top categories list for UI convenience
+    for b in buckets.values():
+        cats = b.get("categories") or {}
+        top = sorted(cats.items(), key=lambda x: (-x[1], x[0]))[:5]
+        b["top_categories"] = [c for c, _ in top]
+    rollup = sorted(buckets.values(), key=lambda x: (-x["max_score"], -x["count"]))
+    lim = max(1, min(int(limit or 50), 200))
+    return {"rollup": rollup[:lim], "total_buckets": len(rollup), "disclaimer": DISCLAIMER}
+
+
+def rollup_by_endpoint(
+    project_id: str,
+    *,
+    min_score: int = DEFAULT_MIN_SCORE,
+    nrs_only: bool = DEFAULT_NRS_ONLY,
+    limit: int = 50,
+) -> dict[str, Any]:
+    matched = matching_sink_rows(
+        project_id, min_score=min_score, nrs_only=nrs_only
+    )
+    buckets: dict[str, dict[str, Any]] = {}
+    for item in matched:
+        eid = item.get("endpoint_id") or ""
+        b = buckets.setdefault(
+            eid,
+            {
+                "key": eid,
+                "endpoint_id": eid,
+                "method": item.get("method"),
+                "host": item.get("host"),
+                "normalized_path": item.get("normalized_path"),
+                "count": 0,
+                "nrs_count": 0,
+                "max_score": 0,
+            },
+        )
+        b["count"] += 1
+        if item.get("possible_network_resource"):
+            b["nrs_count"] += 1
+        b["max_score"] = max(b["max_score"], int(item.get("url_score") or 0))
+    rollup = sorted(buckets.values(), key=lambda x: (-x["max_score"], -x["count"]))
+    lim = max(1, min(int(limit or 50), 200))
+    return {"rollup": rollup[:lim], "total_buckets": len(rollup), "disclaimer": DISCLAIMER}
+
+
+def rollup_by_category(
+    project_id: str,
+    *,
+    min_score: int = DEFAULT_MIN_SCORE,
+    nrs_only: bool = DEFAULT_NRS_ONLY,
+    limit: int = 50,
+) -> dict[str, Any]:
+    matched = matching_sink_rows(
+        project_id, min_score=min_score, nrs_only=nrs_only
+    )
+    buckets: dict[str, dict[str, Any]] = {}
+    scores: dict[str, list[int]] = {}
+    for item in matched:
+        cat = item.get("name_category") or "(none)"
+        b = buckets.setdefault(cat, {"key": cat, "count": 0, "max_score": 0})
+        b["count"] += 1
+        sc = int(item.get("url_score") or 0)
+        b["max_score"] = max(b["max_score"], sc)
+        scores.setdefault(cat, []).append(sc)
+    for cat, b in buckets.items():
+        arr = sorted(scores.get(cat) or [])
+        b["median_score"] = arr[len(arr) // 2] if arr else 0
+    rollup = sorted(buckets.values(), key=lambda x: (-x["count"], -x["max_score"]))
+    lim = max(1, min(int(limit or 50), 200))
+    return {"rollup": rollup[:lim], "total_buckets": len(rollup), "disclaimer": DISCLAIMER}
 
 
 def param_detail(
