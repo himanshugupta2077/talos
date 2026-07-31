@@ -1547,6 +1547,26 @@ talos attack unauth config --auto-run off
 
 ---
 
+## Attack — Authentication & Session Testing (`auth-session`)
+
+**Status (Phase 1):** foundation only — package `talos.auth_session`, schema v54,
+JWT suite catalog / mutators. **Operator CLI is not wired yet** (Phase 2+).
+
+| Future command surface | Purpose |
+|------------------------|---------|
+| `talos attack auth-session bind\|unbind\|show-bindings` | Map `auth_config` header/cookie → auth type (JWT first) |
+| `talos attack auth-session generate` | Create pending mutation candidates |
+| `talos attack auth-session candidates / approve / reject` | Review lifecycle |
+| `talos attack auth-session run` | Enqueue one job per approved test_id (Phase 3) |
+| `talos attack auth-session results / filter / suite list` | Results + decision filter (Phase 4) |
+
+**Differentiation:** Unauth strips/garbles auth (presence); auth-session
+*mutates* token structure (validation); BAC swaps valid other-role sessions.
+
+Design: `docs/design-auth-session-testing-engine.md`.
+
+---
+
 ## Attack — Broken Access Control (BAC)
 
 **Auth prerequisites per attacker role** (provider-dependent):

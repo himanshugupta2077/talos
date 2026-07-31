@@ -2,6 +2,39 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 1 foundation (schema + JWT library)
+
+**Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
+
+Dedicated Authentication & Session Testing package foundation. Tests whether a
+*presented* credential is validated (signature / algorithm / claims / structure)
+— complementary to Unauth (auth presence) and BAC (role swap).
+
+| Deliverable | Detail |
+|-------------|--------|
+| **Schema v54** | `auth_session_bindings`, `auth_session_candidates`, `auth_session_results` (init + migrate) |
+| **Package** | `talos/auth_session/` — distinct from `data_dir/auth_sessions/` role session files |
+| **JWT codec** | Stdlib base64url/json only; header decode + encode; scheme preserve |
+| **Mutators** | Core suite (`jwt.alg_none*`, signature, structure, claims, kid) |
+| **Algorithm degradation** | Phase-1 matrix from observed `alg` (e.g. RS256→HS*); **never** emits `*_to_none` (core owns none) |
+| **Registry** | `AuthTypeAnalyzer` Protocol + `JwtAnalyzer` + `ANALYZERS["jwt"]` |
+
+**Not in Phase 1:** operator CLI, scheduler job, HTTP engine, findings (Phases 2–4).
+
+```bash
+# Library-only (Phase 1) — importable suite / mutators
+python -c "from talos.auth_session import get_analyzer; print(list(get_analyzer('jwt').__class__.__dict__.keys())[:5])"
+# Operator path arrives as: talos attack auth-session … (Phase 2+)
+```
+
+**Tests:** `tests/test_auth_session_schema.py`, `test_auth_session_jwt_mutate.py`,
+`test_auth_session_suite_jwt.py`.
+
+**Files:** `talos/projects/db.py` (v54), `talos/auth_session/{__init__,models,jwt_codec,jwt_mutate,suite_jwt,types}.py`,
+docs (`architecture.md`, this entry, design doc).
+
+---
+
 ## Control Panel: URL Sink Discovery PR5 — rollups, settings, cross-links
 
 **Shipped:** 2026-07-31 · design `docs/URL-Sink-Discovery-Control-Panel-Design.md`.

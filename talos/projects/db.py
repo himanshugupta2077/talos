@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 53
+SCHEMA_VERSION = 54
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -412,7 +412,7 @@ CREATE TABLE IF NOT EXISTS endpoint_annotations (
 -- scheduler_jobs: persistent replay job queue                         --
 -- Owned by the ReplayScheduler layer.  One row per scheduled job.    --
 -- job_type : replay_flow | replay_endpoint | auth_test | bac_* |     --
---            unauth_attack | iv_*                                    --
+--            unauth_attack | auth_session_attack | iv_*              --
 -- status   : pending | running | paused | done | failed | skipped |  --
 --            cancelled                                               --
 -- priority : higher value = executed first (manual=100, auto=10)     --
@@ -1429,6 +1429,143 @@ CREATE TABLE IF NOT EXISTS ai_draft_findings (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_draft_findings_project
     ON ai_draft_findings (project_id, status, updated_at DESC);
+
+-- ------------------------------------------------------------------ --
+-- Auth-session attack engine (v54): bindings, candidates, results.  --
+-- Package: talos/auth_session/ (distinct from auth_sessions/ files).  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS auth_session_bindings (
+    id            TEXT PRIMARY KEY,          -- UUID
+    location      TEXT NOT NULL,             -- 'header' | 'cookie'
+    name          TEXT NOT NULL,             -- e.g. Authorization, sessionid
+    auth_type     TEXT NOT NULL,             -- 'jwt' | future types
+    role_id       TEXT,                      -- optional preferred role
+    config_json   TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (location, name)
+);
+
+CREATE TABLE IF NOT EXISTS auth_session_candidates (
+    id                 TEXT PRIMARY KEY,
+    binding_id         TEXT NOT NULL
+        REFERENCES auth_session_bindings(id) ON DELETE RESTRICT,
+    endpoint_id        TEXT,
+    baseline_flow_id   TEXT NOT NULL,
+    auth_type          TEXT NOT NULL,
+    test_id            TEXT NOT NULL,
+    test_family        TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    mutation_summary   TEXT NOT NULL,
+    token_fingerprint  TEXT,                 -- short hash of original token
+    risk_hint          TEXT,
+    status             TEXT NOT NULL,        -- pending|approved|rejected|running|done|failed
+    reject_reason      TEXT,
+    skip_reason        TEXT,
+    meta_json          TEXT NOT NULL DEFAULT '{}',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (binding_id, test_id, baseline_flow_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_cand_status
+    ON auth_session_candidates (status, endpoint_id);
+
+CREATE TABLE IF NOT EXISTS auth_session_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,                 -- denormalized for CLI filters
+    candidate_id       TEXT NOT NULL,
+    binding_id         TEXT NOT NULL,
+    auth_type          TEXT NOT NULL,
+    test_id            TEXT NOT NULL,
+    test_family        TEXT,
+    mutation_summary   TEXT,
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    diff_verdict       TEXT,                 -- SAME | DIFFERENT | ERROR
+    verdict            TEXT NOT NULL,        -- WEAK_VALIDATION | SECURE | UNKNOWN
+    matched_section    TEXT,
+    matched_group      TEXT,
+    matched_rules      TEXT,                 -- JSON
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_results_endpoint_test
+    ON auth_session_results (endpoint_id, test_id, verdict);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_results_original_test
+    ON auth_session_results (original_flow_id, test_id);
+"""
+
+# Shared CREATE statements for Auth-session engine tables (schema v54).
+# Used by _migrate_schema and migrate_project_db so upgrade paths stay in sync
+# with the CREATE TABLE blocks embedded in _DDL above.
+_AUTH_SESSION_SCHEMA_V54_DDL = """
+CREATE TABLE IF NOT EXISTS auth_session_bindings (
+    id            TEXT PRIMARY KEY,
+    location      TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    auth_type     TEXT NOT NULL,
+    role_id       TEXT,
+    config_json   TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (location, name)
+);
+
+CREATE TABLE IF NOT EXISTS auth_session_candidates (
+    id                 TEXT PRIMARY KEY,
+    binding_id         TEXT NOT NULL
+        REFERENCES auth_session_bindings(id) ON DELETE RESTRICT,
+    endpoint_id        TEXT,
+    baseline_flow_id   TEXT NOT NULL,
+    auth_type          TEXT NOT NULL,
+    test_id            TEXT NOT NULL,
+    test_family        TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    mutation_summary   TEXT NOT NULL,
+    token_fingerprint  TEXT,
+    risk_hint          TEXT,
+    status             TEXT NOT NULL,
+    reject_reason      TEXT,
+    skip_reason        TEXT,
+    meta_json          TEXT NOT NULL DEFAULT '{}',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (binding_id, test_id, baseline_flow_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_cand_status
+    ON auth_session_candidates (status, endpoint_id);
+
+CREATE TABLE IF NOT EXISTS auth_session_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    candidate_id       TEXT NOT NULL,
+    binding_id         TEXT NOT NULL,
+    auth_type          TEXT NOT NULL,
+    test_id            TEXT NOT NULL,
+    test_family        TEXT,
+    mutation_summary   TEXT,
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    diff_verdict       TEXT,
+    verdict            TEXT NOT NULL,
+    matched_section    TEXT,
+    matched_group      TEXT,
+    matched_rules      TEXT,
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_results_endpoint_test
+    ON auth_session_results (endpoint_id, test_id, verdict);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_results_original_test
+    ON auth_session_results (original_flow_id, test_id);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -2358,6 +2495,10 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
                 "url_features TEXT NOT NULL DEFAULT '{}'"
             )
 
+    if from_version < 54:
+        # Auth-session attack engine: bindings, candidates, results.
+        conn.executescript(_AUTH_SESSION_SCHEMA_V54_DDL)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2493,6 +2634,8 @@ def migrate_project_db(db_path: Path) -> None:
                    ai_observations, ai_task_nodes.
         v51 → v52: AI Layer Phase E — ai_draft_findings (KB = markdown dir).
         v52 → v53: URL Sink Discovery Phase 1 — parameters.url_features JSON.
+        v53 → v54: auth_session_bindings, auth_session_candidates,
+                   auth_session_results (Authentication & Session Testing engine).
     """
     if not db_path.exists():
         return
@@ -3850,6 +3993,12 @@ def migrate_project_db(db_path: Path) -> None:
                     "url_features TEXT NOT NULL DEFAULT '{}'"
                 )
             conn.execute("UPDATE schema_version SET version = 53")
+            conn.commit()
+
+        if current < 54:
+            # Auth-session attack engine: bindings, candidates, results.
+            conn.executescript(_AUTH_SESSION_SCHEMA_V54_DDL)
+            conn.execute("UPDATE schema_version SET version = 54")
             conn.commit()
 
 
