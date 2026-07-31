@@ -1677,9 +1677,15 @@ talos input-validation synthesize --dry-run
 talos input-validation synthesize --format json
 
 # Attack candidates (Module 11/12 — prioritization only, not confirmed vulns)
+# Attacks: xss sqli open_redirect ssrf webhook_abuse oauth_redirect hpp
+#          header_injection path_traversal mass_assignment
 talos input-validation candidates
 talos input-validation candidates --attack xss --min-score 60
+talos input-validation candidates --attack ssrf --min-score 40
+talos input-validation candidates --attack webhook_abuse
+talos input-validation candidates --attack oauth_redirect
 talos input-validation candidates --host api.example.com --capability reflective_input
+talos input-validation candidates --capability network_resource_sink
 talos input-validation candidates --capability stored_reflection
 talos input-validation candidates --format json
 
@@ -1807,11 +1813,17 @@ After `synthesize` (or a completed planner run), parameter profiles store:
 
 | Field | Meaning |
 |-------|---------|
-| `capabilities` | Behaviour flags (`reflective_input`, `stored_reflection`, `html_context`, `url_like_value`, …) |
+| `capabilities` | Behaviour flags (`reflective_input`, `stored_reflection`, `html_context`, `url_like_value`, `network_resource_sink`, `redirect_sink`, `fetch_sink`, `webhook_sink`, …) |
 | `candidates` | Prioritization rows: `attack`, `score`, `confidence`, `reasons`, `evidence_flow_ids`, optional `reflection_modes` / `stored_reflection` |
 | `reflections` CLI | Raw cross-flow source→sink links (FP validation; no full secrets) |
 
 `reflective_input` covers same-request **or** cross-flow reflection. `stored_reflection` is set when a value later appears on another page/flow (data-flow evidence, not XSS).
+
+URL Sink Discovery Phase 4: `network_resource_sink` is derived from passive
+`url_features` + active `observed.url_sink` + type soft-accept. Candidates for
+`ssrf` / `open_redirect` are **value-first** (random-named URL values still
+rank); `webhook_abuse` and `oauth_redirect` are additional attack labels.
+`url_like_value` remains a compat alias.
 
 ```bash
 # Enable passive cross-flow indexing (default off until bake-in)
@@ -1821,6 +1833,9 @@ talos config set parameter_intel.cross_flow.enabled true --project
 talos input-validation show <parameter_uuid>           # same-req + cross-flow; dual modes
 talos input-validation show <parameter_uuid> --format json
 talos input-validation candidates --attack xss --min-score 60
+talos input-validation candidates --attack ssrf --min-score 40
+talos input-validation candidates --attack webhook_abuse
+talos input-validation candidates --capability network_resource_sink
 talos input-validation candidates --capability stored_reflection
 talos input-validation reflections [--param-uuid UUID] [--host HOST]
 talos input-validation export parameter <parameter_uuid>

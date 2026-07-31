@@ -395,7 +395,7 @@ reflection_encoding   (raw | html_encoded | url_encoded)
 url_features      (JSON: passive URL Sink Discovery — value/name + structure evidence)
 ```
 
-### URL Sink Discovery (passive + IV Phase 3)
+### URL Sink Discovery (passive + IV + capabilities)
 
 Parameters may carry a `url_features` document (schema v53+) produced by
 `talos.url_sink`: value-first detection of URLs/hostnames/IPs/paths plus a
@@ -413,12 +413,18 @@ canaries (`talos-canary.invalid`, path/IP forms; deep+ protocol variants).
 Responses are fingerprinted for validation phrases, DNS/fetch/timeout classes,
 and Location canary reflection. Results land in the IV param profile as
 `observed.url_sink` (accepts_url/hostname/…, redirect_behavior, fetch_behavior,
-error_classes, …) plus `tested.url_sink:*` — still **characterization only**,
-not confirmed SSRF/open-redirect findings. Unified capabilities and attack
-candidate scoring come later.
+error_classes, …) plus `tested.url_sink:*`.
+
+**Phase 4 (consumer contract):** Module 11 derives `network_resource_sink` (plus
+`redirect_sink` / `fetch_sink` / `webhook_sink`) from passive features + active
+`url_sink` + type soft-accept. Attack candidates for `ssrf` / `open_redirect`
+are **value-first** (e.g. `abc=https://…` ranks without name tokens); new labels
+`webhook_abuse` and `oauth_redirect` bias webhook/OAuth surfaces. Still
+**prioritization only** — not confirmed SSRF/open-redirect findings.
 
 This is characterization only — not exploit confirmation. Random-named values
-like `abc=https://cdn.example/x` still score as network resources.
+like `abc=https://cdn.example/x` still score as network resources and can
+produce SSRF candidates after URL accept evidence.
 
 ### Passive Reflection Intelligence
 
@@ -487,7 +493,7 @@ always running a fixed ~70-probe matrix. Default tier is **standard**
 | 3: Characters | Class representatives / drill-down (skipped under standard when multiprobe confident) |
 | 4: Length | Binary/log length search (fixed matrix only on exhaustive) |
 | 5: Types | Passive-first type_confirm (pruned under standard; full on exhaustive) |
-| 5b: URL sink | Benign URL canaries when passive `url_features` warrants → `observed.url_sink` (Phase 3; characterization only) |
+| 5b: URL sink | Benign URL canaries when passive `url_features` warrants → `observed.url_sink` (Phase 3); Phase 4 → `network_resource_sink` + value-first candidates |
 | 6: Transformations | Detect trim, lowercase, normalization, escaping, encoding (enriched by M8 pipeline) |
 | 7: Reflection | Endpoint-specific reflection analysis (not globally cached) |
 | 8: Validation | Semantic rules + core validation; exploit-shaped strings deep+ only; tested{} negatives |
@@ -537,9 +543,12 @@ confidence (cap 75). Inspect with `show --endpoint` / `show --host`.
 After synthesis, each parameter profile exposes:
 
 - **capabilities** — flags such as `reflective_input`, `html_context`,
-  `url_like_value`, `duplicate_parameter`, surface kinds, …
+  `url_like_value`, `network_resource_sink` (+ `redirect_sink` / `fetch_sink` /
+  `webhook_sink`), `duplicate_parameter`, surface kinds, …
 - **candidates** — prioritization scores for `xss`, `sqli`, `open_redirect`,
-  `ssrf`, `hpp`, `header_injection`, `path_traversal`, `mass_assignment`
+  `ssrf`, `webhook_abuse`, `oauth_redirect`, `hpp`, `header_injection`,
+  `path_traversal`, `mass_assignment` (value-first URL sink scoring for the
+  network-resource family)
 
 Each candidate includes `score` (0–100), `confidence`, `reasons[]`, and
 `evidence_flow_ids[]`. **Scores rank where to look first; they are not

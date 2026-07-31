@@ -495,15 +495,20 @@ planner `url_sink_probes` → job type `iv_url_sink`; synthesize → `observed.u
 
 **Acceptance**
 
-- [ ] `network_resource_sink` (+ subflags) derived and listed in KNOWN_CAPABILITIES
-- [ ] `url_like_value` still present as alias (compat)
-- [ ] Random-named URL values produce candidates without name tokens
-- [ ] Category biases attack label (redirect vs webhook vs ssrf)
-- [ ] Behavior signals reweight scores; negatives still subtract
-- [ ] `list_candidates` / CLI filters accept new attack names
-- [ ] Heavy unit tests; golden reason strings stable enough for CP
+- [x] `network_resource_sink` (+ subflags) derived and listed in KNOWN_CAPABILITIES
+- [x] `url_like_value` still present as alias (compat)
+- [x] Random-named URL values produce candidates without name tokens
+- [x] Category biases attack label (redirect vs webhook vs ssrf)
+- [x] Behavior signals reweight scores; negatives still subtract
+- [x] `list_candidates` / CLI filters accept new attack names
+- [x] Heavy unit tests; golden reason strings stable enough for CP
 
 **Suggested AI prompt focus:** “Wire sink features + IV url_sink observations into capabilities and rewrite open_redirect/ssrf scoring value-first.”
+
+**Shipped:** 2026-07-31 on `main` (schema remains v53). Modules:
+`capabilities.py` / `candidates.py` (Phase 4 rewrite); profile constants;
+synthesize + `get_param_intelligence` attach `observed.url_features`; CLI/CP/AI
+enums include `webhook_abuse` / `oauth_redirect`.
 
 ---
 

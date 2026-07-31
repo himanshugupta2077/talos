@@ -6,8 +6,9 @@ Purpose:
     synthesis of ``observed.url_sink``.
 
     Benign canaries only (``.invalid`` TLD, loopback shape, path form).  No
-    collaborator/OAST domains, no exploit chains, no Findings.  Capabilities
-    and candidate rewrites are Phase 4.
+    collaborator/OAST domains, no exploit chains, no Findings.  Phase 4
+    consumes ``observed.url_sink`` for ``network_resource_sink`` capabilities
+    and value-first candidate scores (capabilities.py / candidates.py).
 
     Design goals (PR-6 / PR-7):
         - Schedule when passive ``url_features`` warrants (network resource
@@ -199,7 +200,7 @@ class UrlSinkSynthesisResult:
     Aggregated URL sink characterization (→ observed.url_sink).
 
     Matches the plan contract for active post-IV url_sink block.  Does **not**
-    emit Findings or network_resource_sink capability (Phase 4).
+    emit Findings; capability derivation lives in capabilities.py (Phase 4).
     """
 
     confidence: int = 0

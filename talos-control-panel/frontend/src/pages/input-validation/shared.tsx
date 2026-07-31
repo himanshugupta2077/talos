@@ -40,6 +40,8 @@ export const ATTACKS = [
   "sqli",
   "open_redirect",
   "ssrf",
+  "webhook_abuse",
+  "oauth_redirect",
   "hpp",
   "header_injection",
   "path_traversal",

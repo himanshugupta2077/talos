@@ -151,7 +151,7 @@ After each IV job settles, the scheduler calls `continue_param_plan()` so the ne
 ### 4.3 URL sink characterization probes (Phase 3)
 
 **Source:** `talos.input_validation.url_sink_probes` + fingerprint helpers in `fingerprint.py`.  
-**Philosophy:** Characterization only — no OAST collaborator domains, no SSRF exploit chains, no Findings. Capabilities (`network_resource_sink`) and candidate rewrites land in a later phase.
+**Philosophy:** Characterization only — no OAST collaborator domains, no SSRF exploit chains, no Findings. Phase 4 derives `network_resource_sink` (+ subflags) and value-first candidates from these observations.
 
 **When scheduled**
 
@@ -235,7 +235,7 @@ Offline synthesis fills:
 }
 ```
 
-Plus `tested.url_sink:*` family outcomes (positive and negative). **Does not** create Findings or `network_resource_sink` capability flags (Phase 4).
+Plus `tested.url_sink:*` family outcomes (positive and negative). **Does not** create Findings. Capability flags and candidates are derived in Module 11 (Phase 4).
 
 **Cross-flow / stored reflection (parameter intelligence):** separately from the IV reflection analysis phase, every committed flow (proxy worker **and** replay/IV) can index distinctive request values and scan later response bodies for matches on the **same host**. Links are stored in `cross_flow_reflections` and merged into param profiles as `observed.reflection.cross_flow` (see §6–§7). Disabled by default:
 
@@ -368,10 +368,15 @@ Capabilities are **surface/behaviour flags**, not vulns. Derived from observed r
 | `header_injection_surface` | location header (or header surface kind) |
 | `path_parameter` | location path |
 | `multipart_filename` / `graphql_variable` | surface kind |
-| `redirect_like` | baseline fingerprint `redirect` true |
-| `url_like_value` | type `url` soft-accepted or primary type url |
+| `redirect_like` | baseline fingerprint `redirect` true **or** `url_sink.redirect_behavior` |
+| `url_like_value` | type `url` soft-accepted / primary type url; **also** compat alias when `network_resource_sink` confidence ≥ 45 |
+| `network_resource_sink` | Umbrella: type URL soft-accept, passive `url_features` (score ≥ 45 / `possible_network_resource`), or active `observed.url_sink` accepts/behaviors (confidence in observed block) |
+| `redirect_sink` | redirect/oauth name category **or** `url_sink.redirect_behavior` **or** baseline redirect + URL accept forms |
+| `fetch_sink` | `fetch_behavior` / DNS / network error classes **or** NRS + remote_fetch-style categories |
+| `webhook_sink` | webhook/callback name category (soft) + stronger when fetch/URL accept |
+| `protocol_support` | `accepts_protocol` or non-empty `accepted_protocols` on `url_sink` |
 
-Name alone does **not** invent `url_like_value`; candidate scorers use name tokens separately.
+Name alone does **not** invent `network_resource_sink` / `url_like_value` without value or accept evidence. Candidate scorers use **catalog categories** (not flat token lists) + value-first rules.
 
 ---
 
@@ -416,7 +421,7 @@ Name alone does **not** invent `url_like_value`; candidate scorers use name toke
 
 **Vocabulary (`KNOWN_ATTACKS`):**
 
-`xss` · `sqli` · `open_redirect` · `ssrf` · `hpp` · `header_injection` · `path_traversal` · `mass_assignment`
+`xss` · `sqli` · `open_redirect` · `ssrf` · `webhook_abuse` · `oauth_redirect` · `hpp` · `header_injection` · `path_traversal` · `mass_assignment`
 
 Scoring is pure: `score_candidates(profile)` does not touch the DB. Persistence happens when synthesis (or explicit recompute) writes the profile.
 
@@ -430,9 +435,11 @@ Each scorer reads a `_ProfileView` over:
 | `tested[key].outcome` | Validation/parser negatives and family keys (`crlf`, `quote`, `type:url`, …) |
 | `observed.types[tname].outcome` | Soft-accept / rejected for type probes (e.g. `url`) |
 | `observed.reflection` | top-level state/contexts; nested `same_request` + `cross_flow` when merged |
-| `capabilities[]` | Derived flags (often driven by soft-accept + reflection / stored_reflection) |
+| `capabilities[]` | Derived flags (soft-accept + reflection + URL sink Phase 4) |
 | `observed.parser` | Structural behaviours (not always outcome labels; behaviours like `first_wins`) |
-| `name` / `location` | Name-token and surface biases |
+| `observed.url_features` | Passive EI copy (score, categories, possible_network_resource) |
+| `observed.url_sink` | Active canary characterization (accepts_*, redirect/fetch/DNS, error_classes) |
+| `name` / `location` | Catalog name categories (via `url_sink.name_classify`) and surface biases |
 
 Helpers:
 
@@ -499,34 +506,62 @@ value from username@POST /register reflected on GET /profile (html, raw)
 
 ---
 
-### 7.5 Open redirect (`_score_open_redirect`)
+### 7.5 Open redirect (`_score_open_redirect`) — value-first (Phase 4)
 
 | Signal | Score delta | IV outcome / evidence |
 |--------|-------------|------------------------|
-| Name tokens (`redirect`, `return_url`, `next`, `url`, …) | +35 | Name heuristic |
-| Capability `redirect_like` | +30 | Baseline fingerprint redirect |
-| Capability `url_like_value` **or** type `url` soft-accept | +28 | Type probe outcome ∈ soft-accept → capability |
-| Semantic type url/uri/redirect | +15 | Passive/semantic |
+| Catalog category `redirect` | +35 | `url_features.name_categories` / classify_name |
+| OAuth category (also redirect-relevant) | +18 | Soft bias; dedicated attack is `oauth_redirect` |
+| Capability `redirect_sink` | +18 | Derived from category / redirect_behavior |
+| `redirect_like` **or** `url_sink.redirect_behavior` | +30 | Baseline redirect or Location canary |
+| URL accept (`url_like_value` / type soft-accept / `accepts_url`) | +28–30 | Type probe or url_sink |
+| Value-first high `url_features.score` (≥45) without redirect name | +15–22 | Random-named URL values |
+| Semantic type url/uri/redirect | +12 | Passive/semantic |
 | Type `url` **rejected** | −25 | Negative type outcome |
-| **High-priority:** name hits + URL soft-accept/capability | `score = max(score, 80)` | Combined |
+| **High-priority:** redirect category + URL accept | `score = max(score, 80)` | Combined |
+| Redirect-only (Location without fetch) | slight reweight | Ranks open_redirect over generic SSRF |
 
----
+### 7.6 SSRF (`_score_ssrf`) — value-first (Phase 4)
 
-### 7.6 SSRF (`_score_ssrf`)
-
-Overlaps URL signals with **server-side fetch** name bias.
+Overlaps URL signals with **server-side fetch** category / behavior bias.
 
 | Signal | Score delta | IV outcome / evidence |
 |--------|-------------|------------------------|
-| SSRF name tokens (`webhook`, `fetch`, `proxy`, `avatar`, …) | +32 | Name heuristic |
-| `url_like_value` or type `url` soft-accept | +30 | Same as open redirect type path |
-| Semantic url/uri/callback/webhook | +15 | |
-| Redirect-like name only (no SSRF tokens, no URL accept) | +10 | Weak |
+| Catalog categories `remote_fetch` / `remote_asset` / `webhook` / … | +32 | Categorized name catalog |
+| Capability `network_resource_sink` | +20 | Phase 4 umbrella flag |
+| `fetch_sink` / `fetch_behavior` | +28 | Active url_sink synthesis |
+| DNS resolution detected | +18 | Canary fingerprint |
+| Network error classes (timeout, DNS fail, …) | +15 | `url_sink.error_classes` |
+| URL accept / `accepts_url` | +28–30 | Type or canary |
+| Value-first high `url_features.score` without SSRF category | +20–30 | **Name-independent** (e.g. `abc=https://…`) |
+| Semantic url/uri/callback/webhook | +12 | |
+| Redirect-only behavior (no fetch/DNS) on redirect names | −12 | Prefer open_redirect |
 | Type `url` rejected | −30 | Negative |
-| Path location without SSRF name tokens | −10 | Surface penalty |
-| **High-priority:** SSRF name + URL accept | `score = max(score, 78)` | Combined |
+| Path location without SSRF category / NRS | −10 | Surface penalty |
+| **High-priority:** SSRF category + URL accept | `score = max(score, 78)` | Combined |
+| **High-priority:** NRS + fetch/DNS | `score = max(score, 72)` | Value-first floor |
 
-Both open_redirect and ssrf can appear on the same parameter when name + URL acceptance align; operators use scores/reasons to prioritize.
+### 7.6b Webhook abuse (`_score_webhook_abuse`)
+
+| Signal | Score delta | Evidence |
+|--------|-------------|------------------------|
+| Webhook/callback category | +35 | Catalog |
+| Capability `webhook_sink` | +15 | Derived |
+| `fetch_behavior` / `fetch_sink` | +30 | Server-side callback delivery |
+| Else URL accept boost | +28 | Soft surface without fetch |
+| **High-priority:** webhook + fetch | `score = max(score, 75)` | Combined |
+
+### 7.6c OAuth redirect (`_score_oauth_redirect`)
+
+| Signal | Score delta | Evidence |
+|--------|-------------|------------------------|
+| OAuth / redirect_uri-like name | +35 | Catalog `oauth` or name substring |
+| `redirect_behavior` / `redirect_sink` | +30 | Active or capability |
+| Else `redirect_like` | +22 | Baseline |
+| URL accept | +28 | Type / canary |
+| **High-priority:** oauth + redirect/URL | `score = max(score, 78)` | Combined |
+
+`open_redirect`, `ssrf`, `webhook_abuse`, and `oauth_redirect` can co-exist on the same parameter; operators use scores/reasons to prioritize. **No Findings** from candidate scoring.
 
 ---
 

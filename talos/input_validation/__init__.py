@@ -46,9 +46,12 @@ Sub-modules:
                   policy (Module 9).
     learning    — Multi-level learning (Module 10): endpoint/app aggregation,
                   inheritance priors, confidence decay.
-    capabilities — Capability flag derivation from observed/inferred (Module 11).
+    capabilities — Capability flag derivation from observed/inferred (Module 11);
+                  Phase 4: network_resource_sink / redirect_sink / fetch_sink /
+                  webhook_sink (+ url_like_value alias).
     candidates  — Attack candidate scores + stable consumer API (Module 11):
-                  get_param_intelligence / list_candidates.
+                  get_param_intelligence / list_candidates; Phase 4 value-first
+                  ssrf / open_redirect / webhook_abuse / oauth_redirect.
     cli         — Operator CLI (Module 12): budget, status confidence,
                   candidates list, export JSON/Markdown, synthesize, show.
     fingerprint — Response fingerprints + differential compare (Module 1).

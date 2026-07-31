@@ -3,10 +3,16 @@ Module: talos.input_validation.candidates
 
 Purpose:
     Module 11 — **attack candidate scoring** and the stable consumer API
-    for attack modules (XSS, SQLi, SSRF, open redirect, HPP, header issues).
+    for attack modules (XSS, SQLi, SSRF, open redirect, webhook abuse,
+    OAuth redirect, HPP, header issues).
 
     Candidates are **prioritization hints**, not confirmed vulnerabilities.
     Attack modules must still verify; IV only ranks where to look first.
+
+    URL Sink Discovery Phase 4 (PR-9): value-first scoring from
+    ``url_features`` + ``observed.url_sink`` + capabilities
+    (``network_resource_sink`` / redirect_sink / fetch_sink / webhook_sink).
+    Flat name-token lists are replaced by the categorized catalog.
 
 What this module does
     - score_candidates(profile) → list of candidate dicts
@@ -22,8 +28,9 @@ What this module does **not** do
 Candidate shape (code-as-truth)::
 
     {
-      "attack": "xss" | "sqli" | "open_redirect" | "ssrf" | "hpp" |
-                "header_injection" | "path_traversal" | "mass_assignment",
+      "attack": "xss" | "sqli" | "open_redirect" | "ssrf" | "webhook_abuse" |
+                "oauth_redirect" | "hpp" | "header_injection" |
+                "path_traversal" | "mass_assignment",
       "score": 0-100,           # prioritization strength
       "confidence": 0-100,      # evidence quality for this score
       "reasons": ["..."],
@@ -32,7 +39,7 @@ Candidate shape (code-as-truth)::
 
 Dependencies:
     talos.input_validation.profile (capability constants)
-    talos.input_validation.capabilities (derive/has)
+    talos.input_validation.capabilities (derive/has, url_features resolvers)
     talos.input_validation.db (profile CRUD for consumer API)
     talos.input_validation.outcomes (outcome labels)
 Data flow:
@@ -49,6 +56,8 @@ from typing import Any
 from talos.input_validation.capabilities import (
     derive_capabilities,
     has_capability,
+    resolve_url_features,
+    resolve_url_sink,
 )
 from talos.input_validation.outcomes import (
     OUTCOME_ACCEPTED,
@@ -59,18 +68,22 @@ from talos.input_validation.outcomes import (
 )
 from talos.input_validation.profile import (
     CAPABILITY_DUPLICATE_PARAMETER,
+    CAPABILITY_FETCH_SINK,
     CAPABILITY_GRAPHQL_VARIABLE,
     CAPABILITY_HEADER_INJECTION_SURFACE,
     CAPABILITY_HTML_CONTEXT,
     CAPABILITY_JS_CONTEXT,
     CAPABILITY_JSON_CONTEXT,
     CAPABILITY_JSON_PARSER,
+    CAPABILITY_NETWORK_RESOURCE_SINK,
     CAPABILITY_PATH_PARAMETER,
     CAPABILITY_REDIRECT_LIKE,
+    CAPABILITY_REDIRECT_SINK,
     CAPABILITY_REFLECTIVE_INPUT,
     CAPABILITY_STORED_REFLECTION,
     CAPABILITY_URL_CONTEXT,
     CAPABILITY_URL_LIKE_VALUE,
+    CAPABILITY_WEBHOOK_SINK,
     CAPABILITY_XML_BODY,
 )
 
@@ -82,6 +95,8 @@ ATTACK_XSS = "xss"
 ATTACK_SQLI = "sqli"
 ATTACK_OPEN_REDIRECT = "open_redirect"
 ATTACK_SSRF = "ssrf"
+ATTACK_WEBHOOK_ABUSE = "webhook_abuse"
+ATTACK_OAUTH_REDIRECT = "oauth_redirect"
 ATTACK_HPP = "hpp"
 ATTACK_HEADER_INJECTION = "header_injection"
 ATTACK_PATH_TRAVERSAL = "path_traversal"
@@ -92,6 +107,8 @@ KNOWN_ATTACKS: frozenset[str] = frozenset({
     ATTACK_SQLI,
     ATTACK_OPEN_REDIRECT,
     ATTACK_SSRF,
+    ATTACK_WEBHOOK_ABUSE,
+    ATTACK_OAUTH_REDIRECT,
     ATTACK_HPP,
     ATTACK_HEADER_INJECTION,
     ATTACK_PATH_TRAVERSAL,
@@ -106,19 +123,26 @@ _SOFT_ACCEPT: frozenset[str] = frozenset({
     OUTCOME_NORMALIZED,
 })
 
-# Parameter name tokens → open redirect / URL surface.
-_REDIRECT_NAME_TOKENS: tuple[str, ...] = (
-    "redirect", "return_url", "returnurl", "return_to", "returnto",
-    "next", "continue", "goto", "dest", "destination", "callback",
-    "url", "uri", "target", "redir", "rurl", "relay",
-)
-
-# Name tokens that bias toward SSRF (server-side fetch / webhook style).
-_SSRF_NAME_TOKENS: tuple[str, ...] = (
-    "webhook", "callback", "fetch", "proxy", "url", "uri", "endpoint",
-    "host", "target", "feed", "avatar", "image_url", "img", "media",
-    "remote", "src", "source", "link",
-)
+# Catalog categories → attack family bias (value still dominates).
+_REDIRECT_CATEGORIES: frozenset[str] = frozenset({"redirect"})
+_OAUTH_CATEGORIES: frozenset[str] = frozenset({"oauth"})
+_WEBHOOK_CATEGORIES: frozenset[str] = frozenset({"webhook"})
+_SSRF_CATEGORIES: frozenset[str] = frozenset({
+    "remote_fetch",
+    "remote_asset",
+    "import_metadata",
+    "infrastructure",
+    "network_probe",
+    "webhook",  # webhook also elevates SSRF; dedicated attack is separate
+})
+# Error classes that imply server-side network processing.
+_NETWORK_ERROR_CLASSES: frozenset[str] = frozenset({
+    "timeout",
+    "connection_refused",
+    "dns_lookup_failed",
+    "unable_to_fetch",
+    "host_unreachable",
+})
 
 # Minimum score to include a candidate in the default list (avoid noise).
 MIN_EMIT_SCORE = 25
@@ -299,6 +323,8 @@ def score_candidates(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
         _score_sqli,
         _score_open_redirect,
         _score_ssrf,
+        _score_webhook_abuse,
+        _score_oauth_redirect,
         _score_hpp,
         _score_header_injection,
         _score_path_traversal,
@@ -429,6 +455,9 @@ def get_param_intelligence(
     # Product decision (§6.3): XSS candidates from stored reflection require
     # an existing iv_param_profiles document. No soft stubs on first link.
     had_profile_doc = profile is not None
+    passive_uf = (passive or {}).get("url_features") if passive else None
+    if not isinstance(passive_uf, dict):
+        passive_uf = {}
     if profile is None:
         # Passive row exists but no synthesized profile yet.
         profile = {
@@ -438,12 +467,21 @@ def get_param_intelligence(
             "name": name,
             "capabilities": [],
             "candidates": [],
-            "observed": {},
+            "observed": {"url_features": dict(passive_uf)} if passive_uf else {},
             "inferred": {},
             "tested": {},
         }
     else:
         profile = ensure_profile_shape(dict(profile))
+        # Inject passive url_features when profile lacks them (Phase 4).
+        if passive_uf:
+            obs = profile.setdefault("observed", {})
+            if not isinstance(obs, dict):
+                profile["observed"] = {}
+                obs = profile["observed"]
+            existing_uf = obs.get("url_features")
+            if not isinstance(existing_uf, dict) or not existing_uf:
+                obs["url_features"] = dict(passive_uf)
 
     # Cross-flow merge (P1): only on real profile docs. Parity with
     # list_candidates: merge when recompute=True OR live links exist, so a
@@ -493,6 +531,7 @@ def get_param_intelligence(
             "semantic_type": (passive or {}).get("semantic_type"),
             "is_reflected": (passive or {}).get("is_reflected"),
             "examples": (passive or {}).get("examples"),
+            "url_features": (passive or {}).get("url_features") or {},
         } if passive else None,
     }
 
@@ -676,6 +715,7 @@ class _ProfileView:
     __slots__ = (
         "profile", "caps", "obs", "tested", "name", "location",
         "acceptance", "types", "refl", "parser", "semantic",
+        "url_features", "url_sink", "name_categories",
     )
 
     def __init__(self, profile: dict[str, Any]) -> None:
@@ -703,6 +743,12 @@ class _ProfileView:
         if not isinstance(self.parser, dict):
             self.parser = {}
         self.semantic = _resolve_semantic(profile, self.types)
+        # URL Sink Discovery Phase 4 — passive + active context for scorers.
+        self.url_features = resolve_url_features(profile)
+        self.url_sink = resolve_url_sink(profile)
+        self.name_categories = _categories_from_features(
+            self.url_features, name=self.name,
+        )
 
     def has(self, cap: str) -> bool:
         return cap in self.caps
@@ -805,6 +851,141 @@ def _entry_conf(entry: Any, default: int = 60) -> int:
     if isinstance(entry, dict):
         return _clamp(entry.get("confidence") or default)
     return default
+
+
+def _categories_from_features(
+    url_features: dict[str, Any],
+    *,
+    name: str = "",
+) -> set[str]:
+    """
+    Purpose: Collect name_category / name_categories; fall back to classify_name.
+    Side effects: None.
+    """
+    cats: set[str] = set()
+    primary = url_features.get("name_category") if isinstance(url_features, dict) else None
+    if primary:
+        cats.add(str(primary).lower())
+    for c in (url_features.get("name_categories") or []) if isinstance(url_features, dict) else []:
+        if c:
+            cats.add(str(c).lower())
+    if name and not cats:
+        try:
+            from talos.url_sink.name_classify import classify_name
+
+            nf = classify_name(name)
+            if nf.name_category:
+                cats.add(str(nf.name_category).lower())
+            for c in nf.name_categories or ():
+                cats.add(str(c).lower())
+        except Exception:
+            pass
+    return cats
+
+
+def _passive_url_score(url_features: dict[str, Any] | None) -> int:
+    if not isinstance(url_features, dict):
+        return 0
+    try:
+        return max(0, min(100, int(url_features.get("score") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _has_url_evidence(ctx: _ProfileView) -> bool:
+    """
+    Purpose:
+        True when there is value/behavior/accept evidence beyond bare name.
+        Used to gate spam and to bias value-first scoring.
+    """
+    us = ctx.url_sink
+    uf = ctx.url_features
+    if ctx.has(CAPABILITY_NETWORK_RESOURCE_SINK):
+        return True
+    if ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url"):
+        return True
+    if ctx.has(CAPABILITY_REDIRECT_LIKE) or ctx.has(CAPABILITY_REDIRECT_SINK):
+        return True
+    if ctx.has(CAPABILITY_FETCH_SINK) or ctx.has(CAPABILITY_WEBHOOK_SINK):
+        return True
+    if any(
+        us.get(k) is True
+        for k in (
+            "accepts_url",
+            "accepts_hostname",
+            "accepts_ip",
+            "accepts_protocol",
+            "redirect_behavior",
+            "fetch_behavior",
+            "dns_resolution_detected",
+        )
+    ):
+        return True
+    if uf.get("possible_network_resource") is True:
+        return True
+    if _passive_url_score(uf) >= 45:
+        return True
+    if ctx.semantic in ("url", "uri"):
+        return True
+    return False
+
+
+def _url_accept_boost(
+    ctx: _ProfileView,
+    reasons: list[str],
+    confs: list[int],
+) -> int:
+    """
+    Purpose:
+        Shared +score for URL soft-accept / accepts_url / network_resource_sink
+        type evidence. Appends reasons/confs when contributing.
+    Output: score delta (0 if none).
+    """
+    us = ctx.url_sink
+    boost = 0
+    if ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url"):
+        boost = max(boost, 28)
+        if "accepts URL-shaped input" not in reasons:
+            reasons.append("accepts URL-shaped input")
+        confs.append(_entry_conf(ctx.types.get("url"), 80))
+    if us.get("accepts_url") is True:
+        boost = max(boost, 30)
+        if "url_sink accepts_url" not in " ".join(reasons):
+            reasons.append("url_sink accepts_url (canary form accepted)")
+        confs.append(_clamp(us.get("confidence") or 80))
+    elif us.get("accepts_hostname") is True or us.get("accepts_ip") is True:
+        boost = max(boost, 22)
+        form = "hostname" if us.get("accepts_hostname") else "ip"
+        reasons.append(f"url_sink accepts_{form}")
+        confs.append(_clamp(us.get("confidence") or 75))
+    return boost
+
+
+def _url_flows(ctx: _ProfileView) -> list[str]:
+    """Collect evidence_flow_ids from type url + url_sink per_probe."""
+    flows: list[str] = []
+    url_entry = ctx.types.get("url")
+    if isinstance(url_entry, dict):
+        for fid in url_entry.get("evidence_flow_ids") or []:
+            s = str(fid)
+            if s and s not in flows:
+                flows.append(s)
+    us = ctx.url_sink
+    per = us.get("per_probe") if isinstance(us, dict) else None
+    if isinstance(per, dict):
+        for entry in per.values():
+            if not isinstance(entry, dict):
+                continue
+            for fid in entry.get("evidence_flow_ids") or []:
+                s = str(fid)
+                if s and s not in flows:
+                    flows.append(s)
+            fid = entry.get("flow_id")
+            if fid:
+                s = str(fid)
+                if s and s not in flows:
+                    flows.append(s)
+    return flows
 
 
 # ---------------------------------------------------------------------------
@@ -1099,37 +1280,67 @@ def _score_sqli(ctx: _ProfileView) -> dict[str, Any] | None:
 
 
 def _score_open_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
-    """open_redirect: name signals + url type + url-like / redirect capabilities."""
+    """
+    open_redirect: redirect category / redirect_behavior + network resource
+    evidence. Value-first: random name + URL accept still scores.
+    """
     score = 0
     reasons: list[str] = []
     confs: list[int] = []
     flows: list[str] = []
 
-    name_hits = _name_tokens_match(ctx.name, _REDIRECT_NAME_TOKENS)
-    if name_hits:
-        score += 35
-        reasons.append(f"parameter name suggests redirect/URL ({', '.join(name_hits[:4])})")
-        confs.append(70)
+    cats = ctx.name_categories
+    redir_cat = bool(cats & _REDIRECT_CATEGORIES)
+    oauth_cat = bool(cats & _OAUTH_CATEGORIES)
+    url_ev = _has_url_evidence(ctx)
+    us = ctx.url_sink
+    uf = ctx.url_features
 
-    if ctx.has(CAPABILITY_REDIRECT_LIKE):
+    if redir_cat:
+        score += 35
+        reasons.append(
+            f"name category suggests redirect ({', '.join(sorted(cats & _REDIRECT_CATEGORIES))})"
+        )
+        confs.append(70)
+    elif oauth_cat:
+        # OAuth params also redirect-shaped; dedicated attack is separate.
+        score += 18
+        reasons.append("oauth name category (also open-redirect relevant)")
+        confs.append(65)
+
+    if ctx.has(CAPABILITY_REDIRECT_SINK):
+        score += 18
+        reasons.append("capability redirect_sink")
+        confs.append(75)
+
+    if ctx.has(CAPABILITY_REDIRECT_LIKE) or us.get("redirect_behavior") is True:
         score += 30
-        reasons.append("baseline response is redirect-like")
-        confs.append(80)
+        if us.get("redirect_behavior") is True:
+            reasons.append("URL sink redirect_behavior (Location/canary)")
+            confs.append(85)
+        else:
+            reasons.append("baseline response is redirect-like")
+            confs.append(80)
         fp = ctx.obs.get("baseline_fingerprint") or {}
         if isinstance(fp, dict):
-            flows = ctx.flows_from(fp)
+            flows = list(dict.fromkeys(flows + ctx.flows_from(fp)))
 
-    if ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url"):
-        score += 28
-        reasons.append("accepts URL-shaped input")
-        confs.append(_entry_conf(ctx.types.get("url"), 80))
-        if isinstance(ctx.types.get("url"), dict):
-            flows = list(dict.fromkeys(
-                flows + list((ctx.types.get("url") or {}).get("evidence_flow_ids") or [])
-            ))
+    url_accept = _url_accept_boost(ctx, reasons, confs)
+    score += url_accept
+    flows = list(dict.fromkeys(flows + _url_flows(ctx)))
+
+    # Value-first: high passive URL score without name catalog hit.
+    passive_score = _passive_url_score(uf)
+    if passive_score >= 45 and not redir_cat:
+        boost = 22 if passive_score >= 90 else 15
+        score += boost
+        reasons.append(
+            f"value-first url_features.score={passive_score} (no redirect name required)"
+        )
+        confs.append(min(90, passive_score))
 
     if ctx.semantic in ("url", "uri", "redirect"):
-        score += 15
+        score += 12
         reasons.append(f"semantic_type={ctx.semantic}")
         confs.append(75)
 
@@ -1138,13 +1349,31 @@ def _score_open_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
         reasons.append("negative evidence: URL type rejected")
         confs.append(85)
 
+    # Gate: name-only weak hits without URL/behavior evidence do not spam.
     if score < MIN_EMIT_SCORE:
         return None
+    if not url_ev and not redir_cat and not oauth_cat:
+        return None
+    if redir_cat and not url_ev and score < 40:
+        # Pure name without accept/value stays at modest score; still emit
+        # if ≥ 25 for operator inventory (catalog redirect names).
+        pass
 
-    # Name + URL type is the classic high-priority pattern.
-    if name_hits and (ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url")):
+    # High-priority: redirect category + URL acceptance.
+    if redir_cat and (
+        ctx.has(CAPABILITY_URL_LIKE_VALUE)
+        or ctx.type_soft_accept("url")
+        or us.get("accepts_url") is True
+    ):
         score = max(score, 80)
-        reasons.append("high-priority: redirect-like name + URL type accepted")
+        reasons.append("high-priority: redirect category + URL acceptance")
+
+    # Redirect-only behavior should beat generic SSRF when both present
+    # (reweight: extra boost when redirect_behavior without fetch).
+    if us.get("redirect_behavior") is True and us.get("fetch_behavior") is not True:
+        score = max(score, score + 5)
+        if "redirect-biased over fetch" not in " ".join(reasons):
+            reasons.append("redirect-biased: Location behavior without fetch")
 
     return empty_candidate(
         ATTACK_OPEN_REDIRECT,
@@ -1157,58 +1386,262 @@ def _score_open_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
 
 def _score_ssrf(ctx: _ProfileView) -> dict[str, Any] | None:
     """
-    SSRF candidate: URL-shaped acceptance + server-side name hints.
-    Overlaps open_redirect signals but biases webhook/fetch-style names.
+    SSRF candidate: network_resource_sink + fetch/DNS/timeout **or** strong
+    remote name category + URL accept. Value-first: random name + URL value.
     """
     score = 0
     reasons: list[str] = []
     confs: list[int] = []
     flows: list[str] = []
 
-    ssrf_hits = _name_tokens_match(ctx.name, _SSRF_NAME_TOKENS)
-    redir_hits = _name_tokens_match(ctx.name, _REDIRECT_NAME_TOKENS)
+    cats = ctx.name_categories
+    ssrf_cats = cats & _SSRF_CATEGORIES
+    redir_cat = bool(cats & _REDIRECT_CATEGORIES)
+    us = ctx.url_sink
+    uf = ctx.url_features
+    url_ev = _has_url_evidence(ctx)
 
-    if ssrf_hits:
+    if ssrf_cats:
         score += 32
-        reasons.append(f"parameter name suggests server-side URL fetch ({', '.join(ssrf_hits[:4])})")
+        reasons.append(
+            f"name category suggests server-side URL sink ({', '.join(sorted(ssrf_cats)[:4])})"
+        )
         confs.append(70)
 
-    if ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url"):
-        score += 30
-        reasons.append("accepts URL-shaped input")
-        confs.append(_entry_conf(ctx.types.get("url"), 80))
-        if isinstance(ctx.types.get("url"), dict):
-            flows = list((ctx.types.get("url") or {}).get("evidence_flow_ids") or [])
+    if ctx.has(CAPABILITY_NETWORK_RESOURCE_SINK):
+        score += 20
+        reasons.append("capability network_resource_sink")
+        confs.append(80)
+
+    if ctx.has(CAPABILITY_FETCH_SINK) or us.get("fetch_behavior") is True:
+        score += 28
+        reasons.append("fetch_behavior / fetch_sink (server-side processing)")
+        confs.append(85)
+    if us.get("dns_resolution_detected") is True:
+        score += 18
+        reasons.append("dns_resolution_detected on URL canary")
+        confs.append(80)
+    err = {str(e).lower() for e in (us.get("error_classes") or []) if e}
+    net_errs = err & _NETWORK_ERROR_CLASSES
+    if net_errs:
+        score += 15
+        reasons.append(f"network error classes: {', '.join(sorted(net_errs)[:4])}")
+        confs.append(75)
+
+    url_accept = _url_accept_boost(ctx, reasons, confs)
+    score += url_accept
+    flows = list(dict.fromkeys(flows + _url_flows(ctx)))
+
+    # Value-first: high passive URL score without name catalog hit.
+    passive_score = _passive_url_score(uf)
+    if passive_score >= 45 and not ssrf_cats:
+        boost = 30 if passive_score >= 90 else 20
+        score += boost
+        reasons.append(
+            f"value-first url_features.score={passive_score} (name-independent SSRF priority)"
+        )
+        confs.append(min(92, passive_score))
+    elif passive_score >= 90 and ssrf_cats:
+        score += 8
+        reasons.append(f"strong URL-shaped value (score={passive_score})")
+        confs.append(85)
 
     if ctx.semantic in ("url", "uri", "callback", "webhook"):
-        score += 15
+        score += 12
         reasons.append(f"semantic_type={ctx.semantic}")
 
-    # Open-redirect-only names without URL acceptance: weaker SSRF signal.
-    if redir_hits and not ssrf_hits and not (
-        ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url")
-    ):
+    # Redirect-only names without URL acceptance: weaker SSRF signal.
+    if redir_cat and not ssrf_cats and not url_ev:
         score += 10
         reasons.append("redirect-like name without confirmed URL acceptance")
+
+    # When redirect_behavior dominates and no fetch/DNS, soft-downweight SSRF
+    # so open_redirect ranks higher for pure redirect sinks.
+    if (
+        us.get("redirect_behavior") is True
+        and us.get("fetch_behavior") is not True
+        and not net_errs
+        and not us.get("dns_resolution_detected")
+        and redir_cat
+        and not ssrf_cats
+    ):
+        score -= 12
+        reasons.append("redirect-only behavior: SSRF priority reduced")
 
     if ctx.type_rejected("url"):
         score -= 30
         reasons.append("negative evidence: URL type rejected")
         confs.append(90)
 
-    # Path params rarely SSRF surfaces unless named url-like.
-    if ctx.location == "path" and not ssrf_hits:
+    # Path params rarely SSRF surfaces unless named fetch-like / network resource.
+    if ctx.location == "path" and not ssrf_cats and not ctx.has(CAPABILITY_NETWORK_RESOURCE_SINK):
         score -= 10
 
     if score < MIN_EMIT_SCORE:
         return None
 
-    if ssrf_hits and (ctx.has(CAPABILITY_URL_LIKE_VALUE) or ctx.type_soft_accept("url")):
+    # Require some URL / network evidence beyond bare weak name (spam gate).
+    if not url_ev and not ssrf_cats and passive_score < 45:
+        return None
+    if ssrf_cats and not url_ev and score < 40:
+        # Name-only webhook/fetch without value: keep modest emit if ≥ 25.
+        pass
+
+    if ssrf_cats and (
+        ctx.has(CAPABILITY_URL_LIKE_VALUE)
+        or ctx.type_soft_accept("url")
+        or us.get("accepts_url") is True
+    ):
         score = max(score, 78)
-        reasons.append("high-priority: SSRF-ish name + URL type accepted")
+        reasons.append("high-priority: SSRF category + URL type accepted")
+
+    # network_resource_sink + fetch/DNS without name → strong value-first floor.
+    if (
+        ctx.has(CAPABILITY_NETWORK_RESOURCE_SINK)
+        and (
+            ctx.has(CAPABILITY_FETCH_SINK)
+            or us.get("fetch_behavior") is True
+            or us.get("dns_resolution_detected") is True
+            or net_errs
+        )
+    ):
+        score = max(score, 72)
+        if "high-priority: network_resource_sink + fetch/DNS" not in reasons:
+            reasons.append("high-priority: network_resource_sink + fetch/DNS evidence")
 
     return empty_candidate(
         ATTACK_SSRF,
+        score=score,
+        confidence=_avg_conf(*confs) if confs else 55,
+        reasons=reasons,
+        evidence_flow_ids=flows[:20],
+    )
+
+
+def _score_webhook_abuse(ctx: _ProfileView) -> dict[str, Any] | None:
+    """
+    webhook_abuse: callback/webhook category + fetch_behavior (or URL accept).
+    Prioritization only — not confirmed webhook abuse.
+    """
+    cats = ctx.name_categories
+    if not (cats & _WEBHOOK_CATEGORIES) and not ctx.has(CAPABILITY_WEBHOOK_SINK):
+        return None
+
+    score = 0
+    reasons: list[str] = []
+    confs: list[int] = []
+    flows: list[str] = []
+    us = ctx.url_sink
+
+    if cats & _WEBHOOK_CATEGORIES:
+        score += 35
+        reasons.append(
+            f"webhook/callback name category ({', '.join(sorted(cats & _WEBHOOK_CATEGORIES))})"
+        )
+        confs.append(75)
+    if ctx.has(CAPABILITY_WEBHOOK_SINK):
+        score += 15
+        reasons.append("capability webhook_sink")
+        confs.append(80)
+
+    if us.get("fetch_behavior") is True or ctx.has(CAPABILITY_FETCH_SINK):
+        score += 30
+        reasons.append("fetch_behavior suggests server-side callback delivery")
+        confs.append(85)
+    else:
+        # Without fetch, still score when URL is accepted (soft webhook surface).
+        url_accept = _url_accept_boost(ctx, reasons, confs)
+        score += url_accept
+        if url_accept == 0 and not _has_url_evidence(ctx):
+            # Name-only webhook without URL/fetch evidence — modest floor only.
+            if score < MIN_EMIT_SCORE:
+                return None
+
+    flows = list(dict.fromkeys(flows + _url_flows(ctx)))
+
+    if ctx.has(CAPABILITY_NETWORK_RESOURCE_SINK):
+        score += 10
+        reasons.append("network_resource_sink present")
+
+    if ctx.type_rejected("url"):
+        score -= 20
+        reasons.append("negative evidence: URL type rejected")
+
+    if score < MIN_EMIT_SCORE:
+        return None
+
+    if (cats & _WEBHOOK_CATEGORIES) and (
+        us.get("fetch_behavior") is True or ctx.has(CAPABILITY_FETCH_SINK)
+    ):
+        score = max(score, 75)
+        reasons.append("high-priority: webhook category + fetch_behavior")
+
+    return empty_candidate(
+        ATTACK_WEBHOOK_ABUSE,
+        score=score,
+        confidence=_avg_conf(*confs) if confs else 55,
+        reasons=reasons,
+        evidence_flow_ids=flows[:20],
+    )
+
+
+def _score_oauth_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
+    """
+    oauth_redirect: oauth / redirect_uri-like name + redirect_behavior.
+    Prioritization only.
+    """
+    cats = ctx.name_categories
+    us = ctx.url_sink
+    oauth = bool(cats & _OAUTH_CATEGORIES)
+    # Also treat redirect_uri-style leaf names via category; catalog owns aliases.
+    if not oauth and not (
+        "redirect_uri" in ctx.name.lower().replace("-", "_")
+        or "return_uri" in ctx.name.lower().replace("-", "_")
+    ):
+        return None
+    if not oauth:
+        oauth = True  # name substring matched
+
+    score = 0
+    reasons: list[str] = []
+    confs: list[int] = []
+    flows: list[str] = []
+
+    score += 35
+    reasons.append("oauth / redirect_uri-like parameter name")
+    confs.append(75)
+
+    if us.get("redirect_behavior") is True or ctx.has(CAPABILITY_REDIRECT_SINK):
+        score += 30
+        reasons.append("redirect_behavior / redirect_sink on OAuth-like param")
+        confs.append(85)
+    elif ctx.has(CAPABILITY_REDIRECT_LIKE):
+        score += 22
+        reasons.append("baseline redirect-like response")
+        confs.append(75)
+
+    url_accept = _url_accept_boost(ctx, reasons, confs)
+    score += url_accept
+    flows = list(dict.fromkeys(flows + _url_flows(ctx)))
+
+    if ctx.type_rejected("url"):
+        score -= 20
+        reasons.append("negative evidence: URL type rejected")
+
+    if score < MIN_EMIT_SCORE:
+        return None
+
+    # Prefer some URL or redirect evidence; pure name still emits if ≥ 25.
+    if oauth and (
+        us.get("redirect_behavior") is True
+        or ctx.has(CAPABILITY_URL_LIKE_VALUE)
+        or ctx.type_soft_accept("url")
+    ):
+        score = max(score, 78)
+        reasons.append("high-priority: oauth name + redirect/URL acceptance")
+
+    return empty_candidate(
+        ATTACK_OAUTH_REDIRECT,
         score=score,
         confidence=_avg_conf(*confs) if confs else 55,
         reasons=reasons,
@@ -1421,6 +1854,8 @@ __all__ = [
     "ATTACK_SQLI",
     "ATTACK_OPEN_REDIRECT",
     "ATTACK_SSRF",
+    "ATTACK_WEBHOOK_ABUSE",
+    "ATTACK_OAUTH_REDIRECT",
     "ATTACK_HPP",
     "ATTACK_HEADER_INJECTION",
     "ATTACK_PATH_TRAVERSAL",

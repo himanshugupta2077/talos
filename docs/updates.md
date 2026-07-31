@@ -2,6 +2,43 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## URL Sink Discovery Phase 4 — capabilities + value-first candidates
+
+**Shipped:** 2026-07-31 · schema remains **v53** (no column bump).
+
+Fourth slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementation Plan.md`):
+**PR-8 + PR-9**. Consumer contract for URL Sink Discovery: unified capabilities and
+**value-first** attack candidates. Characterization / prioritization only — still **no
+Findings**, no OAST exploit confirmation.
+
+| Surface | Detail |
+|---------|--------|
+| Capabilities | `network_resource_sink` (umbrella) + `redirect_sink` / `fetch_sink` / `webhook_sink` / `protocol_support`; derived from passive `url_features`, IV `observed.url_sink`, and type soft-accept |
+| Compat | `url_like_value` remains as alias when NRS confidence ≥ 45 (existing scorers/tests keep working) |
+| Candidates | Value-first rewrite: random name + URL value/accept → `ssrf` / `open_redirect` without name tokens; category biases attack family |
+| New attacks | `webhook_abuse` (webhook category + fetch), `oauth_redirect` (oauth / redirect_uri + redirect behavior) |
+| Behavior reweight | `redirect_behavior` elevates open_redirect; fetch/DNS/timeout elevates SSRF; name-only weak hits stay below spam gates |
+| Filters | CLI `candidates --attack`, Control Panel attack dropdown, AI `iv_candidates` schema enum include new labels |
+| Profile merge | Synthesis / `get_param_intelligence` attach passive `url_features` onto `observed.url_features` for pure scoring |
+
+```bash
+# Prioritization only — still not vulns:
+talos input-validation candidates --attack ssrf --min-score 40
+talos input-validation candidates --attack webhook_abuse
+talos input-validation candidates --attack oauth_redirect
+talos input-validation candidates --capability network_resource_sink
+```
+
+**Explicitly out of this ship (Phase 5):** CLI show/export field polish for
+`url_features` + `network_resource_sink` detail, Control Panel profile surface
+expansion, endpoint/app rollups.
+
+**Files:** `talos/input_validation/{capabilities,candidates,profile,synthesize,db}.py`,
+`talos/ai/tools/schemas.py`, Control Panel `command_tree.py` + IV `shared.tsx`,
+`tests/test_iv_candidates.py`, docs.
+
+---
+
 ## URL Sink Discovery Phase 3 — IV canary probes + fingerprinting
 
 **Shipped:** 2026-07-31 · schema remains **v53** (no column bump).
@@ -10,7 +47,7 @@ Third slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementati
 **PR-6 + PR-7**. Active **characterization only** — IV schedules benign URL canaries when
 passive `url_features` warrants, fingerprints responses for validation / DNS / fetch /
 redirect signals, and records `observed.url_sink` on the param profile. **No Findings**,
-no OAST collaborator domains, no `network_resource_sink` capabilities yet (Phase 4).
+no OAST collaborator domains. Phase 4 consumes these signals for capabilities/candidates.
 
 | Surface | Detail |
 |---------|--------|
@@ -27,8 +64,8 @@ no OAST collaborator domains, no `network_resource_sink` capabilities yet (Phase
 # Or: SQLite iv_param_profiles.profile_json → observed.url_sink
 ```
 
-**Explicitly out of this ship (later phases):** `network_resource_sink` capability derivation,
-value-first candidate rewrite (ssrf/open_redirect/webhook_abuse/oauth_redirect), CLI/CP filters.
+**Later phases:** Phase 4 ships `network_resource_sink` + candidate rewrite; Phase 5
+operator polish (CLI/CP detail surfaces).
 
 **Files:** `talos/input_validation/url_sink_probes.py`, `fingerprint.py` (URL analyzers),
 `planner.py`, `engine.py`, `synthesize.py`, `profile.py`, `talos/scheduler/job.py` (`IV_URL_SINK`),

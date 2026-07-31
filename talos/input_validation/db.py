@@ -1630,8 +1630,24 @@ def get_parameter_profile(
         conn.row_factory = sqlite3.Row
 
         # Fetch the single parameter row by primary key.
-        passive_rows = conn.execute(
-            """
+        # url_features is schema v53+; fall back when column is absent.
+        _param_select_v53 = """
+            SELECT
+                p.id, p.name,
+                e.host, e.method, e.normalized_path,
+                p.location, p.param_type, p.semantic_type,
+                p.example_values, p.seen_count,
+                p.appears_in_roles, p.appears_in_modules,
+                p.is_reflected, p.reflection_count,
+                p.reflection_locations, p.reflection_encoding,
+                p.cross_flow_reflected, p.cross_flow_reflection_count,
+                p.cross_flow_sink_endpoints,
+                p.url_features
+            FROM parameters p
+            JOIN endpoints e ON e.id = p.endpoint_id
+            WHERE p.id = ?
+        """
+        _param_select_legacy = """
             SELECT
                 p.id, p.name,
                 e.host, e.method, e.normalized_path,
@@ -1645,9 +1661,11 @@ def get_parameter_profile(
             FROM parameters p
             JOIN endpoints e ON e.id = p.endpoint_id
             WHERE p.id = ?
-            """,
-            (param_id,),
-        ).fetchall()
+        """
+        try:
+            passive_rows = conn.execute(_param_select_v53, (param_id,)).fetchall()
+        except sqlite3.OperationalError:
+            passive_rows = conn.execute(_param_select_legacy, (param_id,)).fetchall()
 
         if not passive_rows:
             return None
@@ -1736,6 +1754,19 @@ def get_parameter_profile(
             cross_flow_reflected = False
             cross_flow_count = 0
 
+        # Schema v53+ passive URL sink features (JSON string).
+        url_features: dict = {}
+        try:
+            raw_uf = row["url_features"]
+            if isinstance(raw_uf, str) and raw_uf.strip():
+                parsed_uf = json.loads(raw_uf)
+                if isinstance(parsed_uf, dict):
+                    url_features = parsed_uf
+            elif isinstance(raw_uf, dict):
+                url_features = raw_uf
+        except (KeyError, json.JSONDecodeError, TypeError, ValueError):
+            url_features = {}
+
         param_uuid = make_param_uuid(row["host"], row["location"], row["name"])
         return {
             "id": row["id"],
@@ -1757,6 +1788,7 @@ def get_parameter_profile(
             "cross_flow_reflected": cross_flow_reflected,
             "cross_flow_reflection_count": cross_flow_count,
             "cross_flow_sink_endpoints": cross_flow_sinks,
+            "url_features": url_features,
             "iv_phases": iv_phases,
             "iv_reflection": reflection_iv,
             "param_uuid": param_uuid,

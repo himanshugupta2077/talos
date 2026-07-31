@@ -1192,8 +1192,9 @@ def _fill_types(
 
     passive_semantic = "unknown"
     examples: list[str] = []
+    url_features: dict[str, Any] = {}
     if db_path and identity and identity.get("host"):
-        passive_semantic, examples = _load_passive_type_fields(
+        passive_semantic, examples, url_features = _load_passive_inventory_fields(
             Path(db_path),
             host=identity["host"],
             location=identity.get("location") or "",
@@ -1214,6 +1215,20 @@ def _fill_types(
     synth = synthesize_type_state(types, passive_type=passive)
     profile["observed"]["types"] = types_summary_block(synth)
     merge_type_tested(profile, types)
+
+    # URL Sink Discovery Phase 4: attach passive url_features for capability
+    # / candidate consumers (merge path: observed.url_features).
+    if url_features:
+        existing_uf = profile["observed"].get("url_features")
+        if not isinstance(existing_uf, dict) or not existing_uf:
+            profile["observed"]["url_features"] = dict(url_features)
+        else:
+            # Prefer higher passive score when both present.
+            try:
+                if int(url_features.get("score") or 0) >= int(existing_uf.get("score") or 0):
+                    profile["observed"]["url_features"] = dict(url_features)
+            except (TypeError, ValueError):
+                profile["observed"]["url_features"] = dict(url_features)
 
     # Surface conflict under inferred for operators / later planners.
     if not isinstance(profile.get("inferred"), dict):
@@ -1237,22 +1252,56 @@ def _load_passive_type_fields(
     Output: (semantic_type, examples).
     Side effects: Read-only DB.
     """
+    st, examples, _uf = _load_passive_inventory_fields(
+        db_path, host=host, location=location, name=name,
+    )
+    return st, examples
+
+
+def _load_passive_inventory_fields(
+    db_path: Path,
+    *,
+    host: str,
+    location: str,
+    name: str,
+) -> tuple[str, list[str], dict[str, Any]]:
+    """
+    Purpose:
+        Read parameters.semantic_type, example_values, and url_features for
+        synthesis (URL Sink Discovery Phase 4 attaches url_features on profile).
+    Output: (semantic_type, examples, url_features_dict).
+    Side effects: Read-only DB.
+    """
+    empty_uf: dict[str, Any] = {}
     try:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                """
-                SELECT p.semantic_type, p.example_values
-                FROM parameters p
-                JOIN endpoints e ON e.id = p.endpoint_id
-                WHERE e.host = ? AND p.location = ? AND p.name = ?
-                ORDER BY p.seen_count DESC
-                LIMIT 1
-                """,
-                (host, location, name),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT p.semantic_type, p.example_values, p.url_features
+                    FROM parameters p
+                    JOIN endpoints e ON e.id = p.endpoint_id
+                    WHERE e.host = ? AND p.location = ? AND p.name = ?
+                    ORDER BY p.seen_count DESC
+                    LIMIT 1
+                    """,
+                    (host, location, name),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    """
+                    SELECT p.semantic_type, p.example_values
+                    FROM parameters p
+                    JOIN endpoints e ON e.id = p.endpoint_id
+                    WHERE e.host = ? AND p.location = ? AND p.name = ?
+                    ORDER BY p.seen_count DESC
+                    LIMIT 1
+                    """,
+                    (host, location, name),
+                ).fetchone()
         if not row:
-            return "unknown", []
+            return "unknown", [], empty_uf
         st = (row["semantic_type"] or "unknown").strip().lower() or "unknown"
         try:
             examples = json.loads(row["example_values"] or "[]")
@@ -1260,9 +1309,20 @@ def _load_passive_type_fields(
             examples = []
         if not isinstance(examples, list):
             examples = []
-        return st, [str(x) for x in examples if x is not None]
+        uf: dict[str, Any] = {}
+        try:
+            raw_uf = row["url_features"]
+            if isinstance(raw_uf, str) and raw_uf.strip():
+                parsed = json.loads(raw_uf)
+                if isinstance(parsed, dict):
+                    uf = parsed
+            elif isinstance(raw_uf, dict):
+                uf = raw_uf
+        except (KeyError, json.JSONDecodeError, TypeError, ValueError):
+            uf = {}
+        return st, [str(x) for x in examples if x is not None], uf
     except sqlite3.Error:
-        return "unknown", []
+        return "unknown", [], empty_uf
 
 
 def _fill_length(profile: dict[str, Any], summaries: list[dict]) -> None:

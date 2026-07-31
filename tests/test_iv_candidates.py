@@ -7,6 +7,8 @@ Covers pure scoring fixtures (no network):
     - Rejected quotes reduce SQLi score; negative evidence referenced
     - Stable consumer API get_param_intelligence / list_candidates
     - Capability derivation centralization
+    - URL Sink Discovery Phase 4: network_resource_sink, value-first SSRF,
+      webhook_abuse / oauth_redirect, redirect_behavior reweight
 """
 
 from __future__ import annotations
@@ -25,10 +27,13 @@ from talos.input_validation.capabilities import (
 from talos.input_validation.candidates import (
     ATTACK_HEADER_INJECTION,
     ATTACK_HPP,
+    ATTACK_OAUTH_REDIRECT,
     ATTACK_OPEN_REDIRECT,
     ATTACK_SQLI,
     ATTACK_SSRF,
+    ATTACK_WEBHOOK_ABUSE,
     ATTACK_XSS,
+    KNOWN_ATTACKS,
     enrich_profile_capabilities_and_candidates,
     get_param_intelligence,
     list_candidates,
@@ -41,10 +46,14 @@ from talos.input_validation.db import (
 )
 from talos.input_validation.profile import (
     CAPABILITY_DUPLICATE_PARAMETER,
+    CAPABILITY_FETCH_SINK,
     CAPABILITY_HEADER_INJECTION_SURFACE,
     CAPABILITY_HTML_CONTEXT,
+    CAPABILITY_NETWORK_RESOURCE_SINK,
+    CAPABILITY_REDIRECT_SINK,
     CAPABILITY_REFLECTIVE_INPUT,
     CAPABILITY_URL_LIKE_VALUE,
+    CAPABILITY_WEBHOOK_SINK,
     empty_param_profile,
 )
 from talos.projects.db import init_project_db
@@ -217,6 +226,208 @@ def test_webhook_name_biases_ssrf():
     assert ssrf["score"] >= 70
     assert any("webhook" in r.lower() or "ssrf" in r.lower() or "url" in r.lower()
                for r in ssrf["reasons"])
+
+
+# ---------------------------------------------------------------------------
+# URL Sink Discovery Phase 4 — capabilities + value-first candidates
+# ---------------------------------------------------------------------------
+
+def test_known_attacks_includes_webhook_and_oauth():
+    assert ATTACK_WEBHOOK_ABUSE in KNOWN_ATTACKS
+    assert ATTACK_OAUTH_REDIRECT in KNOWN_ATTACKS
+
+
+def test_network_resource_sink_from_type_url_and_alias():
+    """type url soft-accept → network_resource_sink + url_like_value alias."""
+    profile = _profile(name="abc")
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 90},
+        "_summary": {"primary": "url"},
+    }
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in caps
+    assert CAPABILITY_URL_LIKE_VALUE in caps  # compat alias
+
+
+def test_network_resource_sink_from_passive_url_features_value_first():
+    """Random name + high url_features.score → network_resource_sink without catalog."""
+    profile = _profile(name="abc")
+    profile["observed"]["url_features"] = {
+        "possible_url_value": True,
+        "possible_network_resource": True,
+        "score": 95,
+        "name_category": None,
+        "name_categories": [],
+        "evidence": ["value_scheme:https"],
+    }
+    caps = derive_capabilities(profile)
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in caps
+    assert CAPABILITY_URL_LIKE_VALUE in caps  # alias when confidence ≥ 45
+
+
+def test_value_first_ssrf_without_name_tokens():
+    """abc=https://… style: high passive score + URL accept → ssrf candidate."""
+    profile = _profile(name="abc")
+    profile["observed"]["url_features"] = {
+        "possible_url_value": True,
+        "possible_network_resource": True,
+        "score": 95,
+        "name_category": None,
+        "name_categories": [],
+        "evidence": ["value_scheme:https"],
+    }
+    profile["observed"]["types"] = {
+        "url": {
+            "outcome": "accepted",
+            "confidence": 88,
+            "evidence_flow_ids": ["f-url"],
+        },
+        "_summary": {"primary": "url"},
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    ssrf = _cand(profile["candidates"], ATTACK_SSRF)
+    assert ssrf is not None
+    assert ssrf["score"] >= 50
+    reasons = " ".join(ssrf["reasons"]).lower()
+    assert "value-first" in reasons or "url" in reasons or "network_resource" in reasons
+    # No name-token requirement
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in profile["capabilities"]
+
+
+def test_url_sink_fetch_raises_ssrf_and_fetch_sink():
+    profile = _profile(name="resource")
+    profile["observed"]["url_features"] = {
+        "score": 60,
+        "possible_network_resource": True,
+        "name_category": "remote_fetch",
+        "name_categories": ["remote_fetch"],
+    }
+    profile["observed"]["url_sink"] = {
+        "confidence": 80,
+        "accepts_url": True,
+        "fetch_behavior": True,
+        "dns_resolution_detected": True,
+        "error_classes": ["timeout"],
+        "accepted_protocols": ["https"],
+        "accepts_protocol": True,
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    assert CAPABILITY_NETWORK_RESOURCE_SINK in profile["capabilities"]
+    assert CAPABILITY_FETCH_SINK in profile["capabilities"]
+    ssrf = _cand(profile["candidates"], ATTACK_SSRF)
+    assert ssrf is not None
+    assert ssrf["score"] >= 70
+    reasons = " ".join(ssrf["reasons"]).lower()
+    assert "fetch" in reasons or "dns" in reasons or "network" in reasons
+
+
+def test_redirect_behavior_elevates_open_redirect():
+    profile = _profile(name="returnTo")
+    profile["observed"]["url_features"] = {
+        "score": 30,
+        "name_category": "redirect",
+        "name_categories": ["redirect"],
+        "possible_network_resource": False,
+    }
+    profile["observed"]["url_sink"] = {
+        "confidence": 85,
+        "accepts_url": True,
+        "redirect_behavior": True,
+        "fetch_behavior": False,
+    }
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 80},
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    assert CAPABILITY_REDIRECT_SINK in profile["capabilities"]
+    redir = _cand(profile["candidates"], ATTACK_OPEN_REDIRECT)
+    ssrf = _cand(profile["candidates"], ATTACK_SSRF)
+    assert redir is not None
+    assert redir["score"] >= 70
+    # Redirect-only: open_redirect should rank at least as high as ssrf.
+    if ssrf is not None:
+        assert redir["score"] >= ssrf["score"] - 5
+
+
+def test_webhook_abuse_candidate():
+    profile = _profile(name="callback_url")
+    profile["observed"]["url_features"] = {
+        "score": 40,
+        "name_category": "webhook",
+        "name_categories": ["webhook", "remote_fetch"],
+    }
+    profile["observed"]["url_sink"] = {
+        "confidence": 75,
+        "accepts_url": True,
+        "fetch_behavior": True,
+    }
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 85},
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    assert CAPABILITY_WEBHOOK_SINK in profile["capabilities"]
+    wh = _cand(profile["candidates"], ATTACK_WEBHOOK_ABUSE)
+    assert wh is not None
+    assert wh["score"] >= 60
+    assert any("webhook" in r.lower() or "callback" in r.lower() for r in wh["reasons"])
+
+
+def test_oauth_redirect_candidate():
+    profile = _profile(name="redirect_uri")
+    profile["observed"]["url_features"] = {
+        "score": 30,
+        "name_category": "oauth",
+        "name_categories": ["oauth", "redirect"],
+    }
+    profile["observed"]["url_sink"] = {
+        "confidence": 70,
+        "accepts_url": True,
+        "redirect_behavior": True,
+    }
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 80},
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    oauth = _cand(profile["candidates"], ATTACK_OAUTH_REDIRECT)
+    assert oauth is not None
+    assert oauth["score"] >= 60
+    assert any("oauth" in r.lower() or "redirect" in r.lower() for r in oauth["reasons"])
+
+
+def test_name_only_weak_does_not_spam_ssrf_without_value():
+    """Bare short name without URL evidence should not invent high SSRF spam."""
+    profile = _profile(name="q")
+    # No types, no url_features network resource, no url_sink.
+    cands = score_candidates(apply_capabilities(profile))
+    assert _cand(cands, ATTACK_SSRF) is None
+    assert _cand(cands, ATTACK_OPEN_REDIRECT) is None
+
+
+def test_list_candidates_filters_new_attacks(db_path: Path):
+    pu = make_param_uuid("api.example.com", "query", "webhook")
+    profile = empty_param_profile(
+        param_uuid=pu, host="api.example.com", location="query", name="webhook",
+    )
+    profile["observed"]["types"] = {
+        "url": {"outcome": "accepted", "confidence": 90},
+    }
+    profile["observed"]["url_sink"] = {
+        "confidence": 70,
+        "accepts_url": True,
+        "fetch_behavior": True,
+    }
+    enrich_profile_capabilities_and_candidates(profile)
+    upsert_param_profile(
+        db_path,
+        param_uuid=pu,
+        host="api.example.com",
+        location="query",
+        param_name="webhook",
+        profile=profile,
+        bump_version=False,
+    )
+    rows = list_candidates(db_path, attack=ATTACK_WEBHOOK_ABUSE, min_score=25)
+    assert any(r.get("attack") == ATTACK_WEBHOOK_ABUSE for r in rows)
 
 
 # ---------------------------------------------------------------------------

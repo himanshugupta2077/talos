@@ -5,9 +5,9 @@ Purpose:
     Module 11 — **central capability derivation** from parameter profiles.
 
     Turns observed/inferred intelligence (reflection, acceptance classes,
-    types, surface, parser, length) into a stable list of capability flags
-    that attack modules and the candidate scorer consume without re-reading
-    raw probe tables.
+    types, surface, parser, length, URL sink features) into a stable list of
+    capability flags that attack modules and the candidate scorer consume
+    without re-reading raw probe tables.
 
     This is characterization only: flags mean "surface / behaviour looks
     relevant", not "vulnerability confirmed".
@@ -15,6 +15,7 @@ Purpose:
 What this module does
     - derive_capabilities(profile) → ordered unique flag list
     - apply_capabilities(profile) → write flags onto profile["capabilities"]
+    - resolve_url_features / resolve_url_sink helpers for candidates (Phase 4)
     - Replaces the ad-hoc rules previously living only in synthesize
 
 What this module does **not** do
@@ -25,8 +26,9 @@ Dependencies:
     talos.input_validation.profile (capability constants, add_capability)
     talos.input_validation.outcomes (soft-accept outcomes)
     talos.input_validation.surface (surface kind labels)
+    talos.url_sink (optional; name classify when passive features missing)
 Data flow:
-    profile (observed|tested|parser|location) → derive_capabilities → flags
+    profile (observed|tested|parser|location|url_features) → derive_capabilities → flags
 Side effects: apply_capabilities mutates profile["capabilities"]; derive is pure.
 """
 
@@ -42,6 +44,7 @@ from talos.input_validation.outcomes import (
 )
 from talos.input_validation.profile import (
     CAPABILITY_DUPLICATE_PARAMETER,
+    CAPABILITY_FETCH_SINK,
     CAPABILITY_GRAPHQL_VARIABLE,
     CAPABILITY_HEADER_INJECTION_SURFACE,
     CAPABILITY_HTML_CONTEXT,
@@ -49,14 +52,18 @@ from talos.input_validation.profile import (
     CAPABILITY_JSON_CONTEXT,
     CAPABILITY_JSON_PARSER,
     CAPABILITY_MULTIPART_FILENAME,
+    CAPABILITY_NETWORK_RESOURCE_SINK,
     CAPABILITY_PATH_PARAMETER,
+    CAPABILITY_PROTOCOL_SUPPORT,
     CAPABILITY_REDIRECT_LIKE,
+    CAPABILITY_REDIRECT_SINK,
     CAPABILITY_REFLECTIVE_INPUT,
     CAPABILITY_STORED_REFLECTION,
     CAPABILITY_STRICT_LENGTH,
     CAPABILITY_UNICODE_SUPPORT,
     CAPABILITY_URL_CONTEXT,
     CAPABILITY_URL_LIKE_VALUE,
+    CAPABILITY_WEBHOOK_SINK,
     CAPABILITY_XML_BODY,
     KNOWN_CAPABILITIES,
     add_capability,
@@ -78,8 +85,29 @@ _SOFT_ACCEPT: frozenset[str] = frozenset({
     OUTCOME_NORMALIZED,
 })
 
+# Minimum passive score / active confidence to raise network_resource_sink.
+_NRS_PASSIVE_SCORE_FLOOR = 45
+_NRS_ACTIVE_CONFIDENCE_FLOOR = 35
+# url_like_value alias when NRS is present with at least this confidence
+# (active url_sink.confidence or passive url_features.score).
+_URL_LIKE_ALIAS_CONFIDENCE = 45
+
+# Categories that strongly imply a network resource sink when combined with
+# URL-shaped evidence (value or accept).
+_SINK_NAME_CATEGORIES: frozenset[str] = frozenset({
+    "redirect",
+    "webhook",
+    "remote_fetch",
+    "remote_asset",
+    "import_metadata",
+    "infrastructure",
+    "network_probe",
+    "oauth",
+})
+
 # Stable derivation order (deterministic, human-friendly).
 # stored_reflection sits immediately after reflective_input (cross-flow design §7).
+# URL sink flags after classic redirect/url_like (compat + Phase 4).
 _CAPABILITY_ORDER: tuple[str, ...] = (
     CAPABILITY_REFLECTIVE_INPUT,
     CAPABILITY_STORED_REFLECTION,
@@ -98,6 +126,11 @@ _CAPABILITY_ORDER: tuple[str, ...] = (
     CAPABILITY_GRAPHQL_VARIABLE,
     CAPABILITY_REDIRECT_LIKE,
     CAPABILITY_URL_LIKE_VALUE,
+    CAPABILITY_NETWORK_RESOURCE_SINK,
+    CAPABILITY_REDIRECT_SINK,
+    CAPABILITY_FETCH_SINK,
+    CAPABILITY_WEBHOOK_SINK,
+    CAPABILITY_PROTOCOL_SUPPORT,
 )
 
 
@@ -249,7 +282,8 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
         found.add(CAPABILITY_STRICT_LENGTH)
 
     url_type = types.get("url")
-    if _is_soft_accept_entry(url_type):
+    type_url_soft = _is_soft_accept_entry(url_type)
+    if type_url_soft:
         found.add(CAPABILITY_URL_LIKE_VALUE)
     summary = types.get("_summary")
     if isinstance(summary, dict) and str(summary.get("primary") or "").lower() == "url":
@@ -262,11 +296,21 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
     name = str(profile.get("name") or "").lower()
     semantic = ""
     if isinstance(types.get("_summary"), dict):
-        semantic = str(types["_summary"].get("passive") or types["_summary"].get("semantic") or "")
+        semantic = str(
+            types["_summary"].get("passive")
+            or types["_summary"].get("semantic")
+            or ""
+        )
     inferred = profile.get("inferred") or {}
     if isinstance(inferred, dict):
-        passive = (inferred.get("passive") or {}) if isinstance(inferred.get("passive"), dict) else {}
+        passive = (
+            (inferred.get("passive") or {})
+            if isinstance(inferred.get("passive"), dict)
+            else {}
+        )
         semantic = semantic or str(passive.get("semantic_type") or "")
+        if not semantic and inferred.get("passive_type"):
+            semantic = str(inferred.get("passive_type") or "")
     if not semantic and isinstance(obs.get("types"), dict):
         # Common passive field mirrored under observed by some synthesizers.
         pass
@@ -293,6 +337,45 @@ def derive_capabilities(profile: dict[str, Any] | None) -> list[str]:
         for k in ("json_null", "json_empty", "json_omit", "json_duplicate_key")
     ):
         found.add(CAPABILITY_JSON_PARSER)
+
+    # --- URL Sink Discovery Phase 4 -----------------------------------------
+    uf = resolve_url_features(profile)
+    us = resolve_url_sink(profile)
+    name_cats = _name_categories_from(uf, name=str(profile.get("name") or ""))
+    nrs_conf = network_resource_sink_confidence(
+        url_features=uf,
+        url_sink=us,
+        type_url_soft=type_url_soft or CAPABILITY_URL_LIKE_VALUE in found,
+        semantic=str(semantic or ""),
+        name_categories=name_cats,
+    )
+    if nrs_conf > 0:
+        found.add(CAPABILITY_NETWORK_RESOURCE_SINK)
+        # Compat alias for one release: scorers/tests that still check
+        # url_like_value keep working when NRS confidence is solid.
+        if nrs_conf >= _URL_LIKE_ALIAS_CONFIDENCE:
+            found.add(CAPABILITY_URL_LIKE_VALUE)
+
+    if _is_redirect_sink(us=us, name_cats=name_cats, baseline_redirect=bool(baseline_fp.get("redirect"))):
+        found.add(CAPABILITY_REDIRECT_SINK)
+        if CAPABILITY_REDIRECT_LIKE not in found and (
+            us.get("redirect_behavior") is True or "redirect" in name_cats or "oauth" in name_cats
+        ):
+            # Align redirect_like when active redirect_behavior is present.
+            if us.get("redirect_behavior") is True:
+                found.add(CAPABILITY_REDIRECT_LIKE)
+
+    if _is_fetch_sink(us=us, name_cats=name_cats, nrs=nrs_conf > 0):
+        found.add(CAPABILITY_FETCH_SINK)
+
+    if _is_webhook_sink(us=us, name_cats=name_cats, nrs=nrs_conf > 0, type_url_soft=type_url_soft):
+        found.add(CAPABILITY_WEBHOOK_SINK)
+
+    accepted_protocols = us.get("accepted_protocols") if isinstance(us, dict) else None
+    if us.get("accepts_protocol") is True or (
+        isinstance(accepted_protocols, list) and len(accepted_protocols) > 0
+    ):
+        found.add(CAPABILITY_PROTOCOL_SUPPORT)
 
     # Preserve any pre-existing known flags already on the profile (e.g. set by
     # parser_intel apply) that our rules might have missed.
@@ -352,6 +435,185 @@ def has_capability(profile: dict[str, Any] | None, capability: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# URL sink / features resolvers (shared with candidates.py)
+# ---------------------------------------------------------------------------
+
+def resolve_url_features(profile: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Purpose:
+        Best-effort passive ``url_features`` document from a profile.
+
+        Sources (first non-empty wins, then merge name categories from name):
+            1. observed.url_features
+            2. top-level profile["url_features"]
+            3. inferred.url_features / inferred.passive.url_features
+            4. compose from parameter name when still empty
+
+    Output: dict (may be empty).
+    Side effects: None (does not mutate profile).
+    """
+    if not profile or not isinstance(profile, dict):
+        return {}
+
+    candidates: list[Any] = []
+    obs = profile.get("observed")
+    if isinstance(obs, dict):
+        candidates.append(obs.get("url_features"))
+    candidates.append(profile.get("url_features"))
+    inferred = profile.get("inferred")
+    if isinstance(inferred, dict):
+        candidates.append(inferred.get("url_features"))
+        passive = inferred.get("passive")
+        if isinstance(passive, dict):
+            candidates.append(passive.get("url_features"))
+
+    uf: dict[str, Any] = {}
+    for c in candidates:
+        parsed = _as_url_features_dict(c)
+        if parsed and (parsed.get("score") or parsed.get("name_category")
+                       or parsed.get("name_categories")
+                       or parsed.get("possible_network_resource")
+                       or parsed.get("evidence")):
+            uf = parsed
+            break
+        if parsed and not uf:
+            uf = parsed
+
+    # Ensure name categories when missing but name is known.
+    name = str(profile.get("name") or "")
+    if name and not (uf.get("name_category") or uf.get("name_categories")):
+        try:
+            from talos.url_sink.features import compose_url_features
+
+            composed = compose_url_features(name=name, value=None)
+            if not uf:
+                uf = composed
+            else:
+                uf = dict(uf)
+                uf["name_category"] = composed.get("name_category")
+                uf["name_categories"] = list(composed.get("name_categories") or [])
+                # Modest name-only score if value score absent.
+                if int(uf.get("score") or 0) == 0 and int(composed.get("score") or 0):
+                    uf["score"] = composed.get("score")
+                    uf["possible_network_resource"] = composed.get(
+                        "possible_network_resource", False
+                    )
+                evidence = list(uf.get("evidence") or [])
+                for e in composed.get("evidence") or []:
+                    if e not in evidence:
+                        evidence.append(e)
+                uf["evidence"] = evidence
+        except Exception:
+            pass
+
+    return uf if isinstance(uf, dict) else {}
+
+
+def resolve_url_sink(profile: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Purpose:
+        Return ``observed.url_sink`` block (active Phase 3 characterization).
+    Output: dict (may be empty).
+    Side effects: None.
+    """
+    if not profile or not isinstance(profile, dict):
+        return {}
+    obs = profile.get("observed")
+    if not isinstance(obs, dict):
+        return {}
+    us = obs.get("url_sink")
+    return dict(us) if isinstance(us, dict) else {}
+
+
+def network_resource_sink_confidence(
+    *,
+    url_features: dict[str, Any] | None = None,
+    url_sink: dict[str, Any] | None = None,
+    type_url_soft: bool = False,
+    semantic: str = "",
+    name_categories: set[str] | frozenset[str] | None = None,
+) -> int:
+    """
+    Purpose:
+        0–100 confidence that this parameter is a network resource sink.
+        Used to decide CAPABILITY_NETWORK_RESOURCE_SINK and alias url_like_value.
+
+    Rules (max of contributing signals):
+        - type url soft-accept / primary url → ≥ 70
+        - active accepts_url / hostname / ip / protocol → ≥ 75–90
+        - fetch / redirect / DNS behavior → ≥ 70
+        - passive possible_network_resource / score ≥ 45 → score-ish
+        - strong name category alone → 0 (name does not invent sink)
+
+    Side effects: None.
+    """
+    uf = url_features if isinstance(url_features, dict) else {}
+    us = url_sink if isinstance(url_sink, dict) else {}
+    cats = set(name_categories or ())
+    conf = 0
+
+    if type_url_soft:
+        conf = max(conf, 75)
+
+    sem = (semantic or "").lower()
+    if sem in ("url", "uri"):
+        conf = max(conf, 55)
+
+    try:
+        passive_score = int(uf.get("score") or 0)
+    except (TypeError, ValueError):
+        passive_score = 0
+    if uf.get("possible_network_resource") is True or passive_score >= _NRS_PASSIVE_SCORE_FLOOR:
+        conf = max(conf, min(95, max(passive_score, _NRS_PASSIVE_SCORE_FLOOR)))
+
+    if any(
+        us.get(k) is True
+        for k in (
+            "accepts_url",
+            "accepts_hostname",
+            "accepts_ip",
+            "accepts_protocol",
+            "accepts_unc",
+        )
+    ):
+        conf = max(conf, 85)
+    if us.get("accepts_path") is True and conf < 50:
+        conf = max(conf, 50)
+
+    if us.get("fetch_behavior") is True:
+        conf = max(conf, 80)
+    if us.get("redirect_behavior") is True:
+        conf = max(conf, 75)
+    if us.get("dns_resolution_detected") is True:
+        conf = max(conf, 78)
+
+    try:
+        active_conf = int(us.get("confidence") or 0)
+    except (TypeError, ValueError):
+        active_conf = 0
+    if active_conf >= _NRS_ACTIVE_CONFIDENCE_FLOOR and (
+        us.get("error_classes")
+        or us.get("per_probe")
+        or us.get("validation_behavior")
+        or active_conf >= 50
+    ):
+        # Soft active evidence without hard accepts still raises NRS modestly.
+        conf = max(conf, min(70, active_conf))
+
+    # Strong name + any URL-shaped value flag (without inventing from name alone).
+    if cats & _SINK_NAME_CATEGORIES and (
+        uf.get("possible_url_value")
+        or uf.get("possible_hostname")
+        or uf.get("possible_ip")
+        or type_url_soft
+        or conf > 0
+    ):
+        conf = max(conf, 50)
+
+    return max(0, min(100, int(conf)))
+
+
+# ---------------------------------------------------------------------------
 # Internal
 # ---------------------------------------------------------------------------
 
@@ -369,3 +631,118 @@ def _name_looks_url_or_redirect(name: str) -> bool:
         "webhook", "fetch", "href", "link", "site",
     )
     return any(x in n for x in needles)
+
+
+def _as_url_features_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            import json
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _name_categories_from(
+    url_features: dict[str, Any],
+    *,
+    name: str = "",
+) -> set[str]:
+    cats: set[str] = set()
+    primary = url_features.get("name_category")
+    if primary:
+        cats.add(str(primary).lower())
+    for c in url_features.get("name_categories") or []:
+        if c:
+            cats.add(str(c).lower())
+    if name and not cats:
+        try:
+            from talos.url_sink.name_classify import classify_name
+
+            nf = classify_name(name)
+            if nf.name_category:
+                cats.add(str(nf.name_category).lower())
+            for c in nf.name_categories or ():
+                cats.add(str(c).lower())
+        except Exception:
+            pass
+    return cats
+
+
+def _is_redirect_sink(
+    *,
+    us: dict[str, Any],
+    name_cats: set[str],
+    baseline_redirect: bool,
+) -> bool:
+    if us.get("redirect_behavior") is True:
+        return True
+    if "redirect" in name_cats or "oauth" in name_cats:
+        # Category alone is a soft sink label when baseline redirects or
+        # active characterization ran; still allow category-only for operator
+        # prioritization when NRS also present (checked by consumer).
+        if baseline_redirect or us.get("accepts_url") is True or int(us.get("confidence") or 0) > 0:
+            return True
+        # Name category redirect/oauth without behavior: still flag as
+        # redirect_sink for candidate bias (characterization, not vuln).
+        return True
+    if baseline_redirect and (
+        us.get("accepts_url") is True
+        or us.get("accepts_hostname") is True
+        or us.get("accepts_path") is True
+    ):
+        return True
+    return False
+
+
+def _is_fetch_sink(
+    *,
+    us: dict[str, Any],
+    name_cats: set[str],
+    nrs: bool,
+) -> bool:
+    if us.get("fetch_behavior") is True:
+        return True
+    if us.get("dns_resolution_detected") is True:
+        return True
+    err = {str(e).lower() for e in (us.get("error_classes") or []) if e}
+    if err & {
+        "timeout",
+        "connection_refused",
+        "dns_lookup_failed",
+        "unable_to_fetch",
+        "host_unreachable",
+    }:
+        return True
+    fetch_cats = {
+        "remote_fetch",
+        "remote_asset",
+        "import_metadata",
+        "infrastructure",
+        "network_probe",
+        "webhook",
+    }
+    if nrs and (name_cats & fetch_cats):
+        return True
+    return False
+
+
+def _is_webhook_sink(
+    *,
+    us: dict[str, Any],
+    name_cats: set[str],
+    nrs: bool,
+    type_url_soft: bool,
+) -> bool:
+    if "webhook" not in name_cats:
+        return False
+    if us.get("fetch_behavior") is True:
+        return True
+    if type_url_soft or nrs or us.get("accepts_url") is True:
+        return True
+    # Name is webhook/callback — soft flag for candidate family bias.
+    return True

@@ -136,6 +136,14 @@ CAPABILITY_MULTIPART_FILENAME = "multipart_filename"
 CAPABILITY_GRAPHQL_VARIABLE = "graphql_variable"
 CAPABILITY_REDIRECT_LIKE = "redirect_like"
 CAPABILITY_URL_LIKE_VALUE = "url_like_value"
+# URL Sink Discovery Phase 4 — unified network resource sink capabilities.
+# Confidence / accepts_* detail lives on observed.url_sink (not on the flag).
+CAPABILITY_NETWORK_RESOURCE_SINK = "network_resource_sink"
+CAPABILITY_REDIRECT_SINK = "redirect_sink"
+CAPABILITY_FETCH_SINK = "fetch_sink"
+CAPABILITY_WEBHOOK_SINK = "webhook_sink"
+# Optional detail flag when protocol variants were accepted (http/https/ftp/…).
+CAPABILITY_PROTOCOL_SUPPORT = "protocol_support"
 
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
     CAPABILITY_REFLECTIVE_INPUT,
@@ -155,6 +163,11 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset({
     CAPABILITY_GRAPHQL_VARIABLE,
     CAPABILITY_REDIRECT_LIKE,
     CAPABILITY_URL_LIKE_VALUE,
+    CAPABILITY_NETWORK_RESOURCE_SINK,
+    CAPABILITY_REDIRECT_SINK,
+    CAPABILITY_FETCH_SINK,
+    CAPABILITY_WEBHOOK_SINK,
+    CAPABILITY_PROTOCOL_SUPPORT,
 })
 
 # Profile level identifiers (multi-level inheritance — Module 10).
@@ -237,6 +250,8 @@ def empty_observed_block() -> dict[str, Any]:
         "semantic": {},  # Module 7 validation/semantic family outcomes
         "parser": {},  # Module 8: duplicate_query, json_null, array_*, …
         "url_sink": {},  # URL Sink Discovery Phase 3: active canary characterization
+        # Passive EI copy (Phase 4 consumers); may be empty until synthesize/load.
+        "url_features": {},
         "timing": {
             "samples_ms": [],
         },

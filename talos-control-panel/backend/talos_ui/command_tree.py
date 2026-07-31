@@ -74,8 +74,8 @@ IV_PHASES = [
 ]
 IV_BUDGET_TIERS = ["quick", "standard", "deep", "exhaustive"]
 IV_ATTACKS = [
-    "xss", "sqli", "open_redirect", "ssrf", "hpp",
-    "header_injection", "path_traversal", "mass_assignment",
+    "xss", "sqli", "open_redirect", "ssrf", "webhook_abuse", "oauth_redirect",
+    "hpp", "header_injection", "path_traversal", "mass_assignment",
 ]
 
 COMMAND_TREE: list[dict] = [

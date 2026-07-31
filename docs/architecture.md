@@ -365,7 +365,14 @@ talos
     │     fingerprint.analyze_url_sink_response — DNS/fetch/timeout/malformed-URL
     │       phrases, Location canary → redirect_behavior, soft timing → fetch
     │     Synthesis → observed.url_sink + tested.url_sink:*
-    │     network_resource_sink capabilities / candidate rewrite → Phase 4
+    │
+    ├── URL sink capabilities + candidates (URL Sink Discovery Phase 4):
+    │     capabilities.py — network_resource_sink (+ redirect_sink / fetch_sink /
+    │       webhook_sink / protocol_support); url_like_value kept as compat alias
+    │     candidates.py — value-first ssrf / open_redirect; new webhook_abuse /
+    │       oauth_redirect; catalog categories replace flat name-token lists
+    │     observed.url_features attached on synthesize / get_param_intelligence
+    │     CLI/CP/AI filters accept new attack names; prioritization only
     │
 ├── Surface completeness (Module 9):
     │     talos.input_validation.surface — path segment rewrite ({name} from
@@ -397,12 +404,16 @@ talos
     ├── Capabilities & attack candidates (Module 11):
     │     talos.input_validation.capabilities — derive flags from observed
     │       reflective_input (same-request or cross-flow); stored_reflection
+    │       URL Sink Phase 4: network_resource_sink (+ redirect_sink / fetch_sink /
+    │         webhook_sink / protocol_support); url_like_value compat alias
     │     talos.input_validation.candidates — score prioritization candidates
     │       {attack, score 0–100, confidence, reasons[], evidence_flow_ids[],
     │        reflection_modes?, stored_reflection?}
-    │       xss | sqli | open_redirect | ssrf | hpp | header_injection |
-    │       path_traversal | mass_assignment
+    │       xss | sqli | open_redirect | ssrf | webhook_abuse | oauth_redirect |
+    │       hpp | header_injection | path_traversal | mass_assignment
     │       XSS: stored/cross-page evidence satisfies reflection gate (+12 stored)
+    │       URL sink: value-first ssrf/open_redirect (catalog categories +
+    │         url_features + observed.url_sink); no Findings from scoring
     │     Cross-flow merge: load_and_merge_cross_flow after _fill_reflection
     │       (synthesize) and on list_candidates / get_param_intelligence
     │     Stable consumer API (attack modules — no probe-table parsing):
