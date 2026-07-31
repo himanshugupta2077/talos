@@ -69,7 +69,8 @@ class JwtAnalyzer:
     """
     Purpose:
         Compact JWS analyzer (v1). Detects Bearer/Token-prefixed or bare JWTs,
-        lists Phase-1 suite rows, applies mutations via suite_jwt / jwt_mutate.
+        lists full JWT suite rows (core + alg degradation), applies via
+        suite_jwt / jwt_mutate.
     Side effects: None.
     """
 

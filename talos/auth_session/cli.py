@@ -2,7 +2,7 @@
 Module: talos.auth_session.cli
 
 Purpose:
-    Operator CLI for Authentication & Session Testing (Phases 2–4).
+    Operator CLI for Authentication & Session Testing (Phases 2–5 complete).
     Entry point: ``talos attack auth-session <subcommand>``
 
     Subcommands:
@@ -16,8 +16,10 @@ Purpose:
         unapprove         approved → pending
         run               Enqueue approved candidates (or --right-now)
         results list|show
+        status            Overview: bindings + candidate/result tallies
         filter init|show|validate
         suite list        List catalog test_ids for an auth type
+                          (--alg expands full alg-degradation matrix)
 
 Dependencies: argparse, asyncio, json, uuid; db, candidates, engine; scheduler
 Data flow: attack_cli → run_auth_session_cli → handlers → DB / scheduler / HTTP
@@ -82,7 +84,26 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         description=(
             "Probe whether a *presented* credential is validated "
             "(signature, algorithm, claims, structure). Distinct from "
-            "unauth (auth removed) and BAC (other-role session swap)."
+            "unauth (auth removed) and BAC (other-role session swap).\n\n"
+            "Workflow:\n"
+            "  1. talos auth set --header Authorization\n"
+            "  2. talos attack auth-session bind --type jwt --header Authorization\n"
+            "  3. talos attack auth-session generate --endpoint <uuid>\n"
+            "  4. talos attack auth-session candidates list --status pending\n"
+            "  5. talos attack auth-session approve --all-pending "
+            "[--test-id jwt.alg_none]\n"
+            "  6. talos attack auth-session run [--right-now]\n"
+            "  7. talos attack auth-session results list "
+            "--verdict WEAK_VALIDATION\n"
+            "  8. talos finding list\n\n"
+            "Each approved test_id is one scheduler job and one new outbound "
+            "HTTP flow. Algorithm degradation expands from the observed JWT "
+            "alg (full product matrix; core jwt.alg_none* owns pure none)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "See also: docs/design-auth-session-testing-engine.md, "
+            "docs/cli-cheat-sheet.md (Attack — auth-session)."
         ),
     )
     as_sub = parser.add_subparsers(dest="auth_session_cmd", metavar="<command>")
@@ -125,6 +146,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         metavar="JSON",
         help="Optional binding config JSON (claim_elevation, disabled_tests, …).",
     )
+    add_format_argument(p_bind)
     p_bind.set_defaults(_as_handler=cmd_bind)
 
     # ---- unbind ---- #
@@ -220,6 +242,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Allow POST/PUT/PATCH/DELETE baselines (default: GET/HEAD/OPTIONS only).",
     )
+    add_format_argument(p_gen)
     p_gen.set_defaults(_as_handler=cmd_generate)
 
     # ---- candidates ---- #
@@ -304,6 +327,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         metavar="FAM",
     )
+    add_format_argument(p_appr)
     p_appr.set_defaults(_as_handler=cmd_approve)
 
     # ---- reject ---- #
@@ -343,6 +367,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         metavar="FAM",
     )
+    add_format_argument(p_rej)
     p_rej.set_defaults(_as_handler=cmd_reject)
 
     # ---- unapprove (optional design transition approved → pending) ---- #
@@ -376,6 +401,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         metavar="FAM",
     )
+    add_format_argument(p_unap)
     p_unap.set_defaults(_as_handler=cmd_unapprove)
 
     # ---- run ---- #
@@ -419,6 +445,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Execute immediately in-process (bypass scheduler queue).",
     )
+    add_format_argument(p_run)
     p_run.set_defaults(_as_handler=cmd_run)
 
     # ---- results ---- #
@@ -468,6 +495,20 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     add_format_argument(p_rshow)
     p_rshow.set_defaults(_as_handler=cmd_results_show)
 
+    # ---- status (operator overview) ---- #
+    p_status = as_sub.add_parser(
+        "status",
+        help="Overview: bindings, candidates by status, results by verdict.",
+    )
+    p_status.add_argument(
+        "--endpoint",
+        dest="endpoint_id",
+        metavar="UUID",
+        help="Scope tallies to one endpoint.",
+    )
+    add_format_argument(p_status)
+    p_status.set_defaults(_as_handler=cmd_status)
+
     # ---- suite list ---- #
     p_suite = as_sub.add_parser(
         "suite",
@@ -489,7 +530,10 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         "--alg",
         dest="observed_alg",
         metavar="ALG",
-        help="Include Phase-1 algorithm-degradation rows for this observed alg.",
+        help=(
+            "Include full algorithm-degradation matrix rows for this observed "
+            "alg (e.g. RS256 → HS*/ES256/PS256)."
+        ),
     )
     p_slist.add_argument(
         "--family",
@@ -718,6 +762,10 @@ def cmd_bind(manager: ProjectManager, args: argparse.Namespace) -> None:
     except Exception as exc:  # IntegrityError etc.
         cli_error(f"Failed to create binding: {exc}")
 
+    if wants_json(args):
+        cli_json(_binding_to_dict(binding))
+        return
+
     print(f"Bound {location} '{name}' → {binding.auth_type}")
     print()
     print("UUID:")
@@ -838,6 +886,21 @@ def cmd_generate(manager: ProjectManager, args: argparse.Namespace) -> None:
         )
     except ValueError as exc:
         cli_usage_error(str(exc))
+
+    payload = {
+        "bindings_processed": stats.bindings_processed,
+        "flows_processed": stats.flows_processed,
+        "created": stats.created,
+        "refreshed": stats.refreshed,
+        "skipped_existing": stats.skipped_existing,
+        "skipped_no_token": stats.skipped_no_token,
+        "skipped_unsafe_method": stats.skipped_unsafe_method,
+        "skipped_no_baseline": stats.skipped_no_baseline,
+        "skip_reasons": list(stats.skip_reasons[:50]),
+    }
+    if wants_json(args):
+        cli_json(payload)
+        return
 
     print("Auth-session generate complete")
     print()
@@ -985,10 +1048,26 @@ def cmd_approve(manager: ProjectManager, args: argparse.Namespace) -> None:
             cli_usage_error(
                 "Provide candidate UUID(s), --all-pending, and/or --retry-failed."
             )
+        if wants_json(args):
+            cli_json({
+                "approved": [],
+                "skipped": [],
+                "approved_count": 0,
+                "skipped_count": 0,
+            })
+            return
         print("No matching candidates to approve.")
         return
 
     approved, skipped = as_db.approve_candidates(db_path, ids)
+    if wants_json(args):
+        cli_json({
+            "approved": list(approved),
+            "skipped": list(skipped),
+            "approved_count": len(approved),
+            "skipped_count": len(skipped),
+        })
+        return
     print(f"Approved: {len(approved)}")
     if skipped:
         print(f"Skipped : {len(skipped)} (wrong status or missing)")
@@ -1006,12 +1085,23 @@ def cmd_reject(manager: ProjectManager, args: argparse.Namespace) -> None:
             cli_usage_error(
                 "Provide candidate UUID(s) or --all-pending."
             )
+        if wants_json(args):
+            cli_json({"rejected": [], "skipped": [], "rejected_count": 0})
+            return
         print("No matching candidates to reject.")
         return
 
     rejected, skipped = as_db.reject_candidates(
         db_path, ids, reason=getattr(args, "reason", None)
     )
+    if wants_json(args):
+        cli_json({
+            "rejected": list(rejected),
+            "skipped": list(skipped),
+            "rejected_count": len(rejected),
+            "skipped_count": len(skipped),
+        })
+        return
     print(f"Rejected: {len(rejected)}")
     if skipped:
         print(f"Skipped : {len(skipped)} (not pending or missing)")
@@ -1026,10 +1116,21 @@ def cmd_unapprove(manager: ProjectManager, args: argparse.Namespace) -> None:
             cli_usage_error(
                 "Provide candidate UUID(s) or --all-approved."
             )
+        if wants_json(args):
+            cli_json({"unapproved": [], "skipped": [], "unapproved_count": 0})
+            return
         print("No matching candidates to unapprove.")
         return
 
     moved, skipped = as_db.unapprove_candidates(db_path, ids)
+    if wants_json(args):
+        cli_json({
+            "unapproved": list(moved),
+            "skipped": list(skipped),
+            "unapproved_count": len(moved),
+            "skipped_count": len(skipped),
+        })
+        return
     print(f"Unapproved (→ pending): {len(moved)}")
     if skipped:
         print(f"Skipped : {len(skipped)} (not approved or missing)")
@@ -1073,13 +1174,15 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         )
 
     right_now = bool(getattr(args, "right_now", False))
+    as_json = wants_json(args)
 
     if right_now:
-        _run_right_now(db_path, project_id, rows)
+        _run_right_now(db_path, project_id, rows, as_json=as_json)
         return
 
     enqueued = 0
     dedup_skipped = 0
+    job_ids: list[str] = []
     for cand in rows:
         if as_db.has_pending_auth_session_duplicate(
             db_path,
@@ -1110,7 +1213,20 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             priority=PRIORITY_MANUAL,
             meta=json.dumps(meta_dict, separators=(",", ":")),
         )
+        job_ids.append(job_id)
         enqueued += 1
+
+    if as_json:
+        cli_json({
+            "mode": "enqueue",
+            "approved_matched": len(rows),
+            "jobs_enqueued": enqueued,
+            "dedup_skipped": dedup_skipped,
+            "job_ids": job_ids,
+        })
+        if enqueued == 0 and not dedup_skipped:
+            cli_error("No jobs were enqueued.")
+        return
 
     print("Auth-session run complete")
     print()
@@ -1135,18 +1251,26 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     print("WEAK_VALIDATION findings appear under: talos finding list")
 
 
-def _run_right_now(db_path, project_id: str, rows: list) -> None:
+def _run_right_now(
+    db_path,
+    project_id: str,
+    rows: list,
+    *,
+    as_json: bool = False,
+) -> None:
     """Execute approved candidates immediately (one HTTP request each)."""
     from talos.auth_session.engine import execute_auth_session_job
     from talos.auth_session.findings_bridge import maybe_create_auth_session_finding
     from talos.auth_session.models import VERDICT_WEAK_VALIDATION
 
-    print(f"Auth-session --right-now: {len(rows)} candidate(s)")
-    print()
+    if not as_json:
+        print(f"Auth-session --right-now: {len(rows)} candidate(s)")
+        print()
 
     done = 0
     failed = 0
     findings = 0
+    outcomes: list[dict[str, Any]] = []
     for cand in rows:
         as_db.mark_candidate_running(db_path, cand.id)
         meta = {
@@ -1171,7 +1295,14 @@ def _run_right_now(db_path, project_id: str, rows: list) -> None:
             as_db.mark_candidate_failed(
                 db_path, cand.id, skip_reason=f"unexpected_error: {exc}"
             )
-            print(f"  FAIL  {cand.test_id}: unexpected_error: {exc}")
+            outcomes.append({
+                "candidate_id": cand.id,
+                "test_id": cand.test_id,
+                "ok": False,
+                "failure_reason": f"unexpected_error: {exc}",
+            })
+            if not as_json:
+                print(f"  FAIL  {cand.test_id}: unexpected_error: {exc}")
             failed += 1
             continue
 
@@ -1179,16 +1310,26 @@ def _run_right_now(db_path, project_id: str, rows: list) -> None:
             as_db.mark_candidate_failed(
                 db_path, cand.id, skip_reason=outcome.failure_reason
             )
-            print(
-                f"  FAIL  {cand.test_id}: {outcome.failure_reason} "
-                f"(verdict={outcome.auth_session_verdict})"
-            )
+            outcomes.append({
+                "candidate_id": cand.id,
+                "test_id": cand.test_id,
+                "ok": False,
+                "verdict": outcome.auth_session_verdict,
+                "failure_reason": outcome.failure_reason,
+                "replay_flow_id": outcome.replayed_flow_id,
+            })
+            if not as_json:
+                print(
+                    f"  FAIL  {cand.test_id}: {outcome.failure_reason} "
+                    f"(verdict={outcome.auth_session_verdict})"
+                )
             failed += 1
         else:
             as_db.mark_candidate_done(db_path, cand.id)
+            finding_id = None
             finding_note = ""
             if outcome.auth_session_verdict == VERDICT_WEAK_VALIDATION:
-                fid = maybe_create_auth_session_finding(
+                finding_id = maybe_create_auth_session_finding(
                     db_path=db_path,
                     project_id=project_id,
                     verdict=outcome.auth_session_verdict,
@@ -1204,16 +1345,38 @@ def _run_right_now(db_path, project_id: str, rows: list) -> None:
                     candidate_id=cand.id,
                     binding_id=cand.binding_id,
                 )
-                if fid:
+                if finding_id:
                     findings += 1
-                    finding_note = f"  finding={fid[:8]}"
-            print(
-                f"  {outcome.auth_session_verdict:<16}  {cand.test_id}  "
-                f"status={outcome.replay_status}  diff={outcome.diff_verdict}  "
-                f"replay={outcome.replayed_flow_id or '—'}"
-                f"{finding_note}"
-            )
+                    finding_note = f"  finding={finding_id[:8]}"
+            outcomes.append({
+                "candidate_id": cand.id,
+                "test_id": cand.test_id,
+                "ok": True,
+                "verdict": outcome.auth_session_verdict,
+                "diff_verdict": outcome.diff_verdict,
+                "replay_status": outcome.replay_status,
+                "replay_flow_id": outcome.replayed_flow_id,
+                "finding_id": finding_id,
+            })
+            if not as_json:
+                print(
+                    f"  {outcome.auth_session_verdict:<16}  {cand.test_id}  "
+                    f"status={outcome.replay_status}  diff={outcome.diff_verdict}  "
+                    f"replay={outcome.replayed_flow_id or '—'}"
+                    f"{finding_note}"
+                )
             done += 1
+
+    if as_json:
+        cli_json({
+            "mode": "right_now",
+            "approved_matched": len(rows),
+            "done": done,
+            "failed": failed,
+            "findings": findings,
+            "outcomes": outcomes,
+        })
+        return
 
     print()
     print(f"Done: {done}  Failed/skipped: {failed}  Findings: {findings}")
@@ -1312,8 +1475,16 @@ def cmd_results_list(manager: ProjectManager, args: argparse.Namespace) -> None:
         verdict=getattr(args, "verdict", None),
         limit=getattr(args, "limit", None),
     )
+    verdict_counts: dict[str, int] = {}
+    for r in rows:
+        verdict_counts[r.verdict] = verdict_counts.get(r.verdict, 0) + 1
+
     if wants_json(args):
-        cli_json([_result_to_dict(r) for r in rows])
+        cli_json({
+            "results": [_result_to_dict(r) for r in rows],
+            "total": len(rows),
+            "verdict_counts": verdict_counts,
+        })
         return
     if not rows:
         print("No auth-session results.")
@@ -1332,6 +1503,12 @@ def cmd_results_list(manager: ProjectManager, args: argparse.Namespace) -> None:
         )
     print()
     print(f"Total: {len(rows)}")
+    if verdict_counts:
+        parts = [f"{v}={n}" for v, n in sorted(verdict_counts.items())]
+        print(f"By verdict: {', '.join(parts)}")
+    weak = verdict_counts.get("WEAK_VALIDATION", 0)
+    if weak:
+        print(f"Findings: talos finding list  ({weak} WEAK_VALIDATION in this list)")
 
 
 def cmd_results_show(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -1381,6 +1558,102 @@ def _result_to_dict(r) -> dict[str, Any]:
         "failure_reason": r.failure_reason,
         "created_at": r.created_at,
     }
+
+
+def cmd_status(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Operator overview of bindings, candidate statuses, and result verdicts.
+    Side effects: Read-only DB queries.
+    """
+    project = _require_active(manager)
+    db_path = project.db_path
+    endpoint_id = getattr(args, "endpoint_id", None)
+
+    bindings = as_db.list_bindings(db_path)
+    candidates = as_db.list_candidates(
+        db_path,
+        endpoint_id=endpoint_id,
+        limit=None,
+    )
+    results = as_db.list_results(
+        db_path,
+        endpoint_id=endpoint_id,
+        limit=None,
+    )
+
+    by_status: dict[str, int] = {}
+    for c in candidates:
+        by_status[c.status] = by_status.get(c.status, 0) + 1
+    by_verdict: dict[str, int] = {}
+    for r in results:
+        by_verdict[r.verdict] = by_verdict.get(r.verdict, 0) + 1
+
+    payload = {
+        "bindings": len(bindings),
+        "binding_details": [
+            {
+                "id": b.id,
+                "location": b.location,
+                "name": b.name,
+                "auth_type": b.auth_type,
+            }
+            for b in bindings
+        ],
+        "candidates_total": len(candidates),
+        "candidates_by_status": by_status,
+        "results_total": len(results),
+        "results_by_verdict": by_verdict,
+        "endpoint_id": endpoint_id,
+    }
+
+    if wants_json(args):
+        cli_json(payload)
+        return
+
+    scope = f" (endpoint={endpoint_id[:12]}…)" if endpoint_id else ""
+    print(f"Auth-session status{scope}")
+    print()
+    print(f"  Bindings           : {len(bindings)}")
+    for b in bindings:
+        print(f"    - {b.location} '{b.name}' → {b.auth_type}  ({b.id[:8]}…)")
+    if not bindings:
+        print("    (none — bind with: talos attack auth-session bind "
+              "--type jwt --header Authorization)")
+    print()
+    print(f"  Candidates         : {len(candidates)}")
+    for status in (
+        STATUS_PENDING,
+        STATUS_APPROVED,
+        "rejected",
+        "running",
+        "done",
+        STATUS_FAILED,
+    ):
+        n = by_status.get(status, 0)
+        if n or status in (STATUS_PENDING, STATUS_APPROVED):
+            print(f"    {status:<12} : {n}")
+    print()
+    print(f"  Results            : {len(results)}")
+    if by_verdict:
+        for v in ("WEAK_VALIDATION", "SECURE", "UNKNOWN"):
+            n = by_verdict.get(v, 0)
+            if n:
+                print(f"    {v:<16} : {n}")
+        for v, n in sorted(by_verdict.items()):
+            if v not in ("WEAK_VALIDATION", "SECURE", "UNKNOWN"):
+                print(f"    {v:<16} : {n}")
+    else:
+        print("    (none yet — run approved candidates)")
+    print()
+    if by_status.get(STATUS_PENDING):
+        print("Next: talos attack auth-session approve --all-pending")
+    elif by_status.get(STATUS_APPROVED):
+        print("Next: talos attack auth-session run [--right-now]")
+    elif by_verdict.get("WEAK_VALIDATION"):
+        print("Inspect: talos attack auth-session results list "
+              "--verdict WEAK_VALIDATION")
+        print("Findings: talos finding list")
 
 
 def cmd_suite_list(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -1437,5 +1710,6 @@ def cmd_suite_list(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(f"Total: {len(rows)}")
     if not observed:
         print(
-            "Tip: pass --alg RS256 to include Phase-1 algorithm-degradation test_ids."
+            "Tip: pass --alg RS256 to include the full algorithm-degradation "
+            "matrix (HS*/ES*/PS* cross-family + same-family downgrades)."
         )

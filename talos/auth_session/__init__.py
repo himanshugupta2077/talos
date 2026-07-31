@@ -27,8 +27,8 @@ Phase 3 (engine & scheduler): heuristic verdict, execute_auth_session_job,
     auth_session_attack jobs, run / results CLI.
 Phase 4 (filter & findings): auth-session-decision-filter.yaml, score with
     filter-then-heuristic, WEAK_VALIDATION findings from settle / right-now.
-
-Later phases: full alg-degradation matrix + docs polish (Phase 5).
+Phase 5 (docs & polish): full algorithm-degradation matrix, status CLI,
+    --format json on action paths, operator docs + Talos Helper.
 
 Dependencies: stdlib only for JWT mutations (base64, json); url_sink.jwt_claims
     for extract_jwt_token / decode_jwt_payload reuse; httpx for replay.

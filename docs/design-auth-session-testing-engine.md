@@ -5,7 +5,7 @@
 | **Document** | Design: Authentication & Session Testing Engine |
 | **Author** | Talos Engineering |
 | **Date** | 2026-07-31 |
-| **Status** | Phases 1–4 implemented (foundation + bindings/candidates + engine/scheduler/run + filter/findings); Phase 5 remaining |
+| **Status** | Phases 1–5 complete (v1 CLI + full JWT suite; Control Panel out of scope) |
 | **Audience** | Senior engineers familiar with Talos attack modules |
 | **Related** | `docs/architecture.md`, `docs/cli-cheat-sheet.md`, `AGENTS.md` |
 
@@ -437,7 +437,8 @@ Normalize `from`/`to` to lowercase alnum (`rs256`, `hs256`, …).
 | `jwt.alg_degrade.rs256_to_hs256` | Degradation Phase 1 |
 | `jwt.alg_degrade.rs256_to_hs384` | Degradation Phase 1 |
 | `jwt.alg_degrade.rs256_to_hs512` | Degradation Phase 1 |
-| `jwt.alg_degrade.rs256_to_es256` | **Phase 5 only** (not Phase 1) |
+| `jwt.alg_degrade.rs256_to_es256` | Degradation Phase 5 (full matrix) |
+| `jwt.alg_degrade.rs256_to_ps256` | Degradation Phase 5 (full matrix) |
 
 #### Implementation notes for mutations
 
@@ -457,7 +458,7 @@ Normalize `from`/`to` to lowercase alnum (`rs256`, `hs256`, …).
 | Encode header/payload segments + reassemble | **`jwt_codec`** (new; do **not** expand url_sink responsibilities) |
 | Passive JWT detector | Orthogonal (exposure only); do not use for mutations |
 
-Helper: `suite_jwt.alg_degradation_tests(original_alg: str) -> list[TestCaseDef]` used by `JwtAnalyzer.list_test_cases` — implements Phase-1 table + none-skip rule.
+Helper: `suite_jwt.alg_degradation_tests(original_alg: str) -> list[TestCaseDef]` used by `JwtAnalyzer.list_test_cases` — implements the **full** product degradation matrix (Phase 5) + none-skip rule.
 
 ### Candidate lifecycle
 
@@ -811,11 +812,13 @@ talos attack auth-session
   candidates list|show
   approve           → approved from pending|failed|done  [--all-pending|--retry-failed|--test-id|--family|--endpoint]
   reject            pending → rejected  [same filters]
+  unapprove         approved → pending
   run               Enqueue approved only [--candidate --endpoint --test-id --family --right-now]
                     (scheduler sets running on job claim; settle → done|failed)
   results list|show
+  status            Bindings + candidate/result tallies
   filter init|show|validate
-  suite list        List test_ids for an auth type (docs from code)
+  suite list        List test_ids for an auth type (docs from code; --alg = full degrade matrix)
 ```
 
 Shared flags where applicable:
@@ -1399,28 +1402,28 @@ When told **“implement Phase N”**, an AI implementer should deliver **all PR
 
 ---
 
-### Phase 5: Docs, suite completeness & polish
+### Phase 5: Docs, suite completeness & polish — **DONE**
 
 **Goal:** Full operator documentation and remaining suite/UX polish so the feature is release-ready.
 
 **Exit criteria:**
-- `docs/cli-cheat-sheet.md` and `docs/architecture.md` document `talos attack auth-session`.
-- `docs/updates.md` entry for the feature.
-- JWT suite catalog complete per design table, including **full algorithm-degradation matrix edges** deferred from Phase 1 (same-family downgrade chains, PS*/ES* coverage as specified).
-- `--format json` on list/show/status paths; discoverability/hierarchy tests green if present.
-- No new architecture; regression suite for auth_test/unauth/BAC still green.
+- [x] `docs/cli-cheat-sheet.md` and `docs/architecture.md` document `talos attack auth-session`.
+- [x] `docs/updates.md` entry for the feature.
+- [x] JWT suite catalog complete per design table, including **full algorithm-degradation matrix edges** deferred from Phase 1 (same-family downgrade chains, PS*/ES* coverage as specified).
+- [x] `--format json` on list/show/status paths; discoverability/hierarchy tests green if present.
+- [x] No new architecture; regression suite for auth_test/unauth/BAC still green.
 
 **Depends on:** Phase 4
 
 **AI implementer scope:** PR 5.1 → 5.2. Documentation and completeness only unless a small bugfix is required for exit criteria.
 
-#### PR 5.1: Full JWT suite + CLI polish
+#### PR 5.1: Full JWT suite + CLI polish — **DONE**
 
-- **Files/components:** remaining mutators/test_ids in `suite_jwt.py` / `jwt_mutate.py` (complete **algorithm-degradation** matrix edges); `results` UX; `--format json`; any CLI consistency with unauth/bac flags.
+- **Files/components:** remaining mutators/test_ids in `suite_jwt.py` / `jwt_mutate.py` (complete **algorithm-degradation** matrix edges); `results` UX; `--format json`; `status` overview; any CLI consistency with unauth/bac flags.
 - **Dependencies:** Phase 4
 - **Description:** Close suite gaps including alg degradation completeness; operator ergonomics.
 
-#### PR 5.2: Documentation & discoverability
+#### PR 5.2: Documentation & discoverability — **DONE**
 
 - **Files/components:** `docs/cli-cheat-sheet.md`; `docs/architecture.md`; `docs/updates.md`; `test_module_discoverability.py` / `test_command_hierarchy.py` updates if required; `__main__.py` help polish.
 - **Dependencies:** PR 5.1 (or parallel if docs-only after Phase 4 CLI is stable)

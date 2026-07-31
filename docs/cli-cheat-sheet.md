@@ -1549,10 +1549,11 @@ talos attack unauth config --auto-run off
 
 ## Attack — Authentication & Session Testing (`auth-session`)
 
-**Status (Phase 4):** bind → generate → approve → **run** (scheduler or
-`--right-now`) → **results** + **findings** on `WEAK_VALIDATION`. Optional
-decision filter (`auth-session-decision-filter.yaml`) scores before heuristic
-fallback. Phase 5: full alg-degradation matrix + polish.
+**Status (v1 complete — Phases 1–5):** bind → generate → approve → **run**
+(scheduler or `--right-now`) → **results** + **findings** on `WEAK_VALIDATION`.
+Optional decision filter (`auth-session-decision-filter.yaml`) scores before
+heuristic fallback. Full JWT algorithm-degradation matrix (same-family
+downgrades + cross-family HS/RS/ES/PS edges). Control Panel UI is out of scope.
 
 Probes whether a *presented* credential is validated (signature, algorithm,
 claims, structure). Distinct from Unauth (auth removed/garbled) and BAC
@@ -1587,10 +1588,12 @@ talos attack auth-session generate --module <name|uuid>
 talos attack auth-session generate --test-id jwt.alg_none --family algorithm
 talos attack auth-session generate --force-refresh   # pending|rejected only
 talos attack auth-session generate --include-unsafe-methods  # allow POST/PUT/…
+talos attack auth-session generate --endpoint <uuid> --format json
 ```
 
 Default baselines: safe methods only (GET/HEAD/OPTIONS). Insert-if-absent on
-`(binding_id, test_id, baseline_flow_id)`.
+`(binding_id, test_id, baseline_flow_id)`. Re-generate after suite upgrades
+creates **new** pending rows for new test_ids only (existing done rows kept).
 
 ### Review / approve / reject
 
@@ -1605,11 +1608,13 @@ talos attack auth-session reject <id>… [--reason "…"]
 talos attack auth-session reject --all-pending
 talos attack auth-session unapprove --all-approved
 talos attack auth-session unapprove <id>…
+talos attack auth-session status [--endpoint UUID] [--format json]
 ```
 
 Statuses: `pending` → `approved` | `rejected`. Re-approve `failed`/`done` for
 re-test. Unapprove (`approved` → `pending`) to re-review or unbind.
 Scheduler: `approved` → `running` → `done` | `failed`.
+`status` shows bindings + candidate/result tallies.
 
 ### Run (one job per approved test_id)
 
@@ -1617,6 +1622,7 @@ Scheduler: `approved` → `running` → `done` | `failed`.
 talos attack auth-session run [--endpoint UUID] [--candidate UUID] \
   [--test-id ID] [--family FAM] [--binding UUID]
 talos attack auth-session run --test-id jwt.alg_none --right-now
+talos attack auth-session run --endpoint <uuid> --format json
 ```
 
 Enqueues `auth_session_attack` jobs (PRIORITY_MANUAL). Meta-aware dedupe on
@@ -1630,6 +1636,9 @@ talos attack auth-session results list [--endpoint UUID] [--verdict WEAK_VALIDAT
   [--test-id ID] [--format table|json]
 talos attack auth-session results show <replay_flow_id>
 ```
+
+Table mode prints a **by-verdict tally** under the list. JSON mode returns
+`{results, total, verdict_counts}`.
 
 Verdicts: filter match first when `auth-session-decision-filter.yaml` exists;
 else heuristic — `WEAK_VALIDATION` (2xx + diff SAME), `SECURE` (401/403/407/3xx
@@ -1656,8 +1665,14 @@ and would hide true weak validation). **No `filter apply`/reclassify in v1**
 
 ```bash
 talos attack auth-session suite list --type jwt
-talos attack auth-session suite list --type jwt --alg RS256   # + Phase-1 degrade rows
+talos attack auth-session suite list --type jwt --alg RS256
+# RS256 degrade rows include HS256/HS384/HS512 + ES256 + PS256 (full matrix)
+# Core owns jwt.alg_none* — never jwt.alg_degrade.*_to_none
 ```
+
+Algorithm degradation rewrites header `alg` only (payload + signature
+segments byte-identical). Observed `alg=RS512` also expands same-family
+downgrades (`rs512_to_rs384`, `rs512_to_rs256`).
 
 ### Findings
 

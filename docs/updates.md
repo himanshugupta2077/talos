@@ -2,6 +2,40 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth-session engine — Phase 5 suite completeness & CLI polish
+
+**Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.
+
+Phase 5 finishes the v1 CLI surface: **full JWT algorithm-degradation matrix**,
+operator ergonomics, and authoritative docs. Control Panel remains out of scope.
+
+| Deliverable | Detail |
+|-------------|--------|
+| **Full alg-degrade matrix** | Same-family downgrade chains (e.g. RS512→RS384→RS256); cross-family `ES256`/`PS256` for RS*; PS* parity; HS* wrong-strength + upgrade-to-asymmetric RS256/ES256; none-skip unchanged (core owns `jwt.alg_none*`) |
+| **CLI `status`** | Bindings + candidates-by-status + results-by-verdict tallies (`--endpoint`, `--format json`) |
+| **`--format json`** | generate / approve / reject / unapprove / run / results list (plus existing list/show paths) |
+| **Results UX** | Table mode prints by-verdict summary; JSON includes `verdict_counts` |
+| **Docs** | `cli-cheat-sheet`, `architecture`, design status, Talos Helper |
+
+```bash
+talos attack auth-session suite list --type jwt --alg RS256
+# includes jwt.alg_degrade.rs256_to_es256 / _to_ps256 (Phase 5)
+talos attack auth-session generate --endpoint <uuid>   # new test_ids → new pending
+talos attack auth-session status --format json
+talos attack auth-session results list --format json
+```
+
+**Not in Phase 5:** Control Panel UI; `filter apply` reclassify; Session Cookie /
+API Key analyzers; `jku`/`x5u`/`x5c` suite rows.
+
+**Tests:** `tests/test_auth_session_suite_jwt.py` (full matrix),
+`test_auth_session_cli.py` (status + JSON actions + Helper).
+
+**Files:** `talos/auth_session/{suite_jwt,cli,__init__,types}.py`,
+`talos/projects/attack_cli.py`, `talos/__main__.py`, docs.
+
+---
+
 ## Auth-session engine — Phase 4 decision filter & findings
 
 **Shipped:** 2026-07-31 · design `docs/design-auth-session-testing-engine.md`.

@@ -1,9 +1,9 @@
 """
-Tests: auth-session JWT suite catalog + analyzer registry (Phase 1.3).
+Tests: auth-session JWT suite catalog + analyzer registry (Phase 1.3 + Phase 5).
 
 Covers:
   - core catalog ids present (jwt.alg_none*)
-  - Phase-1 degradation matrix for RS256 / HS256 / ES256 / none
+  - Full algorithm-degradation matrix for RS/ES/PS/HS families + none
   - none-skip rule: no *_to_none degradation ids
   - claim-required filtering
   - JwtAnalyzer detect / list_test_cases / apply
@@ -79,20 +79,32 @@ def test_normalize_alg() -> None:
     assert normalize_alg(123) == "unknown"
 
 
-def test_rs256_phase1_degradation_targets() -> None:
+def test_rs256_full_degradation_targets() -> None:
+    """Phase 5: RS256 → HS* + ES256 + PS256 cross-family (no to_none)."""
     cases = alg_degradation_tests("RS256")
     ids = [c.test_id for c in cases]
-    assert "jwt.alg_degrade.rs256_to_hs256" in ids
-    assert "jwt.alg_degrade.rs256_to_hs384" in ids
-    assert "jwt.alg_degrade.rs256_to_hs512" in ids
-    # Phase 5 only — must NOT appear in Phase 1.
-    assert "jwt.alg_degrade.rs256_to_es256" not in ids
-    assert "jwt.alg_degrade.rs256_to_ps256" not in ids
+    assert set(ids) == {
+        "jwt.alg_degrade.rs256_to_hs256",
+        "jwt.alg_degrade.rs256_to_hs384",
+        "jwt.alg_degrade.rs256_to_hs512",
+        "jwt.alg_degrade.rs256_to_es256",
+        "jwt.alg_degrade.rs256_to_ps256",
+    }
     # none-skip rule.
     assert "jwt.alg_degrade.rs256_to_none" not in ids
     for c in cases:
         assert c.family == FAMILY_ALGORITHM_DEGRADE
         assert "_to_none" not in c.test_id
+
+
+def test_rs512_same_family_full_downgrade_chain() -> None:
+    """Phase 5: RS512 → RS384 and RS256 (full same-family downgrade)."""
+    ids = [c.test_id for c in alg_degradation_tests("RS512")]
+    assert "jwt.alg_degrade.rs512_to_rs384" in ids
+    assert "jwt.alg_degrade.rs512_to_rs256" in ids
+    assert "jwt.alg_degrade.rs512_to_hs256" in ids
+    assert "jwt.alg_degrade.rs512_to_es256" in ids
+    assert "jwt.alg_degrade.rs512_to_ps256" in ids
 
 
 def test_degradation_never_emits_to_none_for_any_alg() -> None:
@@ -112,20 +124,38 @@ def test_degradation_never_emits_to_none_for_any_alg() -> None:
             assert not c.test_id.endswith("_to_unknown")
 
 
-def test_hs256_phase1_targets() -> None:
-    ids = [c.test_id for c in alg_degradation_tests("HS256")]
-    assert "jwt.alg_degrade.hs256_to_hs512" in ids
-    assert "jwt.alg_degrade.hs256_to_rs256" in ids
+def test_hs256_full_targets() -> None:
+    """Phase 5: wrong HS strength + upgrade-to-asymmetric RS256/ES256."""
+    ids = set(c.test_id for c in alg_degradation_tests("HS256"))
+    assert ids == {
+        "jwt.alg_degrade.hs256_to_hs384",
+        "jwt.alg_degrade.hs256_to_hs512",
+        "jwt.alg_degrade.hs256_to_rs256",
+        "jwt.alg_degrade.hs256_to_es256",
+    }
     assert "jwt.alg_degrade.hs256_to_none" not in ids
 
 
-def test_es256_phase1_targets() -> None:
-    ids = [c.test_id for c in alg_degradation_tests("ES256")]
-    assert set(ids) == {
+def test_es256_full_targets() -> None:
+    ids = set(c.test_id for c in alg_degradation_tests("ES256"))
+    assert ids == {
         "jwt.alg_degrade.es256_to_hs256",
         "jwt.alg_degrade.es256_to_hs384",
         "jwt.alg_degrade.es256_to_hs512",
+        "jwt.alg_degrade.es256_to_rs256",
+        "jwt.alg_degrade.es256_to_ps256",
     }
+
+
+def test_ps_family_parity_with_rs_pattern() -> None:
+    """Phase 5: PS* gets HS* + same-family downgrade + RS256/ES256."""
+    ps256 = set(c.test_id for c in alg_degradation_tests("PS256"))
+    assert "jwt.alg_degrade.ps256_to_hs256" in ps256
+    assert "jwt.alg_degrade.ps256_to_rs256" in ps256
+    assert "jwt.alg_degrade.ps256_to_es256" in ps256
+    ps512 = set(c.test_id for c in alg_degradation_tests("PS512"))
+    assert "jwt.alg_degrade.ps512_to_ps384" in ps512
+    assert "jwt.alg_degrade.ps512_to_ps256" in ps512
 
 
 def test_none_original_degrades_to_hs_rs_only() -> None:
@@ -142,8 +172,10 @@ def test_list_test_cases_includes_core_and_degrade() -> None:
     # Core none rows always present.
     assert "jwt.alg_none" in ids
     assert "jwt.alg_None" in ids
-    # Degradation Phase 1.
+    # Full degradation matrix.
     assert "jwt.alg_degrade.rs256_to_hs256" in ids
+    assert "jwt.alg_degrade.rs256_to_es256" in ids
+    assert "jwt.alg_degrade.rs256_to_ps256" in ids
     assert "jwt.alg_degrade.rs256_to_none" not in ids
     # Claim-required present when claims exist.
     assert "jwt.remove_exp" in ids

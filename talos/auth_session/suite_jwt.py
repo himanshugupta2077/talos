@@ -3,8 +3,8 @@ Module: talos.auth_session.suite_jwt
 
 Purpose:
     JWT test suite catalog for auth-session. Defines core fixed test cases
-    and the Phase-1 algorithm-degradation matrix expansion relative to the
-    observed header ``alg`` (KD15).
+    and the full algorithm-degradation matrix expansion relative to the
+    observed header ``alg`` (KD15; Phase 5 completes the product matrix).
 
     Product rule: degradation **never** emits pure ``to_none`` / empty /
     missing / unknown targets — core ``jwt.alg_none*`` rows own those probes.
@@ -229,21 +229,30 @@ _DEGRADE_FORBIDDEN_TARGETS: frozenset[str] = frozenset({
     "unknown",
 })
 
-# Phase 1 frozen degradation targets by normalized original alg (design table).
-# Values are display-form target algs (HS256, …).
-_PHASE1_DEGRADE_TARGETS: dict[str, tuple[str, ...]] = {
-    "rs256": ("HS256", "HS384", "HS512"),
-    "rs384": ("HS256", "HS384", "HS512", "RS256"),
-    "rs512": ("HS256", "HS384", "HS512", "RS256"),
-    "es256": ("HS256", "HS384", "HS512"),
-    "es384": ("HS256", "HS384", "HS512", "ES256"),
-    "es512": ("HS256", "HS384", "HS512", "ES256"),
-    "ps256": ("HS256", "HS384", "HS512"),
-    "ps384": ("HS256", "HS384", "HS512"),
-    "ps512": ("HS256", "HS384", "HS512"),
-    "hs256": ("HS512", "RS256"),
-    "hs384": ("HS256", "HS512", "RS256"),
-    "hs512": ("HS256", "RS256"),
+# Full product algorithm-degradation matrix (Phase 5 complete).
+# Values are display-form target algs (HS256, …). Rules (design catalog):
+#   - HS* confusion always for asymmetric originals
+#   - Same-family full downgrade chains when stronger (RS512→RS384→RS256, …)
+#   - Cross-family edges (RS↔ES↔PS at 256-bit class; HS→RS256/ES256 upgrade)
+#   - never emits none/empty/missing/unknown targets (KD15)
+#   - none/empty/missing/unknown/other originals: force HS256 + RS256 only
+_FULL_DEGRADE_TARGETS: dict[str, tuple[str, ...]] = {
+    # RS family: HS* + same-family downgrade + ES256/PS256 cross-family
+    "rs256": ("HS256", "HS384", "HS512", "ES256", "PS256"),
+    "rs384": ("HS256", "HS384", "HS512", "RS256", "ES256", "PS256"),
+    "rs512": ("HS256", "HS384", "HS512", "RS384", "RS256", "ES256", "PS256"),
+    # ES family: HS* + same-family downgrade + RS256/PS256 cross-family
+    "es256": ("HS256", "HS384", "HS512", "RS256", "PS256"),
+    "es384": ("HS256", "HS384", "HS512", "ES256", "RS256", "PS256"),
+    "es512": ("HS256", "HS384", "HS512", "ES384", "ES256", "RS256", "PS256"),
+    # PS family: parity with RS (HS* + same-family downgrade + RS256/ES256)
+    "ps256": ("HS256", "HS384", "HS512", "RS256", "ES256"),
+    "ps384": ("HS256", "HS384", "HS512", "PS256", "RS256", "ES256"),
+    "ps512": ("HS256", "HS384", "HS512", "PS384", "PS256", "RS256", "ES256"),
+    # HS family: wrong HS strength + upgrade-to-asymmetric (RS256 / ES256)
+    "hs256": ("HS384", "HS512", "RS256", "ES256"),
+    "hs384": ("HS256", "HS512", "RS256", "ES256"),
+    "hs512": ("HS256", "HS384", "RS256", "ES256"),
     # none / empty / missing / unknown / other → force non-none algs only
     "none": ("HS256", "RS256"),
     "empty": ("HS256", "RS256"),
@@ -251,6 +260,9 @@ _PHASE1_DEGRADE_TARGETS: dict[str, tuple[str, ...]] = {
     "unknown": ("HS256", "RS256"),
     "other": ("HS256", "RS256"),
 }
+
+# Back-compat alias (tests / importers that still reference Phase-1 name).
+_PHASE1_DEGRADE_TARGETS = _FULL_DEGRADE_TARGETS
 
 
 def normalize_alg(alg: Any) -> str:
@@ -276,7 +288,8 @@ def normalize_alg(alg: Any) -> str:
 def alg_degradation_tests(original_alg: Any) -> list[TestCaseDef]:
     """
     Purpose:
-        Expand observed original alg into Phase-1 degradation TestCaseDefs.
+        Expand observed original alg into full product degradation TestCaseDefs
+        (Phase 5 matrix: same-family downgrades + cross-family edges).
         Never emits pure none/empty/missing/unknown *targets* (KD15).
     Input:
         original_alg — JWT header alg value
@@ -285,11 +298,11 @@ def alg_degradation_tests(original_alg: Any) -> list[TestCaseDef]:
     Side effects: None.
     """
     from_norm = normalize_alg(original_alg)
-    targets = _PHASE1_DEGRADE_TARGETS.get(from_norm)
+    targets = _FULL_DEGRADE_TARGETS.get(from_norm)
     if targets is None:
         # Other / non-standard original → HS256 + RS256 only.
         # Keep computed from_norm in test_ids (e.g. customalg_to_hs256).
-        targets = _PHASE1_DEGRADE_TARGETS["other"]
+        targets = _FULL_DEGRADE_TARGETS["other"]
 
     cases: list[TestCaseDef] = []
     for target in targets:
@@ -330,7 +343,7 @@ def list_jwt_test_cases(
     """
     Purpose:
         Deterministic suite for a token: core rows (claim-filtered) +
-        Phase-1 algorithm degradation for observed alg.
+        full algorithm degradation matrix for observed alg.
     Input:
         ctx — TokenContext
         config — binding config (enabled_families, disabled_tests, claim_elevation)

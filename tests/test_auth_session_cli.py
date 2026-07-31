@@ -1,11 +1,12 @@
 """
-Tests: auth-session Phase 2 CLI (bind / generate / approve / reject / suite).
+Tests: auth-session CLI (Phases 2–5).
 
 Covers:
   - bind requires auth_config field
   - generate via CLI creates pending candidates
   - approve --all-pending / reject
-  - suite list includes core rows; --alg expands degradation
+  - suite list includes core rows; --alg expands full degradation matrix
+  - status overview + --format json on action paths
   - Talos Helper documents auth-session surface
   - attack_cli dispatches auth-session
 """
@@ -206,7 +207,10 @@ def test_suite_list_core_and_degrade(manager: MagicMock) -> None:
         )
     text = out.getvalue()
     assert "jwt.alg_degrade.rs256_to_hs256" in text
-    assert "to_none" not in text or "jwt.alg_none" in text  # core none ok
+    # Phase 5 full matrix cross-family edges.
+    assert "jwt.alg_degrade.rs256_to_es256" in text
+    assert "jwt.alg_degrade.rs256_to_ps256" in text
+    assert "jwt.alg_degrade.rs256_to_none" not in text
 
 
 def test_suite_list_json(manager: MagicMock) -> None:
@@ -241,8 +245,10 @@ def test_talos_helper_documents_auth_session() -> None:
     assert "auth-session approve|reject|unapprove" in text
     assert "auth-session run" in text
     assert "auth-session results" in text
+    assert "auth-session status" in text
     assert "auth-session filter" in text
     assert "auth-session suite list" in text
+    assert "full alg-degradation matrix" in text
 
 
 def test_filter_init_show_validate(manager: MagicMock, db_path: Path) -> None:
@@ -327,3 +333,57 @@ def test_show_bindings_json(manager: MagicMock, db_path: Path) -> None:
     data = json.loads(out.getvalue())
     assert len(data) == 1
     assert data[0]["name"] == "Authorization"
+
+
+def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
+    """Phase 5: status overview + --format json on generate / approve / status."""
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as([
+                "bind", "--type", "jwt", "--header", "Authorization",
+                "--format", "json",
+            ]),
+        )
+    bind_data = json.loads(out.getvalue())
+    assert bind_data["name"] == "Authorization"
+    assert bind_data["auth_type"] == "jwt"
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["generate", "--endpoint", EP, "--format", "json"]),
+        )
+    gen = json.loads(out.getvalue())
+    assert gen["created"] > 0
+    assert "bindings_processed" in gen
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["status", "--format", "json"]),
+        )
+    st = json.loads(out.getvalue())
+    assert st["bindings"] == 1
+    assert st["candidates_total"] == gen["created"]
+    assert st["candidates_by_status"].get("pending", 0) == gen["created"]
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["approve", "--all-pending", "--format", "json"]),
+        )
+    ap = json.loads(out.getvalue())
+    assert ap["approved_count"] == gen["created"]
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(manager, _parse_as(["status"]))
+    text = out.getvalue()
+    assert "Auth-session status" in text
+    assert "approved" in text.lower()
+    assert str(gen["created"]) in text

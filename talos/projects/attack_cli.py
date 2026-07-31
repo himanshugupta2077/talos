@@ -13,12 +13,13 @@ Purpose:
       config  — Show or set unauth auto-run (scheduler auth_test auto-enqueue).
       filter  — Manage unauth-decision-filter.yaml (init | show | validate).
 
-    Auth-session commands (talos attack auth-session) — Phases 2–4:
+    Auth-session commands (talos attack auth-session) — Phases 2–5 complete:
       bind | unbind | show-bindings | generate | candidates
       approve | reject | unapprove | suite list
-      run | results list|show
+      run | results list|show | status
       filter init | show | validate
-      (WEAK_VALIDATION findings from scheduler settle / --right-now)
+      (WEAK_VALIDATION findings from scheduler settle / --right-now;
+       full JWT alg-degradation matrix; --format json on list/show/actions)
 
     BAC modules (talos attack bac):
       session-swap   — Direct session swap (replace target-role token).
