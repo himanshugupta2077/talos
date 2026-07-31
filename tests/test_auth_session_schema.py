@@ -163,3 +163,73 @@ def test_binding_unique_location_name(db_path: Path) -> None:
                         '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')
                 """
             )
+
+
+def test_candidate_binding_fk_restrict(db_path: Path) -> None:
+    """ON DELETE RESTRICT: binding with candidates cannot be deleted."""
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """
+            INSERT INTO auth_session_bindings
+                (id, location, name, auth_type, config_json, created_at, updated_at)
+            VALUES ('b1', 'cookie', 'session', 'jwt', '{}',
+                    '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO auth_session_candidates (
+                id, binding_id, baseline_flow_id, auth_type, test_id,
+                test_family, title, mutation_summary, status,
+                created_at, updated_at
+            ) VALUES (
+                'c1', 'b1', 'flow-1', 'jwt', 'jwt.alg_none',
+                'algorithm', 'alg none', 'summary', 'pending',
+                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("DELETE FROM auth_session_bindings WHERE id = 'b1'")
+
+
+def test_candidate_unique_binding_test_flow(db_path: Path) -> None:
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO auth_session_bindings
+                (id, location, name, auth_type, config_json, created_at, updated_at)
+            VALUES ('b1', 'header', 'X-Auth', 'jwt', '{}',
+                    '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO auth_session_candidates (
+                id, binding_id, baseline_flow_id, auth_type, test_id,
+                test_family, title, mutation_summary, status,
+                created_at, updated_at
+            ) VALUES (
+                'c1', 'b1', 'flow-1', 'jwt', 'jwt.alg_none',
+                'algorithm', 't', 'm', 'pending',
+                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO auth_session_candidates (
+                    id, binding_id, baseline_flow_id, auth_type, test_id,
+                    test_family, title, mutation_summary, status,
+                    created_at, updated_at
+                ) VALUES (
+                    'c2', 'b1', 'flow-1', 'jwt', 'jwt.alg_none',
+                    'algorithm', 't', 'm', 'pending',
+                    '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z'
+                )
+                """
+            )

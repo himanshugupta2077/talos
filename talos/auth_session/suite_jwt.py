@@ -42,30 +42,36 @@ from talos.auth_session.models import (
 CORE_JWT_TEST_CASES: tuple[TestCaseDef, ...] = (
     TestCaseDef(
         test_id="jwt.alg_none",
-        title="alg=none",
+        title="alg=none (stripped signature)",
         family=FAMILY_ALGORITHM,
-        description="Set header alg to 'none' with empty signature (classic none attack).",
+        description=(
+            "Set header alg to 'none' and strip the signature segment "
+            "(two-part token h.p). Classic none attack variant."
+        ),
         risk_hint=RISK_CRITICAL,
     ),
     TestCaseDef(
         test_id="jwt.alg_None",
         title="alg=None (casing)",
         family=FAMILY_ALGORITHM,
-        description="Set header alg to 'None' casing variant.",
+        description="Set header alg to 'None' casing variant; empty third segment.",
         risk_hint=RISK_CRITICAL,
     ),
     TestCaseDef(
         test_id="jwt.alg_NONE",
         title="alg=NONE (casing)",
         family=FAMILY_ALGORITHM,
-        description="Set header alg to 'NONE' casing variant.",
+        description="Set header alg to 'NONE' casing variant; empty third segment.",
         risk_hint=RISK_CRITICAL,
     ),
     TestCaseDef(
         test_id="jwt.alg_none_empty_sig",
         title="alg=none empty signature",
         family=FAMILY_ALGORITHM,
-        description="alg=none with empty signature segment sibling.",
+        description=(
+            "alg=none with empty signature segment (three-part h.p.). "
+            "Distinct from jwt.alg_none which strips the segment entirely."
+        ),
         risk_hint=RISK_CRITICAL,
     ),
     TestCaseDef(
@@ -282,11 +288,8 @@ def alg_degradation_tests(original_alg: Any) -> list[TestCaseDef]:
     targets = _PHASE1_DEGRADE_TARGETS.get(from_norm)
     if targets is None:
         # Other / non-standard original → HS256 + RS256 only.
+        # Keep computed from_norm in test_ids (e.g. customalg_to_hs256).
         targets = _PHASE1_DEGRADE_TARGETS["other"]
-        from_norm = from_norm if from_norm else "other"
-        # Keep original norm for test_id when non-empty.
-        if from_norm not in _PHASE1_DEGRADE_TARGETS:
-            pass  # use computed from_norm in ids
 
     cases: list[TestCaseDef] = []
     for target in targets:

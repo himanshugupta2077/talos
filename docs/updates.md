@@ -19,6 +19,11 @@ Dedicated Authentication & Session Testing package foundation. Tests whether a
 | **Algorithm degradation** | Phase-1 matrix from observed `alg` (e.g. RS256→HS*); **never** emits `*_to_none` (core owns none) |
 | **Registry** | `AuthTypeAnalyzer` Protocol + `JwtAnalyzer` + `ANALYZERS["jwt"]` |
 
+**QA fixes (same phase):**
+- `jwt.alg_none` (stripped two-part) vs `jwt.alg_none_empty_sig` (three-part `h.p.`) are distinct
+- Header-only mutators (degrade / empty-missing alg / kid) keep **payload + signature segments byte-identical** (non-canonical JSON safe)
+- Claim elevation: list-valued claims keep list shape; already-elevated no-op does not re-encode
+
 **Not in Phase 1:** operator CLI, scheduler job, HTTP engine, findings (Phases 2–4).
 
 ```bash

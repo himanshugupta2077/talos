@@ -81,6 +81,45 @@ def _result(
     )
 
 
+def _header_only(
+    ctx: TokenContext,
+    test_id: str,
+    *,
+    summary: str,
+    metadata: Optional[dict[str, Any]] = None,
+    mutate_header: Callable[[dict[str, Any]], None],
+) -> MutatedToken:
+    """
+    Purpose:
+        Rewrite JWT header dict only; keep original payload and signature
+        segments **byte-for-byte** (design hard rule for degradation and
+        other signature-preserving header probes).
+    """
+    _header_b64, payload_b64, sig = split_compact_jwt(ctx.raw_token)
+    header = copy.deepcopy(ctx.header)
+    mutate_header(header)
+    new_header_b64 = encode_json_segment(header)
+    compact = join_compact_jwt(new_header_b64, payload_b64, sig)
+    return _result(test_id, ctx, compact, summary, metadata)
+
+
+def _normalize_alg_id(alg: Any) -> str:
+    """
+    Normalize alg for test_id segments (lowercase alnum).
+    Aligns with suite_jwt.normalize_alg for empty/missing semantics where
+    possible; empty string → ``empty`` (not ``unknown``).
+    """
+    if alg is None:
+        return "missing"
+    if not isinstance(alg, str):
+        return "unknown"
+    text = alg.strip()
+    if text == "":
+        return "empty"
+    cleaned = "".join(ch for ch in text.lower() if ch.isalnum())
+    return cleaned or "unknown"
+
+
 # ------------------------------------------------------------------ #
 # Algorithm family (core owns pure none)                               #
 # ------------------------------------------------------------------ #
@@ -89,32 +128,37 @@ def _result(
 def mutate_alg_none(ctx: TokenContext, *, casing: str = "none") -> MutatedToken:
     """
     Purpose:
-        Set header alg to none / None / NONE; keep empty signature segment.
-    Input:
-        ctx — token context
-        casing — exact alg string (none | None | NONE)
-    Output:
-        MutatedToken with empty signature segment (three-part ``h.p.``)
+        Set header alg to none / None / NONE.
+
+        - ``jwt.alg_none`` (casing ``none``): **stripped** signature — two-part
+          token ``h.p`` (no third segment). Differentiates from empty-sig sibling.
+        - ``jwt.alg_None`` / ``jwt.alg_NONE``: three-part with empty third segment.
     """
     header, payload, _sig = _base_parts(ctx)
     header["alg"] = casing
-    compact = encode_jwt(header, payload, "")
     tid = {
         "none": "jwt.alg_none",
         "None": "jwt.alg_None",
         "NONE": "jwt.alg_NONE",
     }.get(casing, "jwt.alg_none")
-    return _result(
-        tid,
-        ctx,
-        compact,
-        f"Set alg={casing!r} with empty signature",
-        {"alg": casing, "signature": "empty"},
-    )
+    if casing == "none":
+        # Stripped signature segment (two-part compact JWT).
+        compact = encode_jwt(header, payload, omit_signature_segment=True)
+        summary = f"Set alg={casing!r}; stripped signature segment (two-part token)"
+        meta: dict[str, Any] = {"alg": casing, "signature": "stripped"}
+    else:
+        compact = encode_jwt(header, payload, "")
+        summary = f"Set alg={casing!r} with empty signature segment"
+        meta = {"alg": casing, "signature": "empty"}
+    return _result(tid, ctx, compact, summary, meta)
 
 
 def mutate_alg_none_empty_sig(ctx: TokenContext) -> MutatedToken:
-    """alg=none with explicitly empty third segment (sibling of jwt.alg_none)."""
+    """
+    alg=none with explicitly empty third segment (``h.p.``).
+
+    Distinct from ``jwt.alg_none`` which emits a two-part stripped token.
+    """
     header, payload, _sig = _base_parts(ctx)
     header["alg"] = "none"
     compact = encode_jwt(header, payload, "")
@@ -122,51 +166,54 @@ def mutate_alg_none_empty_sig(ctx: TokenContext) -> MutatedToken:
         "jwt.alg_none_empty_sig",
         ctx,
         compact,
-        "Set alg='none' with empty signature segment",
+        "Set alg='none' with empty signature segment (three-part h.p.)",
         {"alg": "none", "signature": "empty"},
     )
 
 
 def mutate_alg_empty(ctx: TokenContext) -> MutatedToken:
-    """Set alg to empty string; preserve original signature."""
-    header, payload, sig = _base_parts(ctx)
-    header["alg"] = ""
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.alg_empty",
+    """Set alg to empty string; preserve original payload + signature segments."""
+
+    def _set(h: dict[str, Any]) -> None:
+        h["alg"] = ""
+
+    return _header_only(
         ctx,
-        compact,
-        "Set alg to empty string (signature unchanged)",
-        {"alg": ""},
+        "jwt.alg_empty",
+        summary="Set alg to empty string (payload+signature segments unchanged)",
+        metadata={"alg": ""},
+        mutate_header=_set,
     )
 
 
 def mutate_alg_missing(ctx: TokenContext) -> MutatedToken:
-    """Delete alg header claim; preserve original signature."""
-    header, payload, sig = _base_parts(ctx)
-    header.pop("alg", None)
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.alg_missing",
+    """Delete alg header claim; preserve original payload + signature segments."""
+
+    def _drop(h: dict[str, Any]) -> None:
+        h.pop("alg", None)
+
+    return _header_only(
         ctx,
-        compact,
-        "Removed alg header claim (signature unchanged)",
-        {"alg": None},
+        "jwt.alg_missing",
+        summary="Removed alg header claim (payload+signature segments unchanged)",
+        metadata={"alg": None},
+        mutate_header=_drop,
     )
 
 
 def mutate_alg_unknown(ctx: TokenContext) -> MutatedToken:
-    """Set alg to a non-standard value."""
-    header, payload, sig = _base_parts(ctx)
+    """Set alg to a non-standard value; preserve payload + signature segments."""
     fake = "TalosFakeAlg"
-    header["alg"] = fake
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.alg_unknown",
+
+    def _set(h: dict[str, Any]) -> None:
+        h["alg"] = fake
+
+    return _header_only(
         ctx,
-        compact,
-        f"Set alg={fake!r} (signature unchanged)",
-        {"alg": fake},
+        "jwt.alg_unknown",
+        summary=f"Set alg={fake!r} (payload+signature segments unchanged)",
+        metadata={"alg": fake},
+        mutate_header=_set,
     )
 
 
@@ -178,39 +225,43 @@ def mutate_alg_degrade(
 ) -> MutatedToken:
     """
     Purpose:
-        Algorithm degradation: rewrite header alg only; signature unchanged.
-    Input:
-        ctx — token context
-        target_alg — e.g. HS256 (display form; stored as given)
-        test_id — optional override; default jwt.alg_degrade.<from>_to_<to>
-    Output:
-        MutatedToken
+        Algorithm degradation: rewrite header ``alg`` only.
+
+    Hard rule (design KD15):
+        - re-encode **header** segment only
+        - keep **payload** segment byte-for-byte
+        - keep **signature** segment byte-for-byte
     """
-    header, payload, sig = _base_parts(ctx)
-    original = str(header.get("alg") or "unknown")
-    header["alg"] = target_alg
-    compact = encode_jwt(header, payload, sig)
-    from_norm = _normalize_alg_id(original)
+    original_alg = ctx.header.get("alg")
+    if original_alg is None:
+        original_display = "missing"
+    elif original_alg == "":
+        original_display = ""
+    else:
+        original_display = str(original_alg)
+
+    from_norm = _normalize_alg_id(original_alg)
     to_norm = _normalize_alg_id(target_alg)
     tid = test_id or f"jwt.alg_degrade.{from_norm}_to_{to_norm}"
-    return _result(
-        tid,
+
+    def _set_alg(h: dict[str, Any]) -> None:
+        h["alg"] = target_alg
+
+    return _header_only(
         ctx,
-        compact,
-        f"Degrade alg {original!r} → {target_alg!r} (signature unchanged)",
-        {
-            "from_alg": original,
+        tid,
+        summary=(
+            f"Degrade alg {original_display!r} → {target_alg!r} "
+            "(payload+signature segments unchanged)"
+        ),
+        metadata={
+            "from_alg": original_display if original_display != "missing" else None,
             "to_alg": target_alg,
             "signature_policy": "unchanged",
+            "payload_policy": "unchanged",
         },
+        mutate_header=_set_alg,
     )
-
-
-def _normalize_alg_id(alg: str) -> str:
-    """Normalize alg for test_id segments (lowercase alnum)."""
-    text = (alg or "unknown").strip().lower()
-    cleaned = "".join(ch for ch in text if ch.isalnum())
-    return cleaned or "unknown"
 
 
 # ------------------------------------------------------------------ #
@@ -371,15 +422,64 @@ def mutate_modify_sub(ctx: TokenContext, *, suffix: str = "-talos") -> MutatedTo
     )
 
 
+def _elevate_value(current: Any, ladder: list[Any]) -> Any | None:
+    """
+    Purpose:
+        Compute elevated claim value from a from→to ladder.
+    Output:
+        New value, or None if already at top / no change needed.
+    """
+    if not ladder or len(ladder) < 2:
+        return None
+    low, high = ladder[0], ladder[-1]
+
+    # List/array claims (e.g. roles: ["user"]): promote membership.
+    if isinstance(current, list):
+        # Already holds high privilege marker.
+        if high in current or (
+            isinstance(high, str)
+            and any(isinstance(x, str) and x.lower() == high.lower() for x in current)
+        ):
+            return None
+        elevated = list(current)
+        # Drop low-priv scalar if present; append high.
+        elevated = [
+            x
+            for x in elevated
+            if not (
+                x == low
+                or (isinstance(x, str) and isinstance(low, str) and x.lower() == low.lower())
+            )
+        ]
+        elevated.append(high)
+        return elevated
+
+    if current == high:
+        return None
+    if isinstance(current, str) and isinstance(high, str) and current.lower() == high.lower():
+        return None
+    if current == low or (
+        isinstance(current, str)
+        and isinstance(low, str)
+        and current.lower() == low.lower()
+    ):
+        return high
+    # Present but neither low nor high — still force high (claim elevation probe).
+    if current != high:
+        return high
+    return None
+
+
 def mutate_elevate_role(
     ctx: TokenContext,
     elevation_map: Optional[dict[str, list[Any]]] = None,
 ) -> MutatedToken:
     """
     Purpose:
-        Apply claim-elevation map: for each claim, if current value is the
-        first entry in the pair list, set it to the second (or last).
+        Apply claim-elevation map to matching payload claims.
         Default map elevates role/user→admin style claims when present.
+        Does **not** invent claims that were absent (generate skips when none
+        present). List-valued claims keep list shape (e.g. roles → […, admin]).
     """
     header, payload, sig = _base_parts(ctx)
     elev = elevation_map or default_claim_elevation_map()
@@ -387,27 +487,27 @@ def mutate_elevate_role(
     for claim, ladder in elev.items():
         if claim not in payload:
             continue
-        if not ladder or len(ladder) < 2:
+        if not isinstance(ladder, (list, tuple)) or len(ladder) < 2:
             continue
         current = payload[claim]
-        # Prefer mapping first→last when current matches first; else force last.
-        if current == ladder[0] or str(current).lower() == str(ladder[0]).lower():
-            payload[claim] = ladder[-1]
-            applied[claim] = {"from": current, "to": ladder[-1]}
-        elif current != ladder[-1]:
-            payload[claim] = ladder[-1]
-            applied[claim] = {"from": current, "to": ladder[-1]}
-    if not applied:
-        # Force at least one elevation target if map has role.
-        if "role" in elev and elev["role"]:
-            payload["role"] = elev["role"][-1]
-            applied["role"] = {"from": None, "to": elev["role"][-1]}
-    compact = encode_jwt(header, payload, sig)
+        new_val = _elevate_value(current, list(ladder))
+        if new_val is None:
+            continue
+        payload[claim] = new_val
+        applied[claim] = {"from": current, "to": new_val}
+    if applied:
+        compact = encode_jwt(header, payload, sig)
+        summary = f"Elevated claims: {applied}"
+    else:
+        # No semantic change — keep original compact token (avoid false
+        # re-encode diffs when claims are already elevated).
+        compact = ctx.raw_token
+        summary = "No claim elevation applied (already elevated or empty map)"
     return _result(
         "jwt.elevate_role",
         ctx,
         compact,
-        f"Elevated claims: {applied}",
+        summary,
         {"elevated": applied},
     )
 
@@ -473,42 +573,46 @@ def mutate_duplicate_claim_role(ctx: TokenContext) -> MutatedToken:
 
 
 def mutate_invalid_kid(ctx: TokenContext) -> MutatedToken:
-    header, payload, sig = _base_parts(ctx)
-    header["kid"] = f"talos-invalid-{secrets.token_hex(8)}"
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.invalid_kid",
+    kid = f"talos-invalid-{secrets.token_hex(8)}"
+
+    def _set(h: dict[str, Any]) -> None:
+        h["kid"] = kid
+
+    return _header_only(
         ctx,
-        compact,
-        f"Set kid to random value {header['kid']!r}",
-        {"kid": header["kid"]},
+        "jwt.invalid_kid",
+        summary=f"Set kid to random value {kid!r} (payload+signature unchanged)",
+        metadata={"kid": kid},
+        mutate_header=_set,
     )
 
 
 def mutate_empty_kid(ctx: TokenContext) -> MutatedToken:
-    header, payload, sig = _base_parts(ctx)
-    header["kid"] = ""
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.empty_kid",
+    def _set(h: dict[str, Any]) -> None:
+        h["kid"] = ""
+
+    return _header_only(
         ctx,
-        compact,
-        "Set kid to empty string",
-        {"kid": ""},
+        "jwt.empty_kid",
+        summary="Set kid to empty string (payload+signature unchanged)",
+        metadata={"kid": ""},
+        mutate_header=_set,
     )
 
 
 def mutate_huge_kid(ctx: TokenContext, *, size: int = _HUGE_KID_BYTES) -> MutatedToken:
-    header, payload, sig = _base_parts(ctx)
     n = max(1, min(size, 16 * 1024))
-    header["kid"] = "K" * n
-    compact = encode_jwt(header, payload, sig)
-    return _result(
-        "jwt.huge_kid",
+    kid = "K" * n
+
+    def _set(h: dict[str, Any]) -> None:
+        h["kid"] = kid
+
+    return _header_only(
         ctx,
-        compact,
-        f"Set kid to {n}-byte string",
-        {"kid_bytes": n},
+        "jwt.huge_kid",
+        summary=f"Set kid to {n}-byte string (payload+signature unchanged)",
+        metadata={"kid_bytes": n},
+        mutate_header=_set,
     )
 
 

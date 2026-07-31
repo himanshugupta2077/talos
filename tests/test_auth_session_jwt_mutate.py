@@ -140,29 +140,37 @@ def test_decode_jwt_header_invalid() -> None:
 
 def test_alg_none_casings() -> None:
     ctx = _ctx()
-    for casing, tid in [
-        ("none", "jwt.alg_none"),
-        ("None", "jwt.alg_None"),
-        ("NONE", "jwt.alg_NONE"),
-    ]:
+    # jwt.alg_none (casing none): stripped two-part token.
+    mut_none = mutate_alg_none(ctx, casing="none")
+    assert mut_none.test_id == "jwt.alg_none"
+    assert decode_jwt_header(mut_none.new_raw_token)["alg"] == "none"
+    assert len(mut_none.new_raw_token.split(".")) == 2
+    assert mut_none.metadata.get("signature") == "stripped"
+    assert mut_none.new_header_or_cookie_value.startswith("Bearer ")
+
+    # Casing variants use empty third segment (three-part).
+    for casing, tid in [("None", "jwt.alg_None"), ("NONE", "jwt.alg_NONE")]:
         mut = mutate_alg_none(ctx, casing=casing)
         assert mut.test_id == tid
         h = decode_jwt_header(mut.new_raw_token)
         assert h is not None
         assert h["alg"] == casing
-        # Empty signature segment still present as third part.
         parts = mut.new_raw_token.split(".")
         assert len(parts) == 3
         assert parts[2] == ""
-        # Scheme preserved.
         assert mut.new_header_or_cookie_value.startswith("Bearer ")
 
 
-def test_alg_none_empty_sig_via_dispatch() -> None:
+def test_alg_none_empty_sig_distinct_from_alg_none() -> None:
+    """jwt.alg_none (stripped) must differ from jwt.alg_none_empty_sig (h.p.)."""
     ctx = _ctx()
-    mut = apply_mutation(ctx, "jwt.alg_none_empty_sig")
-    assert mut.test_id == "jwt.alg_none_empty_sig"
-    assert mut.new_raw_token.endswith(".")
+    stripped = apply_mutation(ctx, "jwt.alg_none")
+    empty_sig = apply_mutation(ctx, "jwt.alg_none_empty_sig")
+    assert stripped.new_raw_token != empty_sig.new_raw_token
+    assert len(stripped.new_raw_token.split(".")) == 2
+    assert empty_sig.new_raw_token.endswith(".")
+    assert len(empty_sig.new_raw_token.split(".")) == 3
+    assert empty_sig.metadata.get("signature") == "empty"
 
 
 def test_alg_empty_missing_unknown() -> None:
@@ -183,13 +191,47 @@ def test_alg_degrade_keeps_signature() -> None:
     ctx = _ctx(token)
     mut = mutate_alg_degrade(ctx, "HS256")
     assert mut.test_id == "jwt.alg_degrade.rs256_to_hs256"
-    h, _p, s = split_compact_jwt(mut.new_raw_token)
+    _h, _p, s = split_compact_jwt(mut.new_raw_token)
     assert decode_jwt_header(mut.new_raw_token)["alg"] == "HS256"
     assert s == sig
     # Payload unchanged segment-wise after re-encode of same payload.
     orig_payload = decode_jwt_payload(token)
     assert decode_jwt_payload(mut.new_raw_token) == orig_payload
     assert mut.metadata.get("signature_policy") == "unchanged"
+
+
+def test_header_only_preserves_spaced_payload_bytes() -> None:
+    """
+    Design hard rule: degradation / header-only mutators must keep the
+    original payload segment byte-for-byte (even non-canonical JSON).
+    """
+    from talos.auth_session.jwt_codec import b64url_encode, join_compact_jwt
+    from talos.auth_session.types import JwtAnalyzer
+
+    h_raw = '{ "alg" : "RS256" , "typ" : "JWT" }'
+    p_raw = '{ "sub" : "u1", "role" : "user" }'
+    sig = "SigKeepMeByteForByte"
+    token = join_compact_jwt(
+        b64url_encode(h_raw.encode("utf-8")),
+        b64url_encode(p_raw.encode("utf-8")),
+        sig,
+    )
+    ctx = JwtAnalyzer().detect(f"Bearer {token}")
+    assert ctx is not None
+    _h0, p0, s0 = split_compact_jwt(token)
+
+    for tid in (
+        "jwt.alg_degrade.rs256_to_hs256",
+        "jwt.alg_empty",
+        "jwt.alg_missing",
+        "jwt.alg_unknown",
+        "jwt.empty_kid",
+        "jwt.invalid_kid",
+    ):
+        mut = apply_mutation(ctx, tid)
+        _h1, p1, s1 = split_compact_jwt(mut.new_raw_token)
+        assert p1 == p0, f"{tid} re-encoded payload segment"
+        assert s1 == s0, f"{tid} changed signature segment"
 
 
 def test_invalid_signature_changes_sig() -> None:
@@ -240,6 +282,26 @@ def test_claim_mutations() -> None:
 
     m_elev = apply_mutation(ctx, "jwt.elevate_role")
     assert decode_jwt_payload(m_elev.new_raw_token)["role"] == "admin"
+
+
+def test_elevate_role_list_claim_keeps_list_shape() -> None:
+    token = _make_token({"alg": "HS256"}, {"roles": ["user", "read"]})
+    ctx = _ctx(token)
+    mut = apply_mutation(ctx, "jwt.elevate_role")
+    roles = decode_jwt_payload(mut.new_raw_token)["roles"]
+    assert isinstance(roles, list)
+    assert "admin" in roles
+    assert "user" not in roles
+
+
+def test_elevate_role_already_admin_no_false_force() -> None:
+    token = _make_token({"alg": "HS256"}, {"role": "admin"})
+    ctx = _ctx(token)
+    mut = apply_mutation(ctx, "jwt.elevate_role")
+    assert mut.metadata.get("elevated") == {}
+    assert "No claim elevation" in mut.mutation_summary
+    # No-op must not invent a re-encoded token (false positive risk later).
+    assert mut.new_raw_token == ctx.raw_token
 
 
 def test_duplicate_claim_role() -> None:
