@@ -2,6 +2,41 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## URL Sink Discovery Phase 2 — structure discovery (encoded / JWT / HTML / JS)
+
+**Shipped:** 2026-07-31 · schema remains **v53** (no column bump).
+
+Second slice of the multi-PR plan (`docs/URL Sink Discovery Multi-PR Implementation Plan.md`):
+**PR-4 + PR-5**. Expands the parameter inventory so nested, encoded, JWT, header,
+and HTML/JS surfaces carry the same passive `url_features` as Phase 1 request
+params — still **characterization only** (no IV probes, no candidates rewrite).
+
+| Surface | Detail |
+|---------|--------|
+| Encoded JSON | Base64 / base64url / URL-encoded JSON in form, query, JSON string leaves, multipart fields → walk leaves with **full dotted paths** (`config.oauth.metadata.url`); depth/size/leaf caps |
+| JWT claims | Virtual params `jwt.jku` / `jwt.iss` / `jwt.aud` (and URL-shaped `kid`) from Authorization / cookies / other JWT values; inventory-only decode (no verify) |
+| Headers | Expanded allowlist (`content-location`, `link`, `destination`, `x-rewrite-url`, `x-forwarded-server`, …) + **value-first** capture of custom headers whose values look like network resources |
+| HTML / JS | Hidden `<input type=hidden>` + `__NEXT_DATA__` / `window.__CONFIG__` / common `apiUrl` assigns → `location=response`; gate = name category **or** score ≥ 45; de-dupe; no external script fetch |
+| Wiring | `extract_flow_params` expands structure; FlowWorker also calls `extract_response_url_sink_params` after response body is available |
+
+```bash
+# Still passive — no new CLI. Example inventory rows after capture:
+# config.oauth.metadata.url  location=body     (from base64 form field)
+# jwt.jku                    location=header   (from Authorization Bearer)
+# redirect_url               location=response (from HTML hidden input)
+# SELECT name, location, url_features FROM parameters WHERE name LIKE 'jwt.%';
+```
+
+**Explicitly out of this ship (later phases):** IV URL canary probes + fingerprinting,
+`network_resource_sink` capabilities, candidate rewrite (ssrf/open_redirect value-first),
+Control Panel / CLI filters, endpoint rollups.
+
+**Files:** `talos/url_sink/{decode,jwt_claims,html_js_extract}.py`,
+`talos/projects/parameters.py`, `talos/worker/worker.py`,
+`tests/test_url_sink_structure.py`, docs (architecture, about-talos, cheat sheet).
+
+---
+
 ## URL Sink Discovery Phase 1 — passive core (value + name + inventory)
 
 **Shipped:** 2026-07-31 · schema **v52 → v53** (`parameters.url_features`).

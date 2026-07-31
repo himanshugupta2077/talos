@@ -9,24 +9,35 @@ Purpose:
     This is **characterization and prioritization**, not exploit confirmation.
     No OAST chains, no Findings, no freeform shell.
 
-Architecture (Phase 1 — passive core):
-    Endpoint Intelligence (parameters.py)
-        → value_classify  (does the value look like a network resource?)
-        → name_classify   (does the name suggest a sink category?)
-        → features.compose_url_features  → parameters.url_features JSON
-        → improved semantic_type=url for URL-shaped values
+Architecture:
+    Phase 1 — passive core:
+        Endpoint Intelligence (parameters.py)
+            → value_classify  (does the value look like a network resource?)
+            → name_classify   (does the name suggest a sink category?)
+            → features.compose_url_features  → parameters.url_features JSON
+            → improved semantic_type=url for URL-shaped values
 
-    Later phases (not in Phase 1):
-        structure discovery, IV URL probes, capabilities, candidate rewrite.
+    Phase 2 — structure discovery (still mostly passive):
+        → decode.py          base64 / URL-encoded JSON unwrap + dotted paths
+        → jwt_claims.py      URL-shaped JWT claims as virtual jwt.* params
+        → html_js_extract.py hidden forms + JS/bootstrap config inventory
+        → parameters.py      header allowlist + value-first custom headers
+        → FlowWorker         response inventory after body available
 
-Public exports (Phase 1):
+    Later phases (not yet):
+        IV URL probes, capabilities, candidate rewrite, operator UI filters.
+
+Public exports:
     classify_value, UrlValueFeatures
     classify_name, NameClassification
     compose_url_features, NETWORK_RESOURCE_SCORE_THRESHOLD
+    try_unwrap_json, walk_unwrapped_leaves
+    extract_url_claim_params, JwtClaimParam
+    extract_html_js_params, HtmlJsParamCandidate
     NAME_CATEGORIES, all catalog category constants
 
-Dependencies: stdlib only (re, dataclasses, ipaddress, urllib.parse)
-Data flow: raw name/value → pure classifiers → url_features dict → parameters table
+Dependencies: stdlib only in pure classifiers (re, dataclasses, ipaddress, …)
+Data flow: raw name/value / HTML → pure helpers → url_features → parameters table
 Side effects: None in pure classifiers; DB write only when wired by parameters.upsert.
 """
 
@@ -45,10 +56,26 @@ from talos.url_sink.catalog import (
     NAME_CATEGORIES,
     ALL_CATEGORY_NAMES,
 )
+from talos.url_sink.decode import (
+    UnwrapResult,
+    try_unwrap_json,
+    walk_unwrapped_leaves,
+)
 from talos.url_sink.features import (
     NETWORK_RESOURCE_SCORE_THRESHOLD,
     compose_url_features,
     empty_url_features,
+)
+from talos.url_sink.html_js_extract import (
+    HtmlJsParamCandidate,
+    extract_html_js_params,
+    passes_inventory_gate,
+)
+from talos.url_sink.jwt_claims import (
+    JwtClaimParam,
+    decode_jwt_payload,
+    extract_jwt_token,
+    extract_url_claim_params,
 )
 from talos.url_sink.name_classify import (
     NameClassification,
@@ -86,4 +113,15 @@ __all__ = [
     "compose_url_features",
     "empty_url_features",
     "NETWORK_RESOURCE_SCORE_THRESHOLD",
+    # Phase 2 structure discovery
+    "UnwrapResult",
+    "try_unwrap_json",
+    "walk_unwrapped_leaves",
+    "JwtClaimParam",
+    "extract_jwt_token",
+    "decode_jwt_payload",
+    "extract_url_claim_params",
+    "HtmlJsParamCandidate",
+    "extract_html_js_params",
+    "passes_inventory_gate",
 ]

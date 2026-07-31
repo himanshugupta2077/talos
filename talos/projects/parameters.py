@@ -11,8 +11,12 @@ Purpose:
         - Query parameters
         - Body parameters  (JSON nested, URL-encoded form, multipart fields,
                            XML element names, GraphQL variables)
-        - Security-relevant request headers
+        - Security-relevant request headers (+ URL-ish allowlist; value-first
+          for custom headers whose values look like network resources)
         - Request cookies
+        - Structure discovery (Phase 2): base64/URL-encoded JSON unwrap, JWT
+          URL claims as virtual params
+        - Response inventory (Phase 2): HTML hidden fields + JS config URL keys
 
     For each parameter it infers a semantic type identifying security-relevant
     values: UUID, JWT, email, ObjectID, URL, IP, hash, timestamp, filename,
@@ -21,14 +25,15 @@ Purpose:
     Passive reflection intelligence is also collected: when a parameter value
     appears in the response body, the reflection location and encoding are noted.
 
-    URL Sink Discovery (Phase 1): each extracted parameter carries a composed
-    ``url_features`` document (value classifier + name category catalog) that is
-    persisted on the parameters table for inventory and later IV/candidate use.
+    URL Sink Discovery:
+        Phase 1 — each extracted parameter carries composed ``url_features``
+        Phase 2 — encoded/JWT/header/HTML/JS surfaces expand the inventory
 
 Dependencies: dataclasses, json, re, sqlite3, urllib.parse, uuid, xml.etree.ElementTree,
               talos.url_sink
 Data flow:
-    FlowWorker -> extract_flow_params() -> upsert_endpoint_params() -> parameters table
+    FlowWorker -> extract_flow_params() [+ extract_response_url_sink_params]
+              -> upsert_endpoint_params() -> parameters table
 Side effects: None in extraction layer; DB write in upsert layer.
 """
 
@@ -40,7 +45,13 @@ from dataclasses import dataclass
 from urllib.parse import parse_qsl, quote
 from xml.etree import ElementTree
 
-from talos.url_sink.features import compose_url_features
+from talos.url_sink.decode import try_unwrap_json, walk_unwrapped_leaves
+from talos.url_sink.features import (
+    NETWORK_RESOURCE_SCORE_THRESHOLD,
+    compose_url_features,
+)
+from talos.url_sink.html_js_extract import extract_html_js_params
+from talos.url_sink.jwt_claims import extract_url_claim_params
 from talos.url_sink.name_classify import classify_name
 from talos.url_sink.value_classify import UrlValueFeatures, classify_value
 
@@ -51,18 +62,26 @@ from talos.url_sink.value_classify import UrlValueFeatures, classify_value
 
 _MAX_EXAMPLE_VALUES: int = 5
 
-# Security-relevant request headers.  These are direct attack surface for
-# BAC, SSRF, injection, header smuggling, etc.
+# Cap nested leaves expanded from one encoded blob on the request path.
+_MAX_STRUCTURE_LEAVES_PER_PARAM: int = 50
+
+# Security-relevant + URL-ish request headers (PR-4 expanded allowlist).
+# These are direct attack surface for BAC, SSRF, injection, header smuggling, etc.
 _SECURITY_HEADERS: frozenset[str] = frozenset({
     "authorization",
     "x-api-key",
     "x-forwarded-for",
     "x-forwarded-host",
+    "x-forwarded-server",
     "x-original-url",
+    "x-rewrite-url",
     "x-http-method-override",
     "origin",
     "referer",
     "host",
+    "content-location",
+    "link",
+    "destination",
     "x-tenant",
     "x-user",
     "x-user-id",
@@ -79,6 +98,47 @@ _SECURITY_HEADERS: frozenset[str] = frozenset({
     "x-auth-token",
     "x-access-token",
     "proxy-authorization",
+})
+
+# Headers never captured via value-first discovery (noise / transport / body CT).
+_HEADER_VALUE_FIRST_SKIP: frozenset[str] = frozenset({
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "accept-charset",
+    "cache-control",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "date",
+    "expect",
+    "if-match",
+    "if-modified-since",
+    "if-none-match",
+    "if-range",
+    "if-unmodified-since",
+    "keep-alive",
+    "pragma",
+    "range",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "user-agent",
+    "via",
+    "warning",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-user",
+    "sec-gpc",
+    "dnt",
+    "upgrade-insecure-requests",
+    "priority",
 })
 
 # ---------------------------------------------------------------------------
@@ -127,8 +187,11 @@ class ExtractedParam:
         type, sample value, URL sink features, and the capture-context
         role/module for tracking.
     Fields:
-        name          - Parameter name as supplied by the client.
-        location      - 'path' | 'query' | 'body' | 'header' | 'cookie'
+        name          - Parameter name as supplied by the client (or virtual
+                        path such as jwt.jku / config.oauth.metadata.url /
+                        js.__NEXT_DATA__.apiUrl).
+        location      - 'path' | 'query' | 'body' | 'header' | 'cookie' |
+                        'response' (HTML/JS response inventory, Phase 2)
         param_type    - 'int' | 'float' | 'bool' | 'string' | 'unknown'
         semantic_type - UUID, JWT, email, objectid, url, ip, hash, timestamp,
                         filename, boolean, integer, float, array, string, unknown
@@ -185,8 +248,12 @@ def extract_flow_params(
     """
     Purpose:
         Extract all observable parameters from one captured flow across every
-        input surface: path, query, body (all content types), security-relevant
-        headers, and cookies.
+        request input surface: path, query, body (all content types),
+        security-relevant + value-first headers, and cookies.
+
+        Phase 2 structure discovery also expands:
+            - base64 / URL-encoded JSON nested leaves (full dotted paths)
+            - JWT URL-shaped claims as virtual ``jwt.<claim>`` params
     Input:
         query           - Cleaned query string (no leading '?').
         request_body    - Raw request body bytes, or None.
@@ -197,7 +264,7 @@ def extract_flow_params(
         role_id         - Active role UUID at capture time.
         module_id       - Active module UUID at capture time.
     Output:
-        List of ExtractedParam. May be empty.
+        List of ExtractedParam. May be empty. Deduped by (name, location).
     Side effects: None.
     """
     cookies = request_cookies or {}
@@ -214,7 +281,57 @@ def extract_flow_params(
     params.extend(_stamp(
         _extract_cookie_params(cookies, request_headers), role_id, module_id
     ))
-    return params
+    # Structure discovery: encoded JSON leaves + JWT claims (request surfaces).
+    params = _expand_structure_discovery(params)
+    params = _stamp(params, role_id, module_id)
+    return _dedupe_params(params)
+
+
+def extract_response_url_sink_params(
+    response_body: bytes | None,
+    response_headers: dict | None = None,
+    *,
+    role_id: str = "",
+    module_id: str = "",
+    score_threshold: int = NETWORK_RESOURCE_SCORE_THRESHOLD,
+) -> list[ExtractedParam]:
+    """
+    Purpose:
+        Phase 2 response inventory: hidden form fields and JS/bootstrap config
+        URL keys from HTML responses, gated by name category or value score.
+    Input:
+        response_body    - Raw response body bytes (HTML / HTML shell).
+        response_headers - Response headers (used for content-type gate).
+        role_id / module_id — capture context.
+        score_threshold  - Inventory gate (default possible_network_resource).
+    Output:
+        ExtractedParam list with location=``response``. May be empty.
+    Side effects: None.
+    Risk control:
+        Only HTML-ish content-types (or missing CT with ``<`` body marker).
+        De-dupe by name; score/name gate inside html_js_extract.
+    """
+    if not response_body:
+        return []
+    headers = response_headers or {}
+    ct = _header_value(headers, "content-type").lower()
+    body_text = response_body.decode("utf-8", errors="replace")
+    if not _is_html_ish_response(ct, body_text):
+        return []
+
+    candidates = extract_html_js_params(
+        body_text,
+        score_threshold=score_threshold,
+    )
+    results: list[ExtractedParam] = []
+    for cand in candidates:
+        results.append(_make_param(
+            cand.name,
+            "response",
+            cand.sample_value,
+            extra_evidence=list(cand.evidence),
+        ))
+    return _stamp(results, role_id, module_id)
 
 
 def detect_reflections(
@@ -505,6 +622,7 @@ def _make_param(
     *,
     param_type: str | None = None,
     semantic_type: str | None = None,
+    extra_evidence: list[str] | tuple[str, ...] | None = None,
 ) -> ExtractedParam:
     """
     Purpose:
@@ -513,6 +631,8 @@ def _make_param(
     Input:
         name / location / sample_value — identity fields.
         param_type / semantic_type — optional overrides (e.g. array, filename).
+        extra_evidence — optional tokens merged into url_features.evidence
+                         (e.g. decode:base64, jwt_claim, html_hidden).
     Output:
         ExtractedParam with url_features JSON populated.
     Side effects: None.
@@ -530,6 +650,11 @@ def _make_param(
     features = compose_url_features(
         name=name, value=value, value_features=vf, name_features=nf,
     )
+    if extra_evidence:
+        features = dict(features)
+        merged = list(features.get("evidence") or [])
+        merged.extend(extra_evidence)
+        features["evidence"] = list(dict.fromkeys(merged))
     return ExtractedParam(
         name=name,
         location=location,
@@ -678,18 +803,44 @@ def _extract_body_params(body: bytes | None, content_type: str) -> list[Extracte
 def _extract_header_params(headers: dict) -> list[ExtractedParam]:
     """
     Purpose:
-        Extract security-relevant request headers as parameters.
-        Only headers in _SECURITY_HEADERS are captured; routine headers
-        (Accept, User-Agent, Content-Length) are excluded.
+        Extract security-relevant / URL-ish request headers as parameters.
+
+        Capture rules (Phase 2):
+            1. Allowlist: headers in ``_SECURITY_HEADERS`` (expanded URL-ish set).
+            2. Value-first: any other header whose value classifies as a network
+               resource (score ≥ threshold) — custom URL headers without names
+               on the allowlist still surface.
+
         The 'cookie' header is never duplicated here — handled separately.
+        Routine transport headers (Accept, User-Agent, Content-Length, …) are
+        skipped via ``_HEADER_VALUE_FIRST_SKIP``.
     """
     results: list[ExtractedParam] = []
+    seen: set[str] = set()
     for key, raw_value in headers.items():
         norm_key = str(key).lower()
-        if norm_key not in _SECURITY_HEADERS:
+        if norm_key == "cookie" or norm_key in seen:
             continue
         value = _coerce_header(raw_value)
-        results.append(_make_param(norm_key, "header", value))
+        allowlisted = norm_key in _SECURITY_HEADERS
+        if not allowlisted:
+            if norm_key in _HEADER_VALUE_FIRST_SKIP:
+                continue
+            # Value-first: only when the value looks like a network resource.
+            vf = classify_value(value)
+            if not (
+                vf.possible_network_resource
+                or vf.score >= NETWORK_RESOURCE_SCORE_THRESHOLD
+                or vf.possible_url_value
+            ):
+                continue
+            extra = ["header_value_first"]
+        else:
+            extra = None
+        seen.add(norm_key)
+        results.append(_make_param(
+            norm_key, "header", value, extra_evidence=extra,
+        ))
     return results
 
 
@@ -1106,3 +1257,155 @@ def _coerce_header(raw: object) -> str:
     if isinstance(raw, list):
         return str(raw[0]) if raw else ""
     return str(raw) if raw is not None else ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 structure discovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _expand_structure_discovery(
+    params: list[ExtractedParam],
+) -> list[ExtractedParam]:
+    """
+    Purpose:
+        From already-extracted request params, emit additional inventory rows for:
+            - Nested leaves inside base64 / URL-encoded JSON scalar values
+            - URL-shaped JWT claims (``jwt.jku``, ``jwt.iss``, …)
+    Input:
+        params — primary extract list (path/query/body/header/cookie).
+    Output:
+        Original params plus expansions (caller dedupes).
+    Side effects: None.
+    Risk control:
+        Per-value leaf cap; skip huge / non-string samples; no recursive re-unwrap
+        of virtual jwt.* names.
+    """
+    if not params:
+        return params
+    extra: list[ExtractedParam] = []
+    for param in params:
+        value = param.sample_value or ""
+        if not value:
+            continue
+        # Encoded JSON structure walk (query/body/header/cookie/path values).
+        if not param.name.startswith("jwt."):
+            extra.extend(_expand_encoded_json_param(param))
+        # JWT claims from any JWT-shaped sample.
+        extra.extend(_expand_jwt_param(param))
+    if not extra:
+        return params
+    return list(params) + extra
+
+
+def _expand_encoded_json_param(param: ExtractedParam) -> list[ExtractedParam]:
+    """
+    Purpose:
+        If ``param.sample_value`` is base64/URL-encoded JSON, walk nested leaves
+        with full dotted paths under the outer parameter name.
+    Output:
+        Zero or more ExtractedParam with location inherited from parent.
+    Side effects: None.
+    """
+    unwrap = try_unwrap_json(param.sample_value)
+    if unwrap.parsed is None:
+        return []
+    leaves = walk_unwrapped_leaves(
+        unwrap.parsed,
+        prefix=param.name,
+        max_leaves=_MAX_STRUCTURE_LEAVES_PER_PARAM,
+    )
+    if not leaves:
+        return []
+    decode_ev = list(unwrap.evidence)
+    results: list[ExtractedParam] = []
+    for leaf_name, leaf_val in leaves:
+        if leaf_name == param.name:
+            continue
+        results.append(_make_param(
+            leaf_name,
+            param.location,
+            leaf_val,
+            extra_evidence=decode_ev + [f"parent:{param.name}"],
+        ))
+    return results
+
+
+def _expand_jwt_param(param: ExtractedParam) -> list[ExtractedParam]:
+    """
+    Purpose:
+        Emit virtual ``jwt.<claim>`` params for URL-shaped claims in a JWT value.
+    Output:
+        Zero or more ExtractedParam (location = parent location).
+    Side effects: None.
+    """
+    # Avoid re-expanding already-virtual claim params.
+    if param.name.startswith("jwt."):
+        return []
+    claims = extract_url_claim_params(
+        param.sample_value,
+        parent_name=param.name,
+        parent_location=param.location,
+    )
+    results: list[ExtractedParam] = []
+    for claim in claims:
+        results.append(_make_param(
+            claim.name,
+            param.location,
+            claim.sample_value,
+            extra_evidence=list(claim.evidence),
+        ))
+    return results
+
+
+def _dedupe_params(params: list[ExtractedParam]) -> list[ExtractedParam]:
+    """
+    Purpose:
+        Keep first sighting of each (name, location); prefer richer url_features
+        score when a later duplicate is stronger.
+    Side effects: None.
+    """
+    best: dict[tuple[str, str], ExtractedParam] = {}
+    order: list[tuple[str, str]] = []
+    for p in params:
+        key = (p.name, p.location)
+        if key not in best:
+            best[key] = p
+            order.append(key)
+            continue
+        # Prefer higher url_features score on collision.
+        try:
+            old_score = int(json.loads(best[key].url_features or "{}").get("score") or 0)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            old_score = 0
+        try:
+            new_score = int(json.loads(p.url_features or "{}").get("score") or 0)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            new_score = 0
+        if new_score > old_score:
+            best[key] = p
+    return [best[k] for k in order]
+
+
+def _is_html_ish_response(content_type: str, body_text: str) -> bool:
+    """
+    Purpose:
+        Gate response inventory to HTML (or HTML shells with missing CT).
+    Side effects: None.
+    """
+    ct = (content_type or "").lower()
+    if "html" in ct or "xhtml" in ct:
+        return True
+    if ct and not any(t in ct for t in ("text/", "application/xhtml", "application/xml")):
+        # Explicit non-HTML JSON/image/etc. — skip (avoid scanning APIs as HTML).
+        if any(t in ct for t in ("json", "javascript", "image/", "octet-stream", "pdf")):
+            return False
+    # Missing or generic CT: look for a light HTML marker.
+    sample = body_text.lstrip()[:2000].lower()
+    return (
+        "<html" in sample
+        or "<!doctype html" in sample
+        or "<input" in sample
+        or "__next_data__" in sample
+        or "window.__" in sample
+    )

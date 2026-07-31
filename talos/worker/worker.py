@@ -74,7 +74,12 @@ from talos.passive.worker import maybe_enqueue_passive_scan
 from talos.projects.endpoints import NormalizedFlowURL, normalize_flow_url
 from talos.projects.model import Project
 from talos.projects.outscope import load_prefix_set
-from talos.projects.parameters import extract_flow_params, upsert_endpoint_params, detect_reflections
+from talos.projects.parameters import (
+    extract_flow_params,
+    extract_response_url_sink_params,
+    upsert_endpoint_params,
+    detect_reflections,
+)
 from talos.projects.policy import upsert_auto_priority
 from talos.projects.policy import update_endpoint_qualification
 from talos.projects.policy_score import compute_auto_priority, load_score_config
@@ -745,6 +750,22 @@ def _persist_db(
                     role_id=flow.get("role_id", ""),
                     module_id=flow.get("module_id", ""),
                 )
+                # Phase 2: HTML hidden fields + JS config URL inventory from
+                # the response (read-only; location=response; score/name gated).
+                try:
+                    response_params = extract_response_url_sink_params(
+                        flow.get("response_body"),
+                        flow.get("response_headers", {}),
+                        role_id=flow.get("role_id", ""),
+                        module_id=flow.get("module_id", ""),
+                    )
+                    if response_params:
+                        params = list(params) + list(response_params)
+                except Exception:
+                    logger.debug(
+                        "Response URL-sink inventory failed — flow_id=%s — skipping",
+                        flow.get("flow_id"),
+                    )
                 if params:
                     # Passive reflection detection: check if any param value
                     # appears in the response body.  Non-fatal if it fails.

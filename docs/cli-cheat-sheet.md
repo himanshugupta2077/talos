@@ -1785,7 +1785,16 @@ counts.
 
 Populated automatically by the FlowWorker during capture. No dedicated CLI.
 
-Surfaces: path, query, body (JSON/form/multipart/XML/GraphQL), security headers, cookies. Semantic types and passive reflection are stored on the `parameters` table.
+Surfaces: path, query, body (JSON/form/multipart/XML/GraphQL), security +
+URL-ish headers (plus value-first custom URL headers), cookies, and
+**response** inventory (HTML hidden fields + JS/bootstrap config URL keys).
+
+**URL Sink Discovery** (`talos.url_sink`, schema v53 `parameters.url_features`):
+value + name classifiers; Phase 2 also unwraps base64/URL-encoded JSON into
+dotted paths, emits virtual `jwt.*` claims when URL-shaped, and gates HTML/JS
+candidates by name category or score ≥ 45. No dedicated `talos url-sink` CLI yet.
+
+Semantic types and passive reflection are stored on the `parameters` table.
 
 Inspect via `talos input-validation show <parameter_uuid>` or endpoint export.
 

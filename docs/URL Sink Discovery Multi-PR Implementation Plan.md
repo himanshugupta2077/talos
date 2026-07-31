@@ -472,14 +472,18 @@ Each phase = **mergeable vertical slice** combining 2–3 PRs, with tests green 
 
 **Acceptance**
 
-- [ ] Base64 + URL-encoded JSON walked with caps
-- [ ] JWT claims emitted as virtual params when URL-shaped
-- [ ] Header discovery value-first + expanded allowlist
-- [ ] Hidden form + JS config extraction with de-dupe / score gate
-- [ ] Regression: existing extraction tests still pass
-- [ ] Docs: architecture EI section updated
+- [x] Base64 + URL-encoded JSON walked with caps
+- [x] JWT claims emitted as virtual params when URL-shaped
+- [x] Header discovery value-first + expanded allowlist
+- [x] Hidden form + JS config extraction with de-dupe / score gate
+- [x] Regression: existing extraction tests still pass
+- [x] Docs: architecture EI section updated
 
 **Suggested AI prompt focus:** “Expand EI extraction surfaces for URL sinks; do not touch candidate scoring yet.”
+
+**Shipped:** 2026-07-31 on `main` (schema remains v53). Package modules:
+`talos/url_sink/{decode,jwt_claims,html_js_extract}.py`; wiring in
+`talos/projects/parameters.py` + FlowWorker response inventory.
 
 ---
 

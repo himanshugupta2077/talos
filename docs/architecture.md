@@ -191,17 +191,26 @@ talos
     │             path params  (dynamic segments from normalized path)
     │             query params
     │             body params  (JSON nested, form, multipart, XML, GraphQL variables)
-    │             security headers  (Authorization, X-Forwarded-For, Origin, X-Tenant,
-    │                                X-CSRF-Token, X-HTTP-Method-Override, etc.)
+    │             security + URL-ish headers  (Authorization, Referer, Origin,
+    │                                Content-Location, Link, Destination,
+    │                                X-Original-URL, X-Rewrite-URL, X-Forwarded-*, …)
+    │             value-first custom headers (value classifies as network resource)
     │             cookies
+    │             response inventory (location=response): HTML hidden inputs + JS/bootstrap config
     │           Infer semantic types: uuid | jwt | email | objectid | url | ip |
     │                                 hash | timestamp | filename | boolean |
     │                                 integer | float | array | string
-    │           URL Sink Discovery (passive, talos.url_sink — Phase 1):
+    │           URL Sink Discovery (passive, talos.url_sink — Phases 1–2):
     │             value classifier (URL/host/IP/path/UNC/schemes; email ignored)
     │             name category catalog (redirect, webhook, remote_fetch, …)
     │             compose url_features → parameters.url_features (JSON, schema v53)
     │             value-first scoring: abc=https://… surfaces as network resource
+    │             Phase 2 structure discovery:
+    │               base64 / URL-encoded JSON unwrap → full dotted paths
+    │                 (e.g. config.oauth.metadata.url)
+    │               JWT URL claims → virtual jwt.jku / jwt.iss / jwt.aud / …
+    │               HTML hidden + __NEXT_DATA__ / window.__CONFIG__ / apiUrl assigns
+    │                 (score ≥ 45 or name category; de-duped; no external script fetch)
     │             (IV probes / capabilities / candidates land in later phases)
     │           Passive Reflection Intelligence (same-flow):
     │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)
@@ -1797,8 +1806,9 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.projects.access_cli` | Argument parsing + output for role/module (incl. show/rename/delete) and access commands | State management |
 | `talos.projects.cli` | Argument parsing + output formatting for project commands | State management |
 | `talos.projects.endpoints` | Canonicalize raw paths/queries into stable endpoint identities | DB writes, access inference |
-| `talos.projects.parameters` | Extract query/body parameters from flows; upsert per-endpoint parameter inventory with type inference, deduplication, and passive `url_features` | DB schema changes beyond inventory |
-| `talos.url_sink` | URL Sink Discovery (Phase 1): pure value/name classifiers + `url_features` compose; inventory only | IV probes, Findings, candidate scoring (later phases) |
+| `talos.projects.parameters` | Extract request surfaces + Phase 2 structure discovery (encoded JSON, JWT claims, value-first headers) and response HTML/JS inventory; upsert with type inference, dedupe, and passive `url_features` | DB schema changes beyond inventory; IV mutation |
+| `talos.url_sink` | URL Sink Discovery (Phases 1–2): value/name classifiers, `url_features` compose, encoded-JSON decode, JWT claim extract, HTML/JS inventory helpers | IV probes, Findings, candidate scoring (later phases) |
+
 | `talos.url_identity` | Shared URL identity: scheme, hostname, ports, canonical authority/origin, path normalization | Scope policy, I/O |
 | `talos.projects.scope_io` | Atomic scope file/bulk-text parse (one prefix per line; `#` comments) | Storage, matching |
 | `talos.projects.scope_cli` | `project scope add\|remove\|list\|clear\|import` | Registry writes (via manager) |
@@ -2158,6 +2168,9 @@ AI Layer Phase E (v52): `ai_draft_findings`. Markdown KB is filesystem-only
 (`~/.talos/ai/kb/*.md` — not SQLite).
 URL Sink Discovery Phase 1 (v53): `parameters.url_features` JSON (passive value +
 name classification via `talos.url_sink`).
+URL Sink Discovery Phase 2 (still v53): structure discovery expands inventory —
+encoded JSON dotted paths, JWT virtual claims, expanded/value-first headers,
+HTML/JS response params (`location=response`); no schema bump.
 Passive Source Intelligence tables arrive at v39; v40 adds virtual-document
 parent/logical columns for source maps and HTML extractors; v42 adds
 cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,

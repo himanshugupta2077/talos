@@ -5,12 +5,14 @@ Purpose:
     Compose the stable ``url_features`` document stored on parameter inventory
     rows by merging value classification + name classification.
 
-    Rules (Phase 1):
+    Rules:
         - Value dominates name for score (e.g. abc=https://… ≈ 90–100).
         - Email addresses stay non-network-resource.
         - Name alone can set category + modest score (15–35), never invents
           a confirmed sink.
         - possible_network_resource = score >= NETWORK_RESOURCE_SCORE_THRESHOLD.
+        - Phase 2 may append structure evidence (decode:*, jwt_claim, html_hidden,
+          js_config, header_value_first) via parameters._make_param.
 
 Dependencies: talos.url_sink.value_classify, talos.url_sink.name_classify
 Data flow: name + sample_value → url_features dict

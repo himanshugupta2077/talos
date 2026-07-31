@@ -362,19 +362,25 @@ Talos extracts every observable input surface for each captured flow:
 | Location | What is extracted |
 |---|---|
 | `path` | Dynamic path segments resolved from normalized path pattern |
-| `query` | All query string parameters |
-| `body` | JSON (nested), URL-encoded form, multipart fields, XML leaf elements, GraphQL variables |
-| `header` | Security-relevant headers: Authorization, X-Forwarded-For, Origin, X-Tenant, X-CSRF-Token, X-HTTP-Method-Override, etc. |
+| `query` | All query string parameters; base64/URL-encoded JSON values are also walked into dotted leaves |
+| `body` | JSON (nested), URL-encoded form, multipart fields, XML leaf elements, GraphQL variables; encoded JSON leaves expanded |
+| `header` | Security + URL-ish allowlist (Authorization, Referer, Origin, Content-Location, Link, Destination, X-Original-URL, X-Rewrite-URL, X-Forwarded-*, …) **and** value-first custom headers whose values look like network resources |
 | `cookie` | All request cookies as individual parameters |
+| `response` | HTML hidden `<input>` fields + JS/bootstrap config URL keys (`__NEXT_DATA__`, `window.__CONFIG__`, common `apiUrl`/`baseUrl` assigns) — gated by name category or value score |
 
 Headers and cookies are full attack surface — for BAC especially, headers are
-often more important than query parameters.
+often more important than query parameters. Response inventory is
+**read-only characterization** (not a request injection surface for IV).
+
+JWT-bearing values (Authorization, cookies, …) may also emit virtual parameters
+such as `jwt.jku` / `jwt.iss` / `jwt.aud` when claims are URL-shaped (inventory
+only; payload decoded without verification).
 
 ### Per parameter, Talos stores:
 
 ```
 name
-location          (path | query | body | header | cookie)
+location          (path | query | body | header | cookie | response)
 param_type        (int | float | bool | string | unknown)
 semantic_type     (uuid | jwt | email | objectid | url | ip | hash | timestamp |
                    filename | boolean | integer | float | array | string)
@@ -386,7 +392,7 @@ is_reflected      (boolean: value seen in response)
 reflection_count
 reflection_locations  (html | json | xml | javascript | other)
 reflection_encoding   (raw | html_encoded | url_encoded)
-url_features      (JSON: passive URL Sink Discovery — value/name classification)
+url_features      (JSON: passive URL Sink Discovery — value/name + structure evidence)
 ```
 
 ### URL Sink Discovery (passive)
@@ -394,6 +400,10 @@ url_features      (JSON: passive URL Sink Discovery — value/name classificatio
 Parameters may carry a `url_features` document (schema v53+) produced by
 `talos.url_sink`: value-first detection of URLs/hostnames/IPs/paths plus a
 categorized name catalog (redirect, webhook, remote_fetch, remote_asset, …).
+Phase 2 also expands **structure discovery** (encoded JSON dotted paths, JWT
+URL claims, HTML/JS response sinks) with evidence tokens such as
+`decode:base64`, `jwt_claim`, `html_hidden`, `js_config`.
+
 This is characterization only — not exploit confirmation. Random-named values
 like `abc=https://cdn.example/x` still score as network resources.
 
