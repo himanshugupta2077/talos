@@ -92,6 +92,11 @@ from talos.projects.value_reflection import (
 from talos.proxy.queue import FlowQueue
 from talos.proxy.scope import any_rule_matches
 from talos.url_identity import UrlIdentityError, parse_request_url
+from talos.url_sink.config import (
+    UrlSinkRuntimeConfig,
+    load_url_sink_config_for_project,
+    set_process_url_sink_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +192,15 @@ class FlowWorker:
             self._cross_flow_cfg = CrossFlowConfig()
         set_process_cross_flow_config(self._cross_flow_cfg)
         self._last_cross_flow_cfg_reload_at: float = time.monotonic()
+
+        # URL Sink Discovery: passive + HTML/JS inventory knobs (defaults on).
+        try:
+            self._url_sink_cfg: UrlSinkRuntimeConfig = load_url_sink_config_for_project(
+                project=project,
+            )
+        except Exception:
+            self._url_sink_cfg = UrlSinkRuntimeConfig()
+        set_process_url_sink_config(self._url_sink_cfg)
 
     def start(self) -> None:
         """
@@ -491,17 +505,38 @@ class FlowWorker:
                 exc_info=True,
             )
             return
-        if new_cfg == self._cross_flow_cfg:
+        if new_cfg != self._cross_flow_cfg:
+            old = self._cross_flow_cfg
+            self._cross_flow_cfg = new_cfg
+            set_process_cross_flow_config(new_cfg)
+            logger.info(
+                "Cross-flow config reloaded — enabled=%s→%s feed_iv=%s→%s",
+                old.enabled,
+                new_cfg.enabled,
+                old.feed_iv,
+                new_cfg.feed_iv,
+            )
+        # Same reload cadence for url_sink kill-switches (cheap; shared timer).
+        try:
+            us_cfg = load_url_sink_config_for_project(project=self._project)
+        except Exception:
             return
-        old = self._cross_flow_cfg
-        self._cross_flow_cfg = new_cfg
-        set_process_cross_flow_config(new_cfg)
+        if us_cfg == self._url_sink_cfg:
+            return
+        old_us = self._url_sink_cfg
+        self._url_sink_cfg = us_cfg
+        set_process_url_sink_config(us_cfg)
         logger.info(
-            "Cross-flow config reloaded — enabled=%s→%s feed_iv=%s→%s",
-            old.enabled,
-            new_cfg.enabled,
-            old.feed_iv,
-            new_cfg.feed_iv,
+            "URL sink config reloaded — passive=%s→%s html_js=%s→%s "
+            "iv_probes=%s→%s threshold=%s→%s",
+            old_us.passive_enabled,
+            us_cfg.passive_enabled,
+            old_us.html_js_enabled,
+            us_cfg.html_js_enabled,
+            old_us.iv_probes_enabled,
+            us_cfg.iv_probes_enabled,
+            old_us.score_threshold,
+            us_cfg.score_threshold,
         )
 
     def _maybe_log_stats(self) -> None:
@@ -752,20 +787,24 @@ def _persist_db(
                 )
                 # Phase 2: HTML hidden fields + JS config URL inventory from
                 # the response (read-only; location=response; score/name gated).
-                try:
-                    response_params = extract_response_url_sink_params(
-                        flow.get("response_body"),
-                        flow.get("response_headers", {}),
-                        role_id=flow.get("role_id", ""),
-                        module_id=flow.get("module_id", ""),
-                    )
-                    if response_params:
-                        params = list(params) + list(response_params)
-                except Exception:
-                    logger.debug(
-                        "Response URL-sink inventory failed — flow_id=%s — skipping",
-                        flow.get("flow_id"),
-                    )
+                # Gated by url_sink.passive.enabled + url_sink.html_js.enabled.
+                us_cfg = getattr(self, "_url_sink_cfg", None) or UrlSinkRuntimeConfig()
+                if us_cfg.passive_enabled and us_cfg.html_js_enabled:
+                    try:
+                        response_params = extract_response_url_sink_params(
+                            flow.get("response_body"),
+                            flow.get("response_headers", {}),
+                            role_id=flow.get("role_id", ""),
+                            module_id=flow.get("module_id", ""),
+                            score_threshold=int(us_cfg.score_threshold),
+                        )
+                        if response_params:
+                            params = list(params) + list(response_params)
+                    except Exception:
+                        logger.debug(
+                            "Response URL-sink inventory failed — flow_id=%s — skipping",
+                            flow.get("flow_id"),
+                        )
                 if params:
                     # Passive reflection detection: check if any param value
                     # appears in the response body.  Non-fatal if it fails.

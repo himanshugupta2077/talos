@@ -143,7 +143,8 @@ def test_extract_form_base64_json_dotted_path() -> None:
         request_headers={"content-type": "application/x-www-form-urlencoded"},
     )
     by_name = {p.name: p for p in params}
-    assert "config" in by_name
+    # Opaque base64 parent is dropped after leaf expansion (QA-USD-17).
+    assert "config" not in by_name
     assert "config.oauth.metadata.url" in by_name
     nested = by_name["config.oauth.metadata.url"]
     assert nested.location == "body"
@@ -162,7 +163,8 @@ def test_extract_query_url_encoded_json() -> None:
         request_headers={},
     )
     names = {p.name for p in params}
-    assert "payload" in names
+    # Opaque JSON-encoded parent dropped when leaves exist (QA-USD-17).
+    assert "payload" not in names
     assert any(n.endswith("redirect.url") for n in names)
     nested = next(p for p in params if p.name.endswith("redirect.url"))
     assert nested.location == "query"
@@ -180,7 +182,8 @@ def test_extract_json_string_leaf_base64_expand() -> None:
         request_headers={"content-type": "application/json"},
     )
     names = {p.name for p in params}
-    assert "wrap" in names
+    # Opaque base64 string leaf parent dropped after expansion (QA-USD-17).
+    assert "wrap" not in names
     assert "wrap.callback_url" in names
     p = next(x for x in params if x.name == "wrap.callback_url")
     assert p.semantic_type == "url"
@@ -332,6 +335,22 @@ def test_html_js_hidden_and_bootstrap() -> None:
     assert any(
         c.sample_value == "https://hooks.example/events" for c in cands
     )
+
+
+def test_window_next_data_assignment_extracts() -> None:
+    """QA-USD-08: window.__NEXT_DATA__ = {…} assignment form (not only script id=)."""
+    html = """
+    <html><body>
+    <script>
+    window.__NEXT_DATA__ = {"props":{"pageProps":{"apiUrl":"https://api.example/v2"}}};
+    </script>
+    </body></html>
+    """
+    cands = extract_html_js_params(html)
+    assert any("apiUrl" in c.name for c in cands)
+    hit = next(c for c in cands if "apiUrl" in c.name)
+    assert "https://api.example/v2" in hit.sample_value
+    assert hit.score >= 90
 
 
 def test_inventory_gate_rejects_static_cdn_noise_without_name() -> None:

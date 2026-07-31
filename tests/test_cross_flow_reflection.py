@@ -891,6 +891,23 @@ def test_parameter_intel_in_builtin_defaults():
     assert "parameter_intel.cross_flow.scan_time_budget_ms" in schema_keys
 
 
+def test_url_sink_in_builtin_defaults():
+    """QA-USD-09: plan url_sink.* knobs present in layered config defaults."""
+    assert "url_sink" in BUILTIN_DEFAULTS
+    us = BUILTIN_DEFAULTS["url_sink"]
+    assert us["passive"]["enabled"] is True
+    assert us["html_js"]["enabled"] is True
+    assert us["iv_probes"]["enabled"] is True
+    assert us["score_threshold"] == 45
+    assert "url_sink" in CONFIG_SECTIONS
+    assert "url_sink" in SECTION_META
+    leafs = [p for p in KNOWN_LEAF_PATHS if p.startswith("url_sink.")]
+    assert "url_sink.passive.enabled" in leafs
+    assert "url_sink.score_threshold" in leafs
+    schema_keys = {e["key"] for e in SETTING_SCHEMA if e["section"] == "url_sink"}
+    assert "url_sink.iv_probes.enabled" in schema_keys
+
+
 def test_effective_config_has_parameter_intel(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -899,6 +916,10 @@ def test_effective_config_has_parameter_intel(tmp_path: Path):
     eff = mgr.load()
     assert eff.parameter_intel.cross_flow.enabled is False
     assert eff.parameter_intel.cross_flow.scan_hot_set_k == 2000
+    assert eff.url_sink.passive_enabled is True
+    assert eff.url_sink.html_js_enabled is True
+    assert eff.url_sink.iv_probes_enabled is True
+    assert eff.url_sink.score_threshold == 45
 
 
 def test_normalize_proxy_and_replay_shapes():

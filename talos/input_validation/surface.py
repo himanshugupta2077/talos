@@ -45,6 +45,8 @@ LOCATION_QUERY = "query"
 LOCATION_BODY = "body"
 LOCATION_HEADER = "header"
 LOCATION_COOKIE = "cookie"
+# Inventory-only (HTML/JS response discovery) — never a request injection surface.
+LOCATION_RESPONSE = "response"
 
 KNOWN_LOCATIONS: frozenset[str] = frozenset({
     LOCATION_PATH,
@@ -53,6 +55,12 @@ KNOWN_LOCATIONS: frozenset[str] = frozenset({
     LOCATION_HEADER,
     LOCATION_COOKIE,
 })
+
+# Virtual / structure-only name prefixes that must not be injected as real headers.
+# JWT claim inventory emits jwt.jku / jwt.iss / … (parent Authorization is separate).
+INVENTORY_ONLY_NAME_PREFIXES: tuple[str, ...] = (
+    "jwt.",
+)
 
 # Finer body/surface kinds (stored as observed.surface.kind when useful).
 SURFACE_PATH = "path"
@@ -88,6 +96,8 @@ PHASE_SURFACE = "surface"
 SKIP_AUTH_ARTIFACT = "auth_artifact"
 SKIP_HOP_BY_HOP_HEADER = "hop_by_hop_header"
 SKIP_UNSUPPORTED_SURFACE = "unsupported_surface"
+# Inventory-only rows (location=response, virtual jwt.* claims) — not injectable.
+SKIP_INVENTORY_ONLY = "inventory_only"
 # HTTP client / h11 rejects the value before the request reaches the server.
 # IV characterizes application handling — skip transport-illegal probes.
 SKIP_TRANSPORT_INVALID_HEADER = "transport_invalid_header"
@@ -271,6 +281,29 @@ def is_auth_artifact(
     return False
 
 
+def is_inventory_only_param(*, location: str, name: str) -> bool:
+    """
+    Purpose:
+        True when a parameter is Endpoint Intelligence inventory only and must
+        not be treated as a request injection surface by IV.
+
+        Covers:
+            - location=response (HTML/JS discovery rows)
+            - virtual JWT claim names (jwt.jku, jwt.iss, …) — claim rewrite is
+              not implemented; injecting a literal jwt.* header is non-representative
+    Side effects: None.
+    """
+    loc = (location or "").strip().lower()
+    n = (name or "").strip()
+    if loc == LOCATION_RESPONSE:
+        return True
+    n_low = n.lower()
+    for prefix in INVENTORY_ONLY_NAME_PREFIXES:
+        if n_low.startswith(prefix):
+            return True
+    return False
+
+
 def should_skip_param(
     *,
     location: str,
@@ -283,6 +316,7 @@ def should_skip_param(
     """
     Purpose:
         Unified skip gate for scheduling: hop-by-hop headers always skipped;
+        inventory-only rows (response / virtual jwt.*) always skipped;
         auth artifacts skipped unless include_auth_artifacts is True.
     Output:
         SkipDecision.
@@ -290,6 +324,24 @@ def should_skip_param(
     """
     loc = (location or "").strip().lower()
     n = (name or "").strip()
+
+    if is_inventory_only_param(location=loc, name=n):
+        if loc == LOCATION_RESPONSE:
+            detail = (
+                f"Parameter location=response ({n}) is HTML/JS inventory only "
+                f"and is not a request injection surface."
+            )
+        else:
+            detail = (
+                f"Parameter {loc}/{n} is a virtual inventory row (e.g. JWT claim "
+                f"extract). IV does not rewrite production tokens or invent "
+                f"literal claim headers; parent surface is characterized separately."
+            )
+        return SkipDecision(
+            skip=True,
+            reason=SKIP_INVENTORY_ONLY,
+            detail=detail,
+        )
 
     if loc == LOCATION_HEADER and is_hop_by_hop_header(n):
         return SkipDecision(

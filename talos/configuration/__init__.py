@@ -47,6 +47,7 @@ from talos.configuration.model import (
     ProxyConfigSection,
     SchedulerConfigSection,
     SourceInfo,
+    UrlSinkConfigSection,
     ValueSource,
 )
 
@@ -65,6 +66,7 @@ __all__ = [
     "ProxyConfigSection",
     "SchedulerConfigSection",
     "SourceInfo",
+    "UrlSinkConfigSection",
     "ValueSource",
     "load_effective_config",
 ]

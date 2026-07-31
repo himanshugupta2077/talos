@@ -124,6 +124,10 @@ def test_candidates_help_documents_filters() -> None:
     assert "--min-score" in text
     assert "--capability" in text
     assert "--host" in text
+    # QA-USD-10 / QA-USD-14: help lists new Phase 4 attacks + NRS capability
+    assert "webhook_abuse" in text
+    assert "oauth_redirect" in text
+    assert "network_resource_sink" in text
 
 
 def test_export_parameter_help_documents_format() -> None:
@@ -151,6 +155,8 @@ def test_run_help_documents_budget() -> None:
             assert e.code in (0, None)
     text = out.getvalue() + err.getvalue()
     assert "--budget" in text
+    # QA-USD-15: run help mentions url_sink_probes / canary path
+    assert "url_sink" in text.lower()
 
 
 def test_status_includes_confidence(manager: MagicMock, db_path: Path) -> None:

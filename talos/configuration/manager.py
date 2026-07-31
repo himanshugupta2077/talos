@@ -61,6 +61,7 @@ from talos.configuration.model import (
     ParameterIntelConfigSection,
     ProxyConfigSection,
     SchedulerConfigSection,
+    UrlSinkConfigSection,
     ValueSource,
 )
 
@@ -493,6 +494,30 @@ class ConfigurationManager:
             canary_ttl_hours=int(cf_raw.get("canary_ttl_hours", 24)),
         )
 
+        us_raw = merged.get("url_sink") or {}
+        if not isinstance(us_raw, dict):
+            us_raw = {}
+        passive_raw = us_raw.get("passive") or {}
+        html_js_raw = us_raw.get("html_js") or {}
+        iv_probes_raw = us_raw.get("iv_probes") or {}
+        if not isinstance(passive_raw, dict):
+            passive_raw = {}
+        if not isinstance(html_js_raw, dict):
+            html_js_raw = {}
+        if not isinstance(iv_probes_raw, dict):
+            iv_probes_raw = {}
+        try:
+            score_threshold = int(us_raw.get("score_threshold", 45))
+        except (TypeError, ValueError):
+            score_threshold = 45
+        score_threshold = max(0, min(100, score_threshold))
+        url_sink = UrlSinkConfigSection(
+            passive_enabled=bool(passive_raw.get("enabled", True)),
+            html_js_enabled=bool(html_js_raw.get("enabled", True)),
+            iv_probes_enabled=bool(iv_probes_raw.get("enabled", True)),
+            score_threshold=score_threshold,
+        )
+
         return EffectiveConfig(
             proxy=ProxyConfigSection(
                 upstream_enabled=enabled,
@@ -516,6 +541,7 @@ class ConfigurationManager:
                 rules=tuple(rules),
             ),
             parameter_intel=ParameterIntelConfigSection(cross_flow=cross_flow),
+            url_sink=url_sink,
             raw=merged,
             sources=sources,
             global_path=str(self.global_path),

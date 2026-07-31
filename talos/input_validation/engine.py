@@ -1225,12 +1225,18 @@ def _passive_param_intel(
                 uf = {}
         out["url_features"] = uf
         from talos.input_validation.url_sink_probes import url_sink_is_warranted
+        from talos.url_sink.config import ensure_process_url_sink_config
 
-        out["url_sink_warranted"] = url_sink_is_warranted(
-            url_features=uf,
-            semantic_type=out["semantic_type"],
-            param_name=name,
-        )
+        us_cfg = ensure_process_url_sink_config(Path(db_path).parent)
+        if not us_cfg.iv_probes_enabled:
+            out["url_sink_warranted"] = False
+        else:
+            out["url_sink_warranted"] = url_sink_is_warranted(
+                url_features=uf,
+                semantic_type=out["semantic_type"],
+                param_name=name,
+                score_threshold=int(us_cfg.score_threshold),
+            )
     except sqlite3.Error as exc:
         _log.debug("[iv] passive param intel read failed: %s", exc)
     return out

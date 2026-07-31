@@ -374,6 +374,24 @@ class TestAuthSkip:
         d = should_skip_param(location="header", name="x-tenant")
         assert not d.skip
 
+    def test_response_location_skipped_inventory_only(self) -> None:
+        """QA-USD-05: location=response is inventory-only, never IV-scheduled."""
+        from talos.input_validation.surface import SKIP_INVENTORY_ONLY
+
+        d = should_skip_param(location="response", name="redirect_url")
+        assert d.skip
+        assert d.reason == SKIP_INVENTORY_ONLY
+
+    def test_jwt_virtual_claim_skipped_inventory_only(self) -> None:
+        """QA-USD-06: virtual jwt.* claims must not inject literal headers."""
+        from talos.input_validation.surface import SKIP_INVENTORY_ONLY
+
+        d = should_skip_param(location="header", name="jwt.jku")
+        assert d.skip
+        assert d.reason == SKIP_INVENTORY_ONLY
+        d2 = should_skip_param(location="header", name="jwt.iss")
+        assert d2.skip
+
     def test_is_auth_artifact_jwt_cookie(self) -> None:
         assert is_auth_artifact(
             location="cookie", name="id", semantic_type="jwt"

@@ -161,7 +161,26 @@ Planner action `url_sink_probes` runs when passive Endpoint Intelligence warrant
 - `name_category` / `name_categories` in `{redirect, webhook, remote_fetch, remote_asset, import_metadata, infrastructure, network_probe, oauth}`, **or**
 - `semantic_type=url`
 
-Gated by the **types** analysis toggle (no separate config column yet). Runs even under standard **early stop** when warranted so network-resource params still get canaries. Skipped when `observed.url_sink` is already known or probes already completed.
+Gated by the **types** analysis toggle **and** layered config
+`url_sink.iv_probes.enabled` (default true). Score gate uses
+`url_sink.score_threshold` (default 45). Runs even under standard **early stop**
+when warranted so network-resource params still get canaries. Skipped when
+`observed.url_sink` is already known or probes already completed.
+
+**Inventory-only (never IV-scheduled):**
+
+- `location=response` — HTML/JS response discovery rows (inject would be a no-op)
+- Virtual `jwt.*` claim params — claim rewrite is not implemented; parent
+  Authorization remains an auth artifact unless `--include-auth-artifacts`
+
+**Config**
+
+```bash
+talos config set url_sink.iv_probes.enabled false --project
+talos config set url_sink.score_threshold 50 --project
+talos config set url_sink.html_js.enabled false --project   # FlowWorker response inventory
+talos config set url_sink.passive.enabled false --project   # master passive kill-switch (worker)
+```
 
 **Canaries (benign only)**
 

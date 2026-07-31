@@ -520,10 +520,16 @@ enums include `webhook_abuse` / `oauth_redirect`.
 
 **Acceptance**
 
-- [ ] CLI show/export includes url_features + network_resource_sink detail
-- [ ] Control panel IV profile/candidates surfaces new fields
-- [ ] architecture.md + cli-cheat-sheet + about-talos consistency
+- [x] CLI show/export includes url_features + network_resource_sink detail
+- [ ] Control panel IV profile/candidates surfaces new fields (optional)
+- [x] architecture.md + cli-cheat-sheet + about-talos consistency
 - [ ] Optional endpoint/app rollup if scheduled
+
+**Shipped (CLI polish, 2026-07-31):** `talos endpoint params`; IV show/export
+`url_features` + `observed.url_sink` table sections; inventory-only IV skip for
+`location=response` and virtual `jwt.*`; `url_sink.*` layered config knobs;
+help text for `webhook_abuse` / `oauth_redirect` / `network_resource_sink`.
+See `docs/updates.md` Phase 5 + QA fix-up and `docs/URL-Sink-Discovery-QA-Issues.md`.
 
 **Suggested AI prompt focus:** “Expose URL sink intelligence in CLI and control panel; finish documentation.”
 

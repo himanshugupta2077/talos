@@ -183,7 +183,11 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     # ------------------------------------------------------------------
     p_run = sub.add_parser(
         "run",
-        help="Schedule Input Validation jobs for the project (or a scoped subset).",
+        help=(
+            "Schedule Input Validation jobs for the project (or a scoped subset). "
+            "When types analysis is on and passive url_features warrant, also "
+            "schedules url_sink_probes (benign talos-canary.invalid canaries)."
+        ),
     )
     _add_scope_args(p_run)
     p_run.add_argument(
@@ -208,7 +212,9 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         help=(
             "Set planner budget tier (persists as probe_strategy) then schedule: "
             "quick|standard|deep|exhaustive. Same as "
-            "'config --probe-strategy TIER' before run."
+            "'config --probe-strategy TIER' before run. "
+            "Also enables url_sink_probes when types analysis is on and "
+            "passive url_features warrant (benign talos-canary.invalid canaries)."
         ),
     )
 
@@ -460,8 +466,9 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         "--attack",
         metavar="NAME",
         help=(
-            "Filter by attack name: xss, sqli, open_redirect, ssrf, hpp, "
-            "header_injection, path_traversal, mass_assignment."
+            "Filter by attack name: xss, sqli, open_redirect, ssrf, "
+            "webhook_abuse, oauth_redirect, hpp, header_injection, "
+            "path_traversal, mass_assignment."
         ),
     )
     p_cands.add_argument(
@@ -487,8 +494,9 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         "--capability",
         metavar="FLAG",
         help=(
-            "Require capability flag (e.g. reflective_input, "
-            "stored_reflection, html_context)."
+            "Require capability flag (e.g. network_resource_sink, "
+            "reflective_input, stored_reflection, html_context, "
+            "redirect_sink, fetch_sink, webhook_sink)."
         ),
     )
     p_cands.add_argument(
@@ -1176,6 +1184,15 @@ def _cmd_show(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(
         f"  Examples   : {', '.join(str(e) for e in profile['examples']) or '(none)'}"
     )
+    # Passive URL Sink Discovery inventory (schema v53) — always show when present.
+    uf = profile.get("url_features")
+    if isinstance(uf, dict) and uf:
+        from talos.input_validation.synthesize import format_url_features_lines
+
+        print()
+        print("  URL Sink inventory (passive url_features):")
+        for line in format_url_features_lines(uf):
+            print(f"    {line}")
     print()
 
     # Synthesized intelligence profile (Module 3+11) — preferred summary view.
@@ -1800,7 +1817,7 @@ def _cmd_export_parameter(manager: ProjectManager, args: argparse.Namespace) -> 
             SELECT p.id, p.name, e.host, e.method, e.normalized_path,
                    p.location, p.param_type, p.semantic_type, p.seen_count,
                    p.example_values, p.is_reflected, p.reflection_count,
-                   e.id AS endpoint_id
+                   e.id AS endpoint_id, p.url_features
             FROM parameters p
             JOIN endpoints e ON e.id = p.endpoint_id
             WHERE p.id = ?
@@ -1823,7 +1840,7 @@ def _cmd_export_parameter(manager: ProjectManager, args: argparse.Namespace) -> 
                     SELECT p.id, p.name, e.host, e.method, e.normalized_path,
                            p.location, p.param_type, p.semantic_type, p.seen_count,
                            p.example_values, p.is_reflected, p.reflection_count,
-                           e.id AS endpoint_id
+                           e.id AS endpoint_id, p.url_features
                     FROM parameters p
                     JOIN endpoints e ON e.id = p.endpoint_id
                     WHERE p.name = ? AND p.location = ? AND e.host = ?
@@ -1856,6 +1873,14 @@ def _cmd_export_parameter(manager: ProjectManager, args: argparse.Namespace) -> 
         param_dict = None
         if p_row is not None:
             param_dict = {k: p_row[k] for k in p_row.keys()}
+            # Parse url_features JSON for structured export when present.
+            if param_dict is not None and "url_features" in param_dict:
+                raw_uf = param_dict.get("url_features")
+                if isinstance(raw_uf, str):
+                    try:
+                        param_dict["url_features"] = json.loads(raw_uf or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        param_dict["url_features"] = {}
         payload = {
             "export_type": "parameter",
             "param_uuid": probe_uuid,
@@ -1886,7 +1911,11 @@ def _cmd_export_parameter(manager: ProjectManager, args: argparse.Namespace) -> 
         return
 
     from talos.input_validation.candidates import format_candidates_lines
-    from talos.input_validation.synthesize import format_profile_summary_lines
+    from talos.input_validation.synthesize import (
+        format_profile_summary_lines,
+        format_url_features_lines,
+        format_url_sink_lines,
+    )
 
     lines: list[str] = []
     lines.append("# Input Validation — Parameter Export")
@@ -1910,12 +1939,41 @@ def _cmd_export_parameter(manager: ProjectManager, args: argparse.Namespace) -> 
         lines.append(
             f"**Example Values:** {', '.join(str(e) for e in ex_list) or '(none)'}"
         )
+        # Passive URL Sink inventory (schema v53)
+        uf_raw = None
+        try:
+            uf_raw = p_row["url_features"]
+        except (IndexError, KeyError):
+            uf_raw = None
+        uf_doc: dict = {}
+        if uf_raw:
+            try:
+                parsed = json.loads(uf_raw) if isinstance(uf_raw, str) else uf_raw
+                if isinstance(parsed, dict):
+                    uf_doc = parsed
+            except (json.JSONDecodeError, TypeError):
+                uf_doc = {}
+        if uf_doc:
+            lines.append("")
+            lines.append("## URL Sink inventory (passive `url_features`)")
+            lines.append("")
+            for uline in format_url_features_lines(uf_doc):
+                lines.append(f"- {uline}")
     else:
         lines.append(f"**Param UUID:** `{probe_uuid}`")
     lines.append(f"**Total Probes:** {len(probe_records)}")
     lines.append("")
 
     if intel:
+        # Dedicated url_sink section when canaries ran (also in summary lines).
+        obs = intel.get("observed") or {}
+        us_doc = obs.get("url_sink") if isinstance(obs, dict) else None
+        if isinstance(us_doc, dict) and us_doc:
+            lines.append("## URL Sink canaries (`observed.url_sink`)")
+            lines.append("")
+            for uline in format_url_sink_lines(us_doc):
+                lines.append(f"- {uline}")
+            lines.append("")
         lines.append("## Intelligence Profile")
         lines.append("")
         lines.append(

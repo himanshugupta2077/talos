@@ -1654,7 +1654,10 @@ talos input-validation config
 # Surfaces (Module 9): path, query, body (JSON/form/multipart/XML/GraphQL), header, cookie
 # URL sink (Phase 3): when passive url_features warrants, planner adds url_sink_probes
 #   (benign talos-canary.invalid canaries → observed.url_sink; no Findings yet)
-# Operator path (Module 12): run --budget → show → candidates (no SQL required)
+#   Kill-switch: talos config set url_sink.iv_probes.enabled false --project
+#   Inventory-only rows (location=response, virtual jwt.*) are never scheduled.
+# Operator path (Module 12): endpoint params → run --budget → show → candidates
+talos endpoint params <endpoint_id> --network-resource
 talos input-validation run --budget standard
 talos input-validation run
 talos input-validation run --host api.example.com
@@ -1800,12 +1803,25 @@ URL-ish headers (plus value-first custom URL headers), cookies, and
 
 **URL Sink Discovery** (`talos.url_sink`, schema v53 `parameters.url_features`):
 value + name classifiers; Phase 2 also unwraps base64/URL-encoded JSON into
-dotted paths, emits virtual `jwt.*` claims when URL-shaped, and gates HTML/JS
-candidates by name category or score ≥ 45. No dedicated `talos url-sink` CLI yet.
+dotted paths, emits virtual `jwt.*` claims when URL-shaped (inventory only —
+not IV-injected), and gates HTML/JS candidates by name category or score ≥ 45
+(`url_sink.score_threshold`). Opaque encoded parents are dropped after leaf
+expansion. Config: `url_sink.passive.enabled`, `url_sink.html_js.enabled`,
+`url_sink.iv_probes.enabled`, `url_sink.score_threshold`.
 
 Semantic types and passive reflection are stored on the `parameters` table.
 
-Inspect via `talos input-validation show <parameter_uuid>` or endpoint export.
+```bash
+# Browse inventory after capture (Phase 5)
+talos endpoint params <endpoint_id>
+talos endpoint params <endpoint_id> --min-score 45 --network-resource
+talos endpoint params <endpoint_id> --location response --format json
+talos endpoint export <endpoint_id>   # params table: score / NRS / categories
+
+# IV show/export include url_features + observed.url_sink blocks
+talos input-validation show <parameter_uuid>
+talos input-validation export parameter <parameter_uuid>
+```
 
 ### IV capabilities & attack candidates (Module 11)
 

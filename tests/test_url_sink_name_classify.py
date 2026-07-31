@@ -88,6 +88,13 @@ def test_nested_metadata_leaf() -> None:
     )
 
 
+def test_redirect_url_primary_is_redirect_not_oauth() -> None:
+    """QA-USD-16: classic redirect_url primary category is redirect, not oauth."""
+    c = classify_name("redirect_url")
+    assert c.name_category == CATEGORY_REDIRECT
+    assert CATEGORY_REDIRECT in (c.name_categories or [])
+
+
 def test_redirect_uri_oauth_primary() -> None:
     c = classify_name("redirect_uri")
     assert CATEGORY_OAUTH in c.name_categories

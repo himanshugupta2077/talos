@@ -72,6 +72,19 @@ BUILTIN_DEFAULTS: dict = {
             "canary_ttl_hours": 24,
         },
     },
+    # URL Sink Discovery (talos.url_sink + IV url_sink_probes). Safe defaults on.
+    "url_sink": {
+        "passive": {
+            "enabled": True,  # value/name classify + structure inventory
+        },
+        "html_js": {
+            "enabled": True,  # response HTML/JS inventory (score-gated)
+        },
+        "iv_probes": {
+            "enabled": True,  # benign canaries when passive warrants (IV types gate)
+        },
+        "score_threshold": 45,  # possible_network_resource / inventory gate
+    },
 }
 
 # Top-level sections exposed as first-class CLI resources.
@@ -82,6 +95,7 @@ CONFIG_SECTIONS: tuple[str, ...] = (
     "attack",
     "http",
     "parameter_intel",
+    "url_sink",
 )
 
 # Dot-path keys that operators commonly get/set (for help and validation).
@@ -108,6 +122,10 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "parameter_intel.cross_flow.scan_time_budget_ms",
     "parameter_intel.cross_flow.max_body_scan_bytes",
     "parameter_intel.cross_flow.canary_ttl_hours",
+    "url_sink.passive.enabled",
+    "url_sink.html_js.enabled",
+    "url_sink.iv_probes.enabled",
+    "url_sink.score_threshold",
 )
 
 # Machine-readable presentation + type metadata for Control Panel / automation.
@@ -142,6 +160,13 @@ SECTION_META: dict[str, dict] = {
         "description": (
             "Passive parameter intelligence, including cross-flow / stored "
             "reflection indexing for XSS prioritization evidence."
+        ),
+    },
+    "url_sink": {
+        "label": "URL Sink Discovery",
+        "description": (
+            "Passive URL/hostname inventory (talos.url_sink) and optional IV "
+            "benign canary probes (url_sink_probes). Kill-switches and score gate."
         ),
     },
 }
@@ -363,6 +388,52 @@ SETTING_SCHEMA: tuple[dict, ...] = (
         "minimum": 1,
         "unit": "hours",
         "description": "TTL for multiprobe canary rows in value_index.",
+    },
+    {
+        "key": "url_sink.passive.enabled",
+        "section": "url_sink",
+        "label": "Passive URL sink enabled",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When true, FlowWorker composes url_features and expands structure "
+            "discovery (encoded JSON / JWT claims) on captured parameters."
+        ),
+    },
+    {
+        "key": "url_sink.html_js.enabled",
+        "section": "url_sink",
+        "label": "HTML/JS inventory enabled",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When true, inventory HTML hidden fields and JS/bootstrap config "
+            "URL keys from responses (location=response; score-gated)."
+        ),
+    },
+    {
+        "key": "url_sink.iv_probes.enabled",
+        "section": "url_sink",
+        "label": "IV URL sink probes enabled",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When true and types analysis is on, planner schedules benign "
+            "url_sink canaries (talos-canary.invalid) when passive features warrant."
+        ),
+    },
+    {
+        "key": "url_sink.score_threshold",
+        "section": "url_sink",
+        "label": "Network-resource score threshold",
+        "type": "int",
+        "default": 45,
+        "minimum": 0,
+        "maximum": 100,
+        "description": (
+            "Minimum url_features.score for possible_network_resource inventory "
+            "gates and IV canary warrant (default 45)."
+        ),
     },
 )
 

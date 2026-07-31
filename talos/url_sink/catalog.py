@@ -546,15 +546,13 @@ _PATH_LIKE_NAMES: frozenset[str] = frozenset({
     "folder",
 })
 
+# OAuth-specific URI names only. Classic open-redirect names (redirect_url,
+# return_url) stay in _REDIRECT_NAMES so primary_category prefers redirect.
 _OAUTH_NAMES: frozenset[str] = frozenset({
     "redirect_uri",
     "redirecturi",
-    "redirect_url",
-    "redirecturl",
     "return_uri",
     "returnuri",
-    "return_url",
-    "returnurl",
     "post_logout_redirect_uri",
     "postlogoutredirecturi",
     "client_uri",

@@ -7,6 +7,7 @@ Purpose:
 
     Subcommands:
         talos endpoint list   — inventory of captured endpoints (with filters)
+        talos endpoint params <id>  — parameter inventory + url_features (URL Sink)
         talos endpoint mark   <id> [<id> ...] (--logout | --dangerous | --safe)
         talos endpoint unmark <id> [<id> ...] (--logout | --dangerous)
         talos endpoint show   <id>
@@ -216,6 +217,38 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
     _build_rule_parser(p_rule)
 
     # talos endpoint export
+    # talos endpoint params <endpoint_id> — URL Sink / parameter inventory
+    p_params = sub.add_parser(
+        "params",
+        help=(
+            "List parameter inventory for an endpoint (name, location, type, "
+            "url_features score/NRS/categories). Use after proxy capture."
+        ),
+    )
+    p_params.add_argument(
+        "endpoint_id",
+        help="Endpoint UUID (from 'talos endpoint list').",
+    )
+    p_params.add_argument(
+        "--min-score",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Only show parameters with url_features.score >= N (default 0).",
+    )
+    p_params.add_argument(
+        "--network-resource",
+        action="store_true",
+        help="Only show possible_network_resource=true rows.",
+    )
+    p_params.add_argument(
+        "--location",
+        default=None,
+        metavar="LOC",
+        help="Filter by location (query|body|header|cookie|path|response).",
+    )
+    add_format_argument(p_params)
+
     p_export = sub.add_parser(
         "export",
         help="Export complete endpoint dossier(s) as Markdown.",
@@ -254,6 +287,8 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
     cmd = args.endpoint_cmd
     if cmd == "list":
         cmd_endpoint_list(project, args)
+    elif cmd == "params":
+        cmd_endpoint_params(project, args)
     elif cmd == "mark":
         cmd_endpoint_mark(project, args)
     elif cmd == "unmark":
@@ -488,6 +523,33 @@ def _build_rule_parser(parser: argparse.ArgumentParser) -> None:
 # Shared helpers                                                       #
 # ------------------------------------------------------------------ #
 
+def _parse_url_features_row(row) -> dict:
+    """
+    Purpose:
+        Parse parameters.url_features JSON from a sqlite Row / mapping.
+    Side effects: None.
+    """
+    import json
+
+    raw = None
+    try:
+        raw = row["url_features"] if "url_features" in row.keys() else None
+    except Exception:
+        try:
+            raw = row["url_features"]
+        except Exception:
+            raw = None
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _require_endpoint(db_path, endpoint_id: str) -> dict:
     """Load an endpoint row or exit with a clear error."""
     endpoint = replay_db.get_endpoint_by_id(db_path, endpoint_id)
@@ -686,6 +748,135 @@ def _has_list_filters(args: argparse.Namespace) -> bool:
         or args.role
         or args.priority
     )
+
+
+def cmd_endpoint_params(project: object, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        List parameter inventory for one endpoint with URL Sink url_features
+        summary (score, NRS, categories) for post-capture triage.
+    Side effects: Read-only DB; prints table or JSON.
+    """
+    import json
+    import sqlite3
+
+    from talos.input_validation.db import make_param_uuid
+
+    db_path = project.db_path  # type: ignore[attr-defined]
+    endpoint_id = (args.endpoint_id or "").strip()
+    ep = _require_endpoint(db_path, endpoint_id)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, name, location, param_type, semantic_type,
+                   seen_count, is_reflected, reflection_count,
+                   example_values, url_features
+            FROM parameters
+            WHERE endpoint_id = ?
+            ORDER BY location, name
+            """,
+            (endpoint_id,),
+        ).fetchall()
+
+    min_score = int(getattr(args, "min_score", 0) or 0)
+    nrs_only = bool(getattr(args, "network_resource", False))
+    loc_filter = (getattr(args, "location", None) or "").strip().lower() or None
+
+    items: list[dict] = []
+    host = ep.get("host") or ""
+    # Prefer host_display when origin-aware (same as export).
+    host_key = host
+    if "://" in host:
+        # origin form — make_param_uuid historically uses host column value
+        host_key = host
+
+    for r in rows:
+        uf = _parse_url_features_row(r)
+        try:
+            score = int(uf.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        nrs = bool(uf.get("possible_network_resource"))
+        if score < min_score:
+            continue
+        if nrs_only and not nrs:
+            continue
+        loc = (r["location"] or "").strip().lower()
+        if loc_filter and loc != loc_filter:
+            continue
+        cats = uf.get("name_categories") or []
+        if not isinstance(cats, list):
+            cats = []
+        primary = uf.get("name_category")
+        try:
+            examples = json.loads(r["example_values"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            examples = []
+        param_uuid = make_param_uuid(host_key, r["location"] or "", r["name"] or "")
+        items.append({
+            "id": r["id"],
+            "param_uuid": param_uuid,
+            "name": r["name"],
+            "location": r["location"],
+            "param_type": r["param_type"],
+            "semantic_type": r["semantic_type"],
+            "seen_count": r["seen_count"],
+            "is_reflected": bool(r["is_reflected"]),
+            "examples": examples[:3] if isinstance(examples, list) else [],
+            "url_features": uf,
+            "url_score": score,
+            "possible_network_resource": nrs,
+            "name_category": primary,
+            "name_categories": cats,
+        })
+
+    if wants_json(args):
+        cli_json({
+            "endpoint_id": endpoint_id,
+            "method": ep.get("method"),
+            "host": host,
+            "path": ep.get("normalized_path") or ep.get("path"),
+            "count": len(items),
+            "parameters": items,
+        })
+        return
+
+    print(
+        f"\nParameters: {ep.get('method', '')} "
+        f"{host}{ep.get('normalized_path') or ep.get('path') or ''}"
+    )
+    print(f"Endpoint: {endpoint_id}")
+    print("=" * 78)
+    if not items:
+        print("  (no parameters match filters — capture traffic or lower --min-score)")
+        print()
+        return
+
+    # Compact table
+    print(
+        f"{'Name':<28} {'Loc':<10} {'Type':<14} "
+        f"{'Score':>5} {'NRS':>3} {'Category':<16} Seen"
+    )
+    print("-" * 78)
+    for it in items:
+        cat = it.get("name_category") or (
+            ",".join(it["name_categories"][:2]) if it["name_categories"] else "—"
+        )
+        type_s = f"{it['param_type'] or '?'}/{it['semantic_type'] or '?'}"
+        name = (it["name"] or "")[:28]
+        print(
+            f"{name:<28} {(it['location'] or ''):<10} {type_s:<14} "
+            f"{it['url_score']:>5} {'Y' if it['possible_network_resource'] else 'n':>3} "
+            f"{str(cat)[:16]:<16} {it['seen_count']}"
+        )
+    print(f"\n{len(items)} parameter(s).")
+    print(
+        "Tip: talos input-validation show <param_uuid>  "
+        "(param_uuid = sha256(host|location|name)[:32])"
+    )
+    print()
 
 
 def cmd_endpoint_mark(project: object, args: argparse.Namespace) -> None:
@@ -1446,7 +1637,8 @@ def _export_one_endpoint(project: object, endpoint_id: str) -> Path:
         params = conn.execute(
             """
             SELECT id, name, location, param_type, semantic_type,
-                   seen_count, is_reflected, reflection_count, example_values
+                   seen_count, is_reflected, reflection_count, example_values,
+                   url_features
             FROM parameters WHERE endpoint_id = ?
             ORDER BY location, name
             """,
@@ -1503,13 +1695,31 @@ def _export_one_endpoint(project: object, endpoint_id: str) -> Path:
     lines.append(f"## Parameters ({len(params)})")
     lines.append("")
     if params:
-        lines.append("| Name | Location | Type | Seen | Reflected |")
-        lines.append("|------|----------|------|------|-----------|")
+        lines.append(
+            "| Name | Location | Type | Seen | Reflected | "
+            "URL score | NRS | Categories |"
+        )
+        lines.append(
+            "|------|----------|------|------|-----------|"
+            "----------:|-----|------------|"
+        )
         for p in params:
+            uf = _parse_url_features_row(p)
+            cats = uf.get("name_categories") or []
+            if isinstance(cats, list) and cats:
+                cat_txt = ", ".join(str(c) for c in cats)
+            else:
+                cat_txt = str(uf.get("name_category") or "—")
+            try:
+                score = int(uf.get("score") or 0)
+            except (TypeError, ValueError):
+                score = 0
+            nrs = "yes" if uf.get("possible_network_resource") else "no"
             lines.append(
                 f"| `{p['name']}` | {p['location']} | "
                 f"{p['param_type']}/{p['semantic_type']} | "
-                f"{p['seen_count']} | {'Yes' if p['is_reflected'] else 'No'} |"
+                f"{p['seen_count']} | {'Yes' if p['is_reflected'] else 'No'} | "
+                f"{score} | {nrs} | {cat_txt} |"
             )
     else:
         lines.append("*No parameters discovered yet.*")

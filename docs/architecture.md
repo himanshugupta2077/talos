@@ -209,16 +209,20 @@ talos
     │               base64 / URL-encoded JSON unwrap → full dotted paths
     │                 (e.g. config.oauth.metadata.url)
     │               JWT URL claims → virtual jwt.jku / jwt.iss / jwt.aud / …
-    │               HTML hidden + __NEXT_DATA__ / window.__CONFIG__ / apiUrl assigns
-    │                 (score ≥ 45 or name+network-shaped value; empty only for strong
-    │                  sink categories; de-duped; no external script fetch;
-    │                  location=response skipped by same-flow reflection)
+    │                 (inventory only — IV surface skips jwt.* and location=response)
+    │               HTML hidden + __NEXT_DATA__ (script id= or window.__NEXT_DATA__=)
+    │                 / window.__CONFIG__ / apiUrl assigns
+    │                 (score ≥ url_sink.score_threshold or name+network-shaped value;
+    │                  empty only for strong sink categories; de-duped; no external script fetch;
+    │                  location=response skipped by same-flow reflection and IV scheduling)
     │             Phase 3 active IV (talos.input_validation.url_sink_probes):
     │               planner url_sink_probes when passive warrants → iv_url_sink jobs
+    │               gated by types analysis + url_sink.iv_probes.enabled
     │               benign canaries (talos-canary.invalid, path/IP/forms; deep+ protocols)
     │               fingerprint phrases + Location canary + soft timing
     │               → observed.url_sink + tested.url_sink:* (no Findings)
-    │             (capabilities / candidates land in Phase 4)
+    │             Phase 4 capabilities / candidates (network_resource_sink, value-first)
+    │             Phase 5 operator CLI: endpoint params; show/export url_features + url_sink
     │           Passive Reflection Intelligence (same-flow):
     │             detect if param values appear in **same** response (raw / html_encoded / url_encoded)
     │             record: is_reflected, reflection_count, reflection_locations, reflection_encoding

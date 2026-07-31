@@ -292,6 +292,8 @@ def test_value_first_ssrf_without_name_tokens():
     assert "value-first" in reasons or "url" in reasons or "network_resource" in reasons
     # No name-token requirement
     assert CAPABILITY_NETWORK_RESOURCE_SINK in profile["capabilities"]
+    # QA-USD-13: pure URL-accept without redirect signal is not open_redirect noise
+    assert _cand(profile["candidates"], ATTACK_OPEN_REDIRECT) is None
 
 
 def test_url_sink_fetch_raises_ssrf_and_fetch_sink():

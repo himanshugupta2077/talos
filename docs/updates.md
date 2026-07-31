@@ -2,6 +2,47 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## URL Sink Discovery Phase 5 + QA fix-up — operator polish & surface gates
+
+**Shipped:** 2026-07-31 · schema remains **v53**.
+
+Addresses `docs/URL-Sink-Discovery-QA-Issues.md` (report-only QA) and finishes Phase 5
+CLI operator path for URL Sink Discovery (Control Panel still optional).
+
+| ID | Fix |
+|----|-----|
+| QA-USD-05 | IV skips `location=response` (HTML/JS inventory only) |
+| QA-USD-06 | IV skips virtual `jwt.*` claim rows (no literal claim-header inject) |
+| QA-USD-01–04 / 07 / 11 / 12 | `talos endpoint params`; show/export surface `url_features` + `observed.url_sink` |
+| QA-USD-08 | `window.__NEXT_DATA__ = {…}` bootstrap assignment extraction |
+| QA-USD-09 | Layered config: `url_sink.passive/html_js/iv_probes.enabled`, `url_sink.score_threshold` |
+| QA-USD-10 / 14 / 15 | CLI help: `webhook_abuse` / `oauth_redirect` / `network_resource_sink` / `url_sink_probes` |
+| QA-USD-13 | `open_redirect` requires redirect signal (no soft noise on pure URL-accept params) |
+| QA-USD-16 | `redirect_url` primary category is `redirect` (not oauth) |
+| QA-USD-17 | Drop opaque base64/JSON parents after leaf expansion |
+
+```bash
+# Browse inventory after capture
+talos endpoint params <endpoint_id>
+talos endpoint params <endpoint_id> --network-resource --min-score 45
+talos endpoint export <endpoint_id>   # params table includes URL score/NRS/categories
+
+# IV profile table shows passive features + canary aggregate
+talos input-validation show <param_uuid>
+talos input-validation export parameter <param_uuid>
+
+# Kill-switches / threshold
+talos config set url_sink.html_js.enabled false --project
+talos config set url_sink.iv_probes.enabled false --project
+talos config set url_sink.score_threshold 50 --project
+```
+
+**Files:** `surface.py`, `html_js_extract.py`, `catalog.py`, `candidates.py`,
+`parameters.py`, `configuration/*`, `url_sink/config.py`, `worker.py`, `engine.py`,
+`synthesize.py`, `cli.py`, `endpoint_cli.py`, `__main__.py`, tests, docs.
+
+---
+
 ## URL Sink Discovery Phase 4 — capabilities + value-first candidates
 
 **Shipped:** 2026-07-31 · schema remains **v53** (no column bump).
@@ -36,9 +77,8 @@ talos input-validation candidates --attack oauth_redirect
 talos input-validation candidates --capability network_resource_sink
 ```
 
-**Explicitly out of this ship (Phase 5):** CLI show/export field polish for
-`url_features` + `network_resource_sink` detail, Control Panel profile surface
-expansion, endpoint/app rollups.
+**Phase 5 (CLI polish) shipped in follow-up** — see section above. Control Panel
+profile surface expansion and endpoint/app rollups remain optional.
 
 **Files:** `talos/input_validation/{capabilities,candidates,profile,synthesize,db}.py`,
 `talos/ai/tools/schemas.py`, Control Panel `command_tree.py` + IV `shared.tsx`,

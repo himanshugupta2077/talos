@@ -1302,8 +1302,10 @@ def _score_sqli(ctx: _ProfileView) -> dict[str, Any] | None:
 
 def _score_open_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
     """
-    open_redirect: redirect category / redirect_behavior + network resource
-    evidence. Value-first: random name + URL accept still scores.
+    open_redirect: requires a redirect-shaped signal (name category redirect/
+    oauth, redirect_behavior, or baseline redirect_like) **plus** network
+    resource evidence. Pure URL-accept params without redirect signals go to
+    SSRF / network_resource_sink instead (QA-USD-13 noise reduction).
     Name-only catalog hits (go/to/next) do **not** emit without URL evidence.
     """
     score = 0
@@ -1321,6 +1323,17 @@ def _score_open_redirect(ctx: _ProfileView) -> dict[str, Any] | None:
 
     # Spam gate: require value/behavior/accept evidence (not bare name).
     if not url_ev:
+        return None
+
+    # Redirect-signal gate: do not emit open_redirect for every URL-accept param.
+    has_redirect_signal = (
+        redir_cat
+        or oauth_cat
+        or us.get("redirect_behavior") is True
+        or ctx.has(CAPABILITY_REDIRECT_LIKE)
+        or ctx.has(CAPABILITY_REDIRECT_SINK)
+    )
+    if not has_redirect_signal:
         return None
 
     if redir_cat:

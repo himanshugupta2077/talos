@@ -96,11 +96,15 @@ _BOOTSTRAP_ID_HINTS = frozenset({
 })
 
 # window.__CONFIG__ = {…}; / window["__INITIAL_STATE__"] = {…};
+# window.__NEXT_DATA__ = {…} must be matched as a full token first — a leading
+# ``__?`` would consume the underscores and leave NEXT_DATA__ unmatched.
 # Allow trailing underscores on well-known bootstrap names (__CONFIG__).
 _WINDOW_BOOTSTRAP = re.compile(
-    r"""window(?:\[["']|[\.])(__?(?:CONFIG|INITIAL_STATE|INITIAL_DATA|"""
-    r"""PRELOADED_STATE|__NEXT_DATA__|APP_CONFIG|ENV|RUNTIME_CONFIG)"""
-    r"""_*)["']?\]?\s*=\s*""",
+    r"""window(?:\[["']|\.)("""
+    r"""__NEXT_DATA__|__NUXT_DATA__|__NUXT__|"""
+    r"""__?(?:CONFIG|INITIAL_STATE|INITIAL_DATA|PRELOADED_STATE|"""
+    r"""APP_CONFIG|ENV|RUNTIME_CONFIG)_*"""
+    r""")["']?\]?\s*=\s*""",
     re.IGNORECASE,
 )
 

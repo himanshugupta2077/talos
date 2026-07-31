@@ -282,7 +282,14 @@ def extract_flow_params(
         _extract_cookie_params(cookies, request_headers), role_id, module_id
     ))
     # Structure discovery: encoded JSON leaves + JWT claims (request surfaces).
-    params = _expand_structure_discovery(params)
+    # Gated by url_sink.passive.enabled (process-cached; default true).
+    try:
+        from talos.url_sink.config import get_process_url_sink_config
+
+        if get_process_url_sink_config().passive_enabled:
+            params = _expand_structure_discovery(params)
+    except Exception:
+        params = _expand_structure_discovery(params)
     params = _stamp(params, role_id, module_id)
     return _dedupe_params(params)
 
@@ -1283,7 +1290,9 @@ def _expand_structure_discovery(
     Input:
         params — primary extract list (path/query/body/header/cookie).
     Output:
-        Original params plus expansions (caller dedupes).
+        Original params plus expansions (caller dedupes). Low-score outer
+        encoded-JSON wrappers are dropped when leaves were emitted so inventory
+        is not flooded with opaque base64 parents (QA-USD-17).
     Side effects: None.
     Risk control:
         Per-value leaf cap; one nested re-unwrap pass on newly emitted leaves
@@ -1292,13 +1301,18 @@ def _expand_structure_discovery(
     if not params:
         return params
     extra: list[ExtractedParam] = []
+    # Outer names that produced encoded-JSON leaves (eligible for parent drop).
+    encoded_parents: set[str] = set()
     for param in params:
         value = param.sample_value or ""
         if not value:
             continue
         # Encoded JSON structure walk (query/body/header/cookie/path values).
         if not param.name.startswith("jwt."):
-            extra.extend(_expand_encoded_json_param(param))
+            leaves = _expand_encoded_json_param(param)
+            if leaves:
+                encoded_parents.add(param.name)
+                extra.extend(leaves)
         # JWT claims from any JWT-shaped sample.
         extra.extend(_expand_jwt_param(param))
 
@@ -1317,7 +1331,54 @@ def _expand_structure_discovery(
 
     if not extra:
         return params
-    return list(params) + extra
+
+    # Drop low-score structure wrappers that only exist as opaque containers
+    # after successful leaf expansion (parent score 0 / non-NRS noise).
+    keep_parents: list[ExtractedParam] = []
+    for param in params:
+        if param.name not in encoded_parents:
+            keep_parents.append(param)
+            continue
+        if _structure_parent_worth_keeping(param):
+            keep_parents.append(param)
+    return list(keep_parents) + extra
+
+
+def _structure_parent_worth_keeping(param: ExtractedParam) -> bool:
+    """
+    Purpose:
+        Keep an outer encoded-JSON field only when the **value itself** looks
+        like a network resource. Name-category-only hits (e.g. bare ``config``
+        / ``cfg`` over opaque base64) are inventory noise once leaves exist.
+    Side effects: None.
+    """
+    try:
+        feat = json.loads(param.url_features or "{}")
+    except (json.JSONDecodeError, TypeError):
+        feat = {}
+    if not isinstance(feat, dict):
+        feat = {}
+    if feat.get("possible_network_resource") is True:
+        return True
+    try:
+        score = int(feat.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    if score >= NETWORK_RESOURCE_SCORE_THRESHOLD:
+        return True
+    # Value-shaped flags without full NRS (hostname/IP/path) still keep parent.
+    if any(
+        feat.get(k) is True
+        for k in (
+            "possible_url_value",
+            "possible_hostname",
+            "possible_ip",
+            "possible_domain",
+            "possible_unc",
+        )
+    ):
+        return True
+    return False
 
 
 def _expand_encoded_json_param(param: ExtractedParam) -> list[ExtractedParam]:

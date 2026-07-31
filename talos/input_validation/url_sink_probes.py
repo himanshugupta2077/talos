@@ -261,6 +261,7 @@ def url_sink_is_warranted(
     semantic_type: str | None = None,
     param_name: str | None = None,
     name_categories: list[str] | None = None,
+    score_threshold: int | None = None,
 ) -> bool:
     """
     Purpose:
@@ -268,7 +269,7 @@ def url_sink_is_warranted(
 
         Warranted when any of:
             - passive url_features.possible_network_resource
-            - url_features.score >= 45
+            - url_features.score >= score_threshold (default 45 / config)
             - name_category / name_categories intersects warrant set
             - semantic_type == url
             - param_name leaf matches a warrant category via features when
@@ -279,6 +280,7 @@ def url_sink_is_warranted(
         semantic_type   — parameters.semantic_type.
         param_name      — unused for matching when categories already known.
         name_categories — optional override list.
+        score_threshold — min score for value-first warrant (default 45).
 
     Output: bool.
     Side effects: None.
@@ -287,7 +289,11 @@ def url_sink_is_warranted(
     if uf.get("possible_network_resource") is True:
         return True
     try:
-        if int(uf.get("score") or 0) >= 45:
+        threshold = 45 if score_threshold is None else int(score_threshold)
+    except (TypeError, ValueError):
+        threshold = 45
+    try:
+        if int(uf.get("score") or 0) >= threshold:
             return True
     except (TypeError, ValueError):
         pass

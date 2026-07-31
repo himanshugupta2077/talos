@@ -789,6 +789,12 @@ def format_profile_summary_lines(profile: dict[str, Any] | None) -> list[str]:
         if rejected_keys:
             lines.append(f"Tested-rejected: {', '.join(sorted(rejected_keys))}")
 
+    # URL Sink Discovery — passive inventory + active canary aggregate.
+    uf_lines = format_url_features_lines(obs.get("url_features"))
+    lines.extend(uf_lines)
+    us_lines = format_url_sink_lines(obs.get("url_sink"))
+    lines.extend(us_lines)
+
     caps = profile.get("capabilities") or []
     if caps:
         lines.append(f"Capabilities: {', '.join(caps)}")
@@ -804,6 +810,112 @@ def format_profile_summary_lines(profile: dict[str, Any] | None) -> list[str]:
             "Missing analyses: " + ", ".join(synth["missing_analyses"])
         )
 
+    return lines
+
+
+def format_url_features_lines(url_features: Any) -> list[str]:
+    """
+    Purpose:
+        Human-readable passive url_features block for CLI show/export.
+    Side effects: None.
+    """
+    if not isinstance(url_features, dict) or not url_features:
+        return []
+    try:
+        score = int(url_features.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    nrs = bool(url_features.get("possible_network_resource"))
+    primary = url_features.get("name_category") or "(none)"
+    cats = url_features.get("name_categories") or []
+    if isinstance(cats, list) and cats:
+        cat_txt = ", ".join(str(c) for c in cats)
+    else:
+        cat_txt = str(primary) if primary != "(none)" else "(none)"
+    flags: list[str] = []
+    for key, label in (
+        ("possible_url_value", "url"),
+        ("possible_hostname", "hostname"),
+        ("possible_ip", "ip"),
+        ("possible_path", "path"),
+        ("possible_domain", "domain"),
+        ("possible_unc", "unc"),
+        ("possible_protocol", "protocol"),
+    ):
+        if url_features.get(key) is True:
+            flags.append(label)
+    flag_txt = ",".join(flags) if flags else "(none)"
+    lines = [
+        f"URL features (passive): score={score}  "
+        f"network_resource={'yes' if nrs else 'no'}  "
+        f"category={primary}  categories=[{cat_txt}]  "
+        f"looks_like={flag_txt}"
+    ]
+    evidence = url_features.get("evidence") or []
+    if isinstance(evidence, list) and evidence:
+        lines.append(
+            "  evidence: " + ", ".join(str(e) for e in evidence[:12])
+            + (f" … +{len(evidence) - 12} more" if len(evidence) > 12 else "")
+        )
+    return lines
+
+
+def format_url_sink_lines(url_sink: Any) -> list[str]:
+    """
+    Purpose:
+        Human-readable observed.url_sink canary aggregate for CLI show/export.
+    Side effects: None.
+    """
+    if not isinstance(url_sink, dict) or not url_sink:
+        return []
+    try:
+        conf = int(url_sink.get("confidence") or 0)
+    except (TypeError, ValueError):
+        conf = 0
+    unc = url_sink.get("uncertainty") or "?"
+    accepts: list[str] = []
+    for key, label in (
+        ("accepts_url", "url"),
+        ("accepts_hostname", "hostname"),
+        ("accepts_ip", "ip"),
+        ("accepts_path", "path"),
+        ("accepts_unc", "unc"),
+        ("accepts_protocol", "protocol"),
+    ):
+        if url_sink.get(key) is True:
+            accepts.append(label)
+    accept_txt = ",".join(accepts) if accepts else "(none)"
+    behaviors: list[str] = []
+    if url_sink.get("redirect_behavior") is True:
+        behaviors.append("redirect")
+    if url_sink.get("fetch_behavior") is True:
+        behaviors.append("fetch")
+    if url_sink.get("dns_resolution_detected") is True:
+        behaviors.append("dns")
+    beh_txt = ",".join(behaviors) if behaviors else "(none)"
+    lines = [
+        f"URL sink (canaries): confidence={conf}  uncertainty={unc}  "
+        f"accepts={accept_txt}  behavior={beh_txt}"
+    ]
+    protocols = url_sink.get("accepted_protocols") or []
+    if isinstance(protocols, list) and protocols:
+        lines.append("  accepted_protocols: " + ", ".join(str(p) for p in protocols))
+    if url_sink.get("validation_behavior"):
+        lines.append(f"  validation: {url_sink.get('validation_behavior')}")
+    errors = url_sink.get("error_classes") or []
+    if isinstance(errors, list) and errors:
+        lines.append("  error_classes: " + ", ".join(str(e) for e in errors[:10]))
+    if url_sink.get("requires_absolute") is True:
+        lines.append("  requires_absolute=yes")
+    if url_sink.get("requires_https") is True:
+        lines.append("  requires_https=yes")
+    per_probe = url_sink.get("per_probe") or {}
+    if isinstance(per_probe, dict) and per_probe:
+        keys = list(per_probe.keys())[:8]
+        lines.append(
+            "  per_probe: " + ", ".join(str(k) for k in keys)
+            + (f" … +{len(per_probe) - 8} more" if len(per_probe) > 8 else "")
+        )
     return lines
 
 

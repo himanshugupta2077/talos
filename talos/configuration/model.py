@@ -148,6 +148,20 @@ class ParameterIntelConfigSection:
 
 
 @dataclass(frozen=True)
+class UrlSinkConfigSection:
+    """
+    Purpose:
+        URL Sink Discovery knobs (passive inventory + IV canaries).
+        Defaults match BUILTIN_DEFAULTS['url_sink'].
+    """
+
+    passive_enabled: bool = True
+    html_js_enabled: bool = True
+    iv_probes_enabled: bool = True
+    score_threshold: int = 45
+
+
+@dataclass(frozen=True)
 class EffectiveConfig:
     """
     Purpose:
@@ -161,6 +175,7 @@ class EffectiveConfig:
         attack           — attack toggles.
         http             — HTTP manipulation engine (rules + master switch).
         parameter_intel  — parameter intelligence (cross-flow reflection).
+        url_sink         — URL Sink Discovery kill-switches + score gate.
         raw              — full merged dict tree (for generic get / effective views).
         sources          — dotted path → ValueSource for inheritance display.
         global_path      — path to global config file (may not exist yet).
@@ -175,6 +190,7 @@ class EffectiveConfig:
     parameter_intel: ParameterIntelConfigSection = field(
         default_factory=ParameterIntelConfigSection
     )
+    url_sink: UrlSinkConfigSection = field(default_factory=UrlSinkConfigSection)
     raw: dict = field(default_factory=dict)
     sources: dict[str, ValueSource] = field(default_factory=dict)
     global_path: Optional[str] = None
