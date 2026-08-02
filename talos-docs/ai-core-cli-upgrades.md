@@ -22,6 +22,8 @@ This doc lists **core CLI / product upgrades** that make a methodology-driven, m
 
 ## 2. Priority tiers
 
+- full talos documentation. one md file per feature in md and hosted for me in talos control panel and access to talos ai as well.
+
 ### P0 — Do early (blocks good AI)
 
 | Upgrade                                            | Problem today                                                         | Desired behavior                                                                                                                                                                                       | Why AI needs it                                                                |
