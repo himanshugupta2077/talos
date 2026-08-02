@@ -1,11 +1,11 @@
 # Core CLI / Product Upgrades That Greatly Help Talos AI
 
-| Field | Value |
-|-------|-------|
-| **Status** | Input notes for planning (not an implementation commit) |
-| **Audience** | Operators / engineers planning AI revamp + core CLI work |
-| **Related** | `docs/design-talos-ai-layer.md`, `docs/ai-revamp-design-notes.md`, `docs/cli-cheat-sheet.md` |
-| **Date** | 2026-07-30 |
+| Field                 | Value                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Status**            | Input notes for planning (not an implementation commit)                                                            |
+| **Audience**          | Operators / engineers planning AI revamp + core CLI work                                                           |
+| **Related**           | `docs/design-talos-ai-layer.md`, `docs/ai-revamp-design-notes.md`, `docs/cli-cheat-sheet.md`                       |
+| **Date**              | 2026-07-30                                                                                                         |
 | **Out of scope here** | Full AI redesign (see `docs/ai-revamp-design-notes.md`); `talos recon` implementation (deferred by product choice) |
 
 ---
@@ -24,15 +24,15 @@ This doc lists **core CLI / product upgrades** that make a methodology-driven, m
 
 ### P0 — Do early (blocks good AI)
 
-| Upgrade | Problem today | Desired behavior | Why AI needs it |
-|---------|---------------|------------------|-----------------|
-| **Stable `--format json` everywhere AI will call** | Some list/show/status paths are table-first or incomplete JSON | Every read path AI uses returns one JSON document on stdout; empty → `[]` / null object | Machine parsing; no table scraping |
-| **Batch inventory packs** | Full `endpoint list` / flow dumps blow context | Paginated, compact fields: `endpoint list --format json --limit N --offset M --fields compact`; optional “classify pack” export (id, method, host, path, role, module, annotations, param count, tags) | Phase: “go through all endpoints in batches” |
-| **Progressive raw HTTP access** | Full request/response can be huge | Default: short excerpts + sizes + content-type + paths/IDs; AI can request more (`--full`, `--body request\|response`, byte ranges, or `talos http dump <flow_id> --max-bytes N`) | “Give AI little; if it needs more, it asks” |
-| **Unified HTTP dump by ID** | Fragmented: `send show`, flow show, export dirs | `talos flow dump` / `talos http dump <flow_id>` → request.http + response + meta JSON | Reliable evidence for analysis + notes |
-| **Append-safe notes** | Endpoint notes often replace entire column; no first-class append API | `endpoint notes append <id>`, app/module notes append with timestamp + author (`ai` / `analyst`) | Test log: “XSS tested on field X, outcome …” without clobbering |
-| **Machine-readable command catalog** | Help text is human prose | `talos help catalog --format json` (or schema export): command, summary, when-to-use, risk class, needs-project, HTTP-producing?, dangerous-capable? | Planner proposes valid commands without stuffing entire cheat sheet every turn |
-| **AI-safe command execution façade (core side)** | Dual paths risk drift | Single internal entry used by CLI and AI: validate project pin, capture stdout/stderr/exit, optional body artifacts on disk | Observations with raw-enough output + full path on disk |
+| Upgrade                                            | Problem today                                                         | Desired behavior                                                                                                                                                                                       | Why AI needs it                                                                |
+| -------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| **Stable `--format json` everywhere AI will call** | Some list/show/status paths are table-first or incomplete JSON        | Every read path AI uses returns one JSON document on stdout; empty → `[]` / null object                                                                                                                | Machine parsing; no table scraping                                             |
+| **Batch inventory packs**                          | Full `endpoint list` / flow dumps blow context                        | Paginated, compact fields: `endpoint list --format json --limit N --offset M --fields compact`; optional “classify pack” export (id, method, host, path, role, module, annotations, param count, tags) | Phase: “go through all endpoints in batches”                                   |
+| **Progressive raw HTTP access**                    | Full request/response can be huge                                     | Default: short excerpts + sizes + content-type + paths/IDs; AI can request more (`--full`, `--body request\|response`, byte ranges, or `talos http dump <flow_id> --max-bytes N`)                      | “Give AI little; if it needs more, it asks”                                    |
+| **Unified HTTP dump by ID**                        | Fragmented: `send show`, flow show, export dirs                       | `talos flow dump` / `talos http dump <flow_id>` → request.http + response + meta JSON                                                                                                                  | Reliable evidence for analysis + notes                                         |
+| **Append-safe notes**                              | Endpoint notes often replace entire column; no first-class append API | `endpoint notes append <id>`, app/module notes append with timestamp + author (`ai` / `analyst`)                                                                                                       | Test log: “XSS tested on field X, outcome …” without clobbering                |
+| **Machine-readable command catalog**               | Help text is human prose                                              | `talos help catalog --format json` (or schema export): command, summary, when-to-use, risk class, needs-project, HTTP-producing?, dangerous-capable?                                                   | Planner proposes valid commands without stuffing entire cheat sheet every turn |
+| **AI-safe command execution façade (core side)**   | Dual paths risk drift                                                 | Single internal entry used by CLI and AI: validate project pin, capture stdout/stderr/exit, optional body artifacts on disk                                                                            | Observations with raw-enough output + full path on disk                        |
 
 ### P1 — Strong helpers for checklist quality
 

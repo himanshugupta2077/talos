@@ -228,3 +228,7 @@ talos-control-panel/**/.env.local
 talos-control-panel/frontend.log
 talos-control-panel/frontend-error.log
 talos-control-panel/.frontend.pid
+
+
+#talos-docs-obsidian
+talos-docs/.obsidian
