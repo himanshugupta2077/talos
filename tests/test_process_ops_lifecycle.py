@@ -78,6 +78,40 @@ def test_spawn_and_identity(ops: ProcessOps, child_paths: tuple[Path, Path]) -> 
         ops.wait(identity, timeout_s=5.0)
 
 
+def test_wait_after_exit_does_not_raise_on_platform_apis(
+    ops: ProcessOps, child_paths: tuple[Path, Path]
+) -> None:
+    """
+    Regression: wait() must not call POSIX-only os.WNOHANG on Windows.
+
+    Proxy start failure paths call request_graceful_shutdown + wait; on
+    Windows that used to crash with AttributeError: os has no attribute WNOHANG.
+    """
+    ready, graceful = child_paths
+    identity = _spawn_child(ops, ready, graceful, hold_seconds=2.0)
+    ops.request_graceful_shutdown(identity)
+    # Must return (exit code or None) without raising on any platform.
+    exit_code = ops.wait(identity, timeout_s=5.0)
+    assert not ops.is_alive(identity)
+    assert exit_code is None or isinstance(exit_code, int)
+    # Calling _try_exit_code again on a dead pid must also be safe.
+    again = ops._try_exit_code(identity.pid)
+    assert again is None or isinstance(again, int)
+
+
+def test_try_exit_code_win32_branch_avoids_posix_waitpid(
+    ops: ProcessOps, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Force the win32 branch even on Linux CI so a regression reintroducing
+    os.WNOHANG in _try_exit_code is caught without a Windows runner.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ops, "_windows_exit_code", lambda pid: 0 if pid == 42 else None)
+    assert ops._try_exit_code(42) == 0
+    assert ops._try_exit_code(99) is None
+
+
 def test_graceful_stop_writes_marker(
     ops: ProcessOps, child_paths: tuple[Path, Path]
 ) -> None:

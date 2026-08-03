@@ -339,7 +339,16 @@ class ProcessOps:
         return starttime
 
     def _try_exit_code(self, pid: int) -> Optional[int]:
-        """Best-effort; usually None for non-child processes of this CLI."""
+        """
+        Best-effort exit status for a reaped/exited process.
+
+        POSIX: non-blocking waitpid on our own children (WNOHANG).
+        Windows: WNOHANG / WIF* are not available; we do not retain a Popen
+        handle across CLI invocations, so exit codes are usually unavailable.
+        Callers treat None as "unknown" and rely on is_alive for liveness.
+        """
+        if sys.platform == "win32":
+            return self._windows_exit_code(pid)
         try:
             finished_pid, status = os.waitpid(pid, os.WNOHANG)
             if finished_pid == 0:
@@ -351,6 +360,34 @@ class ProcessOps:
         except (ChildProcessError, OSError):
             pass
         return None
+
+    def _windows_exit_code(self, pid: int) -> Optional[int]:
+        """
+        Query exit code via GetExitCodeProcess when the process handle is
+        still openable. Returns None if still running, already reaped, or
+        inaccessible (common once the process has fully exited).
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            PROCESS_QUERY_INFORMATION = 0x0400
+            handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            if code.value == STILL_ACTIVE:
+                return None
+            return int(code.value)
+        finally:
+            kernel32.CloseHandle(handle)
 
     def _windows_ctrl_break(self, pid: int) -> None:
         """Send CTRL_BREAK_EVENT to the process group identified by pid."""
