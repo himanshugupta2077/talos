@@ -26,6 +26,10 @@ Matching semantics:
                Default ports canonicalize (http:80, https:443) for identity,
                but host-only rules still match any port.
     Path     — omitted or "/" → any path; otherwise normalized path prefix.
+               Parenthetical path parameters (SAP WebGUI session form
+               ``/sap(...)/...``, ASP.NET cookieless ``/(S(...))/...``) are
+               stripped before prefix comparison so a rule ending in ``/sap/``
+               matches both ``/sap/bc/...`` and ``/sap(<session>)/bc/...``.
     Query    — never part of Basic Scope identity.
 
 Precedence (evaluate_scope):
@@ -57,6 +61,7 @@ from talos.url_identity import (
     parse_authority_and_path,
     parse_request_url,
     normalize_url_path,
+    strip_url_path_parameters,
 )
 
 
@@ -158,7 +163,9 @@ def rule_matches(rule: ScopeRule, identity: UrlIdentity) -> bool:
         - scheme: None in rule → http or https; else exact scheme.
         - host: exact equality on normalized hostname.
         - port: None in rule → any port; else identity.effective_port == rule.port.
-        - path: None in rule → any path; else identity.path startswith path_prefix.
+        - path: None in rule → any path; else path-prefix match after stripping
+          parenthetical path parameters (SAP/ASP.NET session forms). Plain paths
+          without parentheses are unchanged by stripping.
     Side effects: None.
     """
     if rule.scheme is not None:
@@ -176,8 +183,14 @@ def rule_matches(rule: ScopeRule, identity: UrlIdentity) -> bool:
             return False
 
     if rule.path_prefix is not None:
+        # Fast path: ordinary string prefix (no session-encoding in the path).
         req_path = identity.path or "/"
-        if not req_path.startswith(rule.path_prefix):
+        if req_path.startswith(rule.path_prefix):
+            return True
+        # Path-parameter-aware match: /sap(...)/bc under scope .../sap/.
+        req_cmp = strip_url_path_parameters(req_path)
+        rule_cmp = strip_url_path_parameters(rule.path_prefix)
+        if not req_cmp.startswith(rule_cmp):
             return False
 
     return True

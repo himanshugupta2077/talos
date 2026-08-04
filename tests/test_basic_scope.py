@@ -30,6 +30,7 @@ from talos.url_identity import (
     format_canonical_origin,
     parse_authority_and_path,
     parse_request_url,
+    strip_url_path_parameters,
 )
 from talos.worker.worker import _endpoint_origin_key, _upsert_endpoint
 from talos.projects.endpoints import normalize_flow_url
@@ -121,6 +122,75 @@ def test_path_prefix_scope():
     assert is_url_in_scope("http://example.com/api/", scope)
     assert not is_url_in_scope("https://example.com/login", scope)
     assert not is_url_in_scope("https://example.com/apix", scope)
+
+
+def test_strip_url_path_parameters_sap_and_aspnet():
+    assert (
+        strip_url_path_parameters(
+            "/sap(cz1TSUQlM2FBTk9O)/bc/gui/sap/its/webgui/1.htm"
+        )
+        == "/sap/bc/gui/sap/its/webgui/1.htm"
+    )
+    assert strip_url_path_parameters("/(S(abc123))/app/page.aspx") == "/app/page.aspx"
+    assert strip_url_path_parameters("/api/v1/users") == "/api/v1/users"
+    assert strip_url_path_parameters("/sap/") == "/sap/"
+    assert strip_url_path_parameters("") == "/"
+
+
+def test_sap_session_path_matches_directory_scope_prefix():
+    """
+    SAP WebGUI embeds the session in parentheses after the first path segment:
+    /sap(<session>)/bc/...  must match Basic Scope .../sap/  (trailing slash).
+    Without path-parameter stripping, startswith('/sap/') fails on '/sap(...'.
+    """
+    scope = ["https://eu1.tesla.com/sap/"]
+    sap_url = (
+        "https://eu1.tesla.com/sap(cz1TSUQlM2FBTk9OJTNhVk0wVVdFUlNVVEEyNV9FVTJf"
+        "MDAlM2FJSFU1SGZ3V3hCQ3pMbGhsVUJ5LTVHd0lPeXg1STBsdzlZVGdlT3F0LUFUVA==)"
+        "/bc/gui/sap/its/webgui/115/data/"
+        "CBD74E6CFA415267~CDD98FF17BDAF12CA58200505686F1D4/1/HTML000001.htm"
+    )
+    assert is_url_in_scope(sap_url, scope)
+    # Plain /sap/bc form still matches.
+    assert is_url_in_scope(
+        "https://eu1.tesla.com/sap/bc/gui/sap/its/webgui/",
+        scope,
+    )
+    # Sibling path not under /sap/ must not match.
+    assert not is_url_in_scope("https://eu1.tesla.com/login", scope)
+    # /sapphire is not under /sap/ after stripping either.
+    assert not is_url_in_scope("https://eu1.tesla.com/sapphire/", scope)
+    # Wrong host.
+    assert not is_url_in_scope(
+        "https://other.example.com/sap(session)/bc/",
+        scope,
+    )
+
+
+def test_aspnet_cookieless_session_path_matches_scope():
+    scope = ["https://app.example.com/app/"]
+    assert is_url_in_scope(
+        "https://app.example.com/(S(sessionid))/app/page.aspx",
+        scope,
+    )
+    assert is_url_in_scope(
+        "https://app.example.com/app/page.aspx",
+        scope,
+    )
+
+
+def test_path_parameter_out_of_scope_uses_same_matcher():
+    """Out-of-scope overrides in-scope with the same parenthetical path rules."""
+    assert not is_url_in_scope(
+        "https://eu1.tesla.com/sap(session)/bc/gui/logout",
+        ["https://eu1.tesla.com/sap/"],
+        ["https://eu1.tesla.com/sap/bc/gui/logout"],
+    )
+    assert is_url_in_scope(
+        "https://eu1.tesla.com/sap(session)/bc/gui/home",
+        ["https://eu1.tesla.com/sap/"],
+        ["https://eu1.tesla.com/sap/bc/gui/logout"],
+    )
 
 
 def test_subdomains_not_implicitly_included():

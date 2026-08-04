@@ -16,6 +16,7 @@ Conceptual API:
     canonical_origin("http://example.com")          -> "http://example.com"
     canonical_origin("http://example.com:80")       -> "http://example.com"
     canonical_origin("http://example.com:8000")     -> "http://example.com:8000"
+    strip_url_path_parameters("/sap(sid)/bc")       -> "/sap/bc"  (scope match only)
 
 Dependencies: dataclasses, ipaddress, re, urllib.parse
 Data flow:
@@ -189,6 +190,51 @@ def normalize_url_path(path: str | None) -> str:
     normalized = path if path.startswith("/") else f"/{path}"
     normalized = _DUPLICATE_SLASH_RE.sub("/", normalized)
     return normalized or "/"
+
+
+def strip_url_path_parameters(path: str | None) -> str:
+    """
+    Purpose:
+        Remove parenthetical path parameters so scope path-prefix rules match
+        session-encoded URL forms used by SAP WebGUI and ASP.NET cookieless
+        sessions (and similar frameworks).
+
+    Examples:
+        /sap(cz1...)/bc/gui/...     → /sap/bc/gui/...
+        /(S(abc123))/app/page.aspx  → /app/page.aspx
+        /api/v1/users               → /api/v1/users  (unchanged)
+
+    Matching intent:
+        A Basic Scope entry of ``https://host/sap/`` must capture traffic under
+        both ``/sap/bc/...`` and ``/sap(<session>)/bc/...``. Without stripping,
+        a trailing-slash prefix ``/sap/`` fails against ``/sap(...)/...`` because
+        the next character is ``(`` rather than ``/``.
+
+    Rules:
+        - Nested parentheses are supported (depth counting).
+        - Unmatched closing ``)`` characters outside a group are kept.
+        - Result is then passed through :func:`normalize_url_path`.
+        - Stored endpoint paths and capture records keep the original path;
+          this helper is for **matching only**.
+
+    Side effects: None.
+    """
+    if not path:
+        return "/"
+    out: list[str] = []
+    depth = 0
+    for ch in path:
+        if ch == "(":
+            depth += 1
+            continue
+        if ch == ")":
+            if depth > 0:
+                depth -= 1
+                continue
+            # Unmatched ')' treated as a literal character.
+        if depth == 0:
+            out.append(ch)
+    return normalize_url_path("".join(out))
 
 
 def normalize_endpoint_path(path: str | None) -> str:

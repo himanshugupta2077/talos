@@ -2,6 +2,45 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Basic Scope: SAP / cookieless path parameters match directory prefixes
+
+**Shipped:** 2026-08-04
+
+### Problem
+
+Scoping `https://eu1.tesla.com/sap/` did not capture SAP WebGUI traffic whose path
+embeds a session in parentheses:
+
+```http
+GET /sap(cz1TSUQlM2FBTk9O…)/bc/gui/sap/its/webgui/…/HTML000001.htm HTTP/1.1
+Host: eu1.tesla.com
+```
+
+Path-prefix matching used a raw `startswith("/sap/")` check. The request path
+starts with `/sap(` rather than `/sap/`, so the shared evaluator returned
+out-of-scope, the proxy never enqueued the flow, and the URL never appeared in
+the Control Panel (endpoints, flows, search).
+
+### Fix
+
+- `talos.url_identity.strip_url_path_parameters` removes parenthetical path
+  parameters (nested groups supported) for **matching only**.
+- `talos.proxy.scope.rule_matches` applies that strip to both the request path
+  and the rule path before prefix comparison (fast path unchanged when no
+  parentheses are present).
+- Out-of-scope uses the same matcher (overrides still work on stripped paths).
+- Captured endpoint paths are **not** rewritten — only scope eligibility changes.
+
+| Example scope | Now matches | Still does not match |
+|---------------|-------------|----------------------|
+| `https://host/sap/` | `/sap/bc/...`, `/sap(<sid>)/bc/...` | `/login`, `/sapphire/` |
+| `https://host/app/` | `/app/...`, `/(S(sid))/app/...` | `/other/...` |
+
+Tests: `tests/test_basic_scope.py` (SAP URL fixture, ASP.NET cookieless, outscope).
+Docs: `docs/architecture.md`, `docs/cli-cheat-sheet.md`.
+
+---
+
 ## Windows Control Panel launcher — single script + import-probe fix
 
 **Shipped:** 2026-08-04
@@ -2549,6 +2588,8 @@ scope control):
 - Protocol optional → HTTP and HTTPS; present → that scheme only.
 - Port omitted → any port; present → that port only.
 - Path is a prefix; query is not part of identity.
+- Parenthetical path parameters (SAP `/sap(...)/`, ASP.NET cookieless) are
+  stripped for **path-prefix matching only** (see later update in this file).
 - Subdomains are never implied.
 - Wildcards rejected with an actionable message (no dual matching engines).
 - Out-of-scope uses the **same** parser/matcher and **overrides** in-scope.

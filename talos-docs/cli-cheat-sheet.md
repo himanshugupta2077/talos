@@ -642,12 +642,14 @@ talos project scope import ./scope.txt --replace
 | `example.com:8000` | Port 8000 only (both schemes) |
 | `http://example.com:8000` | HTTP port 8000 only |
 | `example.com/api/` | Path prefix `/api/` on that host |
+| `https://host/sap/` | `/sap/bc/...` and SAP session form `/sap(<sid>)/bc/...` |
 | `10.10.10.25` / `http://10.10.10.25:8000` | IP targets with the same rules |
 
 - Subdomains are **not** implied (`example.com` does not match `api.example.com`).
 - Wildcards (`*.example.com`) are **rejected** with an actionable error.
 - Default ports canonicalize for identity (`http://h` ≡ `http://h:80`) but a **host-only** rule still matches any port.
 - Query strings are not part of Basic Scope identity.
+- **Parenthetical path parameters** (SAP WebGUI `/sap(...)/...`, ASP.NET cookieless `/(S(...))/...`) are stripped **only for path-prefix matching**, so a directory scope like `https://eu1.example.com/sap/` captures session-encoded SAP URLs. Stored paths keep the original form.
 
 **Import file format (UTF-8):** one prefix per line; blank lines ignored; `#` comments; commas are not separators; invalid lines reject the **entire** import (atomic).
 

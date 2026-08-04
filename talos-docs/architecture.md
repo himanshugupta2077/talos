@@ -2158,10 +2158,19 @@ parse time with an actionable message).
 | `example.com:8000` | Port 8000 only (both schemes) | Port 9000 or default 80/443 |
 | `http://example.com:8000` | HTTP + port 8000 | HTTPS :8000 or HTTP :9000 |
 | `example.com/api/` | Paths under `/api/` on that host | `/login`, `/apix` |
+| `https://host/sap/` | `/sap/bc/...` **and** SAP session form `/sap(<sid>)/bc/...` | `/login`, `/sapphire/` |
 | `10.10.10.25:8000` | That IPv4 + port | Same IP on another port |
 
 **Port identity:** `http://h` ≡ `http://h:80`; `https://h` ≡ `https://h:443`.
 Non-default ports remain part of canonical origin.
+
+**Parenthetical path parameters (matching only):** Before path-prefix comparison,
+Talos strips `(...)` groups from the request path and the rule path
+(`talos.url_identity.strip_url_path_parameters`). This makes Basic Scope work for
+SAP WebGUI session URLs (`/sap(<session>)/bc/...`) and ASP.NET cookieless forms
+(`/(S(...))/app/...`) when the operator scopes the directory form
+(`https://host/sap/`). Captured endpoint paths are **not** rewritten — only the
+scope evaluator treats parentheses as transparent.
 
 **Precedence:**
 
