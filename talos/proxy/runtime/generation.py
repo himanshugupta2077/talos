@@ -8,7 +8,7 @@ Purpose:
     applied_generation (in proxy runtime state) records the spawn-time
     generation of the running process — never a later generation.
 
-Dependencies: json, os, tempfile, threading, pathlib
+Dependencies: json, threading, pathlib, atomic_io
 Data flow:
     notify / writers → bump_generation → reconcile reads get_generation
 Side effects:
@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
+
+from talos.proxy.runtime.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -89,23 +89,12 @@ def _bump_now(projects_root: Path, project_id: str, *, reason: str) -> int:
         indent=2,
         sort_keys=True,
     ) + "\n"
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent),
+    atomic_write_text(
+        path,
+        payload,
         prefix=".proxy_generation.",
         suffix=".tmp",
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
     logger.info(
         "Proxy config generation %s → %s project=%s reason=%s",
         current,

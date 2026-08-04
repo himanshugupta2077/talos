@@ -3,10 +3,10 @@ Module: talos.proxy.runtime.state
 
 Purpose:
     Atomic persistence of proxy runtime state under ~/.talos/runtime/proxy.json.
-    Writers use temp-file + os.replace so concurrent status readers always see
-    a complete JSON document.
+    Writers use atomic_write_text (temp + replace, with Windows lock retries)
+    so concurrent status readers almost always see a complete JSON document.
 
-Dependencies: json, os, tempfile, pathlib, dataclasses, enum, datetime
+Dependencies: json, pathlib, dataclasses, enum, datetime, atomic_io
 Data flow:
     ProxyRuntimeManager → load_state / save_state → proxy.json
 Side effects:
@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
-from dataclasses import asdict, dataclass, field
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
+from talos.proxy.runtime.atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
+
+# Brief retries when status readers / AV hold proxy.json open on Windows.
+_LOAD_ATTEMPTS: int = 5
+_LOAD_DELAY_S: float = 0.05
 
 RUNTIME_VERSION: int = 1
 
@@ -132,46 +137,44 @@ def load_state(data_dir: Path) -> ProxyRuntimeState:
     """
     Purpose:
         Load proxy.json or return a fresh STOPPED state if missing/corrupt.
+        Retries briefly on transient Windows sharing / access errors.
     """
     path = proxy_state_path(data_dir)
     if not path.exists():
         return ProxyRuntimeState()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            logger.warning("proxy.json is not an object; treating as STOPPED")
+    last_exc: Optional[BaseException] = None
+    for attempt in range(_LOAD_ATTEMPTS):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                logger.warning("proxy.json is not an object; treating as STOPPED")
+                return ProxyRuntimeState()
+            return ProxyRuntimeState.from_dict(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt + 1 < _LOAD_ATTEMPTS:
+                time.sleep(_LOAD_DELAY_S * (attempt + 1))
+                continue
+            logger.warning(
+                "Failed to read proxy.json (%s); treating as STOPPED",
+                exc,
+            )
             return ProxyRuntimeState()
-        return ProxyRuntimeState.from_dict(raw)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to read proxy.json (%s); treating as STOPPED", exc)
-        return ProxyRuntimeState()
+    logger.warning(
+        "Failed to read proxy.json (%s); treating as STOPPED",
+        last_exc,
+    )
+    return ProxyRuntimeState()
 
 
 def save_state(data_dir: Path, state: ProxyRuntimeState) -> None:
     """
     Purpose:
-        Atomically write proxy.json via temp file + os.replace.
+        Atomically write proxy.json (Windows-safe replace with retries).
     """
     path = proxy_state_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n"
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=".proxy.json.",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, payload, prefix=".proxy.json.", suffix=".tmp")
 
 
 def utc_now_iso() -> str:

@@ -94,6 +94,7 @@ from talos.proxy.scope import any_rule_matches
 from talos.url_identity import UrlIdentityError, parse_request_url
 from talos.url_sink.config import (
     UrlSinkRuntimeConfig,
+    get_process_url_sink_config,
     load_url_sink_config_for_project,
     set_process_url_sink_config,
 )
@@ -788,7 +789,8 @@ def _persist_db(
                 # Phase 2: HTML hidden fields + JS config URL inventory from
                 # the response (read-only; location=response; score/name gated).
                 # Gated by url_sink.passive.enabled + url_sink.html_js.enabled.
-                us_cfg = getattr(self, "_url_sink_cfg", None) or UrlSinkRuntimeConfig()
+                # _persist_db is a free function — use process-cached config.
+                us_cfg = get_process_url_sink_config()
                 if us_cfg.passive_enabled and us_cfg.html_js_enabled:
                     try:
                         response_params = extract_response_url_sink_params(

@@ -5,8 +5,8 @@ Purpose:
     SchedulerRuntimeManager — owns the standalone ReplayScheduler process.
     Independent of proxy lifecycle except on active-project transitions.
 
-Dependencies: json, logging, os, sys, tempfile, pathlib, dataclasses
-              talos.proxy.runtime.{lock,process_ops}, talos.projects.model
+Dependencies: json, logging, os, sys, pathlib, dataclasses
+              talos.proxy.runtime.{lock,process_ops,atomic_io}, talos.projects.model
 Data flow:
     CLI / project open-close → SchedulerRuntimeManager → ProcessOps → runner
 Side effects:
@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from talos.projects.model import Project
+from talos.proxy.runtime.atomic_io import atomic_write_text
 from talos.proxy.runtime.lock import RuntimeLock
 from talos.proxy.runtime.process_ops import ProcessIdentity, ProcessOps
 from talos.proxy.runtime.state import ProxyState
@@ -147,23 +147,8 @@ def load_scheduler_state(data_dir: Path) -> SchedulerRuntimeState:
 
 def save_scheduler_state(data_dir: Path, state: SchedulerRuntimeState) -> None:
     path = scheduler_state_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n"
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".scheduler.json.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, payload, prefix=".scheduler.json.", suffix=".tmp")
 
 
 class SchedulerRuntimeManager:

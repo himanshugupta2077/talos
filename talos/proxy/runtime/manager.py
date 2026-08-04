@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,7 +61,9 @@ logger = logging.getLogger(__name__)
 
 # Default settle / drain timeouts.
 _START_SETTLE_S: float = 0.4
-_START_READY_TIMEOUT_S: float = 5.0
+# Linux is typically ready in ~1–2s. Windows (esp. VDI + AV) can take longer
+# for mitmdump to import the addon and bind the listen port.
+_START_READY_TIMEOUT_S: float = 20.0 if sys.platform == "win32" else 5.0
 _DEFAULT_STOP_TIMEOUT_S: float = 30.0
 _STATUS_LOCK_TIMEOUT_S: float = 0.2
 _FORCE_KILL_WAIT_S: float = 5.0
