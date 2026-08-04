@@ -271,6 +271,7 @@ def _print_usage() -> None:
         "                    [--upstream URL | --no-upstream] [--port] [--listen-host]\n"
         "    stop            Gracefully stop the managed capture proxy\n"
         "    kill            Stop managed proxy + free port (orphan mitmdump)\n"
+        "                    Use after a failed start if the listen port stays busy\n"
         "    restart         Gracefully restart the managed capture proxy\n"
         "    status          Show managed proxy runtime status [--format json]\n"
         "    config          Show or set Direct vs Upstream Proxy mode\n"

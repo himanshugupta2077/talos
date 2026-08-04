@@ -200,6 +200,29 @@ Common after messy shutdowns or when spawn-time process identity failed to recor
 1. Check core status: `talos proxy status --format json`
 2. If a process owns :8080 but status is stopped: `talos proxy kill --port 8080` then Start from the UI
 3. Fixed in core: status rebinds `create_time` when it was recorded as `0.0` instead of wiping a live proxy to stopped
+
+### `talos proxy start` crashes with `os has no attribute 'WNOHANG'` (Windows)
+
+**Symptom:** Start prints listen/mode lines, then a Python traceback ending at
+`process_ops._try_exit_code` / `os.waitpid(..., os.WNOHANG)`. Exit code 1 in
+~5–10s. Port may still be held by mitmdump.
+
+**Cause (fixed in current core):** readiness timeout cleanup used POSIX-only
+`os.WNOHANG` after `CTRL_BREAK`. Windows does not define that symbol.
+
+**What to do:**
+
+1. Update/reinstall Talos from a build that includes the ProcessOps Windows
+   exit-code path (`GetExitCodeProcess`), not raw `waitpid`.
+2. Reclaim any orphan: `talos proxy kill --port 8080` (or your listen port).
+3. Start again: `talos proxy start --listen-host 127.0.0.1 --port 8080`.
+4. If start still fails **without** a traceback, read the readiness message /
+   `~/.talos/runtime/proxy.log` — slow VDI may need the longer Windows ready
+   timeout (already 20s in current manager).
+
+Current core never raises from exit-code polling; a failed start should report
+`ProxyStartError` (e.g. did not listen within N seconds), not `AttributeError`.
+
 ---
 
 ## Database issues

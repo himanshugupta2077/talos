@@ -2,6 +2,46 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Windows proxy start: no POSIX `os.WNOHANG` crash on readiness cleanup
+
+**Shipped:** 2026-08-04
+
+### Problem
+
+`talos proxy start` on Windows could spawn mitmdump, hit the listen readiness
+timeout (slow VDI / AV), then **crash the CLI** during cleanup:
+
+```text
+AttributeError: module 'os' has no attribute 'WNOHANG'
+  … process_ops.wait → _try_exit_code → os.waitpid(pid, os.WNOHANG)
+```
+
+`os.WNOHANG` / `os.waitpid` are POSIX-only. After `CTRL_BREAK` graceful stop,
+`ProcessOps.wait()` polled exit status with those APIs and aborted before
+`ProxyStartError` could be raised — leaving an orphan mitmdump and a confusing
+traceback instead of a clear readiness message.
+
+### Fix
+
+| Area | Change |
+|------|--------|
+| **`ProcessOps._try_exit_code`** | Windows → `GetExitCodeProcess` via ctypes; POSIX → `waitpid`+`WNOHANG` only when present |
+| **Never raise** | Exit-code probing is best-effort; failures return `None` (liveness uses `is_alive`) |
+| **Manager readiness timeout** | Cleanup (graceful → wait → force kill) is wrapped so probe bugs cannot mask `ProxyStartError` |
+| **Related** | Longer Windows ready timeout (20s), create_time retry/rebind, atomic state writes |
+
+```text
+# After pull/install on Windows:
+talos proxy kill --port 8080   # reclaim orphans if any
+talos proxy start --listen-host 127.0.0.1 --port 8080
+talos proxy status --format json
+```
+
+Tests: `tests/test_process_ops_lifecycle.py` (win32 branch forced on Linux CI).
+Docs: control-panel troubleshooting; architecture proxy runtime notes.
+
+---
+
 ## Basic Scope: SAP / cookieless path parameters match directory prefixes
 
 **Shipped:** 2026-08-04

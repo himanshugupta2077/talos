@@ -766,10 +766,25 @@ class ProxyRuntimeManager:
             time.sleep(0.15)
         else:
             # Timeout still alive but not listening — treat as failure.
-            self._ops.request_graceful_shutdown(identity)
-            self._ops.wait(identity, timeout_s=3.0)
-            if self._ops.is_alive(identity):
-                self._ops.force_kill(identity)
+            # Cleanup must never raise: Windows historically crashed here on
+            # POSIX-only os.WNOHANG during wait(), masking the real readiness
+            # error and leaving mitmdump orphaned.
+            try:
+                self._ops.request_graceful_shutdown(identity)
+                self._ops.wait(identity, timeout_s=3.0)
+                if self._ops.is_alive(identity):
+                    self._ops.force_kill(identity)
+                    self._ops.wait(identity, timeout_s=_FORCE_KILL_WAIT_S)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.warning(
+                    "Cleanup after readiness timeout failed pid=%s: %s",
+                    identity.pid,
+                    cleanup_exc,
+                )
+                try:
+                    self._ops.force_kill(identity)
+                except Exception:  # noqa: BLE001
+                    pass
             state.clear_process()
             state.listen_host = listen_host
             state.listen_port = port

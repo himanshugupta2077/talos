@@ -108,8 +108,69 @@ def test_try_exit_code_win32_branch_avoids_posix_waitpid(
     """
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ops, "_windows_exit_code", lambda pid: 0 if pid == 42 else None)
+
+    def _forbid_waitpid(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AssertionError("os.waitpid must not be called on win32")
+
+    monkeypatch.setattr("os.waitpid", _forbid_waitpid)
     assert ops._try_exit_code(42) == 0
     assert ops._try_exit_code(99) is None
+
+
+def test_try_exit_code_never_raises_without_wnohang(
+    ops: ProcessOps, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Regression: AttributeError: module 'os' has no attribute 'WNOHANG'.
+
+    Even if platform detection is wrong or WNOHANG is missing, wait/exit-code
+    probing must return None — not crash proxy start cleanup.
+    """
+    import os as os_mod
+
+    # Simulate a Windows-like environment where WNOHANG does not exist.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delattr(os_mod, "WNOHANG", raising=False)
+    monkeypatch.setattr(ops, "_windows_exit_code", lambda pid: None)
+    assert ops._try_exit_code(1) is None
+
+    # POSIX path without WNOHANG must also be safe (stripped / exotic builds).
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delattr(os_mod, "WNOHANG", raising=False)
+    assert ops._try_exit_code(1) is None
+
+
+def test_wait_on_win32_platform_never_calls_waitpid(
+    ops: ProcessOps, child_paths: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Full wait() path with platform forced to win32 (Linux CI).
+
+    Mirrors proxy start readiness-timeout cleanup:
+    request_graceful_shutdown → wait → _try_exit_code.
+    """
+    ready, graceful = child_paths
+    identity = _spawn_child(ops, ready, graceful, hold_seconds=2.0)
+
+    def _forbid_waitpid(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AssertionError("os.waitpid must not be called when platform is win32")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("os.waitpid", _forbid_waitpid)
+    monkeypatch.setattr(ops, "_windows_exit_code", lambda pid: None)
+    monkeypatch.setattr(ops, "_windows_ctrl_break", lambda pid: None)
+    monkeypatch.setattr(ops, "_windows_terminate", lambda pid: None)
+    # Pretend process already exited so wait() probes exit code immediately.
+    monkeypatch.setattr(ops, "_read_create_time", lambda pid: None)
+
+    ops.request_graceful_shutdown(identity)
+    exit_code = ops.wait(identity, timeout_s=2.0)
+    assert exit_code is None
+    # Reap the real child so the suite does not leak processes.
+    monkeypatch.undo()
+    if ops.is_alive(identity):
+        ops.force_kill(identity)
+        ops.wait(identity, timeout_s=5.0)
 
 
 def test_graceful_stop_writes_marker(

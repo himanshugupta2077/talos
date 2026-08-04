@@ -818,6 +818,11 @@ talos proxy start --port 8080 --quiet
 talos proxy start --upstream http://127.0.0.1:8081
 talos proxy start --no-upstream
 
+# Status / stop / reclaim port (orphan mitmdump after failed start or crash)
+talos proxy status --format json
+talos proxy stop
+talos proxy kill --port 8080
+
 # Persist project mode (also writes project.yaml)
 talos proxy config
 talos proxy config --upstream http://127.0.0.1:8081
@@ -827,6 +832,12 @@ talos proxy config --no-upstream
 talos config set proxy.upstream.url http://127.0.0.1:8081
 talos config proxy show
 ```
+
+**Windows notes:** Managed lifecycle uses `CTRL_BREAK` (not POSIX signals) and
+never calls `os.WNOHANG`. If an old build crashed start with
+`AttributeError: os has no attribute 'WNOHANG'`, update Talos, run
+`talos proxy kill --port <port>`, then start again. Logs:
+`%USERPROFILE%\.talos\runtime\proxy.log`.
 
 ---
 

@@ -346,10 +346,13 @@ class ProcessOps:
         Returns None if the process does not exist or is a zombie (already dead).
         """
         # Reap our own children so zombies do not linger as "alive".
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except (ChildProcessError, OSError):
-            pass
+        # WNOHANG is POSIX-only — never touch it on Windows (or stripped builds).
+        wnohang = getattr(os, "WNOHANG", None)
+        if wnohang is not None and hasattr(os, "waitpid"):
+            try:
+                os.waitpid(pid, wnohang)
+            except (ChildProcessError, OSError):
+                pass
 
         try:
             with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
@@ -377,20 +380,34 @@ class ProcessOps:
         """
         Best-effort exit status for a reaped/exited process.
 
+        Never raises — callers (proxy/scheduler readiness + drain) must not
+        crash on exit-code probing.
+
         POSIX: non-blocking waitpid on our own children (WNOHANG).
-        Windows: WNOHANG / WIF* are not available; we do not retain a Popen
-        handle across CLI invocations, so exit codes are usually unavailable.
-        Callers treat None as "unknown" and rely on is_alive for liveness.
+        Windows: WNOHANG / WIF* / waitpid are not available; use
+        GetExitCodeProcess when the handle is still openable. Callers treat
+        None as "unknown" and rely on is_alive for liveness.
         """
-        if sys.platform == "win32":
-            return self._windows_exit_code(pid)
         try:
-            finished_pid, status = os.waitpid(pid, os.WNOHANG)
+            if sys.platform == "win32":
+                return self._windows_exit_code(pid)
+            return self._posix_exit_code(pid)
+        except Exception as exc:  # noqa: BLE001 — best-effort; never crash drain
+            logger.debug("exit code probe failed for pid=%s: %s", pid, exc)
+            return None
+
+    def _posix_exit_code(self, pid: int) -> Optional[int]:
+        """Non-blocking waitpid exit status (POSIX only)."""
+        wnohang = getattr(os, "WNOHANG", None)
+        if wnohang is None or not hasattr(os, "waitpid"):
+            return None
+        try:
+            finished_pid, status = os.waitpid(pid, wnohang)
             if finished_pid == 0:
                 return None
-            if os.WIFEXITED(status):
+            if hasattr(os, "WIFEXITED") and os.WIFEXITED(status):
                 return os.WEXITSTATUS(status)
-            if os.WIFSIGNALED(status):
+            if hasattr(os, "WIFSIGNALED") and os.WIFSIGNALED(status):
                 return -os.WTERMSIG(status)
         except (ChildProcessError, OSError):
             pass
