@@ -110,3 +110,33 @@ def test_angle_placeholder_suppressed():
         suppressed, reason = should_suppress(v, detector_family="contextual")
         assert suppressed, v
         assert reason == "angle_placeholder"
+
+
+def test_credentials_mode_and_code_expression_suppressed():
+    from talos.passive.suppress import looks_like_code_expression
+
+    assert looks_like_code_expression("()=>get[e")
+    assert looks_like_code_expression("{...token")
+    assert looks_like_code_expression("!!r.withCredentials)")
+    assert looks_like_code_expression("Object.defineProperty")
+    assert looks_like_code_expression("n=Object.getOwnPropertyDescriptor")
+
+    for v, family in (
+        ("same-origin", "contextual"),
+        ("include", "contextual"),
+        ("omit", "contextual"),
+        ("true", "contextual"),
+        ("{fontFamily:x}", "contextual"),
+    ):
+        suppressed, reason = should_suppress(v, detector_family=family)
+        assert suppressed, (v, reason)
+
+
+def test_non_secret_key_suppressed():
+    suppressed, reason = should_suppress(
+        "whatevervalue12",
+        detector_family="contextual",
+        matched_key="withCredentials",
+    )
+    assert suppressed
+    assert reason == "non_secret_key"

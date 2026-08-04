@@ -174,3 +174,47 @@ def test_encoded_password_comment_not_assignment():
         if not d.suppressed and d.encoding_chain and "base64" in d.encoding_chain
     ]
     assert decoded, "expected base64-decoded secret detection"
+
+
+def test_minified_js_object_define_not_entropy_finding():
+    """Minified Object.* chains must not become high_entropy secrets."""
+    text = (
+        "e=Object.create,t=Object.defineProperty,"
+        "n=Object.getOwnPropertyDescriptor,r=Object.getOwnPropertyNames,"
+        "i=Object.getPrototypeOf,a=Object.prototype"
+    )
+    dets = DetectorOrchestrator().scan_text(text)
+    high = [
+        d
+        for d in dets
+        if not d.suppressed
+        and d.confidence_level in ("HIGH", "CONFIRMED_PATTERN")
+        and d.detector_id in ("high_entropy_secret", "contextual_assignment")
+    ]
+    assert not high, f"minified JS false positives: {high}"
+
+
+def test_fetch_credentials_mode_not_finding():
+    """credentials: 'same-origin' is a Fetch enum, not a secret."""
+    text = "t.credentials=`same-origin`;h.withCredentials=!!r.withCredentials"
+    dets = DetectorOrchestrator().scan_text(text)
+    kept = [
+        d
+        for d in dets
+        if not d.suppressed
+        and d.detector_id == "contextual_assignment"
+        and d.confidence_level in ("HIGH", "CONFIRMED_PATTERN")
+    ]
+    assert not kept, f"credentials mode noise: {kept}"
+
+
+def test_design_token_object_not_finding():
+    """Ant Design style token: {fontFamily…} is not a secret assignment."""
+    text = 'xR={token:{fontFamily:"-apple-system",fontSize:14}}'
+    dets = DetectorOrchestrator().scan_text(text)
+    kept = [
+        d
+        for d in dets
+        if not d.suppressed and d.detector_id == "contextual_assignment"
+    ]
+    assert not kept, f"design token noise: {kept}"

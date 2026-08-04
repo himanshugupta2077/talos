@@ -2,11 +2,15 @@
 Module: talos.passive.detectors.entropy
 
 Purpose:
-    Stage 3 — high-entropy string candidates that need nearby sensitive
-    keyword OR assignment context for promotion (never bare random tokens).
+    Stage 3 — high-entropy string candidates that need a nearby sensitive
+    keyword for promotion (never bare random tokens, never assignment-only).
+
+    Assignment-only gating was removed: minified JS is full of ``=`` and
+    produced hundreds of false HIGH findings.  Key=value paths belong to
+    the contextual assignment detector.
 
     Does **not** create Base64 / encoding findings.  Pure high-entropy
-    blobs without context are ignored.
+    blobs without keyword context are ignored.
 
 Dependencies: re; detectors.base, scoring, rules_loader, constants, models
 Data flow: text → list[RawMatch] (only context-gated)
@@ -26,28 +30,29 @@ from talos.passive.detectors.base import build_raw_match, shannon_entropy
 from talos.passive.models import RawMatch, SourceDocument
 from talos.passive.rules_loader import RuleIndex, get_rule_index
 from talos.passive.scoring import is_high_entropy
-from talos.passive.suppress import looks_like_url_or_hostpath
+from talos.passive.suppress import (
+    looks_like_code_expression,
+    looks_like_url_or_hostpath,
+)
 
-# Quoted or bare high-entropy-looking tokens.
-# Note: charset includes / and . for base64/url-safe alphabets; URL-shaped
-# matches are rejected after extract via looks_like_url_or_hostpath.
+# Quoted high-entropy-looking tokens (base64 / url-safe / hex-ish).
+# Bare (unquoted) candidates deliberately exclude `.` and `=` so minified
+# JS property chains (Object.defineProperty, e.unstable_now=…) never match.
 _CANDIDATE = re.compile(
     r"(?:"
     r"\"([A-Za-z0-9+/=_\-.]{16,128})\""
     r"|'([A-Za-z0-9+/=_\-.]{16,128})'"
     r"|`([A-Za-z0-9+/=_\-.]{16,128})`"
-    r"|(?<![A-Za-z0-9+/=_\-.])([A-Za-z0-9+/=_\-.]{20,128})(?![A-Za-z0-9+/=_\-.])"
+    r"|(?<![A-Za-z0-9+/=_\-])([A-Za-z0-9+/=_\-]{24,128})(?![A-Za-z0-9+/=_\-])"
     r")"
 )
-
-# Assignment-ish operators near the candidate
-_ASSIGN_NEAR = re.compile(r"[=:]=?|=>")
 
 _DETECTOR_ID = "high_entropy_secret"
 _BASE_SCORE = 35
 _CONTEXT_RADIUS = 80
-_MIN_ENTROPY = 3.8
-_MIN_LEN = 16
+_MIN_ENTROPY = 4.0
+_MIN_LEN_QUOTED = 16
+_MIN_LEN_BARE = 24
 
 
 class EntropyDetector:
@@ -62,7 +67,7 @@ class EntropyDetector:
         *,
         max_candidates: int = 200,
         min_entropy: float = _MIN_ENTROPY,
-        min_length: int = _MIN_LEN,
+        min_length: int = _MIN_LEN_QUOTED,
     ) -> None:
         self._index = index if index is not None else get_rule_index()
         self._max_candidates = max(1, int(max_candidates))
@@ -96,7 +101,12 @@ class EntropyDetector:
     ) -> list[RawMatch]:
         """
         Purpose:
-            Find high-entropy secrets with context gates.
+            Find high-entropy secrets gated by a nearby sensitive keyword.
+
+        Bare ``=`` assignment context alone is **not** enough — minified JS
+        is full of assignments and was flooding HIGH findings.  Contextual
+        assignment detector owns ``key = value`` paths.
+
         Input:
             text / encoding context
         Output:
@@ -112,21 +122,27 @@ class EntropyDetector:
         for m in _CANDIDATE.finditer(text):
             value = None
             v_start = v_end = 0
+            quoted = False
             for i in range(1, (m.lastindex or 0) + 1):
                 g = m.group(i)
                 if g is not None:
                     value = g
                     v_start, v_end = m.start(i), m.end(i)
+                    # Groups 1–3 are quoted; group 4 is bare.
+                    quoted = i <= 3
                     break
-            if not value or len(value) < self._min_length:
+            min_len = self._min_length if quoted else max(self._min_length, _MIN_LEN_BARE)
+            if not value or len(value) < min_len:
                 continue
             # URLs / host-paths are never secret material for this stage
             # (e.g. //api.github.com/user next to Authorization: token).
             if looks_like_url_or_hostpath(value):
                 continue
+            if looks_like_code_expression(value):
+                continue
             if not is_high_entropy(
                 value,
-                min_length=self._min_length,
+                min_length=min_len,
                 min_entropy=self._min_entropy,
             ):
                 continue
@@ -136,13 +152,14 @@ class EntropyDetector:
             window = text[window_start:window_end]
             window_lower = window.lower()
 
+            # Require a sensitive keyword in the local window.  Assignment
+            # alone matches almost every minified statement and is rejected.
             has_keyword = any(k in window_lower for k in self._boost_keywords)
-            # Assignment: operator before the value in the local window
-            before = text[window_start:v_start]
-            has_assignment = bool(_ASSIGN_NEAR.search(before))
-
-            if not has_keyword and not has_assignment:
+            if not has_keyword:
                 continue
+            # Prefer keyword that is not only a false friend inside a long
+            # identifier far from the value — still accept substring match
+            # (api_key_hint, clientSecret) as historically intended.
 
             dedup = (value, v_start)
             if dedup in seen:
@@ -168,8 +185,9 @@ class EntropyDetector:
                         "case_sensitive": True,
                         "finding_title": "High-Entropy Secret Candidate",
                         "stage": "entropy",
-                        "has_keyword": has_keyword,
-                        "has_assignment": has_assignment,
+                        "has_keyword": True,
+                        "has_assignment": False,
+                        "quoted": quoted,
                         "entropy": shannon_entropy(value),
                     },
                 )

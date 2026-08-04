@@ -145,6 +145,7 @@ def score_match(raw: RawMatch) -> tuple[int, str]:
         score = int(meta.get("base_score") or 40)
         score += _W_SENSITIVE_ASSIGNMENT
         ent = raw.entropy if raw.entropy is not None else shannon_entropy(raw.raw_value)
+        value = raw.raw_value or ""
         if ent >= 3.5:
             score += _W_HIGH_ENTROPY
         if ent >= 4.5:
@@ -158,23 +159,49 @@ def score_match(raw: RawMatch) -> tuple[int, str]:
         if raw.encoding_chain:
             score += _W_ENCODED_BONUS
         # Short / weak values get pulled down (suppression also handles)
-        if len(raw.raw_value or "") < 8:
+        if len(value) < 8:
             score -= 15
+        if len(value) < 16:
+            score -= 10
+        # Flood-prone keys (token/auth/credentials) must not auto-find without
+        # strong secret shape — cap below HIGH unless value is clearly secret.
+        key = (raw.matched_key or "").lower()
+        key_compact = "".join(ch for ch in key if ch.isalnum())
+        flood_keys = {"token", "auth", "credentials", "credential"}
+        if key_compact in flood_keys:
+            strong = (
+                len(value) >= 20
+                and ent >= 4.0
+                and any(c.isdigit() for c in value)
+            )
+            if not strong:
+                score = min(score, SCORE_HIGH_MIN - 1)
         score = max(0, min(100, score))
         return score, level_from_score(score)
 
-    # Entropy stage
+    # Entropy stage — keyword is required at detector level; assignment-only
+    # no longer promotes.  Cap unquoted bare hits at MEDIUM so they stay
+    # observation-only unless threshold is lowered.
     if family == DETECTOR_FAMILY_ENTROPY:
         score = int(meta.get("base_score") or 35)
-        if meta.get("has_assignment"):
-            score += _W_SENSITIVE_ASSIGNMENT
         if meta.get("has_keyword"):
             score += _W_NEARBY_KEYWORD
+        if meta.get("has_assignment"):
+            score += _W_SENSITIVE_ASSIGNMENT
         ent = raw.entropy if raw.entropy is not None else shannon_entropy(raw.raw_value)
         if ent >= 4.0:
             score += _W_HIGH_ENTROPY
+        if ent >= 4.8:
+            score += 10
         if raw.encoding_chain:
             score += _W_ENCODED_BONUS
+        # Without keyword, never reach HIGH (auto-finding threshold).
+        if not meta.get("has_keyword"):
+            score = min(score, SCORE_HIGH_MIN - 1)
+        # Bare (unquoted) candidates need both keyword + very high entropy
+        # to become HIGH; otherwise MEDIUM max.
+        if meta.get("quoted") is False and ent < 4.5:
+            score = min(score, SCORE_HIGH_MIN - 1)
         score = max(0, min(100, score))
         return score, level_from_score(score)
 

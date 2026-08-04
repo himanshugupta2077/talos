@@ -158,6 +158,64 @@ def _register_demo(registry: Path, projects_root: Path):
     )
 
 
+def test_bulk_lifecycle_confirm(client, home):
+    _, projects_root, registry = home
+    _write_registry(
+        registry,
+        {"demo": {"id": "demo", "name": "demo", "status": "ACTIVE", "path": "demo"}},
+    )
+    _seed_findings_db(projects_root)
+
+    with patch("talos_ui.routers.findings.cli.run_scoped") as scoped:
+        scoped.return_value = [_ok_result(["finding", "confirm", "p1"])]
+        res = client.post(
+            "/api/findings/bulk",
+            params={"project_id": "demo"},
+            json={"action": "confirm", "finding_ids": ["p1", "l1"], "linked": False},
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["requested"] == 2
+    assert body["ok"] == 2
+    assert body["action"] == "confirm"
+    assert scoped.call_count == 2
+
+
+def test_bulk_lifecycle_rejects_empty(client, home):
+    _, projects_root, registry = home
+    _write_registry(
+        registry,
+        {"demo": {"id": "demo", "name": "demo", "status": "ACTIVE", "path": "demo"}},
+    )
+    _seed_findings_db(projects_root)
+    res = client.post(
+        "/api/findings/bulk",
+        params={"project_id": "demo"},
+        json={"action": "reject", "finding_ids": []},
+    )
+    assert res.status_code == 400
+
+
+def test_bulk_group_add(client, home):
+    _, projects_root, registry = home
+    _write_registry(
+        registry,
+        {"demo": {"id": "demo", "name": "demo", "status": "ACTIVE", "path": "demo"}},
+    )
+    _seed_findings_db(projects_root)
+
+    with patch("talos_ui.routers.findings.cli.run_scoped") as scoped:
+        scoped.return_value = [_ok_result(["finding", "group", "add", "G", "p1"])]
+        res = client.post(
+            "/api/findings/bulk/group",
+            params={"project_id": "demo"},
+            json={"group": "Report", "finding_ids": ["p1", "solo"]},
+        )
+    assert res.status_code == 200
+    assert res.json()["ok"] == 2
+    assert scoped.call_count == 2
+
+
 def test_list_findings_defaults_to_primary(client, home):
     _talos_home, projects_root, registry = home
     _seed_findings_db(projects_root)

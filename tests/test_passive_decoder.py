@@ -93,20 +93,18 @@ def test_extract_skips_empty():
 
 
 def test_entropy_requires_context():
-    # Bare high-entropy blob without keyword/assignment → no hit
+    # Bare high-entropy blob without sensitive keyword → no hit
     bare = "Xk9mQ2pL7vN4wR8tY1uZ0bC3dE5fG6hJ"
-    hits = EntropyDetector().detect(f"const x = {bare};")
-    # May or may not have assignment operator context (= before value)
-    # With `const x = TOKEN` there IS assignment — so may match.
-    # Use no operator:
+    # Assignment alone is no longer enough (minified JS flood).
+    hits = EntropyDetector().detect(f'const x = "{bare}";')
+    assert hits == []
     hits2 = EntropyDetector().detect(f"note {bare} end")
     assert hits2 == []
 
 
 def test_entropy_with_keyword_promotes():
     token = "Xk9mQ2pL7vN4wR8tY1uZ0bC3dE5fG6hJ"
-    text = f'const api_key_hint = "{token}"; // secret nearby'
-    # Actually need keyword in window — "secret" is in comment
+    # Need keyword in window — "secret" is in comment
     text = f'// secret config\nconst v = "{token}";'
     hits = EntropyDetector().detect(text)
     assert hits

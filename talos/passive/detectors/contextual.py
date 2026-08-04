@@ -34,33 +34,52 @@ from talos.passive.constants import (
 from talos.passive.detectors.base import build_raw_match
 from talos.passive.models import RawMatch, SourceDocument
 from talos.passive.rules_loader import RuleIndex, get_rule_index
+from talos.passive.suppress import (
+    is_non_secret_key,
+    looks_like_code_expression,
+)
 
-# Sensitive key token (word-ish, including camelCase / snake_case)
+# Sensitive key token (word-ish, including camelCase / snake_case).
+# Prefer compound secrets (clientSecret, api_key) over bare "token"/"auth"
+# which flood minified frontend design-system / HTTP client code.
 _KEY_PART = (
     r"(?:password|passwd|secret|client_secret|clientSecret|"
     r"api_key|apiKey|api_secret|apiSecret|"
     r"access_token|accessToken|auth_token|authToken|"
     r"private_key|privateKey|app_secret|appSecret|"
-    r"app_key|appKey|token|credentials?)"
+    r"app_key|appKey|client_secret|refresh_token|refreshToken|"
+    r"id_token|idToken|bearer|credentials?)"
 )
+
+# Bare weak keys only when they are the entire identifier (not withCredentials).
+_WEAK_KEY_EXACT = r"(?:token|auth|password|passwd|secret|credentials?)"
 
 # Assignment operators across JS / JSON / Python / YAML-ish
 _ASSIGN_OPS = r"(?:=|:|=>)"
 
-# Quoted or unquoted value (conservative)
+# Prefer quoted string values. Bare tokens are accepted only for high-quality
+# secret-shaped RHS (no JS expression markers) and are scored/suppressed later.
 _VALUE = (
     r"(?:"
-    r"\"([^\"]{4,256})\""           # double-quoted
-    r"|'([^']{4,256})'"             # single-quoted
-    r"|`([^`]{4,256})`"             # backtick
-    r"|([^\s,;}}\]]{4,256})"        # bare token
+    r"\"([^\"]{6,256})\""           # double-quoted
+    r"|'([^']{6,256})'"             # single-quoted
+    r"|`([^`]{6,256})`"             # backtick
+    r"|([A-Za-z0-9+/=_\-.]{8,256})"  # bare secret-shaped only (no braces/parens)
     r")"
 )
 
-# Full pattern: optional quotes around key, optional const/let/var
+# Full pattern: optional quotes around key, optional const/let/var.
+# Compound keys: *secret*, *password*, apiKey, accessToken, …
+# Exact weak keys: token|auth|… as whole identifier (word boundary via
+# not consuming leading alnum into the key beyond the identifier start).
 _ASSIGNMENT = re.compile(
     rf"(?:(?:const|let|var)\s+)?"
-    rf"[\"']?(?P<key>[A-Za-z_][\w]*{_KEY_PART}[\w]*|{_KEY_PART}[\w]*)[\"']?"
+    rf"[\"']?(?P<key>"
+    rf"[A-Za-z_][\w]*(?:password|passwd|secret|Secret|token|Token|key|Key|"
+    rf"credential|Credential)[\w]*"
+    rf"|{_WEAK_KEY_EXACT}"
+    rf"|{_KEY_PART}"
+    rf")[\"']?"
     rf"\s*{_ASSIGN_OPS}\s*"
     rf"{_VALUE}",
     re.IGNORECASE,
@@ -68,6 +87,24 @@ _ASSIGNMENT = re.compile(
 
 _DETECTOR_ID = "contextual_assignment"
 _BASE_SCORE = 40
+
+# Known non-secret keys (HTTP client / design tokens / hooks).
+_SKIP_KEYS = frozenset({
+    "withcredentials",
+    "withxsrftoken",
+    "canceltoken",
+    "usetoken",
+    "deprecatedtokens",
+    "realtoken",
+    "csstoken",
+    "designtoken",
+    "themetoken",
+    "icontoken",
+    "fonttoken",
+    "colortoken",
+    "tokentype",
+    "tokencolor",
+})
 
 
 class ContextualDetector:
@@ -137,11 +174,21 @@ class ContextualDetector:
             value, v_start, v_end = _value_from_assignment(m)
             if not value or not key:
                 continue
-            # Filter: key must look sensitive
-            if self._keys_lower and key.lower() not in self._keys_lower:
-                # Allow partial: key contains a sensitive key as substring
-                if not any(sk in key.lower() for sk in self._keys_lower):
+            key_l = key.lower()
+            key_compact = re.sub(r"[^a-z0-9]", "", key_l)
+            if key_compact in _SKIP_KEYS or is_non_secret_key(key):
+                continue
+            # Filter: key must look sensitive (exact or compound)
+            if self._keys_lower and key_l not in self._keys_lower:
+                if not any(sk in key_l for sk in self._keys_lower):
                     continue
+            # Reject JS expressions / object literals as values
+            if looks_like_code_expression(value):
+                continue
+            # Bare group (unquoted): require secret-shaped alphabet only
+            # (regex already restricts charset; double-check no whitespace)
+            if any(ch in value for ch in " \t\n\r"):
+                continue
             dedup = (value, v_start)
             if dedup in seen:
                 continue

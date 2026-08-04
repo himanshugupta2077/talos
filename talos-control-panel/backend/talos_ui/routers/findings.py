@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import cli, config, db
 
@@ -262,3 +262,160 @@ def group_delete(project_id: str, body: GroupDeleteBody):
 def group_report(project_id: str, group_name: str):
     results = cli.run_scoped(project_id, ["finding", "report", "--group", group_name])
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Bulk lifecycle (multi-select on Findings list)                       #
+# ------------------------------------------------------------------ #
+
+_BULK_ACTIONS = frozenset({"confirm", "reject", "reopen"})
+_BULK_MAX = 500
+
+
+class BulkLifecycleBody(BaseModel):
+    """
+    Multi-finding status change (list-page selection).
+
+    Mirrors ``talos finding confirm|reject|reopen`` per id. Optional
+    ``linked`` applies PRIMARY+LINKED bulk for each selected PRIMARY
+    (CLI ``--linked --force``).
+    """
+
+    action: str = Field(..., description="confirm | reject | reopen")
+    finding_ids: list[str] = Field(default_factory=list)
+    linked: bool = False
+
+
+class BulkGroupBody(BaseModel):
+    """Add many findings to a named group (CLI group add per id)."""
+
+    group: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+class BulkNotesBody(BaseModel):
+    """Set the same analyst notes on many findings (CLI note set)."""
+
+    notes: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+def _normalize_ids(ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in ids or []:
+        fid = (raw or "").strip()
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        out.append(fid)
+    return out
+
+
+@router.post("/bulk")
+def bulk_lifecycle(project_id: str, body: BulkLifecycleBody):
+    """
+    Confirm / reject / reopen many findings in one request.
+
+    Runs the same CLI lifecycle path as single-finding routes so audit
+    timeline and --linked semantics stay consistent.
+    """
+    action = (body.action or "").strip().lower()
+    if action not in _BULK_ACTIONS:
+        raise HTTPException(400, f"action must be one of {sorted(_BULK_ACTIONS)}")
+    ids = _normalize_ids(body.finding_ids)
+    if not ids:
+        raise HTTPException(400, "finding_ids is empty")
+    if len(ids) > _BULK_MAX:
+        raise HTTPException(400, f"at most {_BULK_MAX} findings per bulk request")
+
+    lifecycle = LifecycleBody(linked=bool(body.linked), force=True)
+    results = []
+    ok = 0
+    failed = 0
+    for fid in ids:
+        steps = cli.run_scoped(project_id, _lifecycle_args(action, fid, lifecycle))
+        step_dicts = [r.to_dict() for r in steps]
+        all_ok = all(s.get("ok", False) for s in step_dicts) if step_dicts else False
+        if all_ok:
+            ok += 1
+        else:
+            failed += 1
+        results.append({"finding_id": fid, "ok": all_ok, "steps": step_dicts})
+    return {
+        "action": action,
+        "requested": len(ids),
+        "ok": ok,
+        "failed": failed,
+        "linked": bool(body.linked),
+        "results": results,
+    }
+
+
+@router.post("/bulk/group")
+def bulk_group_add(project_id: str, body: BulkGroupBody):
+    """Add many findings to a group (``talos finding group add`` per id)."""
+    group = (body.group or "").strip()
+    if not group:
+        raise HTTPException(400, "group name is required")
+    ids = _normalize_ids(body.finding_ids)
+    if not ids:
+        raise HTTPException(400, "finding_ids is empty")
+    if len(ids) > _BULK_MAX:
+        raise HTTPException(400, f"at most {_BULK_MAX} findings per bulk request")
+
+    results = []
+    ok = 0
+    failed = 0
+    for fid in ids:
+        steps = cli.run_scoped(
+            project_id, ["finding", "group", "add", group, fid]
+        )
+        step_dicts = [r.to_dict() for r in steps]
+        all_ok = all(s.get("ok", False) for s in step_dicts) if step_dicts else False
+        if all_ok:
+            ok += 1
+        else:
+            failed += 1
+        results.append({"finding_id": fid, "ok": all_ok, "steps": step_dicts})
+    return {
+        "group": group,
+        "requested": len(ids),
+        "ok": ok,
+        "failed": failed,
+        "results": results,
+    }
+
+
+@router.post("/bulk/notes")
+def bulk_notes(project_id: str, body: BulkNotesBody):
+    """Set the same notes text on many findings (``talos finding note set``)."""
+    notes = body.notes if body.notes is not None else ""
+    if not str(notes).strip():
+        raise HTTPException(400, "notes text is empty")
+    ids = _normalize_ids(body.finding_ids)
+    if not ids:
+        raise HTTPException(400, "finding_ids is empty")
+    if len(ids) > _BULK_MAX:
+        raise HTTPException(400, f"at most {_BULK_MAX} findings per bulk request")
+
+    results = []
+    ok = 0
+    failed = 0
+    for fid in ids:
+        steps = cli.run_scoped_with_stdin(
+            project_id, ["finding", "note", "set", fid], notes
+        )
+        step_dicts = [r.to_dict() for r in steps]
+        all_ok = all(s.get("ok", False) for s in step_dicts) if step_dicts else False
+        if all_ok:
+            ok += 1
+        else:
+            failed += 1
+        results.append({"finding_id": fid, "ok": all_ok, "steps": step_dicts})
+    return {
+        "requested": len(ids),
+        "ok": ok,
+        "failed": failed,
+        "results": results,
+    }
