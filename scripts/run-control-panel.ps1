@@ -387,7 +387,7 @@ try {
         }
     }
 
-    Write-Host "[run] Starting backend on port $CpBackendPort — press Ctrl+C to stop everything"
+    Write-Host "[run] Starting backend on port $CpBackendPort - press Ctrl+C to stop everything"
     $beArgs = @(
         "-m", "uvicorn", "talos_ui.main:app",
         "--reload",
@@ -420,7 +420,7 @@ try {
             } catch { }
             Start-Sleep -Seconds 1
         }
-        Write-Host "[warn] Frontend did not become ready in time — open $Url manually"
+        Write-Host "[warn] Frontend did not become ready in time - open $Url manually"
     } -ArgumentList $frontendUrl
 
     # Wait for backend; Ctrl+C aborts the wait and runs finally cleanup.
