@@ -634,11 +634,11 @@ Secret Detection workspace (Passive Source Intelligence engine) — full parity 
 
 | Route | Purpose |
 |-------|---------|
-| `/testing/secrets?tab=overview` | Status KPIs, enable/disable, rescan, recent detections |
+| `/testing/secrets?tab=overview` | Status KPIs, **secret detection ON/OFF master switch**, rescan, recent detections |
 | `?tab=detections` | Redacted detection inventory + filters |
 | `?tab=documents` | Source document inventory (body identity + scan status) |
 | `?tab=rules` | Loaded YAML detector packs (read-only) |
-| `?tab=settings` | Full `passive_scan_config` via CLI set |
+| `?tab=settings` | Master switch + thresholds, content types, limits (`passive_scan_config.enabled`, …) |
 | `/testing/secrets/detections/:id` | Detection dossier (context, siblings, flow/finding links) |
 | `/testing/secrets/documents/:id` | Document dossier (occurrences, children, detections, rescan) |
 | `/secret-detection/*` | Legacy redirect to `/testing/secrets/*` |
@@ -707,11 +707,13 @@ Status + relation view are server-side; type/verdict/role/module filters are cli
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Lifecycle (confirm/reject/reopen/duplicate + optional `--linked`), analyst notes, cluster, evidence, timeline, report |
-| **Backend** | detail (+ parent/linked), confirm/reject/reopen (linked/force body), notes set/clear, groups add, report |
-| **CLI** | matching `finding *` including `note set\|clear` (stdin) and lifecycle `--linked` |
-| **DB** | findings, evidence, timeline, duplicates, cluster relations |
-| **Components** | Notes editor, Apply-to-linked checkbox, cluster links, evidence cards, timeline |
-| **Workflow** | Triage PRIMARY → notes → confirm/reject (optionally bulk-linked) → optional group/report |
+| **Backend** | detail (+ parent/linked + `flow_comparison`), confirm/reject/reopen (linked/force body), notes set/clear, groups add, report |
+| **CLI** | matching `finding *` including `note set\|clear` (stdin) and lifecycle `--linked`; Original vs Attack comparison parity with `talos finding show` |
+| **DB** | findings, evidence, timeline, duplicates, cluster relations, flows (summary only), replay_diffs |
+| **Components** | **Original vs Attack / Testcase Flow** cards (top of page when evidence present), notes editor, Apply-to-linked checkbox, cluster links, evidence cards with human labels, timeline |
+| **Workflow** | Open finding → see original vs testcase flows immediately → triage PRIMARY → notes → confirm/reject (optionally bulk-linked) → optional group/report |
+
+**Flow comparison (`flow_comparison`):** Built from `original_flow` + `replay_flow` evidence. Side-by-side method/URL/status/body length + delta + optional diff verdict. Open Flow / Send to Repeater actions. Absent for findings without those evidence types (e.g. pure passive secrets).
 
 ---
 

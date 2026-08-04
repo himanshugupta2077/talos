@@ -62,6 +62,127 @@ def list_findings(
     return {"findings": rows, "view": (view or "primary").lower()}
 
 
+def _body_len(value) -> int:
+    """Safe length of a stored response body (bytes or str); never returns content."""
+    if value is None:
+        return 0
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode("utf-8", errors="replace"))
+    return 0
+
+
+def _flow_summary_row(db_path, flow_id: str | None) -> dict | None:
+    """
+    Lightweight flow card for finding detail (parity with ``talos finding show``
+    Original vs Attack Replay comparison). Bodies are not returned — only length.
+    """
+    if not flow_id:
+        return None
+    row = db.query_one(
+        db_path,
+        """
+        SELECT id, method, url, path, status_code, content_type,
+               response_body, captured_at, original_flow_id, replay_reason
+        FROM flows WHERE id = ?
+        """,
+        (flow_id,),
+    )
+    if not row:
+        return {
+            "id": flow_id,
+            "missing": True,
+            "method": None,
+            "url": None,
+            "path": None,
+            "status_code": None,
+            "content_type": None,
+            "body_len": 0,
+            "captured_at": None,
+            "original_flow_id": None,
+            "replay_reason": None,
+        }
+    body = row.pop("response_body", None)
+    return {
+        "id": row.get("id") or flow_id,
+        "missing": False,
+        "method": row.get("method"),
+        "url": row.get("url"),
+        "path": row.get("path"),
+        "status_code": row.get("status_code"),
+        "content_type": row.get("content_type"),
+        "body_len": _body_len(body),
+        "captured_at": row.get("captured_at"),
+        "original_flow_id": row.get("original_flow_id"),
+        "replay_reason": row.get("replay_reason"),
+    }
+
+
+def _find_evidence_row(evidence: list[dict], evidence_type: str) -> dict | None:
+    for ev in evidence:
+        if (ev.get("evidence_type") or "") == evidence_type:
+            return ev
+    return None
+
+
+def build_flow_comparison(db_path, evidence: list[dict]) -> dict | None:
+    """
+    Build a first-class Original Flow vs Attack/Testcase Flow summary for the
+    finding detail page (mirrors CLI ``_print_flow_comparison``).
+
+    Returns None when neither original_flow nor replay_flow evidence is present
+    (e.g. pure passive_secret findings without attack replays).
+    """
+    orig_ev = _find_evidence_row(evidence, "original_flow")
+    replay_ev = _find_evidence_row(evidence, "replay_flow")
+    diff_ev = _find_evidence_row(evidence, "diff")
+    if not orig_ev and not replay_ev:
+        return None
+
+    orig_id = (orig_ev or {}).get("reference_id")
+    replay_id = (replay_ev or {}).get("reference_id")
+    original = _flow_summary_row(db_path, orig_id) if orig_id else None
+    testcase = _flow_summary_row(db_path, replay_id) if replay_id else None
+
+    delta = None
+    if original and testcase and not original.get("missing") and not testcase.get("missing"):
+        o_status = original.get("status_code")
+        t_status = testcase.get("status_code")
+        o_len = int(original.get("body_len") or 0)
+        t_len = int(testcase.get("body_len") or 0)
+        delta = {
+            "status_changed": o_status != t_status,
+            "status_from": o_status,
+            "status_to": t_status,
+            "body_len_delta": t_len - o_len,
+        }
+
+    diff_verdict = None
+    if diff_ev:
+        data = diff_ev.get("data") or {}
+        if isinstance(data, dict):
+            diff_verdict = data.get("diff_verdict") or data.get("verdict")
+        if not diff_verdict and diff_ev.get("reference_id"):
+            # reference_id is often the replay_flow_id for replay_diffs rows
+            drow = db.query_one(
+                db_path,
+                "SELECT verdict FROM replay_diffs WHERE replay_flow_id = ?",
+                (diff_ev["reference_id"],),
+            )
+            if drow:
+                diff_verdict = drow.get("verdict")
+
+    return {
+        "original": original,
+        "testcase": testcase,
+        "delta": delta,
+        "diff_verdict": diff_verdict,
+        "original_evidence_id": (orig_ev or {}).get("id"),
+        "testcase_evidence_id": (replay_ev or {}).get("id"),
+    }
+
+
 @router.get("/{finding_id}")
 def finding_detail(project_id: str, finding_id: str):
     record = db.get_project_record(project_id)
@@ -96,6 +217,13 @@ def finding_detail(project_id: str, finding_id: str):
         """,
         (finding_id,),
     )
+    # Side-by-side original vs attack/testcase flows (CLI finding-show parity).
+    # Wrapped so missing flows / old schemas never break the detail page.
+    try:
+        flow_comparison = build_flow_comparison(db_path, evidence)
+    except Exception:  # noqa: BLE001
+        flow_comparison = None
+
     return {
         "finding": finding,
         "evidence": evidence,
@@ -103,6 +231,7 @@ def finding_detail(project_id: str, finding_id: str):
         "duplicates": duplicates,
         "parent": parent,
         "linked": linked,
+        "flow_comparison": flow_comparison,
     }
 
 

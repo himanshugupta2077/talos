@@ -71,27 +71,41 @@ export default function SettingsTab({
         </p>
       )}
 
+      <Section title="Secret detection master switch">
+        <div className="flex flex-wrap items-center gap-3 text-sm mb-2">
+          <span
+            className={`badge badge-lg ${config.enabled ? "badge-success" : "badge-warning"}`}
+          >
+            {config.enabled ? "ON — scanning responses" : "OFF — no enqueue / no scan"}
+          </span>
+          <div className="flex gap-2">
+            <button
+              className={`btn btn-sm ${config.enabled ? "btn-success" : "btn-outline"}`}
+              disabled={setKey.running || config.enabled}
+              onClick={() => apply("enabled", true)}
+            >
+              Turn on
+            </button>
+            <button
+              className={`btn btn-sm ${!config.enabled ? "btn-warning" : "btn-outline"}`}
+              disabled={setKey.running || !config.enabled}
+              onClick={() => apply("enabled", false)}
+            >
+              Turn off
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-base-content/50">
+          Master switch for Secret Detection (<span className="mono">passive_scan_config.enabled</span>).
+          When off, the proxy still captures traffic but source-like responses are not enqueued
+          or scanned, and no new secret findings are created. Same as{" "}
+          <span className="mono">talos passive config set enabled false</span>.
+          Also available on the Overview tab.
+        </p>
+      </Section>
+
       <Section title="Engine">
         <div className="flex flex-wrap gap-3 items-end text-sm">
-          <div>
-            <div className="text-xs text-base-content/50 mb-1">Enabled</div>
-            <div className="flex gap-2">
-              <button
-                className={`btn btn-xs ${config.enabled ? "btn-success" : "btn-outline"}`}
-                disabled={setKey.running || config.enabled}
-                onClick={() => apply("enabled", true)}
-              >
-                On
-              </button>
-              <button
-                className={`btn btn-xs ${!config.enabled ? "btn-warning" : "btn-outline"}`}
-                disabled={setKey.running || !config.enabled}
-                onClick={() => apply("enabled", false)}
-              >
-                Off
-              </button>
-            </div>
-          </div>
           <div>
             <div className="text-xs text-base-content/50 mb-1">Auto-finding threshold</div>
             <div className="flex gap-1">
@@ -118,6 +132,7 @@ export default function SettingsTab({
         </div>
         <p className="text-xs text-base-content/50 mt-2">
           Default HIGH creates findings for CONFIRMED_PATTERN + HIGH secrets only.
+          Set to OFF to scan and inventory detections without auto-creating findings.
           Infrastructure disclosures never auto-find.
         </p>
       </Section>

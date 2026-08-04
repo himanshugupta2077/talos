@@ -2,6 +2,55 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Finding detail: Original vs Attack/Testcase Flow + Secret Detection master switch
+
+**Shipped:** 2026-08-04
+
+### Problem
+
+1. **Secret detection kill-switch** already lived in `passive_scan_config.enabled`
+   (`talos passive config set enabled …`) and Control Panel Settings, but the
+   ON/OFF control was easy to miss (small badge + tiny buttons). Operators who
+   hit false-positive floods needed a clearer master switch.
+
+2. **Finding detail page** only showed original and attack/replay flows as
+   buried evidence badges (`original_flow` / `replay_flow`). Operators had to
+   hunt through the evidence list; CLI `talos finding show` already printed a
+   clear Original vs Attack Replay comparison.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `GET /api/findings/{id}` → `flow_comparison` | First-class original + testcase flow summaries (method/URL/status/body_len/delta/diff_verdict); no response bodies |
+| `FindingDetail.tsx` | Prominent **Original Flow vs Attack / Testcase Flow** section at top when evidence exists; human labels on evidence types |
+| Secret Detection Overview / Settings | Clear **Turn on / Turn off** master switch for `enabled`; disabled empty-state banner |
+| Config source of truth | Unchanged: project SQLite `passive_scan_config.enabled` (not layered `talos config`) |
+
+### Operator notes
+
+```text
+# Kill secret detection for a project (no enqueue / no scan)
+talos passive config set enabled false
+# Or Control Panel → Testing → Secret Detection → Turn off
+
+# Resume
+talos passive config set enabled true
+
+# Auto-findings only off (still scan + inventory detections)
+talos passive config set auto_finding_threshold OFF
+```
+
+Finding page: open any attack finding (unauth/BAC/auth-session/…) → see
+side-by-side Original vs Attack/Testcase cards with Open flow / Repeater links.
+
+### Tests
+
+- `talos-control-panel/backend/tests/test_findings_routes.py`
+  (`test_finding_detail_flow_comparison`)
+
+---
+
 ## Windows proxy start: no POSIX `os.WNOHANG` crash on readiness cleanup
 
 **Shipped:** 2026-08-04

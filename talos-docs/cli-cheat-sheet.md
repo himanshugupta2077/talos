@@ -461,10 +461,14 @@ talos finding report --group "Client Report" > client-report.md
 # Zero-HTTP scan of captured HTML/JS/JSON/CSS/maps after FlowWorker commit.
 # HIGH/CONFIRMED secrets → findings (cluster PASSIVE_SECRET:<fingerprint>).
 # Infrastructure disclosures stay in passive_detections only (no auto-finding).
+# Master switch: passive_scan_config.enabled (project DB). Control Panel:
+#   Testing → Secret Detection → Turn on/off (Overview or Settings).
 talos passive status
 talos passive config show
-talos passive config set enabled true
+talos passive config set enabled true    # master ON (enqueue + scan)
+talos passive config set enabled false   # master OFF (capture continues; no secret scan)
 talos passive config set auto_finding_threshold HIGH
+talos passive config set auto_finding_threshold OFF  # scan only; no auto-findings
 talos passive config set max_document_size 2000000
 talos passive rules list
 talos passive documents list

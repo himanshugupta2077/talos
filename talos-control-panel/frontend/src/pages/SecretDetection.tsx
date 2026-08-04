@@ -114,9 +114,15 @@ export default function SecretDetection() {
             <strong>Rules</strong> — loaded YAML detector packs (read-only).
           </p>
           <p>
-            <strong>Settings</strong> — enable, thresholds, content types,
+            <strong>Settings</strong> — secret detection master switch (
+            <span className="mono">enabled</span>), thresholds, content types,
             limits (maps to{" "}
             <span className="mono">talos passive config set</span>).
+          </p>
+          <p>
+            Turn secret detection off with{" "}
+            <span className="mono">talos passive config set enabled false</span>{" "}
+            or the Overview/Settings Turn off button.
           </p>
           <p>
             High-confidence secrets become Findings (

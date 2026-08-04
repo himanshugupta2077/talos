@@ -125,7 +125,7 @@ Defined in `App.tsx` with React Router v6 nested routes under `Layout`.
 | `/secret-detection/*` | Redirect → `/testing/secrets/*` |
 | `/input-validation/*` | Redirect → `/testing/input-validation/*` |
 | `/findings` | `Findings` |
-| `/findings/:findingId` | `FindingDetail` |
+| `/findings/:findingId` | `FindingDetail` (Original vs Attack/Testcase Flow cards + evidence) |
 | `/console` | `Console` |
 | `/talos-config` | `TalosConfig` (query: `tab`, `section`, `scope`) |
 

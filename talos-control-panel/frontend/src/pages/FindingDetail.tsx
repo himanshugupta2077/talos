@@ -10,6 +10,34 @@ import { formatIST } from "../lib/time";
 import { Finding, FindingGroup } from "../types";
 import { SECRETS_BASE } from "./attack/registry";
 
+interface FlowSummary {
+  id: string;
+  missing?: boolean;
+  method?: string | null;
+  url?: string | null;
+  path?: string | null;
+  status_code?: number | null;
+  content_type?: string | null;
+  body_len?: number;
+  captured_at?: string | null;
+  original_flow_id?: string | null;
+  replay_reason?: string | null;
+}
+
+interface FlowComparison {
+  original: FlowSummary | null;
+  testcase: FlowSummary | null;
+  delta: {
+    status_changed: boolean;
+    status_from: number | null;
+    status_to: number | null;
+    body_len_delta: number;
+  } | null;
+  diff_verdict?: string | null;
+  original_evidence_id?: string | null;
+  testcase_evidence_id?: string | null;
+}
+
 interface Bundle {
   finding: Finding;
   evidence: { id: string; evidence_type: string; reference_id: string | null; label: string; data: any; created_at: string }[];
@@ -17,6 +45,194 @@ interface Bundle {
   duplicates: Finding[];
   parent?: Finding | null;
   linked?: Finding[];
+  flow_comparison?: FlowComparison | null;
+}
+
+const EVIDENCE_TYPE_LABELS: Record<string, string> = {
+  original_flow: "Original Flow",
+  replay_flow: "Attack / Testcase Flow",
+  diff: "Replay Diff",
+  passive_detection: "Secret Detection",
+  source_document: "Source Document",
+  source_occurrence: "Source Occurrence",
+  auth_test_result: "Auth Test Result",
+  unauth_result: "Unauth Result",
+  auth_session_result: "Auth-Session Result",
+  bac_result: "BAC Result",
+  attacker_role: "Attacker Role",
+  target_role: "Target Role",
+  endpoint: "Endpoint",
+  scheduler_job: "Scheduler Job",
+  module: "Module",
+  role: "Role",
+  analyst_note: "Analyst Note",
+  decision_filter_result: "Decision Filter",
+};
+
+function evidenceTypeLabel(t: string): string {
+  return EVIDENCE_TYPE_LABELS[t] || t;
+}
+
+function formatBodyLen(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function FlowCard({
+  title,
+  badgeClass,
+  flow,
+  emptyLabel,
+}: {
+  title: string;
+  badgeClass: string;
+  flow: FlowSummary | null | undefined;
+  emptyLabel: string;
+}) {
+  if (!flow) {
+    return (
+      <div className="panel p-3 h-full">
+        <div className="flex items-center gap-2 mb-2">
+          <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
+        </div>
+        <p className="text-sm text-base-content/40">{emptyLabel}</p>
+      </div>
+    );
+  }
+
+  if (flow.missing) {
+    return (
+      <div className="panel p-3 h-full">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
+          <UuidChip value={flow.id} />
+        </div>
+        <p className="text-sm text-warning">
+          Flow row missing from project DB (id may be stale).
+        </p>
+        <div className="flex flex-wrap gap-2 mt-2">
+          <Link to={`/flows/${flow.id}`} className="btn btn-xs btn-outline">
+            Open flow
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const displayUrl = flow.url || flow.path || "—";
+
+  return (
+    <div className="panel p-3 h-full border-l-4 border-l-primary/40">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
+        {flow.status_code != null && (
+          <span className="badge badge-outline badge-sm mono">{flow.status_code}</span>
+        )}
+        {flow.replay_reason && (
+          <span className="badge badge-ghost badge-xs" title={flow.replay_reason}>
+            {flow.replay_reason}
+          </span>
+        )}
+      </div>
+      <div className="text-sm mono break-all mb-2">
+        <span className="font-semibold">{flow.method || "?"}</span>{" "}
+        <span className="text-base-content/80">{displayUrl}</span>
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-base-content/70">
+        <dt>Body</dt>
+        <dd className="mono">{formatBodyLen(flow.body_len)}</dd>
+        {flow.content_type && (
+          <>
+            <dt>Type</dt>
+            <dd className="truncate" title={flow.content_type}>
+              {flow.content_type}
+            </dd>
+          </>
+        )}
+        {flow.captured_at && (
+          <>
+            <dt>When</dt>
+            <dd>{formatIST(flow.captured_at)}</dd>
+          </>
+        )}
+        <dt>ID</dt>
+        <dd>
+          <UuidChip value={flow.id} />
+        </dd>
+      </dl>
+      <div className="flex flex-wrap gap-2 mt-3">
+        <Link to={`/flows/${flow.id}`} className="btn btn-xs btn-primary">
+          Open flow
+        </Link>
+        <Link to={`/repeater?flow=${flow.id}`} className="btn btn-xs btn-outline">
+          Send to Repeater
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function FlowComparisonSection({ comparison }: { comparison: FlowComparison }) {
+  const { original, testcase, delta, diff_verdict } = comparison;
+
+  return (
+    <Section
+      title="Original Flow vs Attack / Testcase Flow"
+      action={
+        diff_verdict ? (
+          <StatusBadge value={String(diff_verdict)} />
+        ) : undefined
+      }
+    >
+      <p className="text-xs text-base-content/50 mb-3">
+        Baseline captured request vs the attack engine replay (testcase). Same comparison as{" "}
+        <span className="mono">talos finding show</span>.
+      </p>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <FlowCard
+          title="Original Flow"
+          badgeClass="badge-info"
+          flow={original}
+          emptyLabel="No original_flow evidence on this finding."
+        />
+        <FlowCard
+          title="Attack / Testcase Flow"
+          badgeClass="badge-warning"
+          flow={testcase}
+          emptyLabel="No replay_flow (attack/testcase) evidence on this finding."
+        />
+      </div>
+      {delta && (
+        <div className="mt-3 panel p-3 text-sm flex flex-wrap gap-4 items-center">
+          <span className="text-xs font-medium uppercase tracking-wide text-base-content/50">
+            Delta
+          </span>
+          <span>
+            Status:{" "}
+            <span className={delta.status_changed ? "text-warning font-medium" : ""}>
+              {delta.status_changed ? "changed" : "unchanged"}
+            </span>{" "}
+            <span className="mono text-base-content/70">
+              ({delta.status_from ?? "?"} → {delta.status_to ?? "?"})
+            </span>
+          </span>
+          <span>
+            Body length:{" "}
+            <span
+              className={`mono ${
+                delta.body_len_delta !== 0 ? "text-warning font-medium" : ""
+              }`}
+            >
+              {delta.body_len_delta >= 0 ? "+" : ""}
+              {delta.body_len_delta} B
+            </span>
+          </span>
+        </div>
+      )}
+    </Section>
+  );
 }
 
 export default function FindingDetail() {
@@ -71,6 +287,7 @@ export default function FindingDetail() {
   const { finding, evidence, timeline, duplicates } = bundle;
   const parent = bundle.parent ?? null;
   const linked = bundle.linked ?? [];
+  const flowComparison = bundle.flow_comparison ?? null;
   const isPrimary = (finding.relation_type || "PRIMARY").toUpperCase() === "PRIMARY";
   const linkedCount = finding.linked_count ?? linked.length;
 
@@ -103,6 +320,9 @@ export default function FindingDetail() {
           )}
         </div>
       </div>
+
+      {/* First-class original vs attack/testcase — not buried in Evidence */}
+      {flowComparison && <FlowComparisonSection comparison={flowComparison} />}
 
       <Section title="Lifecycle">
         <div className="flex gap-2 flex-wrap items-center">
@@ -237,8 +457,11 @@ export default function FindingDetail() {
               e.data.raw_value.length > 0;
             return (
               <div key={e.id} className="panel p-3">
-                <div className="flex items-center gap-2 text-xs mb-1">
-                  <span className="badge badge-outline badge-xs">{e.evidence_type}</span>
+                <div className="flex items-center gap-2 text-xs mb-1 flex-wrap">
+                  <span className="badge badge-outline badge-xs" title={e.evidence_type}>
+                    {evidenceTypeLabel(e.evidence_type)}
+                  </span>
+                  <span className="text-base-content/40 mono text-[10px]">{e.evidence_type}</span>
                   <span className="text-base-content/50">{e.created_at}</span>
                   {e.reference_id && (
                     isFlowRef ? (

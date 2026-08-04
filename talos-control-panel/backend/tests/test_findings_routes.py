@@ -257,9 +257,80 @@ def test_finding_detail_includes_cluster(client, home):
     assert body["finding"]["id"] == "p1"
     assert {x["id"] for x in body["linked"]} == {"l1", "l2"}
     assert body["parent"] is None
+    # No original/replay evidence → no comparison block
+    assert body.get("flow_comparison") is None
 
     child = client.get("/api/findings/l1", params={"project_id": "demo"}).json()
     assert child["parent"]["id"] == "p1"
+
+
+def test_finding_detail_flow_comparison(client, home):
+    """Original vs attack/testcase flow summary for Control Panel finding page."""
+    _talos_home, projects_root, registry = home
+    db_path = _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE flows (
+          id TEXT PRIMARY KEY,
+          method TEXT,
+          url TEXT,
+          path TEXT,
+          status_code INTEGER,
+          content_type TEXT,
+          response_body BLOB,
+          captured_at TEXT,
+          original_flow_id TEXT,
+          replay_reason TEXT
+        );
+        CREATE TABLE replay_diffs (
+          replay_flow_id TEXT PRIMARY KEY,
+          verdict TEXT
+        );
+        INSERT INTO flows
+          (id, method, url, path, status_code, content_type, response_body,
+           captured_at, original_flow_id, replay_reason)
+        VALUES
+          ('flow-orig', 'GET', 'https://app.example/api/me', '/api/me', 200,
+           'application/json', X'7b226f6b223a747275657d', '2026-01-01T00:00:00',
+           NULL, NULL),
+          ('flow-atk', 'GET', 'https://app.example/api/me', '/api/me', 401,
+           'application/json', X'7b22657272223a317d', '2026-01-01T00:01:00',
+           'flow-orig', 'unauth_strip');
+        INSERT INTO replay_diffs (replay_flow_id, verdict) VALUES ('flow-atk', 'DIFFERENT');
+        INSERT INTO finding_evidence
+          (id, finding_id, evidence_type, reference_id, label, data, created_at)
+        VALUES
+          ('ev-orig', 'p1', 'original_flow', 'flow-orig', 'Original', '{}',
+           '2026-01-01T00:00:00'),
+          ('ev-rep', 'p1', 'replay_flow', 'flow-atk', 'Attack replay', '{}',
+           '2026-01-01T00:01:00'),
+          ('ev-diff', 'p1', 'diff', 'flow-atk', 'Diff',
+           '{"diff_verdict":"DIFFERENT"}', '2026-01-01T00:01:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/api/findings/p1", params={"project_id": "demo"})
+    assert res.status_code == 200
+    body = res.json()
+    fc = body.get("flow_comparison")
+    assert fc is not None
+    assert fc["original"]["id"] == "flow-orig"
+    assert fc["original"]["method"] == "GET"
+    assert fc["original"]["status_code"] == 200
+    assert fc["original"]["body_len"] > 0
+    assert "response_body" not in fc["original"]
+    assert fc["testcase"]["id"] == "flow-atk"
+    assert fc["testcase"]["status_code"] == 401
+    assert fc["testcase"]["replay_reason"] == "unauth_strip"
+    assert fc["delta"]["status_changed"] is True
+    assert fc["delta"]["status_from"] == 200
+    assert fc["delta"]["status_to"] == 401
+    assert fc["diff_verdict"] == "DIFFERENT"
 
 
 def test_notes_set_uses_stdin_cli(client):

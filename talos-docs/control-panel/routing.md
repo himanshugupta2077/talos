@@ -443,7 +443,7 @@ Scope body fields: `host`, `endpoint`, `parameter`, `param_uuid`, `ignore_cache`
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
 | GET | `/api/findings` | List | status?, view=`primary`\|`linked`\|`all` | `{ findings, view }` (+ `linked_count` on PRIMARY) | — | findings + evidence role/module |
-| GET | `/api/findings/{finding_id}` | Detail | — | finding, evidence, timeline, duplicates, parent, linked | — | findings*, evidence, timeline |
+| GET | `/api/findings/{finding_id}` | Detail | — | finding, evidence, timeline, duplicates, parent, linked, `flow_comparison` (original vs attack/testcase when evidence present) | — | findings*, evidence, timeline, flows (summary), replay_diffs |
 | POST | `/{id}/confirm` | Confirm | body linked?, force? | steps | `finding confirm [--linked] [--force]` | — |
 | POST | `/{id}/reject` | Reject | body linked?, force? | steps | `finding reject [--linked] [--force]` | — |
 | POST | `/{id}/reopen` | Reopen | body linked?, force? | steps | `finding reopen [--linked] [--force]` | — |

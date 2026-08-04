@@ -53,50 +53,62 @@ export default function OverviewTab({
     <div>
       <PassiveDisclaimer />
 
-      <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
-        <span className={`badge ${enabled ? "badge-success" : "badge-ghost"}`}>
-          {enabled ? "enabled" : "disabled"}
-        </span>
-        <span className="badge badge-outline">
-          threshold: {status?.auto_finding_threshold || config?.auto_finding_threshold || "HIGH"}
-        </span>
-        <span className="badge badge-ghost mono">
-          scanner {status?.scanner_version || "—"}
-        </span>
-        <span className="badge badge-ghost">
-          queue max {status?.queue_maxsize ?? config?.queue_maxsize ?? "—"}
-        </span>
-        {(status?.stale_documents ?? 0) > 0 && (
-          <span className="badge badge-warning badge-outline">
-            {status!.stale_documents} doc(s) need rescan
-          </span>
-        )}
+      <div className="panel p-3 mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium mb-1">Secret detection</div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className={`badge ${enabled ? "badge-success" : "badge-warning"}`}>
+              {enabled ? "ON" : "OFF"}
+            </span>
+            <span className="text-base-content/60">
+              {enabled
+                ? "Scanning in-scope HTML/JS/JSON/… responses for secrets"
+                : "Not scanning — turn on to enqueue and detect secrets"}
+            </span>
+            <span className="badge badge-outline">
+              threshold: {status?.auto_finding_threshold || config?.auto_finding_threshold || "HIGH"}
+            </span>
+            <span className="badge badge-ghost mono">
+              scanner {status?.scanner_version || "—"}
+            </span>
+            <span className="badge badge-ghost">
+              queue max {status?.queue_maxsize ?? config?.queue_maxsize ?? "—"}
+            </span>
+            {(status?.stale_documents ?? 0) > 0 && (
+              <span className="badge badge-warning badge-outline">
+                {status!.stale_documents} doc(s) need rescan
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {enabled ? (
+            <button
+              className="btn btn-sm btn-warning"
+              disabled={disable.running}
+              onClick={async () => {
+                await disable.run();
+                onRefresh();
+              }}
+            >
+              Turn off
+            </button>
+          ) : (
+            <button
+              className="btn btn-sm btn-success"
+              disabled={enable.running}
+              onClick={async () => {
+                await enable.run();
+                onRefresh();
+              }}
+            >
+              Turn on
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
-        {enabled ? (
-          <button
-            className="btn btn-xs"
-            disabled={disable.running}
-            onClick={async () => {
-              await disable.run();
-              onRefresh();
-            }}
-          >
-            Disable
-          </button>
-        ) : (
-          <button
-            className="btn btn-xs btn-primary"
-            disabled={enable.running}
-            onClick={async () => {
-              await enable.run();
-              onRefresh();
-            }}
-          >
-            Enable
-          </button>
-        )}
         <button
           className="btn btn-xs btn-outline"
           disabled={rescanAll.running}
@@ -128,11 +140,19 @@ export default function OverviewTab({
         </Link>
       </div>
 
-      {emptyState.no_documents && (
+      {emptyState.disabled && (
+        <div className="panel p-4 mb-4 text-sm border border-warning/40 bg-warning/5">
+          <strong>Secret detection is off.</strong> Capture continues, but responses
+          are not scanned for secrets. Use <strong>Turn on</strong> above or{" "}
+          <span className="mono">talos passive config set enabled true</span>.
+        </div>
+      )}
+
+      {emptyState.no_documents && !emptyState.disabled && (
         <div className="panel p-4 mb-4 text-sm text-base-content/70">
           No source documents yet. Browse in-scope apps with the proxy running —
           HTML, JS, JSON, CSS, and source maps are scanned automatically when
-          passive scan is enabled.
+          secret detection is on.
         </div>
       )}
 

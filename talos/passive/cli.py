@@ -199,7 +199,13 @@ def _cmd_config(manager: ProjectManager, argv: list[str]) -> None:
         print(
             "talos passive config show\n"
             "talos passive config set <key> <value>\n\n"
+            "Master switch (Secret Detection on/off):\n"
+            "  enabled true|false   — when false, no enqueue / no scan / no new\n"
+            "                         secret findings (capture continues).\n"
+            "  auto_finding_threshold HIGH|CONFIRMED_PATTERN|MEDIUM|OFF\n"
+            "                         OFF = scan + inventory only (no findings).\n\n"
             f"Keys: {', '.join(sorted(_CONFIG_KEYS))}\n"
+            "Control Panel: Testing → Secret Detection → Turn on/off.\n"
         )
         sys.exit(0)
 

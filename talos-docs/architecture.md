@@ -758,7 +758,10 @@ original_flow · replay_flow · diff · endpoint · module · role · unauth_res
 `module` and `role` are resolved from the original flow's `role_id`/`module_id`
 columns (falling back to the BAC attacker role/module when supplied) so every
 finding shows which application area and identity it was found under, in both
-`talos finding show` and generated reports.
+`talos finding show` and generated reports. Control Panel finding detail
+(`GET /api/findings/{id}` → `flow_comparison`) surfaces the same Original vs
+Attack/Testcase Flow comparison as first-class cards (method/URL/status/body
+length + delta), not only buried evidence badges.
 
 ### Timeline
 
