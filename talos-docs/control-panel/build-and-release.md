@@ -23,8 +23,8 @@ From monorepo root:
 
 ```bash
 ./scripts/run-control-panel.sh
-# or
-scripts\run-control-panel.bat
+# or (Windows PowerShell)
+.\scripts\run-control-panel.ps1
 ```
 
 The launcher:
@@ -132,7 +132,7 @@ There is no backend “production” settings module (no Gunicorn config, no mul
 | Script | Role |
 |--------|------|
 | `scripts/run-control-panel.sh` | Unix end-to-end setup + run |
-| `scripts/run-control-panel.bat` | Windows end-to-end setup + run |
+| `scripts/run-control-panel.ps1` | Windows end-to-end setup + run (only Windows launcher) |
 
 Both treat the monorepo as the unit of deployment: Talos + Control Panel together.
 

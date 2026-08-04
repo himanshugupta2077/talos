@@ -121,7 +121,7 @@ Do not put domain business logic in hooks that duplicates Talos rules—keep orc
 |------|-------|
 | Backend path/port/env | `talos_ui/config.py` + document in configuration.md |
 | Frontend API base | `VITE_API_BASE` / `.env.example` |
-| Launcher ports/paths | `scripts/run-control-panel.sh` and `.bat` (keep in sync) |
+| Launcher ports/paths | `scripts/run-control-panel.sh` and `.ps1` (keep in sync) |
 | CORS origin | `config.CORS_ORIGINS` (code change required today) |
 | CLI timeout | `TALOS_CP_CLI_TIMEOUT` already supported |
 

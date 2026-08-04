@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Talos Control Panel launcher for Windows (monorepo).
+  Talos Control Panel launcher for Windows (monorepo) — the only Windows script.
 
 .DESCRIPTION
   Sets up missing venvs/deps, frees stale Control Panel ports from prior runs,
@@ -9,10 +9,11 @@
   Ctrl+C or normal exit. Child processes are bound to a Windows Job Object with
   KILL_ON_JOB_CLOSE so closing the terminal does not leave orphans.
 
-  Prefer invoking this script directly from PowerShell:
+  Run from PowerShell (repo root or any cwd — paths resolve from this file):
     .\scripts\run-control-panel.ps1
 
-  The .bat wrapper is a thin entry point for double-click / cmd.exe.
+  From cmd.exe:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
 
   Optional env overrides (set before launch):
     TALOS_ROOT, CP_ROOT, TALOS_HOME, TALOS_VENV, CP_BACKEND_PORT, CP_FRONTEND_PORT
@@ -202,12 +203,19 @@ function Invoke-Native {
 
 function Test-PythonImport {
     <#
-      Probe imports without ever throwing.
+      Probe imports without ever throwing or polluting the PowerShell error stream.
 
-      PowerShell + ErrorAction Stop turns Python tracebacks on stderr into
-      terminating errors whose Message is only the first line
-      ("Traceback (most recent call last):"). Start-Process with redirected
-      streams keeps stderr completely out of the PowerShell error pipeline.
+      Why not bare & $py -c ... ?
+        PowerShell ErrorAction Stop turns Python stderr (tracebacks) into
+        terminating errors whose Message is only the first line.
+
+      Why not Start-Process -WindowStyle Hidden -NoNewWindow ?
+        Those two parameters are mutually exclusive on Windows PowerShell —
+        Start-Process throws InvalidOperationException and the probe always
+        "fails", even when the package is installed. That was the root cause
+        of:  talos install finished but 'import httpx' still fails
+
+      Use ProcessStartInfo with redirected stdio + CreateNoWindow instead.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$PythonExe,
@@ -215,23 +223,32 @@ function Test-PythonImport {
     )
     if (-not (Test-Path -LiteralPath $PythonExe)) { return $false }
 
-    $stdout = [System.IO.Path]::GetTempFileName()
-    $stderr = [System.IO.Path]::GetTempFileName()
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
     try {
-        $proc = Start-Process -FilePath $PythonExe `
-            -ArgumentList @("-c", $Code) `
-            -Wait -PassThru -WindowStyle Hidden -NoNewWindow `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr
-        if ($null -eq $proc) { return $false }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonExe
+        # ProcessStartInfo.Arguments is a single string (PS 5.1 / .NET Framework).
+        # Quote the -c payload so commas/spaces in import lists are preserved.
+        $escaped = $Code.Replace('\', '\\').Replace('"', '\"')
+        $psi.Arguments = "-c `"$escaped`""
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.WorkingDirectory = [System.IO.Path]::GetTempPath()
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        # Drain both streams before WaitForExit to avoid pipe deadlocks.
+        $null = $proc.StandardOutput.ReadToEnd()
+        $null = $proc.StandardError.ReadToEnd()
+        if (-not $proc.WaitForExit(120000)) {
+            try { $proc.Kill() } catch { }
+            return $false
+        }
         return ($proc.ExitCode -eq 0)
     } catch {
         return $false
-    } finally {
-        $ErrorActionPreference = $prevEap
-        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
     }
 }
 

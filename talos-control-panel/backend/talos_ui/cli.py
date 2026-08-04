@@ -118,7 +118,8 @@ def run(
             stdout="",
             stderr=(
                 f"[control panel] could not find Python at '{config.TALOS_PYTHON}'. "
-                "Run scripts/run-control-panel.sh (or .bat) to create the Talos "
+                "Run scripts/run-control-panel.sh (Linux/macOS) or "
+                "scripts/run-control-panel.ps1 (Windows) to create the Talos "
                 "venv, or set TALOS_PYTHON to the interpreter that has talos "
                 "installed (python -m talos)."
             ),

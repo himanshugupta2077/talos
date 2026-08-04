@@ -156,8 +156,8 @@ Proxy lifecycle is owned by Talos core (`ProxyRuntimeManager`, generation reconc
 
 ```mermaid
 flowchart TB
-  subgraph launcher["Launcher shell / bat"]
-    L["run-control-panel.sh|.bat"]
+  subgraph launcher["Launcher shell / PowerShell"]
+    L["run-control-panel.sh|.ps1"]
   end
 
   subgraph frontend_proc["Frontend process tree"]
@@ -256,7 +256,7 @@ See [command-execution.md](./command-execution.md) for the mutation path and [ba
 | File | Platform |
 |------|----------|
 | `scripts/run-control-panel.sh` | Linux / macOS |
-| `scripts/run-control-panel.bat` | Windows |
+| `scripts/run-control-panel.ps1` | Windows |
 
 ---
 

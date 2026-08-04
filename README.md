@@ -132,11 +132,11 @@ From the repo root (creates missing venvs / npm deps automatically):
 # Linux / macOS
 ./scripts/run-control-panel.sh
 
-# Windows (PowerShell recommended)
+# Windows (PowerShell — the only Windows launcher)
 .\scripts\run-control-panel.ps1
 
-# Windows (cmd / double-click)
-scripts\run-control-panel.bat
+# Windows from cmd.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
 ```
 
 Then open `http://localhost:5173` (the launcher opens the browser when ready). Ctrl+C stops backend and frontend. See `talos-control-panel/README.md` for details and overrides.

@@ -2,6 +2,31 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Windows Control Panel launcher — single script + import-probe fix
+
+**Shipped:** 2026-08-04
+
+First-run Windows setup aborted after a successful `pip install -e .` with a false
+`import httpx still fails` error. Root cause: `Test-PythonImport` called
+`Start-Process` with both `-NoNewWindow` and `-WindowStyle Hidden` (mutually
+exclusive on Windows PowerShell), so every import probe failed.
+
+| Change | Detail |
+|--------|--------|
+| **Import probe** | Use `ProcessStartInfo` + redirected stdio + `CreateNoWindow` (no `Start-Process` parameter conflict) |
+| **One Windows script** | `scripts/run-control-panel.ps1` only — removed the thin `.bat` wrapper (cmd `Terminate batch job (Y/N)?` hangs; two “broken” entry points) |
+| **Docs / errors** | README, control-panel docs, troubleshooting, and CP `cli.py` FileNotFoundError text all point at `.ps1` |
+
+```powershell
+# Windows (only launcher)
+.\scripts\run-control-panel.ps1
+
+# From cmd.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
+```
+
+---
+
 ## Auth-Session Testing Control Panel — Phases 3–5 (full CLI parity)
 
 **Shipped:** 2026-07-31 · design `docs/Auth-Session-Testing-Control-Panel-Design.md`.

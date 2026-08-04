@@ -138,13 +138,46 @@ In-memory registry is empty; OS process may still run.
 
 ## Windows launcher / orphan processes
 
+### `import httpx` / `import fastapi` still fails after a successful pip install
+
+Symptom (old launcher bug):
+
+```text
+Start-Process : Parameters "-NoNewWindow" and "-WindowStyle" cannot be specified at the same time.
+...
+[error] talos install finished but 'import httpx' still fails in ...\.venv\Scripts\python.exe
+```
+
+**Cause:** the import probe used both `-NoNewWindow` and `-WindowStyle Hidden` on `Start-Process` (mutually exclusive). The probe always failed, so setup aborted even when packages were installed.
+
+**Fix:** pull the latest `scripts/run-control-panel.ps1` (import probes use `ProcessStartInfo` + redirected stdio). Re-run:
+
+```powershell
+.\scripts\run-control-panel.ps1
+```
+
+### Why only one Windows script (`.ps1`, not `.bat`)?
+
+PowerShell is required for Job Objects, reliable process trees, and import probes that do not treat Python stderr as fatal. A separate `.bat` was only a thin wrapper and caused `Terminate batch job (Y/N)?` hangs — it was removed. One script per platform:
+
+| Platform | Script |
+|----------|--------|
+| Linux / macOS | `scripts/run-control-panel.sh` |
+| Windows | `scripts/run-control-panel.ps1` |
+
+From cmd.exe:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
+```
+
 ### Ctrl+C shows `Terminate batch job (Y/N)?` and ignores input
 
-You are on an old path or still stuck in cmd’s batch wait loop.
+You are on an **old** `.bat` wrapper or a leftover cmd wait loop.
 
-- Prefer: `.\scripts\run-control-panel.ps1` from PowerShell
-- Or pull the latest launcher (`run-control-panel.ps1` + thin `.bat` wrapper)
-- Do not answer Y/N in a hung prompt — close that window, then re-launch the `.ps1` (it cleans stale CP ports first)
+- Close that window
+- Use only: `.\scripts\run-control-panel.ps1` from PowerShell
+- Re-launch (it cleans stale CP ports first)
 
 ### Closed the terminal; backend/frontend still running
 

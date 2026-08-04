@@ -44,11 +44,11 @@ both servers:
 # Linux / macOS
 ./scripts/run-control-panel.sh
 
-# Windows (PowerShell — recommended; clean Ctrl+C, no orphan servers)
+# Windows (PowerShell — the only Windows launcher)
 .\scripts\run-control-panel.ps1
 
-# Windows (cmd / double-click — thin wrapper around the .ps1)
-scripts\run-control-panel.bat
+# Windows from cmd.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
 ```
 
 The launcher will, if needed:

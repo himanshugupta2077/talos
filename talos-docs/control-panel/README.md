@@ -79,7 +79,7 @@ See [architecture.md](./architecture.md) for process boundaries, lifecycle, and 
 talos/                              # monorepo root
 ├── scripts/
 │   ├── run-control-panel.sh        # Linux/macOS launcher
-│   └── run-control-panel.bat       # Windows launcher
+│   └── run-control-panel.ps1       # Windows launcher (only Windows script)
 ├── talos/                          # Talos core package + CLI
 ├── talos-control-panel/
 │   ├── README.md                   # operator quick start
@@ -139,7 +139,7 @@ Recommended entry point from the monorepo root:
 
 ```bash
 ./scripts/run-control-panel.sh          # Linux / macOS
-scripts\run-control-panel.bat           # Windows
+.\scripts\run-control-panel.ps1         # Windows (PowerShell)
 ```
 
 High-level sequence:
