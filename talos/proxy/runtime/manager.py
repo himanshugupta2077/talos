@@ -546,10 +546,41 @@ class ProxyRuntimeManager:
                 save_state(self._data_dir, state)
             return state
 
-        identity = ProcessIdentity(pid=state.pid, create_time=state.create_time or 0.0)
-        if state.create_time is None or not self._ops.identity_matches(identity):
+        # Prefer a fresh create_time when spawn-time read failed (0.0 / None).
+        # Without rebind, status() would clear a still-running mitmdump and the
+        # Control Panel would show "stopped" while the port stayed busy.
+        live = self._ops.read_identity(state.pid)
+        if live is None:
             logger.warning(
-                "Stale runtime removed pid=%s create_time=%s",
+                "Stale runtime removed pid=%s create_time=%s (process gone)",
+                state.pid,
+                state.create_time,
+            )
+            state.clear_process()
+            state.last_error = None
+            save_state(self._data_dir, state)
+            return state
+
+        recorded_ct = state.create_time
+        if recorded_ct is None or recorded_ct == 0.0:
+            logger.info(
+                "Runtime validation: rebinding create_time for live pid=%s "
+                "(was %s → %s)",
+                state.pid,
+                recorded_ct,
+                live.create_time,
+            )
+            state.create_time = live.create_time
+            if state.state == ProxyState.STOPPED:
+                # Process is live with a recorded pid — restore RUNNING.
+                state.state = ProxyState.RUNNING
+            save_state(self._data_dir, state)
+            return state
+
+        identity = ProcessIdentity(pid=state.pid, create_time=recorded_ct)
+        if not self._ops.identity_matches(identity):
+            logger.warning(
+                "Stale runtime removed pid=%s create_time=%s (identity mismatch)",
                 state.pid,
                 state.create_time,
             )
@@ -559,9 +590,12 @@ class ProxyRuntimeManager:
         return state
 
     def _is_live_running(self, state: ProxyRuntimeState) -> bool:
-        if state.pid is None or state.create_time is None:
+        if state.pid is None:
             return False
-        identity = ProcessIdentity(pid=state.pid, create_time=state.create_time)
+        # create_time None/0.0: still treat as live if the pid exists; callers
+        # that load via _load_and_validate_locked will rebind create_time.
+        ct = 0.0 if state.create_time is None else float(state.create_time)
+        identity = ProcessIdentity(pid=state.pid, create_time=ct)
         return self._ops.identity_matches(identity) and state.state in (
             ProxyState.RUNNING,
             ProxyState.STARTING,

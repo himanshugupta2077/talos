@@ -44,7 +44,10 @@ both servers:
 # Linux / macOS
 ./scripts/run-control-panel.sh
 
-# Windows
+# Windows (PowerShell — recommended; clean Ctrl+C, no orphan servers)
+.\scripts\run-control-panel.ps1
+
+# Windows (cmd / double-click — thin wrapper around the .ps1)
 scripts\run-control-panel.bat
 ```
 
@@ -53,10 +56,11 @@ The launcher will, if needed:
 1. Create `TALOS_ROOT/.venv` and `pip install -e .` (Talos editable)
 2. Create `talos-control-panel/backend/.venv` and install `requirements.txt`
 3. Run `npm install` in `frontend/` when `node_modules` is missing
-4. Start backend (port **8420**) and frontend (port **5173**)
-5. Open the browser when the frontend is ready
+4. **Windows:** free stale Control Panel ports/processes from a previous crashed run
+5. Start backend (port **8420**) and frontend (port **5173**)
+6. Open the browser when the frontend is ready
 
-Ctrl+C (or closing the backend window on Windows) stops both processes.
+Ctrl+C stops both processes. On Windows, children are bound to a Job Object so closing the terminal also kills them (no more background uvicorn/vite leftovers). The managed Talos proxy is independent — stop it from the Proxy page or `talos proxy stop` if needed.
 
 ### Prerequisites
 

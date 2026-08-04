@@ -9,7 +9,8 @@ This document describes how the Control Panel is launched, configured at process
 | Script | Platform | Location |
 |--------|----------|----------|
 | `run-control-panel.sh` | Linux / macOS | `scripts/run-control-panel.sh` |
-| `run-control-panel.bat` | Windows | `scripts/run-control-panel.bat` |
+| `run-control-panel.ps1` | Windows (primary) | `scripts/run-control-panel.ps1` |
+| `run-control-panel.bat` | Windows (thin wrapper → `.ps1`) | `scripts/run-control-panel.bat` |
 
 Both scripts:
 
@@ -27,7 +28,10 @@ Usage:
 # from monorepo root (or any path — script resolves itself)
 ./scripts/run-control-panel.sh
 
-# Windows
+# Windows (PowerShell — recommended)
+.\scripts\run-control-panel.ps1
+
+# Windows (cmd / double-click)
 scripts\run-control-panel.bat
 ```
 
@@ -262,13 +266,15 @@ Helpers:
 - `_kill_tree` — recursive `pgrep -P` + signal
 - `_kill_session` — `kill -TERM -- -$pid` then KILL; falls back to tree kill
 
-### Windows (`run-control-panel.bat`)
+### Windows (`run-control-panel.ps1` via `run-control-panel.bat`)
 
-1. Backend runs in the foreground
-2. When backend exits (Ctrl+C or window close after process ends), script stops frontend PID and its children via CIM process query
-3. Deletes `.frontend.pid`
+1. **Pre-start cleanup**: frees backend/frontend ports and stops PIDs recorded in `.frontend.pid` / `.backend.pid` from prior crashed runs (does **not** touch the Talos proxy on :8080)
+2. Starts frontend + backend as managed processes
+3. Assigns both to a Windows **Job Object** with `KILL_ON_JOB_CLOSE` so closing the terminal kills children (no silent background leftovers)
+4. On Ctrl+C or backend exit, `finally` teardown runs `taskkill /T` on both trees and re-frees CP ports
+5. Prefer `.\scripts\run-control-panel.ps1` from PowerShell to avoid cmd’s `Terminate batch job (Y/N)?` prompt; the `.bat` is a thin wrapper that only launches the `.ps1`
 
-Browser open is a separate minimized `cmd` invocation of the same bat with `openWhenReady` and does not participate in process-tree cleanup of servers.
+Browser open is a background PowerShell job that polls the frontend URL; it does not keep the proxy/lifecycle alive.
 
 ---
 
@@ -288,13 +294,14 @@ If the frontend never becomes ready, a warning is printed with the URL for manua
 
 | Topic | Unix | Windows |
 |-------|------|---------|
-| Script | bash, `set -euo pipefail` | cmd batch + PowerShell for process start/kill |
+| Script | bash, `set -euo pipefail` | PowerShell primary (`.ps1`); `.bat` wrapper only |
 | Python binary name | `python3` on PATH; venv `bin/python` | `python` on PATH; venv `Scripts\python.exe` |
 | Talos entry check | `$VENV/bin/talos` | `%VENV%\Scripts\talos.exe` |
-| Process isolation | `setsid` when available | Hidden `Start-Process` |
+| Process isolation | `setsid` when available | Job Object `KILL_ON_JOB_CLOSE` + `taskkill /T` on exit |
+| Pre-start cleanup | (none; ports fail if busy) | Frees CP backend/frontend ports + stale pid files |
 | Proxy/CLI kill (in backend) | process group signals | `taskkill /T /F` (in `cli.py`, not launcher) |
 | Frontend stderr | merged into `frontend.log` | separate `frontend-error.log` |
-| Open browser | `xdg-open` / `open` | `start` after curl poll |
+| Open browser | `xdg-open` / `open` | `Invoke-WebRequest` poll then `Start-Process` URL |
 
 ---
 
@@ -305,5 +312,6 @@ If the frontend never becomes ready, a warning is printed with the URL for manua
 | `$CP_ROOT/frontend.log` | Vite stdout/stderr (Unix) / stdout (Windows) |
 | `$CP_ROOT/frontend-error.log` | Windows frontend stderr |
 | `$CP_ROOT/.frontend.pid` | Frontend leader PID for cleanup |
+| `$CP_ROOT/.backend.pid` | Windows backend PID for stale cleanup |
 
 These are operational artifacts, not application source.

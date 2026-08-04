@@ -132,7 +132,10 @@ From the repo root (creates missing venvs / npm deps automatically):
 # Linux / macOS
 ./scripts/run-control-panel.sh
 
-# Windows
+# Windows (PowerShell recommended)
+.\scripts\run-control-panel.ps1
+
+# Windows (cmd / double-click)
 scripts\run-control-panel.bat
 ```
 

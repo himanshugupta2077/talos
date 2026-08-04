@@ -111,6 +111,8 @@ CP_BACKEND_PORT=8421 CP_FRONTEND_PORT=5174 ./scripts/run-control-panel.sh
 
 Also set matching `VITE_API_BASE` if starting frontend manually.
 
+**Windows:** the launcher now frees ports 8420/5173 (and recorded pid files) on every start. If you still hit a conflict, another non-Talos process may own the port — change `CP_BACKEND_PORT` / `CP_FRONTEND_PORT`.
+
 ### Frontend: strictPort failure
 
 Vite is configured with `strictPort: true`. If 5173 is busy, Vite exits instead of picking another port.
@@ -121,7 +123,8 @@ Vite is configured with `strictPort: true`. If 5173 is busy, Vite exits instead 
 
 ProcessManager restart waits for port release; if another process holds the mitm port (default 8080), restart returns an error.
 
-- Stop orphaned mitmdump/proxy processes
+- Stop orphaned mitmdump/proxy processes: `talos proxy kill --port 8080`
+- Or from Control Panel: Proxy menu → Kill / free port
 - Choose another listen port on the Proxy page
 
 ### ProcessManager lost track of proxy after backend restart
@@ -131,6 +134,39 @@ In-memory registry is empty; OS process may still run.
 - Kill orphan proxy/mitmdump manually
 - Start proxy again from the UI
 
+---
+
+## Windows launcher / orphan processes
+
+### Ctrl+C shows `Terminate batch job (Y/N)?` and ignores input
+
+You are on an old path or still stuck in cmd’s batch wait loop.
+
+- Prefer: `.\scripts\run-control-panel.ps1` from PowerShell
+- Or pull the latest launcher (`run-control-panel.ps1` + thin `.bat` wrapper)
+- Do not answer Y/N in a hung prompt — close that window, then re-launch the `.ps1` (it cleans stale CP ports first)
+
+### Closed the terminal; backend/frontend still running
+
+Previous batch launcher left orphans. Current Windows launcher uses a Job Object (`KILL_ON_JOB_CLOSE`) plus pre-start cleanup.
+
+Manual recovery:
+
+```powershell
+# Free Control Panel ports (example defaults)
+foreach ($p in 8420, 5173) {
+  Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+}
+```
+
+### Proxy UI shows **stopped** but traffic still hits mitmdump
+
+Common after messy shutdowns or when spawn-time process identity failed to record:
+
+1. Check core status: `talos proxy status --format json`
+2. If a process owns :8080 but status is stopped: `talos proxy kill --port 8080` then Start from the UI
+3. Fixed in core: status rebinds `create_time` when it was recorded as `0.0` instead of wiping a live proxy to stopped
 ---
 
 ## Database issues

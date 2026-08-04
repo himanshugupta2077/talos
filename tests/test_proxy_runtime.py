@@ -151,6 +151,38 @@ def test_stale_pid_cleared_on_status(
         ops.force_kill(ProcessIdentity(pid=info.pid, create_time=info.create_time))
 
 
+def test_zero_create_time_rebound_on_status(
+    data_dir: Path, project: MagicMock, tmp_path: Path
+) -> None:
+    """
+    Spawn-time create_time read can fail on Windows (recorded as 0.0). Status
+    must rebind create_time and keep RUNNING instead of clearing to stopped.
+    """
+    ops = FakeMitmOps(tmp_path / "child")
+    (tmp_path / "child").mkdir()
+    mgr = ProxyRuntimeManager(data_dir=data_dir, process_ops=ops)
+    info = mgr.start(project=project, port=18085)
+    assert info.pid is not None
+
+    from talos.proxy.runtime.state import save_state
+
+    state = load_state(data_dir)
+    state.create_time = 0.0
+    save_state(data_dir, state)
+
+    status = mgr.status()
+    assert status.state == ProxyState.RUNNING
+    assert status.pid == info.pid
+    assert status.create_time is not None
+    assert status.create_time != 0.0
+
+    rebound = load_state(data_dir)
+    assert rebound.create_time not in (None, 0.0)
+    assert rebound.pid == info.pid
+
+    mgr.stop()
+
+
 def test_status_deferred_when_lock_held(
     data_dir: Path, project: MagicMock, tmp_path: Path
 ) -> None:

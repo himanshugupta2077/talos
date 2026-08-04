@@ -135,10 +135,11 @@ class ProcessOps:
             log_handle.close()
 
         # Brief settle so /proc or Win32 handles exist before identity read.
-        time.sleep(0.05)
-        create_time = self._read_create_time(proc.pid)
+        # Windows (esp. VDI + AV) can need a few retries before OpenProcess works.
+        create_time = self._read_create_time_retry(proc.pid)
         if create_time is None:
             # Process may have exited immediately; still record best-effort.
+            # Manager rebinds create_time on the next status if the pid lives.
             create_time = 0.0
             logger.warning(
                 "Could not read create_time for pid=%s immediately after spawn",
@@ -283,8 +284,11 @@ class ProcessOps:
         current = self._read_create_time(recorded.pid)
         if current is None:
             return False
-        # Allow tiny float noise; create_time values are coarse OS units.
-        return abs(current - recorded.create_time) < 0.5
+        # create_time 0.0 means "spawn-time read failed" — pid liveness only.
+        # Callers (manager validation) rebind create_time on this path.
+        if recorded.create_time == 0.0:
+            return True
+        return self._create_times_equal(recorded.create_time, current)
 
     def read_identity(self, pid: int) -> Optional[ProcessIdentity]:
         """
@@ -299,6 +303,37 @@ class ProcessOps:
     # ------------------------------------------------------------------ #
     # Platform helpers                                                     #
     # ------------------------------------------------------------------ #
+
+    def _create_times_equal(self, recorded: float, current: float) -> bool:
+        """
+        Compare process create stamps with platform-appropriate tolerance.
+
+        POSIX starttime is coarse clock ticks (tolerance 0.5 is fine).
+        Windows FILETIME is ~1e17 in 100ns units stored as float — absolute
+        0.5 is too tight when values round-trip through JSON or lose low bits.
+        """
+        if sys.platform == "win32":
+            # Allow small absolute drift plus relative float noise on large FILETIMEs.
+            scale = max(abs(recorded), abs(current), 1.0)
+            return abs(current - recorded) <= max(1024.0, scale * 1e-12)
+        return abs(current - recorded) < 0.5
+
+    def _read_create_time_retry(
+        self,
+        pid: int,
+        *,
+        attempts: int = 8,
+        delay_s: float = 0.05,
+    ) -> Optional[float]:
+        """Read create_time with brief retries (Windows handle readiness)."""
+        last: Optional[float] = None
+        for i in range(max(1, attempts)):
+            last = self._read_create_time(pid)
+            if last is not None:
+                return last
+            if i + 1 < attempts:
+                time.sleep(delay_s)
+        return last
 
     def _read_create_time(self, pid: int) -> Optional[float]:
         if sys.platform == "win32":
