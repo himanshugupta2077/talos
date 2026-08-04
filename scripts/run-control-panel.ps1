@@ -20,6 +20,10 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# PS7+: do not treat native-command stderr as terminating errors.
+if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -153,35 +157,125 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# Process helpers
+# Helpers
 # ---------------------------------------------------------------------------
+
+function Get-LastExitCodeSafe {
+    # StrictMode: $LASTEXITCODE may be unset until a native command runs.
+    if (Test-Path Variable:LASTEXITCODE) {
+        return [int]$LASTEXITCODE
+    }
+    return 0
+}
+
+function Invoke-Native {
+    <#
+      Run an external executable. Never treats stderr as a terminating error.
+      Throws only on non-zero exit code (with a clear message).
+
+      Always pass args via -ArgumentList @(...). Do NOT use remaining-args
+      style like: Invoke-Native $py -m pip ...
+      PowerShell binds -m as a parameter name and fails before the process starts.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [object[]]$ArgumentList = @()
+    )
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($null -eq $ArgumentList) { $ArgumentList = @() }
+        if ($ArgumentList.Count -eq 0) {
+            & $FilePath
+        } else {
+            & $FilePath @ArgumentList
+        }
+        $code = Get-LastExitCodeSafe
+        if ($code -ne 0) {
+            $joined = ($ArgumentList | ForEach-Object { "$_" }) -join " "
+            throw "Command failed (exit $code): $FilePath $joined".Trim()
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Test-PythonImport {
+    <#
+      Probe imports without ever throwing.
+
+      PowerShell + ErrorAction Stop turns Python tracebacks on stderr into
+      terminating errors whose Message is only the first line
+      ("Traceback (most recent call last):"). Start-Process with redirected
+      streams keeps stderr completely out of the PowerShell error pipeline.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)][string]$Code
+    )
+    if (-not (Test-Path -LiteralPath $PythonExe)) { return $false }
+
+    $stdout = [System.IO.Path]::GetTempFileName()
+    $stderr = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $proc = Start-Process -FilePath $PythonExe `
+            -ArgumentList @("-c", $Code) `
+            -Wait -PassThru -WindowStyle Hidden -NoNewWindow `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+        if ($null -eq $proc) { return $false }
+        return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-ListeningPids {
     param([Parameter(Mandatory = $true)][int]$Port)
-    $pids = New-Object System.Collections.Generic.HashSet[int]
+    $set = New-Object 'System.Collections.Generic.HashSet[int]'
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     try {
-        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                if ($_.OwningProcess -gt 0) { [void]$pids.Add([int]$_.OwningProcess) }
+        $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($conns) {
+            foreach ($c in @($conns)) {
+                if ($c.OwningProcess -gt 0) { [void]$set.Add([int]$c.OwningProcess) }
             }
+        }
     } catch {
         # Fallback: netstat parsing (works without Get-NetTCPConnection)
         # Example: TCP    127.0.0.1:8420    0.0.0.0:0    LISTENING    12345
         $pattern = ":$Port\s+\S+\s+LISTENING\s+(\d+)"
-        netstat -ano -p tcp 2>$null | ForEach-Object {
-            if ($_ -match $pattern) {
+        $ErrorActionPreference = "Continue"
+        $lines = & netstat.exe -ano -p tcp 2>$null
+        foreach ($line in @($lines)) {
+            if ($line -match $pattern) {
                 $pidVal = [int]$Matches[1]
-                if ($pidVal -gt 0) { [void]$pids.Add($pidVal) }
+                if ($pidVal -gt 0) { [void]$set.Add($pidVal) }
             }
         }
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
-    return @($pids)
+    return @($set)
 }
 
 function Stop-ProcessTree {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
     if ($ProcessId -le 0) { return }
-    # /T kills the whole tree; ignore errors if already gone
-    & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # /T kills the whole tree; ignore errors if already gone
+        & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
 }
 
 function Stop-PortListeners {
@@ -189,8 +283,8 @@ function Stop-PortListeners {
         [Parameter(Mandatory = $true)][int]$Port,
         [string]$Label = "port"
     )
-    $owners = Get-ListeningPids -Port $Port
-    if (-not $owners -or $owners.Count -eq 0) { return }
+    $owners = @(Get-ListeningPids -Port $Port)
+    if ($owners.Count -eq 0) { return }
     Write-Host "[cleanup] Freeing $Label $Port (pids: $($owners -join ', '))"
     foreach ($pidVal in $owners) {
         Stop-ProcessTree -ProcessId $pidVal
@@ -216,39 +310,74 @@ function Invoke-Setup {
 
     foreach ($bin in @("python", "node", "npm")) {
         if (-not (Test-CommandExists $bin)) {
-            throw "'$bin' not found in PATH"
+            throw "'$bin' not found in PATH. Install it and re-open this terminal."
         }
     }
 
-    # ---- 1. Talos core venv ----
-    if (-not (Test-Path $TalosPy)) {
-        Write-Host "[setup] Creating Talos venv at $TalosVenv"
-        & python -m venv $TalosVenv
-        & $TalosPy -m pip install --upgrade pip
+    # Resolve python launcher once (Windows often has py/python/python3).
+    $pythonCmd = $null
+    foreach ($cand in @("python", "py", "python3")) {
+        if (Test-CommandExists $cand) {
+            $pythonCmd = $cand
+            break
+        }
     }
+    if (-not $pythonCmd) {
+        throw "'python' not found in PATH"
+    }
+
+    # ---- 1. Talos core venv ----
+    # Do NOT use bare `import talos` as readiness: started from the repo root,
+    # cwd is on sys.path and the source tree imports without pip (deps missing).
+    if (-not (Test-Path -LiteralPath $TalosPy)) {
+        Write-Host "[setup] Creating Talos venv at $TalosVenv"
+        Invoke-Native -FilePath $pythonCmd -ArgumentList @("-m", "venv", $TalosVenv)
+        if (-not (Test-Path -LiteralPath $TalosPy)) {
+            throw "venv created but python not found at $TalosPy"
+        }
+        Write-Host "[setup] Upgrading pip in Talos venv"
+        Invoke-Native -FilePath $TalosPy -ArgumentList @("-m", "pip", "install", "--upgrade", "pip")
+    }
+
+    $talosExe = Join-Path $TalosVenv "Scripts\talos.exe"
     $needTalos = $false
-    if (-not (Test-Path (Join-Path $TalosVenv "Scripts\talos.exe"))) { $needTalos = $true }
-    & $TalosPy -c "import httpx" 2>$null
-    if ($LASTEXITCODE -ne 0) { $needTalos = $true }
+    if (-not (Test-Path -LiteralPath $talosExe)) { $needTalos = $true }
+    if (-not (Test-PythonImport -PythonExe $TalosPy -Code "import httpx")) { $needTalos = $true }
+
     if ($needTalos) {
         Write-Host "[setup] Installing talos package (editable) from $TalosRoot"
-        & $TalosPy -m pip install -e $TalosRoot
-        if ($LASTEXITCODE -ne 0) { throw "pip install -e talos failed" }
+        Write-Host "[setup]   This can take a few minutes on first run..."
+        Invoke-Native -FilePath $TalosPy -ArgumentList @("-m", "pip", "install", "-e", $TalosRoot)
+        if (-not (Test-PythonImport -PythonExe $TalosPy -Code "import httpx")) {
+            throw "talos install finished but 'import httpx' still fails in $TalosPy"
+        }
+        Write-Host "[setup] Talos package installed"
     } else {
         Write-Host "[setup] Talos venv OK"
     }
 
     # ---- 2. Control panel backend venv ----
-    if (-not (Test-Path $CpPy)) {
+    if (-not (Test-Path -LiteralPath $CpPy)) {
         Write-Host "[setup] Creating control panel backend venv"
-        & python -m venv $CpBackendVenv
-        & $CpPy -m pip install --upgrade pip
+        Invoke-Native -FilePath $pythonCmd -ArgumentList @("-m", "venv", $CpBackendVenv)
+        if (-not (Test-Path -LiteralPath $CpPy)) {
+            throw "backend venv created but python not found at $CpPy"
+        }
+        Write-Host "[setup] Upgrading pip in backend venv"
+        Invoke-Native -FilePath $CpPy -ArgumentList @("-m", "pip", "install", "--upgrade", "pip")
     }
-    & $CpPy -c "import fastapi, uvicorn" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+
+    if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn")) {
+        $req = Join-Path $CpBackendDir "requirements.txt"
+        if (-not (Test-Path -LiteralPath $req)) {
+            throw "backend requirements.txt not found: $req"
+        }
         Write-Host "[setup] Installing control panel backend dependencies"
-        & $CpPy -m pip install -r (Join-Path $CpBackendDir "requirements.txt")
-        if ($LASTEXITCODE -ne 0) { throw "backend pip install failed" }
+        Invoke-Native -FilePath $CpPy -ArgumentList @("-m", "pip", "install", "-r", $req)
+        if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn")) {
+            throw "backend install finished but 'import fastapi, uvicorn' still fails in $CpPy"
+        }
+        Write-Host "[setup] Backend dependencies installed"
     } else {
         Write-Host "[setup] Control panel backend venv OK"
     }
@@ -256,16 +385,45 @@ function Invoke-Setup {
     # ---- 3. Frontend deps ----
     if (-not (Test-Path (Join-Path $CpFrontendDir "node_modules"))) {
         Write-Host "[setup] Installing frontend dependencies (npm install)"
+        $npmExe = $null
+        $npmCmdInfo = Get-Command npm.cmd -ErrorAction SilentlyContinue
+        if ($npmCmdInfo) { $npmExe = $npmCmdInfo.Source }
+        if (-not $npmExe) {
+            $npmCmdInfo = Get-Command npm -ErrorAction Stop
+            $npmExe = $npmCmdInfo.Source
+        }
         Push-Location $CpFrontendDir
         try {
-            & npm install
-            if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+            Invoke-Native -FilePath $npmExe -ArgumentList @("install")
         } finally {
             Pop-Location
         }
+        Write-Host "[setup] Frontend dependencies installed"
     } else {
         Write-Host "[setup] Frontend node_modules OK"
     }
+}
+
+function Format-ErrorRecord {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return "(unknown error)" }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $msg = $ErrorRecord.Exception.Message
+    if ($msg) { [void]$lines.Add($msg) }
+    if ($ErrorRecord.InvocationInfo -and $ErrorRecord.InvocationInfo.PositionMessage) {
+        [void]$lines.Add($ErrorRecord.InvocationInfo.PositionMessage)
+    }
+    if ($ErrorRecord.ScriptStackTrace) {
+        [void]$lines.Add("Script stack:")
+        [void]$lines.Add($ErrorRecord.ScriptStackTrace)
+    }
+    # If the exception wrapped a multi-line native/python failure, surface it.
+    $inner = $ErrorRecord.Exception.InnerException
+    while ($inner) {
+        [void]$lines.Add("Inner: $($inner.Message)")
+        $inner = $inner.InnerException
+    }
+    return ($lines -join [Environment]::NewLine)
 }
 
 # ---------------------------------------------------------------------------
@@ -275,6 +433,7 @@ $script:JobHandle = [IntPtr]::Zero
 $script:FrontendProc = $null
 $script:BackendProc = $null
 $script:CleaningUp = $false
+$script:ExitCode = 0
 
 function Invoke-Shutdown {
     if ($script:CleaningUp) { return }
@@ -308,7 +467,7 @@ function Invoke-Shutdown {
     Remove-Item $BackendPidFile -Force -ErrorAction SilentlyContinue
 
     if ($script:JobHandle -ne [IntPtr]::Zero) {
-        [void][TalosJobObject]::CloseHandle($script:JobHandle)
+        try { [void][TalosJobObject]::CloseHandle($script:JobHandle) } catch { }
         $script:JobHandle = [IntPtr]::Zero
     }
     Write-Host "[run] Cleanup complete."
@@ -358,7 +517,7 @@ try {
     try {
         $script:JobHandle = [TalosJobObject]::CreateKillOnCloseJob()
     } catch {
-        Write-Host "[warn] Could not create Job Object (orphans on terminal close still possible): $_"
+        Write-Host "[warn] Could not create Job Object (orphans on terminal close still possible): $($_.Exception.Message)"
         $script:JobHandle = [IntPtr]::Zero
     }
 
@@ -366,8 +525,8 @@ try {
     if (Test-Path $FrontendErrLog) { Remove-Item $FrontendErrLog -Force -ErrorAction SilentlyContinue }
 
     Write-Host "[run] Starting frontend in background (logs -> $FrontendLog)"
-    $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue)
-    if (-not $npmCmd) { $npmCmd = Get-Command npm }
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { $npmCmd = Get-Command npm -ErrorAction Stop }
     $feArgs = @(
         "run", "dev", "--",
         "--port", "$CpFrontendPort",
@@ -383,7 +542,7 @@ try {
     $script:FrontendProc.Id | Out-File -Encoding ascii -FilePath $PidFile
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         try { [TalosJobObject]::Assign($script:JobHandle, $script:FrontendProc) } catch {
-            Write-Host "[warn] Could not assign frontend to job: $_"
+            Write-Host "[warn] Could not assign frontend to job: $($_.Exception.Message)"
         }
     }
 
@@ -402,7 +561,7 @@ try {
     $script:BackendProc.Id | Out-File -Encoding ascii -FilePath $BackendPidFile
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         try { [TalosJobObject]::Assign($script:JobHandle, $script:BackendProc) } catch {
-            Write-Host "[warn] Could not assign backend to job: $_"
+            Write-Host "[warn] Could not assign backend to job: $($_.Exception.Message)"
         }
     }
 
@@ -427,8 +586,16 @@ try {
     # Polling avoids Start-Process -Wait quirks with console signals.
     while ($script:BackendProc -and -not $script:BackendProc.HasExited) {
         Start-Sleep -Milliseconds 400
-        # Refresh process state
         try { $script:BackendProc.Refresh() } catch { break }
+    }
+
+    if ($script:BackendProc -and $script:BackendProc.HasExited -and $script:BackendProc.ExitCode -ne 0) {
+        $script:ExitCode = [int]$script:BackendProc.ExitCode
+        Write-Host "[error] Backend exited with code $script:ExitCode" -ForegroundColor Red
+        if (Test-Path $FrontendErrLog) {
+            Write-Host "[error] Frontend stderr (last 30 lines):" -ForegroundColor Red
+            Get-Content $FrontendErrLog -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+        }
     }
 
     if ($opener) {
@@ -436,8 +603,10 @@ try {
         Remove-Job $opener -Force -ErrorAction SilentlyContinue
     }
 } catch {
-    Write-Host "[error] $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    $script:ExitCode = 1
+    Write-Host "[error] $(Format-ErrorRecord $_)" -ForegroundColor Red
 } finally {
     Invoke-Shutdown
 }
+
+exit $script:ExitCode
