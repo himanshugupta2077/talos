@@ -16,6 +16,7 @@
 #
 # Optional overrides (env):
 #   TALOS_ROOT, CP_ROOT, TALOS_HOME, TALOS_VENV, CP_BACKEND_PORT, CP_FRONTEND_PORT
+#   TALOS_CP_CLI_TIMEOUT (seconds for CP-invoked CLI; default 600 / 10 min)
 
 set -euo pipefail
 
@@ -28,6 +29,9 @@ CP_ROOT="${CP_ROOT:-$TALOS_ROOT/talos-control-panel}"
 : "${CP_BACKEND_PORT:=8420}"
 : "${CP_FRONTEND_PORT:=5173}"
 : "${TALOS_HOME:=$HOME/.talos}"
+# Long budget for large IV/attack enqueue and slow hosts (override via env).
+: "${TALOS_CP_CLI_TIMEOUT:=600}"
+export TALOS_CP_CLI_TIMEOUT
 TALOS_VENV="${TALOS_VENV:-$TALOS_ROOT/.venv}"
 
 CP_BACKEND_DIR="$CP_ROOT/backend"

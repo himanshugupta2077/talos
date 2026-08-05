@@ -46,8 +46,10 @@ TALOS_PYTHON: str = os.environ.get(
 # Display / health only — mutations always go through TALOS_PYTHON -m talos.
 TALOS_BIN: str = os.environ.get("TALOS_BIN", TALOS_PYTHON)
 
-# Command timeout for normal (non-long-running) CLI calls, in seconds.
-CLI_TIMEOUT: int = int(os.environ.get("TALOS_CP_CLI_TIMEOUT", "60"))
+# Command timeout for CLI calls, in seconds.
+# Default 600s (10 min): slow VDI/Windows cold-starts and large IV/attack
+# enqueues routinely exceed a short budget; override with TALOS_CP_CLI_TIMEOUT.
+CLI_TIMEOUT: int = int(os.environ.get("TALOS_CP_CLI_TIMEOUT", "600"))
 
 CP_HOST: str = os.environ.get("CP_HOST", "127.0.0.1")
 CP_PORT: int = int(os.environ.get("CP_PORT", "8420"))

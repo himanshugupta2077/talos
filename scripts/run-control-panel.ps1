@@ -16,7 +16,8 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-control-panel.ps1
 
   Optional env overrides (set before launch):
-    TALOS_ROOT, CP_ROOT, TALOS_HOME, TALOS_VENV, CP_BACKEND_PORT, CP_FRONTEND_PORT
+    TALOS_ROOT, CP_ROOT, TALOS_HOME, TALOS_VENV, CP_BACKEND_PORT, CP_FRONTEND_PORT,
+    TALOS_CP_CLI_TIMEOUT (seconds for CP-invoked CLI; default 600 / 10 min for slow VDI)
 #>
 
 Set-StrictMode -Version Latest
@@ -38,6 +39,8 @@ if (-not $env:CP_BACKEND_PORT) { $env:CP_BACKEND_PORT = "8420" }
 if (-not $env:CP_FRONTEND_PORT) { $env:CP_FRONTEND_PORT = "5173" }
 if (-not $env:TALOS_HOME) { $env:TALOS_HOME = Join-Path $env:USERPROFILE ".talos" }
 if (-not $env:TALOS_VENV) { $env:TALOS_VENV = Join-Path $env:TALOS_ROOT ".venv" }
+# Slow Windows/VDI: CLI cold-start + large IV/attack enqueue need a long budget.
+if (-not $env:TALOS_CP_CLI_TIMEOUT) { $env:TALOS_CP_CLI_TIMEOUT = "600" }
 
 $TalosRoot = $env:TALOS_ROOT
 $CpRoot = $env:CP_ROOT
