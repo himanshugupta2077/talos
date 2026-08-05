@@ -52,7 +52,11 @@ export function CommandLogProvider({ children }: { children: ReactNode }) {
     setTimeout(() => dismissToast(toastId), failed ? 5000 : 2800);
   }, [dismissToast]);
 
-  const clear = useCallback(() => setEntries([]), []);
+  const clear = useCallback(() => {
+    setEntries([]);
+    setLastFailed(false);
+    setToasts([]);
+  }, []);
 
   return (
     <CommandLogContext.Provider
