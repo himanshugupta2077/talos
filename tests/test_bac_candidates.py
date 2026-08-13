@@ -31,7 +31,10 @@ from talos.projects.policy import (
     set_logout,
     set_path_rule,
 )
-from talos.projects.bac.candidates import scan_candidates
+from talos.projects.bac.candidates import (
+    restrict_candidates_to_flows,
+    scan_candidates,
+)
 from talos.projects.bac.engine import execute_bac_job, _endpoint_policy_pre_check
 
 
@@ -419,6 +422,18 @@ def test_get_testable_endpoints_scopes_mutually_exclusive(db_path: Path):
             db_path, PROJECT_ID,
             endpoint_id=EP_ORDERS, module_id=MODULE_ORDERS,
         )
+
+
+def test_restrict_candidates_to_selected_flows(db_path: Path):
+    all_cands = scan_candidates(db_path, PROJECT_ID)
+    all_ids = {fid for c in all_cands for fid in c.flow_ids}
+    assert FLOW_ORDERS in all_ids
+    assert FLOW_ADMIN in all_ids
+    filtered = restrict_candidates_to_flows(all_cands, [FLOW_ORDERS])
+    kept = {fid for c in filtered for fid in c.flow_ids}
+    assert kept == {FLOW_ORDERS}
+    empty = restrict_candidates_to_flows(all_cands, ["no-such-flow"])
+    assert empty == []
 
 
 def test_is_endpoint_testable(db_path: Path):

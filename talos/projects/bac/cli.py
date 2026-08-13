@@ -73,7 +73,7 @@ import sys
 import uuid
 
 from talos.projects.manager import ProjectManager
-from talos.projects.bac.candidates import BacCandidate, scan_candidates
+from talos.projects.bac.candidates import restrict_candidates_to_flows, scan_candidates
 from talos.projects.bac.auth_prereq import check_auth_prereqs
 from talos.projects.bac.variants import VARIANTS_BY_ATTACK
 from talos.scheduler import db as sched_db
@@ -182,6 +182,7 @@ def _enqueue_bac_jobs(
     auto_generate: bool,
     endpoint_id: str | None = None,
     module_id: str | None = None,
+    flow_ids: list[str] | None = None,
 ) -> None:
     """
     Purpose:
@@ -195,6 +196,7 @@ def _enqueue_bac_jobs(
         auto_generate    — Whether to auto-generate session tokens.
         endpoint_id      — Optional single-endpoint scope UUID.
         module_id        — Optional module scope as name or UUID (resolved here).
+        flow_ids         — Optional operator-selected flow UUIDs (`--flow`).
     Side effects:
         Reads from DB; inserts scheduler jobs; prints to stdout/stderr.
         Exits 1 when no candidates exist after prereq validation.
@@ -224,6 +226,8 @@ def _enqueue_bac_jobs(
         endpoint_id=endpoint_id,
         module_id=module_id,
     )
+    if flow_ids:
+        candidates = restrict_candidates_to_flows(candidates, flow_ids)
 
     if not candidates:
         scope_hints: list[str] = []
@@ -233,6 +237,8 @@ def _enqueue_bac_jobs(
             scope_hints.append(f"endpoint '{endpoint_id}'")
         if module_id:
             scope_hints.append(f"module '{module_name or module_id}'")
+        if flow_ids:
+            scope_hints.append(f"{len(flow_ids)} selected flow(s)")
         if scope_hints:
             print(
                 f"No BAC candidates found for {' + '.join(scope_hints)}. "
@@ -360,15 +366,20 @@ def _enqueue_bac_jobs(
 # Command handlers                                                     #
 # ------------------------------------------------------------------ #
 
-def _scope_from_args(args: argparse.Namespace) -> tuple[str | None, str | None]:
+def _scope_from_args(
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None, list[str]]:
     """
     Purpose:
-        Extract optional --endpoint / --module scope from parsed args.
-        Defaults to (None, None) when attributes are absent (older callers).
+        Extract optional --endpoint / --module / --flow scope from parsed args.
+        Defaults to (None, None, []) when attributes are absent.
     """
+    from talos.projects.flow_scope import normalize_flow_ids
+
     return (
         getattr(args, "endpoint", None),
         getattr(args, "module", None),
+        normalize_flow_ids(getattr(args, "flows", None)),
     )
 
 
@@ -378,10 +389,10 @@ def cmd_bac_session_swap(manager: ProjectManager, args: argparse.Namespace) -> N
         Generate direct session-swap BAC jobs.
         Replays target-role flows using the attacker role's session token.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_SESSION_SWAP, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -391,10 +402,10 @@ def cmd_bac_method_fuzz(manager: ProjectManager, args: argparse.Namespace) -> No
         Generate HTTP method manipulation BAC jobs.
         Applies verb changes (GET→POST, POST→GET, etc.) and X-HTTP-Method-Override.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_METHOD_FUZZ, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -404,10 +415,10 @@ def cmd_bac_content_type(manager: ProjectManager, args: argparse.Namespace) -> N
         Generate content-type confusion BAC jobs.
         Changes request Content-Type to confuse server-side parsers.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_CONTENT_TYPE, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -417,10 +428,10 @@ def cmd_bac_url_fuzz(manager: ProjectManager, args: argparse.Namespace) -> None:
         Generate URL manipulation BAC jobs.
         Tests trailing slash, double slash, dot segments, encoding, and case variants.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_URL_FUZZ, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -430,10 +441,10 @@ def cmd_bac_header_inject(manager: ProjectManager, args: argparse.Namespace) -> 
         Generate header injection BAC jobs.
         Injects X-Original-URL, X-Forwarded-For, X-Forwarded-Host, etc.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_HEADER_INJECT, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -443,10 +454,10 @@ def cmd_bac_host_fuzz(manager: ProjectManager, args: argparse.Namespace) -> None
         Generate Host header BAC jobs.
         Replaces Host with example.com, localhost, or 127.0.0.1.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_HOST_FUZZ, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -456,10 +467,10 @@ def cmd_bac_role_inject(manager: ProjectManager, args: argparse.Namespace) -> No
         Generate role parameter injection BAC jobs.
         Injects isAdmin=true, role=admin, and similar escalation parameters.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_ROLE_INJECT, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -470,10 +481,10 @@ def cmd_bac_parser_confuse(manager: ProjectManager, args: argparse.Namespace) ->
         Exploits discrepancies between how gateways and backends parse
         duplicate parameters, duplicate headers, and conflicting framing.
     """
-    endpoint_id, module_id = _scope_from_args(args)
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
     _enqueue_bac_jobs(
         manager, BAC_PARSER_CONFUSE, args.role, args.auto_generate,
-        endpoint_id=endpoint_id, module_id=module_id,
+        endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
     )
 
 
@@ -490,6 +501,7 @@ def _add_bac_shared_args(parser: argparse.ArgumentParser) -> None:
             (no flag)  → project scope
             --module   → module scope
             --endpoint → endpoint scope
+            --flow     → selected captures only (repeatable)
     Side effects: Modifies the parser in-place.
     """
     parser.add_argument(
@@ -501,7 +513,7 @@ def _add_bac_shared_args(parser: argparse.ArgumentParser) -> None:
             "When omitted, all access-matrix role pairs are used."
         ),
     )
-    # Project | Module | Endpoint — exactly one execution mode.
+    # Project | Module | Endpoint | Flow — exactly one execution mode.
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument(
         "--endpoint",
@@ -509,7 +521,7 @@ def _add_bac_shared_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Endpoint execution scope: generate BAC jobs for this single "
-            "endpoint UUID only. Mutually exclusive with --module. "
+            "endpoint UUID only. Mutually exclusive with --module / --flow. "
             "The endpoint must be qualified and not excluded."
         ),
     )
@@ -520,7 +532,19 @@ def _add_bac_shared_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Module execution scope: generate BAC jobs only for flows/"
             "endpoints inside this module (name or UUID). Mutually exclusive "
-            "with --endpoint."
+            "with --endpoint / --flow."
+        ),
+    )
+    scope.add_argument(
+        "--flow",
+        dest="flows",
+        action="append",
+        metavar="UUID",
+        help=(
+            "Flow execution scope: only these captured flow UUIDs "
+            "(repeatable or comma-separated). Mutually exclusive with "
+            "--endpoint / --module. Still requires an access-matrix candidate "
+            "that includes the flow."
         ),
     )
     parser.add_argument(
@@ -557,7 +581,8 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
             "'talos endpoint exclude' to remove endpoints from BAC forever.\n\n"
             "Execution scope (mutually exclusive — default is whole project):\n"
             "  --endpoint UUID       only this endpoint\n"
-            "  --module NAME|UUID    only this module\n\n"
+            "  --module NAME|UUID    only this module\n"
+            "  --flow UUID           only these captures (repeatable)\n\n"
             "Additional filters:\n"
             "  --role NAME|UUID      only this attacker role\n\n"
             "Auth prerequisites per attacker role:\n"

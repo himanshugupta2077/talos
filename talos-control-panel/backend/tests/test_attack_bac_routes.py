@@ -149,6 +149,37 @@ def test_bac_run_with_endpoint_scope(client):
         ]
 
 
+def test_bac_run_with_flows(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/bac/run",
+            params={"project_id": "demo"},
+            json={"techniques": ["session-swap"], "flows": ["flow-a", "flow-b"]},
+        )
+        assert res.status_code == 200
+        assert run_scoped.call_args[0][1] == [
+            "attack",
+            "bac",
+            "session-swap",
+            "--flow",
+            "flow-a",
+            "--flow",
+            "flow-b",
+        ]
+
+
+def test_bac_run_rejects_flows_and_endpoint(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        res = client.post(
+            "/api/attack/bac/run",
+            params={"project_id": "demo"},
+            json={"endpoint": "ep-1", "flows": ["flow-a"]},
+        )
+        assert res.status_code == 400
+        run_scoped.assert_not_called()
+
+
 def test_bac_run_rejects_unknown_technique(client):
     with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
         res = client.post(

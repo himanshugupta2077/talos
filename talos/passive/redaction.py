@@ -93,7 +93,7 @@ def fingerprint_secret(
 
         value_fingerprint = SHA256(detector_family + "\\0" + canonical_secret)
 
-        Cluster key (Phase 8): PASSIVE_SECRET:<value_fingerprint>
+        Cluster key (Phase 8): PASSIVE_SECRET (one cluster; fingerprint is still stored on the detection)
 
     Input:
         family — detector_family string (e.g. "provider", "pem")

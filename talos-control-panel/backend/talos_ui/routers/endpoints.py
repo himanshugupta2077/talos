@@ -422,6 +422,11 @@ class BulkTestBody(BulkIdsBody):
     action: str  # enqueue_replay | replay_now | enqueue_auth
 
 
+class TestFlowsBody(BulkIdsBody):
+    """Resolve ranked test flows for selected endpoints (top N each)."""
+    limit: int = 5
+
+
 def _normalize_ids(ids: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -539,6 +544,35 @@ def bulk_tags(project_id: str, body: BulkTagsBody):
         args.extend(["--format", "json"])
     results = cli.run_scoped(project_id, args)
     return _steps_with_bulk(results)
+
+
+@router.post("/test-flows")
+def test_flows(project_id: str, body: TestFlowsBody):
+    """
+    Ranked 2xx proxy_capture flows for attack launchers.
+    Top `limit` (default 5) per endpoint: baseline first, then method, then recency.
+    """
+    ids = _require_ids(body.endpoint_ids)
+    limit = body.limit if body.limit and body.limit > 0 else 5
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    _ensure_talos_on_path()
+    from talos.projects.flow_scope import (
+        DEFAULT_TEST_FLOWS_PER_ENDPOINT,
+        select_test_flows_for_endpoints,
+    )
+
+    cap = min(max(int(limit), 1), 20)
+    refs, skipped = select_test_flows_for_endpoints(
+        db_path, ids, limit_per_endpoint=cap
+    )
+    return {
+        "flows": [ref.to_dict() for ref in refs],
+        "flow_ids": [ref.flow_id for ref in refs],
+        "skipped_endpoints": skipped,
+        "limit_per_endpoint": cap,
+        "default_limit": DEFAULT_TEST_FLOWS_PER_ENDPOINT,
+    }
 
 
 @router.post("/bulk/test")

@@ -168,6 +168,10 @@ export interface SchedulerStatus {
   } | null;
   active_queue?: number;
   queue_fill_pct?: number;
+  /** Total jobs per exact job_type (all statuses). */
+  by_job_type?: { job_type: string; family: string; n: number }[];
+  /** Total jobs rolled up by attack/replay family (all statuses). */
+  by_family?: { family: string; n: number }[];
 }
 
 /** Header label for scheduler execution state (uppercase, glanceable). */

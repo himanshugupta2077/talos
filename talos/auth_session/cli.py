@@ -197,9 +197,10 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     )
     p_gen.add_argument(
         "--flow",
-        dest="flow_id",
+        dest="flows",
+        action="append",
         metavar="UUID",
-        help="Explicit baseline flow.",
+        help="Explicit baseline flow (repeatable or comma-separated).",
     )
     p_gen.add_argument(
         "--endpoint",
@@ -867,11 +868,14 @@ def cmd_generate(manager: ProjectManager, args: argparse.Namespace) -> None:
     _validate_families(families)
 
     try:
+        from talos.projects.flow_scope import normalize_flow_ids
+
+        flow_ids = normalize_flow_ids(getattr(args, "flows", None))
         stats = generate_candidates(
             db_path,
             project.id,
             binding_id=getattr(args, "binding_id", None),
-            flow_id=getattr(args, "flow_id", None),
+            flow_ids=flow_ids or None,
             endpoint_id=getattr(args, "endpoint_id", None),
             module_id=module_id,
             role_id=role_id,

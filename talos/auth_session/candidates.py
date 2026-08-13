@@ -457,6 +457,7 @@ def generate_candidates(
     *,
     binding_id: Optional[str] = None,
     flow_id: Optional[str] = None,
+    flow_ids: Optional[list[str]] = None,
     endpoint_id: Optional[str] = None,
     module_id: Optional[str] = None,
     role_id: Optional[str] = None,
@@ -489,20 +490,38 @@ def generate_candidates(
         stats.skip_reasons.append("no_bindings")
         return stats
 
+    from talos.projects.flow_scope import normalize_flow_ids
+
+    explicit = normalize_flow_ids(flow_ids if flow_ids is not None else flow_id)
+
     for binding in bindings:
         stats.bindings_processed += 1
         try:
-            selections = select_baselines_for_binding(
-                db_path,
-                project_id,
-                binding,
-                flow_id=flow_id,
-                endpoint_id=endpoint_id,
-                module_id=module_id,
-                role_id=role_id,
-                include_unsafe_methods=include_unsafe_methods,
-                stats=stats,
-            )
+            if explicit:
+                selections = []
+                for fid in explicit:
+                    selections.extend(
+                        select_baselines_for_binding(
+                            db_path,
+                            project_id,
+                            binding,
+                            flow_id=fid,
+                            include_unsafe_methods=include_unsafe_methods,
+                            stats=stats,
+                        )
+                    )
+            else:
+                selections = select_baselines_for_binding(
+                    db_path,
+                    project_id,
+                    binding,
+                    flow_id=flow_id,
+                    endpoint_id=endpoint_id,
+                    module_id=module_id,
+                    role_id=role_id,
+                    include_unsafe_methods=include_unsafe_methods,
+                    stats=stats,
+                )
         except ValueError as exc:
             stats.skip_reasons.append(str(exc))
             continue

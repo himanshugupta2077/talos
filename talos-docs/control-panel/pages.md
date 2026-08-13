@@ -269,14 +269,14 @@ Operator **Endpoint Workspace** (not a raw capture table). Four tabs answer dist
 | **CLI** | All mutations via multi-ID `endpoint mark/unmark/priority/exclude/include/tags` and `endpoint rule *`; test enqueue via `scheduler enqueue` / `replay endpoint`. Reads use core policy resolver (`endpoint_reads` → same as `talos endpoint list/policy`) |
 | **DB** | Read-only observation (hits, modules, parameters); **resolved** priority/exclusion/qualification from Talos policy engine — UI does not infer |
 | **Components** | Tab shell, `InventoryTab`, `PolicyTab`, `RulesTab`, `CoverageTab`, `PolicyExplain`, `SideDrawer`, sticky bulk bar, `DataTable`, `ModuleHelp` |
-| **Workflow** | Inventory browse/filter → multi-select → bulk mutate (one CLI call with all IDs) → Policy explain → Rules create with live preview → Coverage jump-to-filter |
+| **Workflow** | Inventory browse/filter → multi-select → bulk mutate (one CLI call with all IDs) **or run attacks** (top 1–5 test flows per endpoint) → Policy explain → Rules create with live preview → Coverage jump-to-filter |
 
 ### Inventory
 
 - Summary strip (clickable): total, testable, excluded, dangerous, logout, unqualified
 - Filters: search, origin, method, effective priority, priority source (Manual/Rule/Auto), included/excluded, qualified, qualification reason, safety, role, module, tag, has parameters, has baseline
 - Columns: select, method, endpoint (origin+path), priority **and** source separately (`HIGH` `AUTO`), state, roles, params, hits, last seen, ⋮ actions
-- Selection: page / all matching filters (backend resolves IDs) / clear — sticky bulk bar for Mark, Priority, Exclusion, Tags, Test, Create path rule from selection
+- Selection: page / all matching filters (backend resolves IDs) / clear — sticky bulk bar for Mark, Priority, Exclusion, Tags, Test, Create path rule, **and Run attacks** (resolves top 1–5 2xx proxy_capture flows per endpoint via `POST /api/endpoints/test-flows`, then the same catalog as Flows: CORS / Unauth / BAC / IV / Auth-session generate)
 - Bulk result banner: affected / unchanged / total; validation failure surfaces Talos rejection (no per-row CLI loop)
 
 ### Policy
@@ -345,11 +345,11 @@ Capability badge tooltips use prioritization language only (never “vulnerable�
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Browse captured HTTP flows; signal icons; quick actions matching detail rail |
-| **Backend** | list + filters; optional `include=flags` (diff/bac/unauth/evidence/replay/truncation); roles list; replay/enqueue/export; auth-config attach login/control flows |
+| **Backend** | list + filters (source/method/host/status/role/app module/**attack module**); optional `include=flags` (diff/bac/unauth/evidence/replay/truncation); roles list; replay/enqueue/export; auth-config attach login/control flows |
 | **CLI** | `replay flow`, `scheduler enqueue flow`, `flow export`, `auth-config add-flow` / `add-control-flow` |
 | **DB** | flows (+ roles/modules names); LEFT JOINs to `replay_diffs`, `bac_results`, `unauth_results`, `finding_evidence` when flags requested |
 | **Components** | `DataTable` (boxed cells, column resize + reorder + show/hide; Actions header visible), `FlowActions` (⋮ menu), `ModuleHelp`, signal badges, `formatIST` |
-| **Workflow** | Filter (kept in URL) → row open inspection workspace; or ⋮ **Send to Repeater** / replay/enqueue/export/assign login/control/copy helpers |
+| **Workflow** | Filter (kept in URL) → select rows → run attacks on those flows only (CORS, Unauth, BAC, IV; Auth-session generates candidates; Intruder still needs a session); or ⋮ **Run attacks** / **Send to Repeater** / replay/enqueue/export/assign login/control/copy helpers |
 
 **Operator guidance:** page-level `How Flows work` explains filters, signal icons (↺ Δ A F), and that ⋮ actions match the detail Actions panel. **Send to Repeater** opens Mode 2 edit-and-send; **Replay** remains exact Mode 1. Table: click a column header to sort; drag header edges to resize; Columns menu for show/hide; layout persisted under `storageKey=flows`. Actions ⋮ opens a dropdown (`dropdown-open` + overflow-visible) that is not clipped by the table panel.
 
@@ -447,10 +447,10 @@ Priority presets: Lowest(10) … Highest(100); advanced mode exposes numeric pri
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Full CLI surface for the rate-limited priority job queue + managed daemon (not cron): process start/stop, queue pause/resume, job inventory/detail/cancel, enqueue, clear, prune |
-| **Backend** | Enriched `GET /status` (process + metrics + counts); `POST /start` `/stop`; `GET /jobs` (family filter, total/offset); `GET /jobs/{id}`; `POST /cancel` `/prune`; enqueue/clear/pause/resume; rate limits read from `/api/configuration/settings?section=scheduler` |
+| **Backend** | Enriched `GET /status` (process + metrics + status counts + per-type totals `by_family`/`by_job_type`); `POST /start` `/stop`; `GET /jobs` (family filter, total/offset); `GET /jobs/{id}`; `POST /cancel` `/prune`; enqueue/clear/pause/resume; rate limits read from `/api/configuration/settings?section=scheduler` |
 | **CLI** | `scheduler status/start/stop/pause/resume/jobs list|show/cancel/prune/clear/enqueue …`; rate keys owned by `talos config scheduler.*` (Talos Configuration page) |
 | **DB** | scheduler_jobs (+ joins), scheduler_state; process from `SchedulerRuntimeManager` / `~/.talos/runtime/scheduler.json` (config table is legacy dual-write, not CP source of truth) |
-| **Components** | Process + queue control strip (two “running” concepts), clickable status chips + metrics, Jobs / History tabs, job detail drawer, enqueue drawer (flow/endpoint + priority/type/force), bulk cancel, prune confirm |
+| **Components** | Process + queue control strip (two “running” concepts), clickable status chips + per-type request totals (IV / CORS misconfig / BAC / …), Jobs / History tabs, job detail drawer, enqueue drawer (flow/endpoint + priority/type/force), bulk cancel, prune confirm |
 | **Workflow** | Start daemon → watch process vs queue state → filter by family/status → open job drawer (meta/timestamps/verdict) → cancel pending/paused → enqueue with flags → clear pending or prune terminal history |
 | **Deep-link** | `?tab=jobs\|history&status=failed&type=bac&job=<id>` (Dashboard failed jobs land on History with drawer open) |
 
@@ -470,6 +470,7 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | `/testing/unauth` | Unauthenticated Execution (Active) — full unauth workspace |
 | `/testing/bac` | BAC (Active) — Overview / Run / Results / Filter workspace |
 | `/testing/auth-session` | Auth-Session Testing (Active) — full JWT mutation lifecycle (CLI parity) |
+| `/testing/cors` | CORS Misconfiguration (Active) — Origin reflection probes |
 | `/testing/input-validation` | Input Validation (Active) — characterization workspace |
 | `/testing/input-validation/params/:id` | Parameter dossier |
 | `/testing/input-validation/endpoints/:id` | Endpoint intelligence dossier |
@@ -487,12 +488,26 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Discover and launch security tests; module-specific run + results |
-| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
-| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `talos input-validation …`; `talos passive …` for secrets |
-| **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
+| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity), `/api/attack/cors/*` (overview, techniques, run, results, summary); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
+| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `attack cors run\|candidates\|results\|status`; `talos input-validation …`; `talos passive …` for secrets |
+| **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results, cors_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
 | **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
 | **Workflow** | Hub → open module card → run / triage → Findings for global lifecycle |
 | **Nav** | Sidebar group **Testing** → **Modules** (`/testing`) + **Scheduler** (modules are not separate nav entries) |
+
+### CORS Misconfiguration (`/testing/cors`)
+
+**Files:** `pages/attack/modules/CorsModule.tsx` + `pages/attack/cors/*`
+
+Tabbed workspace for `talos attack cors …`. Same enqueue → unique replay flow path as unauth.
+
+| Tab | Role |
+|-----|------|
+| **Overview** | Candidate count, technique total, job pressure, CORS_MISCONFIG / SECURE / UNKNOWN KPIs, recent reflected-origin issues |
+| **Run** | Technique cards (or all), job estimate, enqueue → `attack cors run [--technique]`. Flows list/detail and Endpoints inventory multi-select run selected attack modules on chosen flow UUIDs (`--flow`); catalog in `pages/flows/flowAttacks.ts`. |
+| **Results** | Filterable table (verdict, technique, host); row opens the unique replay flow |
+
+Finding rule (core): only attacker origin / subdomain reflection creates a PRIMARY finding (`CORS:<origin>`); extra techniques LINKED. `ACAO: *` and credentials-only are not standalone issues.
 
 ### Unauthenticated Execution (`/testing/unauth`)
 
@@ -707,13 +722,15 @@ Status + relation view are server-side; type/verdict/role/module filters are cli
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Lifecycle (confirm/reject/reopen/duplicate + optional `--linked`), analyst notes, cluster, evidence, timeline, report |
-| **Backend** | detail (+ parent/linked + `flow_comparison`), confirm/reject/reopen (linked/force body), notes set/clear, groups add, report |
-| **CLI** | matching `finding *` including `note set\|clear` (stdin) and lifecycle `--linked`; Original vs Attack comparison parity with `talos finding show` |
-| **DB** | findings, evidence, timeline, duplicates, cluster relations, flows (summary only), replay_diffs |
-| **Components** | **Original vs Attack / Testcase Flow** cards (top of page when evidence present), notes editor, Apply-to-linked checkbox, cluster links, evidence cards with human labels, timeline |
-| **Workflow** | Open finding → see original vs testcase flows immediately → triage PRIMARY → notes → confirm/reject (optionally bulk-linked) → optional group/report |
+| **Backend** | detail (+ parent/linked + `flow_comparison` + `secret_exposure`), confirm/reject/reopen (linked/force body), notes set/clear, groups add, report |
+| **CLI** | matching `finding *` including `note set\|clear` (stdin) and lifecycle `--linked`; Original vs Attack comparison and leaked-secret highlight parity with `talos finding show` |
+| **DB** | findings, evidence, timeline, duplicates, cluster relations, flows (summary only), replay_diffs, passive_detections (secret highlight) |
+| **Components** | **Leaked secret** highlight (passive_secret), **Original vs Attack / Testcase Flow** cards (top of page when evidence present), notes editor, Apply-to-linked checkbox, cluster links, evidence cards with human labels, timeline |
+| **Workflow** | Open finding → see leaked secret / original vs testcase immediately → triage PRIMARY → notes → confirm/reject (optionally bulk-linked) → optional group/report |
 
 **Flow comparison (`flow_comparison`):** Built from `original_flow` + `replay_flow` evidence. Side-by-side method/URL/status/body length + delta + optional diff verdict. Open Flow / Send to Repeater actions. Absent for findings without those evidence types (e.g. pure passive secrets).
+
+**Leaked secret (`secret_exposure`):** For Client-Side Secret Exposure findings, first-class highlight of every redacted match plus `context_before` / `context_after`. All leaks share cluster `PASSIVE_SECRET`: first PRIMARY, later LINKED. Opening the PRIMARY lists every leak. Secret detection is **on** by default (`passive_scan_config.enabled`).
 
 ---
 

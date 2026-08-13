@@ -6,6 +6,7 @@ Purpose:
     Entry point for: talos attack unauth <subcommand>
                      talos attack bac <module>
                      talos attack auth-session <subcommand>
+                     talos attack cors <subcommand>
 
     Unauth commands (talos attack unauth):
       run     — Generate UNAUTH_ATTACK jobs for all testable endpoints using
@@ -32,6 +33,11 @@ Purpose:
       parser-confuse — Parser Confusion (duplicate params, HPP, TE/CL conflict).
       filter         — Manage BAC-decision-filter.yaml.
 
+    CORS commands (talos attack cors):
+      candidates | techniques | run | results list|show | status
+      One cors_attack job per (baseline flow, Origin technique);
+      each job stores a unique replay flow.
+
     Shared BAC flags (all modules):
       --role NAME|UUID     restrict to one attacker role
       --endpoint UUID      endpoint execution scope (xor --module)
@@ -45,7 +51,7 @@ Purpose:
 
 Dependencies: argparse, sys, talos.projects.manager,
               talos.projects.unauth.cli, talos.projects.bac.cli,
-              talos.auth_session.cli
+              talos.auth_session.cli, talos.cors.cli
 Data flow:
     CLI args → active project lookup → unauth / bac / auth_session cli → stdout
 Side effects:
@@ -78,7 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Attack modules: unauth (unauthenticated access), "
             "auth-session (token validation mutations), "
-            "bac (broken access control)."
+            "bac (broken access control), "
+            "cors (CORS misconfiguration)."
         ),
     )
     sub = parser.add_subparsers(dest="attack_type", metavar="<attack>")
@@ -95,6 +102,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- bac ---- #
     from talos.projects.bac.cli import build_bac_parser
     build_bac_parser(sub)
+
+    # ---- cors ---- #
+    from talos.cors.cli import build_cors_parser
+    build_cors_parser(sub)
 
     return parser
 
@@ -127,3 +138,7 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type == "bac":
         from talos.projects.bac.cli import run_bac_cli
         run_bac_cli(manager, args)
+
+    elif args.attack_type == "cors":
+        from talos.cors.cli import run_cors_cli
+        run_cors_cli(manager, args)

@@ -602,6 +602,7 @@ COMMAND_TREE: list[dict] = [
                     ],
                     help="Restrict to one Unauth technique (default: all recipes)",
                 ),
+                arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); skips auto ranking"),
             ]),
             cmd("attack.unauth.config", ["attack", "unauth", "config"], "Show or set unauth auto-run", [
                 arg(
@@ -675,7 +676,7 @@ COMMAND_TREE: list[dict] = [
                 "Create pending JWT mutation candidates (no HTTP)",
                 [
                     arg("binding", flag="--binding", help="Limit to one binding UUID"),
-                    arg("flow", flag="--flow", help="Explicit baseline flow UUID"),
+                    arg("flow", flag="--flow", kind="multi", help="Explicit baseline flow UUID(s)"),
                     arg("endpoint", flag="--endpoint", help="One testable endpoint UUID"),
                     arg(
                         "module",
@@ -891,7 +892,8 @@ COMMAND_TREE: list[dict] = [
             cmd(f"attack.bac.{tech}", ["attack", "bac", tech], f"Run BAC {tech.replace('-', ' ')}", [
                 arg("role", flag="--role", help="Attacker role name or UUID"),
                 arg("module", flag="--module", help="Module scope (name or UUID); mutex with endpoint"),
-                arg("endpoint", flag="--endpoint", help="Endpoint UUID scope; mutex with module"),
+                arg("endpoint", flag="--endpoint", help="Endpoint UUID scope; mutex with module / flow"),
+                arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); mutex with endpoint / module"),
                 arg("auto_generate", flag="--auto-generate", kind="boolean", help="Auto-generate missing session tokens"),
             ])
             for tech in [
@@ -914,6 +916,56 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.cors",
+        "label": "Attack — CORS",
+        "commands": [
+            cmd("attack.cors.candidates", ["attack", "cors", "candidates"], "List in-scope 200 OK CORS baselines", [
+                arg("limit", flag="--limit", kind="number", default="5", help="Max candidates (default 5)"),
+                arg("endpoint", flag="--endpoint", help="Endpoint UUID"),
+                arg("host", flag="--host", help="Host filter"),
+                arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); skips auto ranking"),
+            ]),
+            cmd("attack.cors.techniques", ["attack", "cors", "techniques"], "List CORS Origin techniques"),
+            cmd("attack.cors.run", ["attack", "cors", "run"], "Enqueue CORS probes (unique flow per technique)", [
+                arg(
+                    "technique",
+                    flag="--technique",
+                    kind="select",
+                    options=[
+                        "baseline_origin",
+                        "arbitrary_https",
+                        "arbitrary_http",
+                        "attacker_subdomain",
+                        "subdomain_of_target",
+                        "prefix_bypass",
+                        "suffix_bypass",
+                        "trusted_plus",
+                        "unescaped_dot",
+                        "encoded_dot",
+                        "underscore",
+                        "null_origin",
+                        "wildcard_origin",
+                        "localhost",
+                        "loopback",
+                        "scheme_downgrade",
+                        "port_443",
+                        "port_80",
+                        "port_8080",
+                        "preflight",
+                    ],
+                    help="Restrict to one Origin technique (default: all)",
+                ),
+                arg("limit", flag="--limit", kind="number", default="5", help="Max candidates (default 5)"),
+                arg("endpoint", flag="--endpoint", help="Endpoint UUID"),
+                arg("host", flag="--host", help="Host filter"),
+                arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); skips auto ranking"),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+            ]),
+            cmd("attack.cors.results.list", ["attack", "cors", "results", "list"], "List CORS probe results"),
+            cmd("attack.cors.status", ["attack", "cors", "status"], "CORS verdict and job tallies"),
+        ],
+    },
+    {
         "group": "input-validation",
         "label": "Input Validation Engine",
         "commands": [
@@ -930,7 +982,9 @@ COMMAND_TREE: list[dict] = [
                 arg("include_auth", flag="--include-auth-artifacts", kind="boolean"),
             ]),
             cmd("iv.run", ["input-validation", "run"], "Schedule IV jobs (adaptive planner)", [
-                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"), arg("parameter", flag="--parameter"),
+                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"),
+                arg("flow", flag="--flow", kind="multi", help="Scope to endpoints of these flows"),
+                arg("parameter", flag="--parameter"),
                 arg("budget", flag="--budget", kind="select", options=IV_BUDGET_TIERS,
                     help="Set planner budget tier then schedule"),
                 arg("ignore_cache", flag="--ignore-cache", kind="boolean"),
@@ -938,7 +992,9 @@ COMMAND_TREE: list[dict] = [
             ]),
             cmd("iv.status", ["input-validation", "status"], "Show IV progress, budget, confidence"),
             cmd("iv.resume", ["input-validation", "resume"], "Resume unfinished IV analyses", [
-                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"), arg("parameter", flag="--parameter"),
+                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"),
+                arg("flow", flag="--flow", kind="multi"),
+                arg("parameter", flag="--parameter"),
             ]),
             cmd("iv.synthesize", ["input-validation", "synthesize"], "Offline profiles from existing probes", [
                 arg("host", flag="--host"),
@@ -986,7 +1042,9 @@ COMMAND_TREE: list[dict] = [
             cmd("iv.export.csv", ["input-validation", "export", "csv"], "Export all probe results as CSV"),
         ] + [
             cmd(f"iv.phase.{phase}", ["input-validation", phase], f"Run IV phase: {phase}", [
-                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"), arg("parameter", flag="--parameter"),
+                arg("host", flag="--host"), arg("endpoint", flag="--endpoint"),
+                arg("flow", flag="--flow", kind="multi"),
+                arg("parameter", flag="--parameter"),
                 arg("ignore_cache", flag="--ignore-cache", kind="boolean"),
             ])
             for phase in IV_PHASES

@@ -118,6 +118,28 @@ def test_extract_query_url_features_and_semantic() -> None:
     assert q_feat["possible_network_resource"] is False
 
 
+def test_extract_json_header_like_host_is_url() -> None:
+    body = json.dumps({
+        "headers": {
+            "Host": "api.example.com",
+            "Accept": "*/*",
+        },
+        "enabled": True,
+        "tags": ["a", "b"],
+        "email": "user@example.com",
+    }).encode()
+    params = extract_flow_params(
+        query="",
+        request_body=body,
+        request_headers={"content-type": "application/json"},
+    )
+    by_name = {p.name: p for p in params}
+    assert by_name["headers.Host"].semantic_type == "url"
+    assert by_name["email"].semantic_type == "email"
+    assert by_name["enabled"].semantic_type == "boolean"
+    assert by_name["tags"].semantic_type == "array"
+
+
 def test_extract_json_nested_avatar() -> None:
     body = json.dumps({
         "user": {"avatar": "https://cdn.example/a.png"},

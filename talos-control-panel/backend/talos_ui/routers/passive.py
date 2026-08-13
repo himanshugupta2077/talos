@@ -97,7 +97,7 @@ def _empty_status() -> dict[str, Any]:
     from talos.passive.constants import SCANNER_VERSION
 
     return {
-        "enabled": False,
+        "enabled": True,
         "auto_finding_threshold": "HIGH",
         "scanner_version": SCANNER_VERSION,
         "documents": 0,

@@ -4,19 +4,15 @@ import { useAction } from "../../hooks/useAction";
 import { api } from "../../api/client";
 import { ConfirmButton, Section } from "../../components/Common";
 import ScopeBar, { ScopeType, scopeBody } from "./components/ScopeBar";
-import { BUDGETS, PHASES, selectClass } from "./shared";
+import { PHASES } from "./shared";
 import type { IvStatus } from "./shared";
 
 export default function RunTab({
   projectId,
-  budget,
-  setBudget,
   status,
   onRefresh,
 }: {
   projectId: string;
-  budget: string;
-  setBudget: (b: string) => void;
   status: IvStatus | null;
   onRefresh: () => void;
 }) {
@@ -30,7 +26,6 @@ export default function RunTab({
     ...scopeBody(scopeType, scopeValue),
     ignore_cache: ignoreCache,
     include_auth_artifacts: includeAuth,
-    budget,
   });
 
   const run = useAction("Run IV", () =>
@@ -97,18 +92,12 @@ export default function RunTab({
       </Section>
 
       <Section title="Run">
+        <p className="text-xs text-base-content/50 mb-3">
+          Runs the full IV probe set for every in-scope parameter (one unique
+          flow per probe). No budget picker — every type-family, URL-sink,
+          character, and validation probe is scheduled.
+        </p>
         <div className="flex flex-wrap gap-3 items-center mb-3">
-          <select
-            className={selectClass}
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-          >
-            {BUDGETS.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
           <label className="label cursor-pointer gap-2 py-0">
             <input
               type="checkbox"
@@ -138,7 +127,7 @@ export default function RunTab({
               onRefresh();
             }}
           >
-            Run ({budget})
+            Run
           </button>
           <button
             className="btn btn-sm"

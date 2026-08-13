@@ -10,6 +10,11 @@ import { useAction } from "../../hooks/useAction";
 import { Modal } from "../../components/Common";
 import { buildCurl, buildRawRequest } from "../../components/http/buildCurl";
 import { Role } from "../../types";
+import FlowAttackRunModal from "./FlowAttackRunModal";
+import {
+  defaultSelectedAttackIds,
+  runFlowAttacks,
+} from "./flowAttacks";
 
 export interface FlowActionTarget {
   id: string;
@@ -34,6 +39,11 @@ interface Props {
   variant?: Variant;
   /** Close parent dropdown (list menu). */
   onDone?: () => void;
+  /**
+   * List menu: parent should select this flow so the sticky attack bar
+   * appears. When omitted (detail panel), a local modal is used.
+   */
+  onRequestAttacks?: () => void;
   className?: string;
 }
 
@@ -52,11 +62,14 @@ export default function FlowActions({
   roles,
   variant = "panel",
   onDone,
+  onRequestAttacks,
   className = "",
 }: Props) {
   const [assignOpen, setAssignOpen] = useState(false);
+  const [attacksOpen, setAttacksOpen] = useState(false);
   const [assignRoleId, setAssignRoleId] = useState(roles[0]?.id || "");
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
+  const [attackIds, setAttackIds] = useState<string[]>(defaultSelectedAttackIds);
 
   const replayNow = useAction("Replay flow now", () =>
     api.post(`/api/replay/flow/${flow.id}`, { right_now: true }, { project_id: projectId })
@@ -76,6 +89,9 @@ export default function FlowActions({
       {},
       { project_id: projectId }
     )
+  );
+  const runAttacks = useAction("Run attacks on this flow", () =>
+    runFlowAttacks(projectId, [flow.id], attackIds)
   );
 
   const flash = (msg: string) => {
@@ -164,6 +180,25 @@ export default function FlowActions({
           </Link>
         ),
         "intruder"
+      )}
+      {wrapItem(
+        <button
+          type="button"
+          className={itemClass}
+          title="Run CORS, Unauth, BAC, IV, or generate Auth-session candidates on this flow only"
+          onClick={() => {
+            if (onRequestAttacks) {
+              onRequestAttacks();
+              finish();
+              return;
+            }
+            setAttackIds(defaultSelectedAttackIds());
+            setAttacksOpen(true);
+          }}
+        >
+          Run attacks…
+        </button>,
+        "attacks"
       )}
       {wrapItem(
         <button
@@ -273,6 +308,7 @@ export default function FlowActions({
           <p className="text-[11px] text-base-content/50 mb-1 px-1 leading-snug">
             <strong>Send to Repeater</strong> opens Mode 2 edit → send with lineage.
             <strong> Replay</strong> re-sends the stored request as-is (Mode 1).
+            <strong> Run attacks</strong> probes this flow only (CORS, Unauth, BAC, IV; Auth-session generates candidates).
             Export writes Markdown via <span className="mono">talos flow export</span>.
           </p>
           {items}
@@ -281,12 +317,30 @@ export default function FlowActions({
           )}
           <div className="divider my-1" />
           <Link to="/testing" className="btn btn-xs btn-ghost justify-start">
-            Open Testing modules (BAC / unauth)
+            Open Testing modules
           </Link>
         </div>
       ) : (
         <ul className={className}>{items}</ul>
       )}
+
+      <FlowAttackRunModal
+        open={attacksOpen}
+        flowCount={1}
+        selectedAttackIds={attackIds}
+        busy={runAttacks.running}
+        onToggleAttack={(id) =>
+          setAttackIds((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+          )
+        }
+        onClose={() => setAttacksOpen(false)}
+        onRun={async () => {
+          await runAttacks.run();
+          setAttacksOpen(false);
+          finish();
+        }}
+      />
 
       <Modal
         open={assignOpen}

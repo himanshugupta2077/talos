@@ -260,6 +260,14 @@ def test_status_includes_process_metrics_shape(client):
     assert "queue_fill_pct" in body
     assert body["config"]["max_queue_size"] == 200
     assert body["state"]["state"] == "running"
+    by_family = {r["family"]: r["n"] for r in body["by_family"]}
+    assert by_family["bac"] == 2
+    assert by_family["iv"] == 1
+    assert by_family["replay"] == 1
+    by_type = {r["job_type"]: r for r in body["by_job_type"]}
+    assert by_type["iv_baseline"]["family"] == "iv"
+    assert by_type["iv_baseline"]["n"] == 1
+    assert by_type["bac_session_swap"]["family"] == "bac"
 
 
 def test_process_status_puts_talos_on_path_and_reads_manager(home):
@@ -455,6 +463,6 @@ def test_filters_include_static_statuses_and_families(client):
         "cancelled",
     ):
         assert s in body["statuses"]
-    for f in ("replay", "bac", "iv", "unauth"):
+    for f in ("replay", "bac", "iv", "unauth", "cors", "auth_session", "intruder"):
         assert f in body["job_types"] or f in body.get("families", [])
     assert "done" in body["pruneable_statuses"]

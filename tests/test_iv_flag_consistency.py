@@ -21,7 +21,7 @@ import pytest
 
 from talos.cli_output import EXIT_USAGE, NONINTERACTIVE_FORCE_REQUIRED
 from talos.input_validation.cli import run_input_validation_cli
-from talos.input_validation.config import IVConfig, save_config
+from talos.input_validation.config import IVConfig, load_config, save_config
 from talos.projects.db import init_project_db
 from talos.__main__ import _print_usage
 
@@ -117,6 +117,24 @@ class TestPhaseIgnoreCacheFlag:
 
 
 class TestRunIgnoreCacheFlag:
+    def test_run_without_budget_upgrades_standard_to_exhaustive(
+        self, manager_enabled: MagicMock, db_path: Path
+    ) -> None:
+        save_config(db_path, IVConfig(enabled=True, probe_strategy="standard"))
+        with (
+            patch(
+                "talos.input_validation.engine.verify_auth_for_iv_scan",
+                return_value=[],
+            ),
+            patch(
+                "talos.input_validation.engine.schedule_project",
+                return_value=1,
+            ),
+        ):
+            text = _run_iv(manager_enabled, ["run"])
+        assert load_config(db_path).probe_strategy == "exhaustive"
+        assert "exhaustive" in text
+
     def test_run_ignore_cache(
         self, manager_enabled: MagicMock
     ) -> None:
@@ -144,6 +162,65 @@ class TestRunIgnoreCacheFlag:
         ):
             run_input_validation_cli(manager_enabled, ["run", "--force"])
         assert exc.value.code == 2  # argparse usage error
+
+    def test_run_flow_schedules_unique_endpoints(
+        self, manager_enabled: MagicMock, db_path: Path
+    ) -> None:
+        from talos.projects.flow_scope import FlowRef
+
+        refs = [
+            FlowRef(
+                flow_id="f1",
+                endpoint_id="ep-1",
+                method="GET",
+                host="app.example.com",
+                path="/a",
+                status_code=200,
+                source="proxy_capture",
+                captured_at="2026-01-01T00:00:00+00:00",
+            ),
+            FlowRef(
+                flow_id="f2",
+                endpoint_id="ep-1",
+                method="POST",
+                host="app.example.com",
+                path="/a",
+                status_code=200,
+                source="proxy_capture",
+                captured_at="2026-01-02T00:00:00+00:00",
+            ),
+            FlowRef(
+                flow_id="f3",
+                endpoint_id="ep-2",
+                method="GET",
+                host="app.example.com",
+                path="/b",
+                status_code=200,
+                source="proxy_capture",
+                captured_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        with (
+            patch(
+                "talos.projects.flow_scope.lookup_flows",
+                return_value=(refs, []),
+            ),
+            patch(
+                "talos.input_validation.engine.verify_auth_for_iv_scan",
+                return_value=[],
+            ),
+            patch(
+                "talos.input_validation.engine.schedule_endpoint",
+                return_value=2,
+            ) as sched,
+        ):
+            text = _run_iv(
+                manager_enabled, ["run", "--flow", "f1", "--flow", "f3"]
+            )
+        assert sched.call_count == 2
+        eps = [c.args[2] for c in sched.call_args_list]
+        assert eps == ["ep-1", "ep-2"]
+        assert "2 endpoint(s) from 2 flow(s)" in text
 
 
 # ------------------------------------------------------------------ #

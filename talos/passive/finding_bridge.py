@@ -8,12 +8,13 @@ Purpose:
     (status, PRIMARY/LINKED, evidence, timeline).  This bridge only:
 
         1. Decides eligibility (threshold, suppressed, already linked)
-        2. Supplies cluster_key = PASSIVE_SECRET:<value_fingerprint>
+        2. Supplies cluster_key = PASSIVE_SECRET (one cluster per project)
         3. Calls findings_db.create_finding + evidence + timeline
         4. Sets passive_detections.finding_id via link_detection_finding
 
-    Does **not** use endpoint-centric build_cluster_key — secrets cluster
-    by fingerprint so the same key in two files becomes PRIMARY then LINKED.
+    Does **not** use endpoint-centric build_cluster_key.  Every eligible
+    leaked secret joins one cluster: first sighting is PRIMARY, later
+    secrets are LINKED under it.
 
 Dependencies:
     logging, pathlib
@@ -30,6 +31,7 @@ Side effects:
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -82,18 +84,17 @@ _DEFAULT_TITLE_BY_SECRET_TYPE: dict[str, str] = {
 }
 
 
-def build_passive_secret_cluster_key(value_fingerprint: str) -> str:
+def build_passive_secret_cluster_key(_value_fingerprint: str = "") -> str:
     """
     Purpose:
-        Build the stable cluster identity for a secret fingerprint.
+        Project-wide cluster identity for all client-side secret leaks.
     Input:
-        value_fingerprint — SHA-256 hex from fingerprint_secret()
+        _value_fingerprint — ignored (kept so older callers still type-check)
     Output:
-        ``PASSIVE_SECRET:<fingerprint>``
+        ``PASSIVE_SECRET``
     Side effects: None.
     """
-    fp = (value_fingerprint or "").strip().lower()
-    return f"{CLUSTER_KEY_PREFIX_PASSIVE_SECRET}:{fp}"
+    return CLUSTER_KEY_PREFIX_PASSIVE_SECRET
 
 
 def finding_title_for_detection(
@@ -155,8 +156,8 @@ def create_passive_secret_finding(
         - finding_id not already set
 
     Clustering:
-        cluster_key = PASSIVE_SECRET:<value_fingerprint>
-        First sighting → PRIMARY; same secret again → LINKED.
+        cluster_key = PASSIVE_SECRET (one per project)
+        First eligible leak → PRIMARY; every later leak → LINKED.
 
     Input:
         db_path / project_id / detection_id
@@ -232,12 +233,20 @@ def create_passive_secret_finding(
                 elif parent.source_kind.value == "html":
                     in_inline_html = True
 
-    title = title_override or finding_title_for_detection(
-        detection, in_source_map=in_source_map
-    )
-    if in_inline_html and "inline" not in title.lower() and "html" not in title.lower():
-        title = f"{title} (Inline HTML)"
-    cluster_key = build_passive_secret_cluster_key(detection.value_fingerprint)
+    cluster_key = build_passive_secret_cluster_key()
+    existing = findings_db.get_primary_by_cluster(db_path, cluster_key)
+    if title_override:
+        title = title_override
+    elif existing is None:
+        title = ATTACK_DISPLAY.get(
+            ATTACK_TYPE_PASSIVE_SECRET, "Client-Side Secret Exposure"
+        )
+    else:
+        title = finding_title_for_detection(
+            detection, in_source_map=in_source_map
+        )
+        if in_inline_html and "inline" not in title.lower() and "html" not in title.lower():
+            title = f"{title} (Inline HTML)"
     endpoint_id = occurrence.endpoint_id if occurrence else None
 
     try:
@@ -396,6 +405,8 @@ def _attach_passive_evidence(
                 exc,
             )
 
+    existing_keys = _evidence_ref_keys(db_path, finding_id)
+
     det_data: dict = {
         "detector_id": detection.detector_id,
         "detector_family": detection.detector_family,
@@ -410,20 +421,26 @@ def _attach_passive_evidence(
         "decode_depth": detection.decode_depth,
         "match_start": detection.match_start,
         "match_end": detection.match_end,
+        "context_before": detection.context_before or "",
+        "context_after": detection.context_after or "",
     }
     if store_raw and raw_value:
         det_data["raw_value"] = raw_value
         det_data["raw_value_stored"] = True
 
-    _add(
-        EVIDENCE_TYPE_PASSIVE_DETECTION,
-        detection.id,
-        f"Passive detection — {detection.detector_id} "
-        f"({detection.confidence_level})",
-        det_data,
-    )
+    if (EVIDENCE_TYPE_PASSIVE_DETECTION, detection.id) not in existing_keys:
+        _add(
+            EVIDENCE_TYPE_PASSIVE_DETECTION,
+            detection.id,
+            f"Passive detection — {detection.detector_id} "
+            f"({detection.confidence_level})",
+            det_data,
+        )
 
-    if document is not None:
+    if document is not None and (
+        EVIDENCE_TYPE_SOURCE_DOCUMENT,
+        document.id,
+    ) not in existing_keys:
         _add(
             EVIDENCE_TYPE_SOURCE_DOCUMENT,
             document.id,
@@ -439,7 +456,10 @@ def _attach_passive_evidence(
             },
         )
 
-    if occurrence is not None:
+    if occurrence is not None and (
+        EVIDENCE_TYPE_SOURCE_OCCURRENCE,
+        occurrence.id,
+    ) not in existing_keys:
         _add(
             EVIDENCE_TYPE_SOURCE_OCCURRENCE,
             occurrence.id,
@@ -454,21 +474,30 @@ def _attach_passive_evidence(
                 "flow_id": occurrence.flow_id,
             },
         )
-        if occurrence.flow_id:
+        if occurrence.flow_id and (
+            EVIDENCE_TYPE_ORIGINAL_FLOW,
+            occurrence.flow_id,
+        ) not in existing_keys:
             _add(
                 EVIDENCE_TYPE_ORIGINAL_FLOW,
                 occurrence.flow_id,
                 f"Original capture flow — {occurrence.flow_id[:8]}",
                 {"flow_id": occurrence.flow_id, "url": occurrence.url},
             )
-        if occurrence.endpoint_id:
+        if occurrence.endpoint_id and (
+            EVIDENCE_TYPE_ENDPOINT,
+            occurrence.endpoint_id,
+        ) not in existing_keys:
             _add(
                 EVIDENCE_TYPE_ENDPOINT,
                 occurrence.endpoint_id,
                 f"Endpoint — {occurrence.endpoint_id[:8]}",
                 {"endpoint_id": occurrence.endpoint_id},
             )
-        if occurrence.role_id:
+        if occurrence.role_id and (
+            EVIDENCE_TYPE_ROLE,
+            occurrence.role_id,
+        ) not in existing_keys:
             role_name = _fetch_name(db_path, "roles", occurrence.role_id)
             _add(
                 EVIDENCE_TYPE_ROLE,
@@ -476,7 +505,10 @@ def _attach_passive_evidence(
                 f"Role — {role_name or occurrence.role_id[:8]}",
                 {"role_id": occurrence.role_id, "name": role_name},
             )
-        if occurrence.module_id:
+        if occurrence.module_id and (
+            EVIDENCE_TYPE_MODULE,
+            occurrence.module_id,
+        ) not in existing_keys:
             module_name = _fetch_name(db_path, "modules", occurrence.module_id)
             _add(
                 EVIDENCE_TYPE_MODULE,
@@ -558,6 +590,160 @@ def _write_passive_timeline(
             "Passive timeline write error (non-fatal): %s",
             exc,
         )
+
+
+def _evidence_ref_keys(db_path: Path, finding_id: str) -> set[tuple[str, Optional[str]]]:
+    """Existing (evidence_type, reference_id) pairs — skip duplicate attach."""
+    try:
+        rows = findings_db.list_evidence(db_path, finding_id)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        (str(r.get("evidence_type") or ""), r.get("reference_id"))
+        for r in rows
+    }
+
+
+def build_secret_exposure(
+    db_path: Path,
+    finding_id: str,
+    *,
+    evidence: Optional[list[dict]] = None,
+) -> Optional[dict]:
+    """
+    Purpose:
+        First-class leaked-secret highlight payload for finding show / detail.
+
+    Output:
+        ``{"hits": [...], "count": N}`` or None when this finding has no
+        passive secret detections.  Each hit uses redacted_value plus
+        context_before/after so the UI can mark the exact leak.
+    Side effects: None (read-only).
+    """
+    hits: list[dict] = []
+    seen_ids: set[str] = set()
+
+    finding_ids = [finding_id]
+    try:
+        row = findings_db.get_finding(db_path, finding_id)
+    except Exception:  # noqa: BLE001
+        row = None
+    if row and (row.get("relation_type") or RELATION_TYPE_PRIMARY) == RELATION_TYPE_PRIMARY:
+        try:
+            for child in findings_db.list_linked_findings(db_path, finding_id):
+                cid = child.get("id")
+                if cid:
+                    finding_ids.append(cid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for fid in finding_ids:
+        try:
+            dets = passive_db.list_detections(db_path, finding_id=fid, limit=50)
+        except Exception:  # noqa: BLE001
+            dets = []
+        for det in dets:
+            if not det.id or det.id in seen_ids:
+                continue
+            seen_ids.add(det.id)
+            occ = None
+            if det.occurrence_id:
+                try:
+                    occ = passive_db.get_occurrence(db_path, det.occurrence_id)
+                except Exception:  # noqa: BLE001
+                    occ = None
+            hit = _hit_from_detection(det, occ)
+            hit["finding_id"] = fid
+            hits.append(hit)
+
+    if not hits and evidence:
+        for ev in evidence:
+            if (ev.get("evidence_type") or "") != EVIDENCE_TYPE_PASSIVE_DETECTION:
+                continue
+            data = _as_dict(ev.get("data"))
+            if not data.get("redacted_value") and not ev.get("reference_id"):
+                continue
+            ref = ev.get("reference_id")
+            if ref and ref in seen_ids:
+                continue
+            if ref:
+                seen_ids.add(ref)
+            hits.append(_hit_from_evidence(ev, evidence))
+
+    if not hits:
+        return None
+    return {"hits": hits, "count": len(hits)}
+
+
+def _hit_from_detection(det: Detection, occ) -> dict:
+    """Serialize one detection as a highlight hit. Side effects: None."""
+    return {
+        "detection_id": det.id,
+        "document_id": det.document_id,
+        "occurrence_id": det.occurrence_id,
+        "flow_id": occ.flow_id if occ else None,
+        "url": (occ.url if occ else None) or (occ.path if occ else None),
+        "path": occ.path if occ else None,
+        "host": occ.host if occ else None,
+        "detector_id": det.detector_id,
+        "detector_family": det.detector_family,
+        "secret_type": det.secret_type,
+        "matched_key": det.matched_key,
+        "redacted_value": det.redacted_value,
+        "confidence_level": det.confidence_level,
+        "confidence_score": det.confidence_score,
+        "match_start": det.match_start,
+        "match_end": det.match_end,
+        "context_before": det.context_before or "",
+        "context_after": det.context_after or "",
+        "encoding_chain": list(det.encoding_chain or []),
+        "finding_id": det.finding_id,
+    }
+
+
+def _as_dict(value) -> dict:
+    """Coerce evidence JSON (dict or serialized string) to a dict."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _hit_from_evidence(ev: dict, evidence: list[dict]) -> dict:
+    """Fallback hit from stored evidence when detection rows are gone."""
+    data = _as_dict(ev.get("data"))
+    occ_ev = None
+    for item in evidence:
+        if (item.get("evidence_type") or "") == EVIDENCE_TYPE_SOURCE_OCCURRENCE:
+            occ_ev = item
+            break
+    occ_data = _as_dict((occ_ev or {}).get("data"))
+    return {
+        "detection_id": ev.get("reference_id"),
+        "document_id": None,
+        "occurrence_id": (occ_ev or {}).get("reference_id"),
+        "flow_id": occ_data.get("flow_id"),
+        "url": occ_data.get("url") or occ_data.get("path"),
+        "path": occ_data.get("path"),
+        "host": occ_data.get("host"),
+        "detector_id": data.get("detector_id"),
+        "detector_family": data.get("detector_family"),
+        "secret_type": data.get("secret_type"),
+        "matched_key": data.get("matched_key"),
+        "redacted_value": data.get("redacted_value") or "",
+        "confidence_level": data.get("confidence_level"),
+        "confidence_score": data.get("confidence_score"),
+        "match_start": data.get("match_start") or 0,
+        "match_end": data.get("match_end") or 0,
+        "context_before": data.get("context_before") or "",
+        "context_after": data.get("context_after") or "",
+        "encoding_chain": list(data.get("encoding_chain") or []),
+    }
 
 
 def _fetch_name(db_path: Path, table: str, row_id: Optional[str]) -> Optional[str]:

@@ -88,6 +88,7 @@ def build_cluster_key(
     attacker_role_id: Optional[str] = None,
     target_role_id: Optional[str] = None,
     auth_type: Optional[str] = None,
+    host: Optional[str] = None,
 ) -> Optional[str]:
     """
     Purpose:
@@ -100,12 +101,14 @@ def build_cluster_key(
         auth_test    → AUTH_TEST:<endpoint_id>
         bac          → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
         auth_session → AUTH_SESSION:<endpoint_id>:<auth_type>
+        cors         → CORS:<scheme://netloc>  (one PRIMARY per target origin)
         other        → <MODULE>:<endpoint_id>
 
-    Passive secret findings do **not** use this helper.  They supply their
-    own cluster_key ``PASSIVE_SECRET:<value_fingerprint>`` via
+    Passive secret findings do **not** use this helper.  They supply
+    cluster_key ``PASSIVE_SECRET`` via
     ``talos.passive.finding_bridge.create_passive_secret_finding`` so that
-    clustering is by secret fingerprint, not endpoint.
+    every leaked secret in the project is one cluster: first PRIMARY,
+    later leaks LINKED.
 
     Input:
         attack_module    — 'bac' | 'auth_test' | 'unauth' | 'auth_session' | …
@@ -114,13 +117,22 @@ def build_cluster_key(
         attacker_role_id — BAC only.
         target_role_id   — BAC only.
         auth_type        — auth_session only (jwt, …); defaults to 'unknown'.
+        host             — cors only: target origin key (scheme://netloc).
     Output:
         cluster_key string, or None when clustering is not possible.
     """
+    module = (attack_module or "").lower()
+    if module == "cors":
+        origin = (host or "").strip().lower()
+        if origin:
+            return f"CORS:{origin}"
+        if endpoint_id:
+            return f"CORS:{endpoint_id}"
+        return None
+
     if not endpoint_id:
         return None
 
-    module = (attack_module or "").lower()
     if module == "unauth":
         return f"UNAUTH:{endpoint_id}"
     if module == "auth_test":

@@ -134,7 +134,7 @@ class TestPlannerHelpers:
         assert resolve_max_requests("quick") == 8
         assert resolve_max_requests("standard") == 18
         assert resolve_max_requests("deep") == 40
-        assert resolve_max_requests("exhaustive") == 80
+        assert resolve_max_requests("exhaustive") == 256
 
     def test_resolve_max_requests_override(self) -> None:
         assert resolve_max_requests("standard", 5) == 5

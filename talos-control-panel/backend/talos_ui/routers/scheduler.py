@@ -52,7 +52,42 @@ _ACTIVE_STATUSES = ("pending", "running", "paused")
 _PRUNEABLE_STATUSES = frozenset({"done", "failed", "skipped", "cancelled"})
 
 # Known families for empty-queue filters (CLI list_jobs family semantics).
-_KNOWN_FAMILIES = ("replay", "bac", "iv", "unauth", "auth_test")
+_KNOWN_FAMILIES = (
+    "replay",
+    "bac",
+    "iv",
+    "unauth",
+    "cors",
+    "auth_session",
+    "auth_test",
+    "intruder",
+)
+
+
+def _job_family(job_type: str | None) -> str:
+    """Roll exact job_type up to the operator family (iv, cors, bac, …)."""
+    raw = (job_type or "").strip().lower()
+    if not raw:
+        return "other"
+    if raw == "auth_test":
+        return "auth_test"
+    if raw.startswith("replay"):
+        return "replay"
+    if raw.startswith("bac"):
+        return "bac"
+    if raw.startswith("iv"):
+        return "iv"
+    if raw.startswith("unauth"):
+        return "unauth"
+    if raw.startswith("cors"):
+        return "cors"
+    if raw.startswith("auth_session"):
+        return "auth_session"
+    if raw.startswith("intruder"):
+        return "intruder"
+    if "_" not in raw:
+        return raw
+    return raw.split("_", 1)[0] or "other"
 
 _JOB_SELECT = """
     SELECT sj.*,
@@ -182,6 +217,24 @@ def status(project_id: str):
     raw_counts = {row["status"]: int(row["n"] or 0) for row in counts_rows}
     counts = _full_counts(raw_counts)
 
+    type_rows = db.query_all(
+        db_path,
+        "SELECT job_type, COUNT(*) AS n FROM scheduler_jobs GROUP BY job_type",
+    )
+    by_job_type: list[dict[str, Any]] = []
+    family_totals: dict[str, int] = {}
+    for row in type_rows:
+        job_type = row.get("job_type") or "unknown"
+        n = int(row.get("n") or 0)
+        family = _job_family(job_type)
+        by_job_type.append({"job_type": job_type, "family": family, "n": n})
+        family_totals[family] = family_totals.get(family, 0) + n
+    by_job_type.sort(key=lambda r: (-int(r["n"]), str(r["job_type"])))
+    by_family = [
+        {"family": fam, "n": n}
+        for fam, n in sorted(family_totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
     cfg = db.query_one(db_path, "SELECT * FROM scheduler_config")
     state = db.query_one(db_path, "SELECT * FROM scheduler_state")
 
@@ -220,6 +273,8 @@ def status(project_id: str):
         "metrics": metrics,
         "active_queue": active_queue,
         "queue_fill_pct": fill,
+        "by_job_type": by_job_type,
+        "by_family": by_family,
     }
 
 

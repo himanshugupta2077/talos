@@ -107,6 +107,9 @@ EVIDENCE_TYPE_UNAUTH_RESULT           = "unauth_result"
 EVIDENCE_TYPE_AUTH_SESSION_RESULT     = "auth_session_result"
 """Authentication & Session Testing result row reference."""
 
+EVIDENCE_TYPE_CORS_RESULT             = "cors_result"
+"""CORS misconfiguration probe result row reference."""
+
 EVIDENCE_TYPE_MODULE                  = "module"
 """The application module (feature area) the target endpoint belongs to."""
 
@@ -146,6 +149,7 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
     "auth_test":    frozenset({"BYPASS"}),
     "unauth":       frozenset({"BYPASS"}),
     "auth_session": frozenset({"WEAK_VALIDATION"}),
+    "cors":         frozenset({"CORS_MISCONFIG"}),
 }
 
 # ------------------------------------------------------------------ #
@@ -157,6 +161,7 @@ ATTACK_DISPLAY: dict[str, str] = {
     "auth_test":      "Authentication Bypass",
     "unauth":         "Unauthenticated Execution",
     "auth_session":   "Authentication & Session Testing",
+    "cors":           "CORS Misconfiguration",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
     "ai_draft":       "AI Draft (promoted)",

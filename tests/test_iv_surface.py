@@ -44,6 +44,7 @@ from talos.input_validation.surface import (
     inject_cookie_param,
     inject_graphql_param,
     inject_header_param,
+    inject_json_param,
     inject_multipart_filename,
     inject_multipart_param,
     inject_path_param,
@@ -54,6 +55,7 @@ from talos.input_validation.surface import (
     is_http_header_value_legal,
     make_cookie_safe,
     make_header_safe,
+    parse_json_param_path,
     should_skip_param,
     transport_skip_for_headers,
     transport_skip_for_payload,
@@ -280,6 +282,79 @@ class TestMultipartGraphqlXml:
         data = json.loads(out)
         assert data["variables"]["id"] == "PROBE"
         assert data["variables"]["nested"]["x"] == "y"
+
+    def test_json_boolean_stays_native(self) -> None:
+        body = json.dumps({"enabled": True, "name": "x"}).encode()
+        out = inject_json_param(body, "enabled", "false", payload_type="boolean_false")
+        data = json.loads(out)
+        assert data["enabled"] is False
+        assert data["name"] == "x"
+
+    def test_json_integer_stays_native(self) -> None:
+        body = json.dumps({"count": 5}).encode()
+        out = inject_json_param(body, "count", "-999999", payload_type="negative_int")
+        data = json.loads(out)
+        assert data["count"] == -999999
+        assert isinstance(data["count"], int)
+
+    def test_json_type_confusion_stays_string(self) -> None:
+        body = json.dumps({"enabled": True}).encode()
+        out = inject_json_param(body, "enabled", "notabool", payload_type="string")
+        data = json.loads(out)
+        assert data["enabled"] == "notabool"
+
+    def test_json_array_path_first_element(self) -> None:
+        body = json.dumps({
+            "items": [{"id": "a", "n": 1}, {"id": "b", "n": 2}],
+        }).encode()
+        out = inject_json_param(body, "items[].id", "PROBE", payload_type="string")
+        data = json.loads(out)
+        assert data["items"][0]["id"] == "PROBE"
+        assert data["items"][1]["id"] == "b"
+        assert data["items"][0]["n"] == 1
+
+    def test_json_array_empty_native(self) -> None:
+        body = json.dumps({"tags": ["a", "b"]}).encode()
+        out = inject_json_param(body, "tags", "[]", payload_type="array_empty")
+        data = json.loads(out)
+        assert data["tags"] == []
+
+    def test_json_nested_header_like_key(self) -> None:
+        body = json.dumps({
+            "headers": {"Host": "api.example.com", "Accept": "*/*"},
+        }).encode()
+        out = inject_json_param(
+            body, "headers.Host", "talos-canary.invalid", payload_type="url_sink:hostname",
+        )
+        data = json.loads(out)
+        assert data["headers"]["Host"] == "talos-canary.invalid"
+        assert data["headers"]["Accept"] == "*/*"
+
+    def test_parse_json_path_brackets(self) -> None:
+        parts = parse_json_param_path("items[].id")
+        assert [p.kind for p in parts] == ["key", "index", "key"]
+        assert parts[0].key == "items"
+        assert parts[1].index is None
+        assert parts[2].key == "id"
+
+    def test_prepare_iv_probe_json_boolean_false(self) -> None:
+        flow = {
+            "method": "POST",
+            "url": "https://api.example.com/cfg",
+            "request_headers": json.dumps({"Content-Type": "application/json"}),
+            "request_body": json.dumps({"enabled": True, "limit": 3}).encode(),
+        }
+        mut = prepare_iv_probe(
+            "types",
+            flow,
+            "enabled",
+            "body",
+            "false",
+            payload_type="boolean_false",
+        )
+        body = json.loads(mut["request_body"])
+        assert body["enabled"] is False
+        assert body["limit"] == 3
 
     def test_graphql_bare_variable_name(self) -> None:
         body = json.dumps({

@@ -28,6 +28,7 @@ import {
   SummaryChip,
   suggestPathPattern,
 } from "./shared";
+import EndpointsAttackBar from "./EndpointsAttackBar";
 
 export default function InventoryTab({
   projectId,
@@ -495,7 +496,8 @@ export default function InventoryTab({
       )}
 
       {selectedCount > 0 && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 panel shadow-lg px-4 py-3 flex flex-wrap items-center gap-2 max-w-[95vw]">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 panel shadow-lg px-4 py-3 flex flex-col gap-2 max-w-[95vw] w-[min(56rem,95vw)]">
+          <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-sm tabular-nums mr-2">{selectedCount} selected</span>
 
           <div className="dropdown dropdown-top">
@@ -690,6 +692,12 @@ export default function InventoryTab({
           <button className="btn btn-xs btn-ghost ml-auto" onClick={clearSelection}>
             Clear
           </button>
+          </div>
+          <EndpointsAttackBar
+            projectId={projectId}
+            endpointIds={selectedIds}
+            busy={runBulk.running}
+          />
         </div>
       )}
 

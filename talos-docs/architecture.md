@@ -342,7 +342,7 @@ talos
     │       (max_accepted, min_rejected, truncation_at, method)
     │
     ├── Types, semantic validation & negative evidence (Module 7):
-    │     talos.input_validation.type_intel — passive-first type pruning
+    │     talos.input_validation.type_intel — passive-first type pruning + type-family catalogs (bool/email/array)
     │       (semantic_type + examples + name hints); type conflict handling;
     │       semantic business-rule probes; core vs edge validation split;
     │       tested{} family keys (null, crlf, type:*, enum_outside, …)
@@ -612,6 +612,8 @@ Attack modules produce verdicts and evidence. The Findings subsystem owns everyt
 | Auth-bypass  | `SECURE` / `UNKNOWN` | No | — |
 | Unauthenticated Execution (`unauth`, from `talos attack unauth`) | `BYPASS` | YES — status `TRIAGING` | Unauthenticated Execution |
 | Unauthenticated Execution | `SECURE` / `UNKNOWN` | No | — |
+| CORS (`cors`, from `talos attack cors`) | `CORS_MISCONFIG` | YES — status `TRIAGING`; cluster `CORS:<origin>` | CORS Misconfiguration |
+| CORS | `SECURE` / `UNKNOWN` | No (`ACAO:*` / ACAC-only are not findings) | — |
 
 `talos.findings.model.VERDICT_TRIGGERS` and `ATTACK_DISPLAY` are keyed by
 attack module (`bac` / `auth_test` / `unauth`) — every module that creates
@@ -821,7 +823,7 @@ Panel UX is Phase 13 (**Done** — Secret Detection workspace).
 | Archive | Never scan archive JSONL | Archive uses `_b64` serialization → false positives + recursive noise |
 | Active validation | None in v1 | No outbound provider checks; engine remains passive |
 | Intelligence vs findings | Observation → detection → finding | Passive tables store intelligence only; Findings subsystem owns lifecycle |
-| Clustering | `PASSIVE_SECRET:<value_fingerprint>` | Fingerprint = `SHA256(detector_family + "\0" + canonical_secret)`; PRIMARY/LINKED by secret, not file |
+| Clustering | `PASSIVE_SECRET` | One cluster per project: first leak PRIMARY, later leaks LINKED |
 | Source grouping | UI/query only (`logical_source_name`, URL) | Does **not** change PRIMARY/LINKED or manual `finding_groups` |
 | Base64 / encodings | Decoder Pipeline only; not findings | Pure encoded blobs create no findings; decoded text is rescanned |
 | Determinism | Rule + score + suppress first | No AI in v1 |
@@ -941,10 +943,10 @@ Bodies remain on `flows.response_body`. Findings lifecycle lives in `findings`; 
 | Module | Role |
 |--------|------|
 | `talos.findings.model` | `EVIDENCE_TYPE_SOURCE_*` / `PASSIVE_DETECTION`; `ATTACK_DISPLAY["passive_secret"]` |
-| `talos.passive.finding_bridge` | `create_passive_secret_finding()` — cluster `PASSIVE_SECRET:<fp>`; PRIMARY/LINKED by secret |
+| `talos.passive.finding_bridge` | `create_passive_secret_finding()` — cluster `PASSIVE_SECRET`; first PRIMARY, later LINKED |
 | `SourceScanWorker` | After persist detections → auto-create findings when confidence ≥ threshold |
 
-**Clustering:** same secret fingerprint across files → first PRIMARY, later LINKED. Different secrets in one file → two PRIMARYs. Threshold default HIGH (CONFIRMED_PATTERN + HIGH). `auto_finding_threshold=OFF` disables.
+**Clustering:** all eligible leaks share `PASSIVE_SECRET`. First finding is PRIMARY ("Client-Side Secret Exposure"); later leaks are LINKED under it. Threshold default HIGH (CONFIRMED_PATTERN + HIGH). `auto_finding_threshold=OFF` disables. Secret detection is on by default (`passive_scan_config.enabled`). Finding detail / `talos finding show` highlight every redacted leak in source context.
 
 ### Phase 9 — CLI
 
@@ -2282,6 +2284,7 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 | `auth_session_bindings` | Auth-session: map `auth_config` field → auth type (JWT, …) (v54) |
 | `auth_session_candidates` | Auth-session: pending/approved/… mutation candidates (v54) |
 | `auth_session_results` | Auth-session: one verdict row per mutated replay flow (v54) |
+| `cors_results` | CORS: one verdict row per unique Origin-probe replay flow (v55) |
 | `proxy_config` | Direct vs upstream URL |
 | `input_validation_config` | IV enablement and phase toggles |
 | `iv_param_cache` | Parameter-level IV phase cache (resume) |
@@ -2312,6 +2315,7 @@ From `talos.scheduler.job`:
 | BAC | `bac_session_swap`, `bac_method_fuzz`, `bac_content_type`, `bac_url_fuzz`, `bac_header_inject`, `bac_host_fuzz`, `bac_role_inject`, `bac_parser_confuse` |
 | Unauthenticated Execution | `unauth_attack` |
 | Auth-session (Phase 4) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed + WEAK_VALIDATION findings) |
+| CORS | `cors_attack` (one unique replay flow per Origin technique) |
 | Input Validation | `iv_baseline`, `iv_multiprobe`, `iv_identifier`, `iv_characters`, `iv_length`, `iv_types`, `iv_transformations`, `iv_reflection`, `iv_validation`, `iv_parser` |
 
 Statuses: `pending`, `running`, `done`, `failed`, `skipped`, `paused`, `cancelled`.
@@ -2361,6 +2365,7 @@ Notable milestones:
 | v52 | AI Layer Phase E: `ai_draft_findings` (markdown KB is filesystem `~/.talos/ai/kb`) |
 | v53 | URL Sink Discovery Phase 1: `parameters.url_features` (passive value + name classification) |
 | v54 | Auth-session engine: `auth_session_bindings`, `auth_session_candidates`, `auth_session_results` |
+| v55 | CORS engine: `cors_results` (one unique replay flow per Origin technique) |
 
 ---
 
@@ -2482,6 +2487,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Replay scheduler — daemon thread started alongside proxy; priority queue with dedup and overflow guards; annotation pre-checks; configurable jitter; `talos scheduler` CLI for status/config/enqueue/clear (`talos.scheduler`)
 - [x] Out-of-scope domain list — per-project block list that overrides the scope allow-list; enforced at proxy capture and worker persist; CLI via `talos project outscope` (`talos.projects.outscope`, `talos.projects.outscope_cli`)
 - [x] HTTP Manipulation Engine — single declarative rule engine for request **and** response modification; replaces former `capture.header_rules` + `request_mutations` / `talos mutation`; rules in layered `http.rules` (global + project concatenated, priority-sorted); match conditions (host/path/method/status/headers/endpoint/context); actions (headers, cookies, query, URL/method, body, status, delay/drop/abort); master switch `http.enabled`; CLI `talos config http` (list/show/create/delete/enable/disable/set-priority/set-match/add-action/export/import/…); proxy `request()` + `response()` hooks (`talos.configuration.http_engine`, `talos.configuration.http_rules`, `talos.configuration.http_cli`)
+- [x] CORS misconfiguration — `talos attack cors run` enqueues `cors_attack` jobs (one unique replay flow per Origin technique); in-scope 200 OK POST/PATCH/PUT then GET; findings only on attacker-origin reflection (`CORS:<origin>` PRIMARY + LINKED techniques); Control Panel `/testing/cors`
 - [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip BYPASS→SECURE (`talos attack unauth filter apply [--dry-run] [--force]`, `talos.projects.unauth.reclassify`); exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
 - [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry (`docs/design-auth-session-testing-engine.md`)
 - [x] Auth-session bindings & candidates (Phase 2) — `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list`; insert-if-absent generate; operator approve lifecycle
@@ -2496,13 +2502,13 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] IV Canaries & Multiprobe (Module 4) — high-entropy `TL…` canaries; multiplexed payload embeds taxonomy class samples; `iv_multiprobe` job (one HTTP → reflection + multi-class outcomes); `probe_strategy` quick|standard|deep|exhaustive; standard skips weak identifiers + per-char matrix when multiprobe on; exhaustive keeps legacy list; flow_meta.multiprobe evidence; synthesis consumes analyzer results; tests in `tests/test_iv_multiprobe.py` (`talos.input_validation.multiprobe`)
 - [x] IV Event-Driven Planner (Module 5) — deterministic adaptive DAG (`planner.py`); budget tiers + `max_requests_per_param`; `run` enqueues next wave only (not ~70 jobs); post-job `continue_param_plan`; high-confidence early stop; reflection-unknown multiprobe retry; no analysis-before-evidence; status shows budget/requests/plan; tests in `tests/test_iv_planner.py`
 - [x] IV Character Taxonomy & Length (Module 6) — class-tier charset probes (`taxonomy.py`); binary/log length search with truncation vs reject (`length_search.py`); planner `char_drilldown` / `length_binary` executors; standard representatives not full 30-char list; length seed under 10; exhaustive keeps extended matrix; tests in `tests/test_iv_taxonomy_length.py`
-- [x] IV Types, Semantic Validation & Negative Evidence (Module 7) — passive-first type pruning + semantic rules + core/edge validation (`type_intel.py`); planner `type_confirm` / `semantic_rules`; systematic `tested{}`; tests in `tests/test_iv_type_semantic.py`
+- [x] IV Types, Semantic Validation & Negative Evidence (Module 7) — passive-first type pruning + semantic rules + type-family catalogs (boolean polarity, email shapes, array wrap, numeric edges) + JSON native inject (`type_intel.py` / `surface.inject_json_param`); planner `type_confirm` / `semantic_rules`; systematic `tested{}`; tests in `tests/test_iv_type_semantic.py` + `tests/test_iv_surface.py`
 - [x] IV Normalization & Parser Fingerprinting (Module 8) — norm pipeline + parser fingerprint (`parser_intel.py`); `iv_parser` jobs; structural inject; tests in `tests/test_iv_parser_norm.py`
 - [x] IV Surface Completeness (Module 9) — path/header/cookie/multipart/GraphQL/XML first-class inject (`surface.py`); auth-artifact skip default; `include_auth_artifacts` config/CLI; transport-legal header/cookie gates + location-aware multiprobe/norm/validation; schema v38; tests in `tests/test_iv_surface.py`
 - [x] IV Multi-Level Learning (Module 10) — endpoint/app profile aggregation + inheritance priors (`learning.py`); confidence decay cap 75; local observed wins; standard skips control/parser when parent known; CLI `show --endpoint` / `show --host`; tests in `tests/test_iv_learning.py`
 - [x] IV Capabilities, Attack Candidates & Consumer API (Module 11) — centralized capability derivation (`capabilities.py`); attack candidate scores with reasons (`candidates.py`); `get_param_intelligence` / `list_candidates` stable API; synthesize + CLI show/export; prioritization only (not confirmed vulns); tests in `tests/test_iv_candidates.py`
 - [x] Findings subsystem — PRIMARY/LINKED clusters, groups, reports (`talos.findings`)
-- [x] Passive Source Intelligence (Phases 0–12, 14–16 core CLI + Phase 13 Control Panel) — design freeze + package skeleton + schema v39/v40 CRUD + candidate/classify/normalize + queue/worker + detector pipeline (provider/YAML, PEM, JWT, connection strings, contextual, entropy, decoder, infrastructure) + findings bridge (`PASSIVE_SECRET:<fp>` PRIMARY/LINKED) + CLI (`talos passive …`) + source-map + HTML inline extractors + rescan + docs/Helper; Control Panel Secret Detection workspace (`/secret-detection`, `/api/passive/*`, Console tree, dashboard/flow/finding deep links); `SCANNER_VERSION=1.3.0`; tests in `tests/test_passive_*.py` + `talos-control-panel/backend/tests/test_passive_routes.py`.
+- [x] Passive Source Intelligence (Phases 0–12, 14–16 core CLI + Phase 13 Control Panel) — design freeze + package skeleton + schema v39/v40 CRUD + candidate/classify/normalize + queue/worker + detector pipeline (provider/YAML, PEM, JWT, connection strings, contextual, entropy, decoder, infrastructure) + findings bridge (`PASSIVE_SECRET` one PRIMARY, later leaks LINKED) + CLI (`talos passive …`) + source-map + HTML inline extractors + rescan + docs/Helper; Control Panel Secret Detection workspace (`/secret-detection`, `/api/passive/*`, Console tree, dashboard/flow/finding deep links); `SCANNER_VERSION=1.3.0`; tests in `tests/test_passive_*.py` + `talos-control-panel/backend/tests/test_passive_routes.py`.
 - [x] Flow inspector — `talos flow list|show|export` (`talos.projects.flow_cli`)
 - [x] Flow inventory (CLI-003) — `talos flow list` prints UUID, endpoint (`host`+`path`), method, status, role, source, created; filters `--endpoint`, `--status-code`, `--role` (name or UUID), `--source`, `--limit`; primary discovery path for flow UUIDs used by show/export/replay/auth-config (`talos.projects.flow_cli`)
 

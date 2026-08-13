@@ -36,8 +36,9 @@ Sub-modules:
                   next-action decisions (pure; no HTTP).
     taxonomy    — Character class map + tiered probe selection (Module 6).
     length_search — Binary/log length search + truncation outcomes (Module 6).
-    type_intel  — Passive-first type pruning, semantic validation probes,
-                  negative-evidence helpers (Module 7).
+    type_intel  — Passive-first type pruning, semantic validation + type-family
+                  catalogs (bool polarity, email, array, numeric edges),
+                  JSON native-value helpers, negative-evidence (Module 7).
     parser_intel — Normalization pipeline stages + parser fingerprinting
                   (duplicate keys, JSON null/empty, array styles) (Module 8).
     url_sink_probes — URL Sink Discovery Phase 3: benign URL canaries +

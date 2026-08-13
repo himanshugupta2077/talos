@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
 import { useAction } from "../hooks/useAction";
@@ -9,6 +9,11 @@ import { attackTypeLabel } from "../lib/attackDisplay";
 import { formatIST } from "../lib/time";
 import { Finding, FindingGroup } from "../types";
 import { SECRETS_BASE } from "./attack/registry";
+import SecretHighlight from "./secret-detection/components/SecretHighlight";
+import ConfidenceChip from "./secret-detection/components/ConfidenceChip";
+import RedactedValue from "./secret-detection/components/RedactedValue";
+import { findingNavFromSearch, preserveSearch } from "./findings/nav";
+import FindingFlowHttp from "./findings/FindingFlowHttp";
 
 interface FlowSummary {
   id: string;
@@ -38,6 +43,34 @@ interface FlowComparison {
   testcase_evidence_id?: string | null;
 }
 
+interface SecretHit {
+  detection_id?: string | null;
+  finding_id?: string | null;
+  document_id?: string | null;
+  occurrence_id?: string | null;
+  flow_id?: string | null;
+  url?: string | null;
+  path?: string | null;
+  host?: string | null;
+  detector_id?: string | null;
+  detector_family?: string | null;
+  secret_type?: string | null;
+  matched_key?: string | null;
+  redacted_value?: string | null;
+  confidence_level?: string | null;
+  confidence_score?: number | null;
+  match_start?: number;
+  match_end?: number;
+  context_before?: string | null;
+  context_after?: string | null;
+  encoding_chain?: string[];
+}
+
+interface SecretExposure {
+  hits: SecretHit[];
+  count: number;
+}
+
 interface Bundle {
   finding: Finding;
   evidence: { id: string; evidence_type: string; reference_id: string | null; label: string; data: any; created_at: string }[];
@@ -46,6 +79,7 @@ interface Bundle {
   parent?: Finding | null;
   linked?: Finding[];
   flow_comparison?: FlowComparison | null;
+  secret_exposure?: SecretExposure | null;
 }
 
 const EVIDENCE_TYPE_LABELS: Record<string, string> = {
@@ -73,104 +107,86 @@ function evidenceTypeLabel(t: string): string {
   return EVIDENCE_TYPE_LABELS[t] || t;
 }
 
-function formatBodyLen(n: number | null | undefined): string {
-  if (n == null || Number.isNaN(n)) return "—";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function FlowCard({
-  title,
-  badgeClass,
-  flow,
-  emptyLabel,
+function SecretExposureSection({
+  exposure,
+  findingId,
 }: {
-  title: string;
-  badgeClass: string;
-  flow: FlowSummary | null | undefined;
-  emptyLabel: string;
+  exposure: SecretExposure;
+  findingId?: string;
 }) {
-  if (!flow) {
-    return (
-      <div className="panel p-3 h-full">
-        <div className="flex items-center gap-2 mb-2">
-          <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
-        </div>
-        <p className="text-sm text-base-content/40">{emptyLabel}</p>
-      </div>
-    );
-  }
-
-  if (flow.missing) {
-    return (
-      <div className="panel p-3 h-full">
-        <div className="flex items-center gap-2 mb-2 flex-wrap">
-          <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
-          <UuidChip value={flow.id} />
-        </div>
-        <p className="text-sm text-warning">
-          Flow row missing from project DB (id may be stale).
-        </p>
-        <div className="flex flex-wrap gap-2 mt-2">
-          <Link to={`/flows/${flow.id}`} className="btn btn-xs btn-outline">
-            Open flow
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const displayUrl = flow.url || flow.path || "—";
-
+  const hits = exposure.hits || [];
   return (
-    <div className="panel p-3 h-full border-l-4 border-l-primary/40">
-      <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <span className={`badge badge-sm ${badgeClass}`}>{title}</span>
-        {flow.status_code != null && (
-          <span className="badge badge-outline badge-sm mono">{flow.status_code}</span>
-        )}
-        {flow.replay_reason && (
-          <span className="badge badge-ghost badge-xs" title={flow.replay_reason}>
-            {flow.replay_reason}
-          </span>
-        )}
+    <Section
+      title={hits.length > 1 ? `Leaked secret (${hits.length} locations)` : "Leaked secret"}
+    >
+      <p className="text-xs text-base-content/50 mb-3">
+        Highlighted span is the exact match Secret Detection flagged. Values are
+        redacted; raw material stays in evidence when that option is on.
+      </p>
+      <div className="space-y-3">
+        {hits.map((hit, i) => {
+          const loc = hit.url || hit.path || "unknown path";
+          const detId = hit.detection_id;
+          return (
+            <div key={detId || `${loc}-${i}`} className="panel p-3 border-l-4 border-l-warning/60">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <RedactedValue value={hit.redacted_value} className="text-sm font-semibold" />
+                {hit.confidence_level && (
+                  <ConfidenceChip
+                    level={hit.confidence_level}
+                    score={hit.confidence_score}
+                  />
+                )}
+                {hit.detector_id && (
+                  <span className="badge badge-ghost badge-sm mono">{hit.detector_id}</span>
+                )}
+                {hit.secret_type && (
+                  <span className="badge badge-outline badge-sm">{hit.secret_type}</span>
+                )}
+                {hit.matched_key && (
+                  <span className="text-xs mono text-base-content/60">
+                    key={hit.matched_key}
+                  </span>
+                )}
+              </div>
+              <SecretHighlight
+                contextBefore={hit.context_before}
+                redactedValue={hit.redacted_value}
+                contextAfter={hit.context_after}
+              />
+              <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-base-content/60">
+                <span className="mono break-all">{loc}</span>
+                {(hit.match_start != null || hit.match_end != null) && (
+                  <span className="mono">
+                    offsets {hit.match_start ?? 0}–{hit.match_end ?? 0}
+                  </span>
+                )}
+                {hit.flow_id && (
+                  <Link to={`/flows/${hit.flow_id}`} className="link">
+                    Open flow
+                  </Link>
+                )}
+                {hit.finding_id && hit.finding_id !== findingId && (
+                  <Link to={`/findings/${hit.finding_id}`} className="link">
+                    Linked finding
+                  </Link>
+                )}
+                {detId && (
+                  <Link to={`${SECRETS_BASE}/detections/${detId}`} className="link">
+                    Open detection
+                  </Link>
+                )}
+                {hit.document_id && (
+                  <Link to={`${SECRETS_BASE}/documents/${hit.document_id}`} className="link">
+                    Open document
+                  </Link>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <div className="text-sm mono break-all mb-2">
-        <span className="font-semibold">{flow.method || "?"}</span>{" "}
-        <span className="text-base-content/80">{displayUrl}</span>
-      </div>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-base-content/70">
-        <dt>Body</dt>
-        <dd className="mono">{formatBodyLen(flow.body_len)}</dd>
-        {flow.content_type && (
-          <>
-            <dt>Type</dt>
-            <dd className="truncate" title={flow.content_type}>
-              {flow.content_type}
-            </dd>
-          </>
-        )}
-        {flow.captured_at && (
-          <>
-            <dt>When</dt>
-            <dd>{formatIST(flow.captured_at)}</dd>
-          </>
-        )}
-        <dt>ID</dt>
-        <dd>
-          <UuidChip value={flow.id} />
-        </dd>
-      </dl>
-      <div className="flex flex-wrap gap-2 mt-3">
-        <Link to={`/flows/${flow.id}`} className="btn btn-xs btn-primary">
-          Open flow
-        </Link>
-        <Link to={`/repeater?flow=${flow.id}`} className="btn btn-xs btn-outline">
-          Send to Repeater
-        </Link>
-      </div>
-    </div>
+    </Section>
   );
 }
 
@@ -178,34 +194,24 @@ function FlowComparisonSection({ comparison }: { comparison: FlowComparison }) {
   const { original, testcase, delta, diff_verdict } = comparison;
 
   return (
-    <Section
-      title="Original Flow vs Attack / Testcase Flow"
-      action={
-        diff_verdict ? (
-          <StatusBadge value={String(diff_verdict)} />
-        ) : undefined
-      }
-    >
-      <p className="text-xs text-base-content/50 mb-3">
-        Baseline captured request vs the attack engine replay (testcase). Same comparison as{" "}
-        <span className="mono">talos finding show</span>.
-      </p>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <FlowCard
-          title="Original Flow"
-          badgeClass="badge-info"
-          flow={original}
-          emptyLabel="No original_flow evidence on this finding."
-        />
-        <FlowCard
-          title="Attack / Testcase Flow"
-          badgeClass="badge-warning"
-          flow={testcase}
-          emptyLabel="No replay_flow (attack/testcase) evidence on this finding."
-        />
-      </div>
-      {delta && (
-        <div className="mt-3 panel p-3 text-sm flex flex-wrap gap-4 items-center">
+    <div className="space-y-4 mb-6">
+      {testcase && (
+        <Section
+          title="Attack flow"
+          action={
+            diff_verdict ? <StatusBadge value={String(diff_verdict)} /> : undefined
+          }
+        >
+          <FindingFlowHttp
+            title="Attack / testcase"
+            badgeClass="badge-warning"
+            summary={testcase}
+            emptyLabel="No replay_flow (attack/testcase) evidence on this finding."
+          />
+        </Section>
+      )}
+      {delta && testcase && original && (
+        <div className="panel p-3 text-sm flex flex-wrap gap-4 items-center">
           <span className="text-xs font-medium uppercase tracking-wide text-base-content/50">
             Delta
           </span>
@@ -231,19 +237,53 @@ function FlowComparisonSection({ comparison }: { comparison: FlowComparison }) {
           </span>
         </div>
       )}
-    </Section>
+      {original && (
+        <Section title="Original flow">
+          <FindingFlowHttp
+            title="Original"
+            badgeClass="badge-info"
+            summary={original}
+            emptyLabel="No original_flow evidence on this finding."
+          />
+        </Section>
+      )}
+    </div>
+  );
+}
+
+function isTypingTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false;
+  return (
+    t.tagName === "INPUT" ||
+    t.tagName === "TEXTAREA" ||
+    t.tagName === "SELECT" ||
+    t.isContentEditable
   );
 }
 
 export default function FindingDetail() {
   const { findingId } = useParams();
   const { selected } = useProject();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [groups, setGroups] = useState<FindingGroup[]>([]);
   const [duplicateOf, setDuplicateOf] = useState("");
   const [reportText, setReportText] = useState("");
   const [notesDraft, setNotesDraft] = useState("");
   const [applyLinked, setApplyLinked] = useState(false);
+  const [adjacent, setAdjacent] = useState<{
+    prev_id: string | null;
+    next_id: string | null;
+  }>({ prev_id: null, next_id: null });
+
+  const filterQs = useMemo(
+    () => findingNavFromSearch(searchParams),
+    [searchParams]
+  );
+  const listHref = `/findings${preserveSearch(searchParams)}`;
+  const findingHref = (id: string) =>
+    `/findings/${id}${preserveSearch(searchParams)}`;
 
   const load = () => {
     if (!selected || !findingId) return;
@@ -251,9 +291,41 @@ export default function FindingDetail() {
       setBundle(b);
       setNotesDraft(b.finding.notes || "");
     });
-    api.get<{ groups: FindingGroup[] }>("/api/findings/groups/list", { project_id: selected.id }).then((r) => setGroups(r.groups));
+    api
+      .get<{ groups: FindingGroup[] }>("/api/findings/groups/list", {
+        project_id: selected.id,
+      })
+      .then((r) => setGroups(r.groups));
+    api
+      .get<{ prev_id: string | null; next_id: string | null }>(
+        `/api/findings/${findingId}/adjacent`,
+        { project_id: selected.id, ...filterQs }
+      )
+      .then(setAdjacent)
+      .catch(() => setAdjacent({ prev_id: null, next_id: null }));
   };
-  useEffect(load, [selected, findingId]);
+  useEffect(load, [selected, findingId, filterQs]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === "Escape") {
+        navigate(listHref);
+        return;
+      }
+      if (e.key === "ArrowLeft" && adjacent.prev_id) {
+        e.preventDefault();
+        navigate(findingHref(adjacent.prev_id));
+      }
+      if (e.key === "ArrowRight" && adjacent.next_id) {
+        e.preventDefault();
+        navigate(findingHref(adjacent.next_id));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [adjacent, navigate, listHref, searchParams]);
 
   const lifecycleBody = () => (applyLinked ? { linked: true, force: true } : {});
 
@@ -288,15 +360,87 @@ export default function FindingDetail() {
   const parent = bundle.parent ?? null;
   const linked = bundle.linked ?? [];
   const flowComparison = bundle.flow_comparison ?? null;
+  const secretExposure = bundle.secret_exposure ?? null;
   const isPrimary = (finding.relation_type || "PRIMARY").toUpperCase() === "PRIMARY";
   const linkedCount = finding.linked_count ?? linked.length;
 
   return (
     <div>
-      <Link to="/findings" className="link link-sm mb-4 inline-block">back to findings</Link>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <Link to={listHref} className="link link-sm">
+          back to findings
+        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-xs"
+            disabled={!adjacent.prev_id}
+            onClick={() => adjacent.prev_id && navigate(findingHref(adjacent.prev_id))}
+            title="Newer finding (←)"
+          >
+            ← prev
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs"
+            disabled={!adjacent.next_id}
+            onClick={() => adjacent.next_id && navigate(findingHref(adjacent.next_id))}
+            title="Older finding (→)"
+          >
+            next →
+          </button>
+          <span className="text-[10px] text-base-content/40 hidden sm:inline">
+            ← / → to move · Esc list
+          </span>
+        </div>
+      </div>
 
       <div className="mb-4">
-        <h1 className="text-xl font-semibold mb-1">{finding.title || "(untitled finding)"}</h1>
+        <div className="flex items-start justify-between gap-3 mb-1 flex-wrap">
+          <h1 className="text-xl font-semibold min-w-0 flex-1">
+            {finding.title || "(untitled finding)"}
+          </h1>
+          <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+            {finding.status === "TRIAGING" && (
+              <>
+                <button
+                  className="btn btn-xs btn-success"
+                  disabled={confirm.running}
+                  onClick={async () => { await confirm.run(); load(); }}
+                >
+                  {confirm.running ? <span className="loading loading-spinner loading-xs" /> : "Confirm"}
+                </button>
+                <button
+                  className="btn btn-xs btn-error"
+                  disabled={reject.running}
+                  onClick={async () => { await reject.run(); load(); }}
+                >
+                  {reject.running ? <span className="loading loading-spinner loading-xs" /> : "Reject"}
+                </button>
+              </>
+            )}
+            {finding.status !== "TRIAGING" && (
+              <button
+                className="btn btn-xs"
+                disabled={reopen.running}
+                onClick={async () => { await reopen.run(); load(); }}
+              >
+                {reopen.running ? <span className="loading loading-spinner loading-xs" /> : "Reopen"}
+              </button>
+            )}
+            {isPrimary && linkedCount > 0 && (
+              <label className="label cursor-pointer gap-2 py-0">
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-xs"
+                  checked={applyLinked}
+                  onChange={(e) => setApplyLinked(e.target.checked)}
+                />
+                <span className="label-text text-xs">Apply to linked ({linkedCount})</span>
+              </label>
+            )}
+          </div>
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <StatusBadge value={finding.verdict} />
           <StatusBadge value={finding.status} />
@@ -318,46 +462,37 @@ export default function FindingDetail() {
               cluster: {finding.cluster_key.length > 40 ? `${finding.cluster_key.slice(0, 40)}…` : finding.cluster_key}
             </span>
           )}
-        </div>
-      </div>
-
-      {/* First-class original vs attack/testcase — not buried in Evidence */}
-      {flowComparison && <FlowComparisonSection comparison={flowComparison} />}
-
-      <Section title="Lifecycle">
-        <div className="flex gap-2 flex-wrap items-center">
-          {finding.status === "TRIAGING" && (
-            <>
-              <button className="btn btn-xs btn-success" onClick={async () => { await confirm.run(); load(); }}>Confirm</button>
-              <button className="btn btn-xs btn-error" onClick={async () => { await reject.run(); load(); }}>Reject</button>
-            </>
-          )}
-          {finding.status !== "TRIAGING" && (
-            <button className="btn btn-xs" onClick={async () => { await reopen.run(); load(); }}>Reopen</button>
-          )}
-          {isPrimary && linkedCount > 0 && (
-            <label className="label cursor-pointer gap-2 py-0">
-              <input
-                type="checkbox"
-                className="checkbox checkbox-xs"
-                checked={applyLinked}
-                onChange={(e) => setApplyLinked(e.target.checked)}
-              />
-              <span className="label-text text-xs">Apply to linked ({linkedCount})</span>
-            </label>
-          )}
-          <div className="flex gap-1 items-center">
-            <input className="input input-xs input-bordered mono w-40" placeholder="duplicate-of uuid" value={duplicateOf} onChange={(e) => setDuplicateOf(e.target.value)} />
-            <button className="btn btn-xs" disabled={!duplicateOf} onClick={async () => { await duplicate.run(); setDuplicateOf(""); load(); }}>Mark duplicate</button>
+          <div className="flex gap-1 items-center ml-auto">
+            <input
+              className="input input-xs input-bordered mono w-40"
+              placeholder="duplicate-of uuid"
+              value={duplicateOf}
+              onChange={(e) => setDuplicateOf(e.target.value)}
+            />
+            <button
+              className="btn btn-xs"
+              disabled={!duplicateOf || duplicate.running}
+              onClick={async () => { await duplicate.run(); setDuplicateOf(""); load(); }}
+            >
+              {duplicate.running ? <span className="loading loading-spinner loading-xs" /> : "Mark duplicate"}
+            </button>
           </div>
         </div>
         {applyLinked && (
-          <p className="text-xs text-base-content/50 mt-2">
+          <p className="text-xs text-base-content/50 mt-2 text-right">
             Passes <span className="mono">--linked --force</span> so PRIMARY + currently LINKED children
             share the same lifecycle status (CLI one-time bulk op).
           </p>
         )}
-      </Section>
+      </div>
+
+      {/* First-class leaked-secret highlight for Client-Side Secret Exposure */}
+      {secretExposure && secretExposure.hits?.length > 0 && (
+        <SecretExposureSection exposure={secretExposure} findingId={finding.id} />
+      )}
+
+      {/* First-class original vs attack/testcase — not buried in Evidence */}
+      {flowComparison && <FlowComparisonSection comparison={flowComparison} />}
 
       <Section title="Analyst notes">
         <textarea
@@ -393,7 +528,7 @@ export default function FindingDetail() {
           {parent && (
             <div className="mb-2 text-sm">
               <span className="text-xs text-base-content/50 mr-2">Primary</span>
-              <Link to={`/findings/${parent.id}`} className="link">
+              <Link to={findingHref(parent.id)} className="link">
                 {parent.title || parent.id}
               </Link>
               <StatusBadge value={parent.status} />
@@ -404,7 +539,7 @@ export default function FindingDetail() {
               {linked.map((c) => (
                 <li key={c.id} className="text-sm flex flex-wrap items-center gap-2">
                   <span className="badge badge-ghost badge-xs">LINKED</span>
-                  <Link to={`/findings/${c.id}`} className="link">
+                  <Link to={findingHref(c.id)} className="link">
                     {c.title || c.id}
                   </Link>
                   <StatusBadge value={c.status} />
@@ -534,7 +669,7 @@ export default function FindingDetail() {
           <ul className="space-y-1">
             {duplicates.map((d) => (
               <li key={d.id}>
-                <Link to={`/findings/${d.id}`} className="link text-sm">{d.title || d.id}</Link>
+                <Link to={findingHref(d.id)} className="link text-sm">{d.title || d.id}</Link>
               </li>
             ))}
           </ul>

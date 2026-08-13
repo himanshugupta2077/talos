@@ -110,8 +110,9 @@ export default function Endpoints() {
           <p>
             <strong>Inventory</strong> is where you browse discovered endpoints, filter by
             resolved policy fields, multi-select, and run bulk mark/priority/exclusion/tag/test
-            operations. Mutations use multi-ID Talos CLI commands atomically — the panel never
-            invents its own policy engine.
+            operations or <strong>run attacks</strong> on the top 1–5 test flows per
+            selected endpoint (same catalog as Flows). Mutations use multi-ID Talos CLI
+            commands atomically — the panel never invents its own policy engine.
           </p>
           <p>
             <strong>Policy</strong> answers what Talos will test, skip, or prioritize, and why.

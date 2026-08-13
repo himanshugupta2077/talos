@@ -1,10 +1,10 @@
 """
-Phase 8 tests: finding bridge + PRIMARY/LINKED clustering by secret fingerprint.
+Phase 8 tests: finding bridge + one project-wide secret cluster.
 
 Covers:
   - Eligible HIGH/CONFIRMED detection → finding with attack_type=passive_secret
   - Same secret in two documents → PRIMARY then LINKED
-  - Different secrets → two PRIMARYs
+  - Different secrets → same cluster (PRIMARY + LINKED)
   - Below threshold / suppressed → no finding
   - Evidence types attached
   - Worker end-to-end auto-finding
@@ -45,6 +45,7 @@ from talos.passive.db import (
 )
 from talos.passive.finding_bridge import (
     build_passive_secret_cluster_key,
+    build_secret_exposure,
     create_passive_secret_finding,
     finding_title_for_detection,
 )
@@ -104,6 +105,10 @@ def _make_detection(
         value_fingerprint=fp,
         confidence_score=confidence_score,
         confidence_level=confidence_level,
+        match_start=match_start,
+        match_end=match_start + len(secret),
+        context_before='const accessKeyId = "',
+        context_after='";',
         suppressed=suppressed,
         raw_value=secret,
     )
@@ -139,9 +144,8 @@ def _seed_doc_with_occurrence(
 
 
 def test_cluster_key_format():
-    fp = "abc123"
-    assert build_passive_secret_cluster_key(fp) == "PASSIVE_SECRET:abc123"
-    assert build_passive_secret_cluster_key("ABC") == "PASSIVE_SECRET:abc"
+    assert build_passive_secret_cluster_key("abc123") == "PASSIVE_SECRET"
+    assert build_passive_secret_cluster_key() == "PASSIVE_SECRET"
 
 
 def test_attack_display_passive_secret():
@@ -166,10 +170,8 @@ def test_create_finding_primary(project: Project):
     assert finding["attack_type"] == ATTACK_TYPE_PASSIVE_SECRET
     assert finding["verdict"] == VERDICT_EXPOSED
     assert finding["relation_type"] == RELATION_TYPE_PRIMARY
-    assert finding["cluster_key"] == build_passive_secret_cluster_key(
-        stored.value_fingerprint
-    )
-    assert "AWS" in finding["title"] or "Secret" in finding["title"]
+    assert finding["cluster_key"] == "PASSIVE_SECRET"
+    assert finding["title"] == "Client-Side Secret Exposure"
 
     from talos.passive.db import get_detection
 
@@ -181,6 +183,19 @@ def test_create_finding_primary(project: Project):
     types = {e["evidence_type"] for e in evidence}
     assert EVIDENCE_TYPE_PASSIVE_DETECTION in types
     assert EVIDENCE_TYPE_SOURCE_DOCUMENT in types
+    det_ev = next(
+        e for e in evidence if e["evidence_type"] == EVIDENCE_TYPE_PASSIVE_DETECTION
+    )
+    data = det_ev.get("data") or {}
+    if isinstance(data, str):
+        import json as _json
+        data = _json.loads(data)
+    assert data.get("context_before")
+    assert data.get("redacted_value")
+    exposure = build_secret_exposure(project.db_path, fid)
+    assert exposure is not None
+    assert exposure["count"] >= 1
+    assert exposure["hits"][0]["redacted_value"]
 
 
 def test_same_secret_two_docs_primary_then_linked(project: Project):
@@ -213,10 +228,15 @@ def test_same_secret_two_docs_primary_then_linked(project: Project):
     assert fa["relation_type"] == RELATION_TYPE_PRIMARY
     assert fb["relation_type"] == RELATION_TYPE_LINKED
     assert fb["parent_finding_id"] == fid_a
-    assert fa["cluster_key"] == fb["cluster_key"]
+    assert fa["cluster_key"] == fb["cluster_key"] == "PASSIVE_SECRET"
+
+    exposure = build_secret_exposure(project.db_path, fid_a)
+    assert exposure is not None
+    assert exposure["count"] == 2
+    assert all(h["redacted_value"] for h in exposure["hits"])
 
 
-def test_different_secrets_two_primaries(project: Project):
+def test_all_secrets_one_cluster(project: Project):
     doc_id, occ_id = _seed_doc_with_occurrence(project, b"bundle")
     d1 = _make_detection(
         doc_id,
@@ -239,14 +259,28 @@ def test_different_secrets_two_primaries(project: Project):
         project.db_path, project.id, s2.id, raw_value=d2.raw_value
     )
     assert f1 and f2
-    assert (
-        findings_db.get_finding(project.db_path, f1)["relation_type"]
-        == RELATION_TYPE_PRIMARY
+    assert f1 != f2
+    fa = findings_db.get_finding(project.db_path, f1)
+    fb = findings_db.get_finding(project.db_path, f2)
+    assert fa["relation_type"] == RELATION_TYPE_PRIMARY
+    assert fa["title"] == "Client-Side Secret Exposure"
+    assert fb["relation_type"] == RELATION_TYPE_LINKED
+    assert fb["parent_finding_id"] == f1
+    assert "AWS" in (fb["title"] or "") or "Secret" in (fb["title"] or "")
+
+    primaries = findings_db.list_findings(
+        project.db_path, project.id, relation_type=RELATION_TYPE_PRIMARY
     )
-    assert (
-        findings_db.get_finding(project.db_path, f2)["relation_type"]
-        == RELATION_TYPE_PRIMARY
-    )
+    passive_primaries = [
+        f for f in primaries if f.get("attack_type") == ATTACK_TYPE_PASSIVE_SECRET
+    ]
+    assert len(passive_primaries) == 1
+
+    exposure = build_secret_exposure(project.db_path, f1)
+    assert exposure is not None
+    assert exposure["count"] == 2
+    redacted = {h["redacted_value"] for h in exposure["hits"]}
+    assert len(redacted) == 2
 
 
 def test_medium_confidence_no_finding(project: Project):

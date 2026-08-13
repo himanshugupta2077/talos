@@ -112,6 +112,26 @@ def test_unauth_run_does_not_emit_dead_flags(client):
         assert argv == ["attack", "unauth", "run"]
 
 
+def test_unauth_run_with_flows(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/unauth/run",
+            params={"project_id": "demo"},
+            json={"flows": ["flow-a", "flow-b"]},
+        )
+        assert res.status_code == 200
+        assert run_scoped.call_args[0][1] == [
+            "attack",
+            "unauth",
+            "run",
+            "--flow",
+            "flow-a",
+            "--flow",
+            "flow-b",
+        ]
+
+
 def test_unauth_overview_shape(client, tmp_path, monkeypatch):
     """Overview returns aggregate fields even when project DB is empty/missing."""
     import talos_ui.config as cfg

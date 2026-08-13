@@ -1,17 +1,22 @@
 import { Link } from "react-router-dom";
 import type { SchedulerStatus } from "../../api/client";
+import { attackModuleShortLabel } from "../../lib/attackDisplay";
 import { formatIST } from "../../lib/time";
-import { COUNT_CHIP_KEYS } from "./shared";
+import { COUNT_CHIP_KEYS, familyBadgeClass } from "./shared";
 
 export default function MetricsStrip({
   status,
   selectedStatus,
+  selectedJobType,
   onStatusChip,
+  onTypeChip,
   rateConfig,
 }: {
   status: SchedulerStatus | null;
   selectedStatus: string;
+  selectedJobType: string;
   onStatusChip: (status: string) => void;
+  onTypeChip: (jobType: string) => void;
   rateConfig: {
     min_delay: unknown;
     max_delay: unknown;
@@ -55,6 +60,8 @@ export default function MetricsStrip({
     rateConfig?.sources?.min_delay ||
     "default";
 
+  const families = (status?.by_family || []).filter((row) => row.n > 0);
+
   return (
     <div className="space-y-3 mb-4">
       <div className="flex flex-wrap gap-1.5">
@@ -77,6 +84,42 @@ export default function MetricsStrip({
           );
         })}
       </div>
+
+      {families.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-base-content/45 mb-1.5">
+            Requests by type
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {families.map((row) => {
+              const selected = selectedJobType === row.family;
+              return (
+                <button
+                  key={row.family}
+                  type="button"
+                  className={[
+                    "btn btn-xs gap-1.5 font-normal",
+                    selected
+                      ? "btn-primary"
+                      : "btn-ghost border border-base-300",
+                  ].join(" ")}
+                  title={`${row.family}: ${row.n} job${row.n === 1 ? "" : "s"}`}
+                  onClick={() =>
+                    onTypeChip(selected ? "" : row.family)
+                  }
+                >
+                  <span
+                    className={`badge badge-xs ${familyBadgeClass(row.family)}`}
+                  >
+                    {attackModuleShortLabel(row.family)}
+                  </span>
+                  <span className="mono font-medium opacity-80">{row.n}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="panel p-3 flex flex-wrap items-center justify-between gap-3 text-sm">
         <div className="flex flex-wrap gap-4">

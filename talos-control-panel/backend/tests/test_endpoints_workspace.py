@@ -43,6 +43,91 @@ def _ok_result(cmd=None, stdout=""):
     return r
 
 
+def test_test_flows_ranks_top_per_endpoint(tmp_path, monkeypatch):
+    import sqlite3
+
+    monorepo = Path(__file__).resolve().parents[3]
+    if str(monorepo) not in sys.path:
+        sys.path.insert(0, str(monorepo))
+    from talos.projects.db import init_project_db
+
+    talos_home = tmp_path / "talos-home"
+    projects = talos_home / "projects"
+    data_dir = projects / "demo"
+    data_dir.mkdir(parents=True)
+    db_path = data_dir / "talos.db"
+    init_project_db(db_path)
+    now = "2026-01-01T00:00:00+00:00"
+    with sqlite3.connect(str(db_path)) as conn:
+        role = conn.execute("SELECT id FROM roles WHERE name='global'").fetchone()[0]
+        module = conn.execute("SELECT id FROM modules WHERE name='global'").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO endpoints
+                (id, project_id, method, host, path, normalized_path,
+                 content_type, auth_required, roles_seen, first_seen, last_seen)
+            VALUES ('ep-a', 'demo', 'GET', 'https://app.example.com', '/a', '/a',
+                    'application/json', 0, '[]', ?, ?)
+            """,
+            (now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, excluded,
+                 dangerous, logout, qualified, qualification_reason,
+                 baseline_flow_id, baseline_status, updated_at)
+            VALUES ('ep-a', 'HIGH', 50, 0, 0, 0, 1, 'flow_2xx', 'flow-base', 200, ?)
+            """,
+            (now,),
+        )
+        for fid, method, captured in (
+            ("flow-base", "GET", "2026-01-01T00:00:00+00:00"),
+            ("flow-post", "POST", "2026-01-02T00:00:00+00:00"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO flows
+                    (id, project_id, captured_at, method, url, host, path,
+                     query, request_headers, status_code, endpoint_id,
+                     role_id, module_id, tags, source)
+                VALUES (?, 'demo', ?, ?, 'https://app.example.com/a',
+                        'app.example.com', '/a', '', '{}', 200, 'ep-a',
+                        ?, ?, '[]', 'proxy_capture')
+                """,
+                (fid, captured, method, role, module),
+            )
+        conn.commit()
+
+    monkeypatch.setenv("TALOS_HOME", str(talos_home))
+    import talos_ui.config as cfg
+    import talos_ui.db as ui_db
+
+    monkeypatch.setattr(cfg, "TALOS_HOME", talos_home)
+    monkeypatch.setattr(
+        ui_db,
+        "get_project_record",
+        lambda _pid: {"id": "demo", "data_dir": str(data_dir)},
+    )
+    monkeypatch.setattr(
+        cfg, "project_db_path", lambda _pid, _rec=None: db_path
+    )
+
+    from talos_ui.main import app
+
+    tc = TestClient(app)
+    res = tc.post(
+        "/api/endpoints/test-flows",
+        params={"project_id": "demo"},
+        json={"endpoint_ids": ["ep-a"], "limit": 5},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["flow_ids"][0] == "flow-base"
+    assert "flow-post" in body["flow_ids"]
+    assert body["limit_per_endpoint"] == 5
+
+
 def test_bulk_mark_uses_multi_id_single_cli(client):
     bulk_json = (
         '{"action":"mark --dangerous","affected":2,"unchanged":0,'

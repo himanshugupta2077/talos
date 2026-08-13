@@ -333,6 +333,75 @@ def test_finding_detail_flow_comparison(client, home):
     assert fc["diff_verdict"] == "DIFFERENT"
 
 
+def test_finding_detail_secret_exposure(client, home):
+    """Client-side secret findings expose highlighted leak context."""
+    _talos_home, projects_root, registry = home
+    db_path = _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        UPDATE findings
+        SET attack_type = 'passive_secret', title = 'Exposed AWS Access Key ID'
+        WHERE id = 'p1'
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finding_evidence
+          (id, finding_id, evidence_type, reference_id, label, data, created_at)
+        VALUES
+          ('ev-sec', 'p1', 'passive_detection', 'det-1',
+           'Passive detection — aws_access_key_id (CONFIRMED_PATTERN)',
+           ?, '2026-01-01T00:00:00'),
+          ('ev-occ', 'p1', 'source_occurrence', 'occ-1',
+           'Source occurrence — /static/app.js',
+           ?, '2026-01-01T00:00:00')
+        """,
+        (
+            json.dumps(
+                {
+                    "detector_id": "aws_access_key_id",
+                    "secret_type": "aws_access_key",
+                    "matched_key": "accessKeyId",
+                    "redacted_value": "AKIA****0001",
+                    "confidence_level": "CONFIRMED_PATTERN",
+                    "confidence_score": 95,
+                    "match_start": 20,
+                    "match_end": 40,
+                    "context_before": 'const accessKeyId = "',
+                    "context_after": '";',
+                }
+            ),
+            json.dumps(
+                {
+                    "url": "https://app.example/static/app.js",
+                    "path": "/static/app.js",
+                    "host": "https://app.example",
+                    "flow_id": "flow-orig",
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/api/findings/p1", params={"project_id": "demo"})
+    assert res.status_code == 200
+    body = res.json()
+    exp = body.get("secret_exposure")
+    assert exp is not None
+    assert exp["count"] >= 1
+    hit = exp["hits"][0]
+    assert hit["redacted_value"] == "AKIA****0001"
+    assert hit["context_before"] == 'const accessKeyId = "'
+    assert hit["context_after"] == '";'
+    assert hit["detector_id"] == "aws_access_key_id"
+    assert hit["match_start"] == 20
+    assert hit["match_end"] == 40
+
+
 def test_notes_set_uses_stdin_cli(client):
     with patch("talos_ui.routers.findings.cli.run_scoped_with_stdin") as scoped:
         scoped.return_value = [_ok_result(), _ok_result()]
@@ -399,6 +468,56 @@ def test_lifecycle_reject_default_no_linked_flag(client):
         )
         assert res.status_code == 200
         assert scoped.call_args[0][1] == ["finding", "reject", "p1"]
+
+
+def test_adjacent_primary_default(client, home):
+    _talos_home, projects_root, registry = home
+    _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+
+    # created_at DESC among PRIMARY: solo (newer), p1 (older)
+    solo = client.get(
+        "/api/findings/solo/adjacent", params={"project_id": "demo"}
+    )
+    assert solo.status_code == 200
+    assert solo.json() == {"prev_id": None, "next_id": "p1"}
+
+    p1 = client.get("/api/findings/p1/adjacent", params={"project_id": "demo"})
+    assert p1.status_code == 200
+    assert p1.json() == {"prev_id": "solo", "next_id": None}
+
+
+def test_adjacent_filter_aware_and_fallback(client, home):
+    _talos_home, projects_root, registry = home
+    _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+
+    # view=all DESC: solo, l2, l1, p1
+    l1 = client.get(
+        "/api/findings/l1/adjacent",
+        params={"project_id": "demo", "view": "all"},
+    )
+    assert l1.json() == {"prev_id": "l2", "next_id": "p1"}
+
+    # LINKED child is not in PRIMARY window → fall back to all findings
+    fallback = client.get(
+        "/api/findings/l1/adjacent", params={"project_id": "demo"}
+    )
+    assert fallback.json() == {"prev_id": "l2", "next_id": "p1"}
+
+    # status+view filter: only TRIAGING PRIMARY is p1
+    isolated = client.get(
+        "/api/findings/p1/adjacent",
+        params={"project_id": "demo", "status": "TRIAGING"},
+    )
+    assert isolated.json() == {"prev_id": None, "next_id": None}
+
+    # attack_type + all: l2, l1, p1 (solo is bac)
+    typed = client.get(
+        "/api/findings/l1/adjacent",
+        params={"project_id": "demo", "view": "all", "attack_type": "unauth"},
+    )
+    assert typed.json() == {"prev_id": "l2", "next_id": "p1"}
 
 
 def test_command_tree_unauth_and_finding_parity():

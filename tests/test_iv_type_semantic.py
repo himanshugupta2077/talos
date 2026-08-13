@@ -46,11 +46,13 @@ from talos.input_validation.type_intel import (
     VALIDATION_EDGE_LABELS,
     estimated_type_probe_count,
     is_url_prioritized,
+    json_native_probe_value,
     merge_type_tested,
     resolve_passive_type,
     select_semantic_probes,
     select_type_probes,
     synthesize_type_state,
+    type_family_probes,
     validation_probes_for_strategy,
 )
 from talos.scheduler.job import IV_TYPES, IV_VALIDATION
@@ -252,6 +254,69 @@ class TestSemanticAndValidation:
         assert "zero" in labels or "huge_int" in labels
         assert "enum_outside" not in labels  # numeric examples not enums
 
+    def test_boolean_type_confirm_includes_both_polarities(self) -> None:
+        plan = select_type_probes(semantic_type="boolean", strategy="standard")
+        labels = [p[0] for p in plan.probes]
+        assert "boolean" in labels
+        assert "boolean_false" in labels
+        values = dict(plan.probes)
+        assert values["boolean"].lower() == "true"
+        assert values["boolean_false"].lower() == "false"
+
+    def test_boolean_family_flips_observed_true(self) -> None:
+        probes = type_family_probes(
+            passive="boolean", examples=["true"], strategy="standard",
+        )
+        labels = [p[0] for p in probes]
+        assert "bool_false" in labels
+        assert dict(probes)["bool_false"] == "false"
+
+    def test_email_family_standard_shapes(self) -> None:
+        plan = select_semantic_probes(
+            semantic_type="email",
+            examples=["user@example.com"],
+            strategy="standard",
+            max_probes=8,
+        )
+        labels = [p[0] for p in plan.probes]
+        assert "email_plus" in labels
+        assert "email_display" in labels
+        assert "email_comma" in labels
+        assert "email_newline" not in labels  # deep only
+
+    def test_email_family_deep_includes_newline(self) -> None:
+        probes = type_family_probes(
+            passive="email", examples=["a@b.co"], strategy="deep",
+        )
+        labels = [p[0] for p in probes]
+        assert "email_newline" in labels
+
+    def test_array_family_standard(self) -> None:
+        plan = select_semantic_probes(
+            semantic_type="array",
+            strategy="standard",
+            max_probes=8,
+        )
+        labels = [p[0] for p in plan.probes]
+        assert "array_empty" in labels
+        assert "array_single" in labels
+        assert "array_string" in labels
+
+    def test_json_host_leaf_is_url(self) -> None:
+        assert resolve_passive_type(param_name="headers.Host") == "url"
+        assert resolve_passive_type(param_name="headers.Location") == "url"
+        assert is_url_prioritized(param_name="headers.Origin")
+
+    def test_json_native_coercion(self) -> None:
+        assert json_native_probe_value("false", "boolean_false") is False
+        assert json_native_probe_value("true", "boolean") is True
+        assert json_native_probe_value("-1", "negative_int") == -1
+        assert json_native_probe_value("null", "null_str") is None
+        assert json_native_probe_value("[]", "array_empty") == []
+        assert json_native_probe_value('["talos"]', "array_single") == ["talos"]
+        assert json_native_probe_value("notabool", "string") == "notabool"
+        assert json_native_probe_value("true", "character") == "true"
+
     def test_enum_outside_for_string_set(self) -> None:
         plan = select_semantic_probes(
             semantic_type="string",
@@ -416,6 +481,39 @@ class TestPlannerM7:
         type_acts = [a for a in result.actions if a.action == ACTION_TYPE_CONFIRM]
         if type_acts:
             assert type_acts[0].estimated_requests <= 4
+
+    def test_typed_boolean_not_skipped_when_classes_solid(self) -> None:
+        ctx = PlanContext(
+            budget_tier="standard",
+            max_requests=18,
+            requests_used=3,
+            completed_analyses=frozenset({"baseline", "multiprobe"}),
+            multiprobe_completed_count=1,
+            reflection_state="reflected",
+            reflection_confidence=95,
+            reflection_uncertainty="none",
+            types_known=False,
+            types_completed_count=0,
+            validation_completed_count=0,
+            acceptance_class_count=5,
+            semantic_type="boolean",
+            param_name="enabled",
+            analyses_enabled={
+                "baseline": True,
+                "multiprobe": True,
+                "types": True,
+                "validation": True,
+                "length": False,
+                "characters": False,
+                "identifier": False,
+                "transformations": True,
+                "reflection": True,
+            },
+        )
+        result = plan_next(ctx)
+        actions = {a.action for a in result.actions}
+        assert ACTION_TYPE_CONFIRM in actions
+        assert ACTION_SEMANTIC_RULES in actions
 
 
 # ---------------------------------------------------------------------------

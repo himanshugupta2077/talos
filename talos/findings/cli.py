@@ -347,6 +347,7 @@ def _cmd_show(manager: ProjectManager, argv: list[str]) -> None:
         for ev in timeline:
             print(f"    {ev['created_at']}  [{ev['actor']}]  {ev['event']}")
 
+    _print_secret_exposure(db_path, finding_id, evidence)
     _print_flow_comparison(db_path, evidence)
 
     if finding.get("notes", "").strip():
@@ -376,6 +377,45 @@ def _fetch_flow_row(db_path: Path, flow_id: str) -> Optional[dict]:
         return dict(row) if row else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _print_secret_exposure(
+    db_path: Path, finding_id: str, evidence: list[dict]
+) -> None:
+    """
+    Purpose:
+        Print the leaked-secret highlight (redacted value + surrounding
+        context) so ``talos finding show`` matches Control Panel detail.
+    """
+    try:
+        from talos.passive.finding_bridge import build_secret_exposure
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        payload = build_secret_exposure(db_path, finding_id, evidence=evidence)
+    except Exception:  # noqa: BLE001
+        return
+    if not payload or not payload.get("hits"):
+        return
+
+    hits = payload["hits"]
+    print(f"\n  Leaked secret ({len(hits)} location(s)):")
+    for hit in hits:
+        redacted = hit.get("redacted_value") or "(redacted)"
+        detector = hit.get("detector_id") or "unknown"
+        level = hit.get("confidence_level") or ""
+        key = hit.get("matched_key")
+        loc = hit.get("url") or hit.get("path") or "unknown path"
+        start = hit.get("match_start") or 0
+        end = hit.get("match_end") or 0
+        print(f"    {redacted}  [{detector} {level}]".rstrip())
+        if key:
+            print(f"      key={key}")
+        print(f"      at {loc}  offsets={start}–{end}")
+        before = hit.get("context_before") or ""
+        after = hit.get("context_after") or ""
+        if before or after or redacted:
+            print(f"      …{before}>>>{redacted}<<<{after}…")
 
 
 def _print_flow_comparison(db_path: Path, evidence: list[dict]) -> None:

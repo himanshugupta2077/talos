@@ -118,6 +118,13 @@ def _init_flow_db(db_path: Path):
               verdict TEXT,
               auth_mutation TEXT
             );
+            CREATE TABLE cors_results (
+              replay_flow_id TEXT PRIMARY KEY,
+              original_flow_id TEXT,
+              host TEXT,
+              technique TEXT,
+              verdict TEXT
+            );
             CREATE TABLE auth_test_results (
               replay_flow_id TEXT PRIMARY KEY,
               verdict TEXT
@@ -228,8 +235,53 @@ def _init_flow_db(db_path: Path):
         conn.execute(
             "INSERT INTO replay_diffs VALUES ('flow-replay', 'flow-orig', 'same', '200→200', 0)"
         )
+        # Attack-module replay flows (newer than capture so adjacent of orig is unchanged)
+        conn.execute(
+            """
+            INSERT INTO flows (
+              id, project_id, captured_at, method, url, host, path, query,
+              request_headers, request_cookies, status_code, response_headers,
+              content_type, endpoint_id, role_id, module_id, tags, source,
+              original_flow_id, replay_reason, flow_meta
+            ) VALUES
+            (
+              'flow-iv', 'demo', '2024-01-01T12:00:00+00:00',
+              'GET', 'https://ex.com/u?id=1', 'ex.com', '/u', 'id=1',
+              '{}', '{}', 200, '{}',
+              '', 'ep-1', 'role-1', 'mod-1', '[]', 'auto_replay',
+              'flow-orig', 'input_validation',
+              '{"generated_by":"input_validation","analysis":"baseline"}'
+            ),
+            (
+              'flow-cors', 'demo', '2024-01-01T12:30:00+00:00',
+              'GET', 'https://ex.com/u?id=1', 'ex.com', '/u', 'id=1',
+              '{}', '{}', 200, '{}',
+              '', 'ep-1', 'role-1', 'mod-1', '[]', 'auto_replay',
+              'flow-orig', 'cors_attack',
+              '{"attack_module":"cors","technique":"reflected_origin"}'
+            ),
+            (
+              'flow-bac', 'demo', '2024-01-01T13:00:00+00:00',
+              'GET', 'https://ex.com/u?id=1', 'ex.com', '/u', 'id=1',
+              '{}', '{}', 200, '{}',
+              '', 'ep-1', 'role-1', 'mod-1', '[]', 'auto_replay',
+              'flow-orig', 'bac_session_swap',
+              '{"attack_module":"bac","attack_type":"bac_session_swap"}'
+            )
+            """
+        )
         conn.execute(
             "INSERT INTO bac_results VALUES ('flow-replay', 'likely', 'horizontal', 'id')"
+        )
+        conn.execute(
+            "INSERT INTO bac_results VALUES ('flow-bac', 'POSSIBLE_BAC', 'bac_session_swap', 'id')"
+        )
+        conn.execute(
+            """
+            INSERT INTO cors_results
+            (replay_flow_id, original_flow_id, host, technique, verdict)
+            VALUES ('flow-cors', 'flow-orig', 'ex.com', 'reflected_origin', 'CORS_MISCONFIG')
+            """
         )
         conn.execute(
             """
@@ -324,9 +376,10 @@ def test_flow_related(client):
     assert res.status_code == 200
     body = res.json()
     assert body["original"] is None
-    assert len(body["children"]) == 1
-    assert body["children"][0]["id"] == "flow-replay"
-    assert body["children"][0]["diff_verdict"] == "same"
+    child_ids = {c["id"] for c in body["children"]}
+    assert child_ids == {"flow-replay", "flow-iv", "flow-cors", "flow-bac"}
+    replay = next(c for c in body["children"] if c["id"] == "flow-replay")
+    assert replay["diff_verdict"] == "same"
     assert body["jobs"][0]["job_id"] == "job-1"
     assert body["param_count"] == 1
     # PR5: optional url_sinks strip when endpoint_id present
@@ -363,7 +416,7 @@ def test_list_with_flags(client):
     )
     assert res.status_code == 200
     body = res.json()
-    assert body["total"] == 2
+    assert body["total"] == 5
     by_id = {f["id"]: f for f in body["flows"]}
     assert by_id["flow-replay"]["is_replay"] is True
     assert by_id["flow-replay"]["has_diff"] is True
@@ -413,6 +466,65 @@ def test_export_uses_cli(client):
         assert res.status_code == 200
         run_scoped.assert_called_once()
         assert run_scoped.call_args[0][1][:3] == ["flow", "export", "flow-orig"]
+
+
+def test_filters_include_attack_modules(client):
+    res = client.get("/api/flows/filters", params={"project_id": "demo"})
+    assert res.status_code == 200
+    body = res.json()
+    mods = body["attack_modules"]
+    for expected in ("iv", "bac", "unauth", "cors", "auth_session", "auth_test", "intruder"):
+        assert expected in mods
+
+
+def test_list_filter_by_attack_module(client):
+    res = client.get(
+        "/api/flows",
+        params={"project_id": "demo", "attack_module": "iv", "limit": 50},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 1
+    assert body["flows"][0]["id"] == "flow-iv"
+    assert body["flows"][0]["attack_module"] == "iv"
+
+    res = client.get(
+        "/api/flows",
+        params={"project_id": "demo", "attack_module": "cors", "limit": 50},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 1
+    assert body["flows"][0]["id"] == "flow-cors"
+    assert body["flows"][0]["attack_module"] == "cors"
+    assert body["flows"][0]["attack_verdict"] == "CORS_MISCONFIG"
+
+    # Alias: input_validation → iv
+    res = client.get(
+        "/api/flows",
+        params={"project_id": "demo", "attack_module": "input_validation", "limit": 50},
+    )
+    assert res.status_code == 200
+    assert res.json()["total"] == 1
+
+    res = client.get(
+        "/api/flows",
+        params={"project_id": "demo", "attack_module": "bac", "limit": 50},
+    )
+    assert res.status_code == 200
+    assert res.json()["flows"][0]["attack_module"] == "bac"
+    assert res.json()["flows"][0]["attack_verdict"] == "POSSIBLE_BAC"
+
+
+def test_adjacent_attack_module_filter(client):
+    res = client.get(
+        "/api/flows/flow-iv/adjacent",
+        params={"project_id": "demo", "attack_module": "iv"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["prev_id"] is None
+    assert body["next_id"] is None
 
 
 def test_flow_not_found(client):

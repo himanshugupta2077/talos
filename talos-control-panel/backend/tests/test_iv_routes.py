@@ -332,3 +332,38 @@ def test_iv_config_returns_phases(client):
     assert "parser" not in body["phases"]
     assert "multiprobe" in body["phases"]
     assert "validation" in body["phases"]
+
+
+def test_iv_run_with_flows(client):
+    from unittest.mock import MagicMock, patch
+
+    tc, pid = client
+
+    def _ok():
+        r = MagicMock()
+        r.ok = True
+        r.to_dict.return_value = {
+            "cmd": [],
+            "stdout": "ok",
+            "stderr": "",
+            "exit_code": 0,
+            "ok": True,
+        }
+        return r
+
+    with patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok()]
+        res = tc.post(
+            "/api/input-validation/run",
+            params={"project_id": pid},
+            json={"flows": ["flow-a", "flow-b"]},
+        )
+    assert res.status_code == 200
+    assert run_scoped.call_args[0][1] == [
+        "input-validation",
+        "run",
+        "--flow",
+        "flow-a",
+        "--flow",
+        "flow-b",
+    ]

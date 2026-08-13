@@ -36,8 +36,11 @@ Module 6 executors (engine implements):
 
 Module 7 executors (engine implements):
 
-    type_confirm    — passive-first pruned type probes (not full 12 matrix)
-    semantic_rules  — business-rule + core validation (no SQLi/XSS by default)
+    type_confirm    — passive-first pruned type probes (not full 12 matrix);
+                      boolean params always include both true and false
+    semantic_rules  — business-rule + type-family catalogs (bool polarity,
+                      email shapes, array wrap, numeric edges) + core
+                      validation (no SQLi/XSS by default)
 
 Module 8 executors (engine implements):
 
@@ -189,7 +192,7 @@ DEFAULT_MAX_REQUESTS: dict[str, int] = {
     BUDGET_TIER_QUICK: 8,
     BUDGET_TIER_STANDARD: 18,
     BUDGET_TIER_DEEP: 40,
-    BUDGET_TIER_EXHAUSTIVE: 80,
+    BUDGET_TIER_EXHAUSTIVE: 256,
 }
 
 # Typical char_drilldown / length_binary sizes by tier (planner estimates).
@@ -219,14 +222,21 @@ _TYPE_CONFIRM_ESTIMATE: dict[str, int] = {
     BUDGET_TIER_QUICK: 2,
     BUDGET_TIER_STANDARD: 4,
     BUDGET_TIER_DEEP: 8,
-    BUDGET_TIER_EXHAUSTIVE: 12,
+    BUDGET_TIER_EXHAUSTIVE: 13,
 }
 _SEMANTIC_RULES_ESTIMATE: dict[str, int] = {
     BUDGET_TIER_QUICK: 2,
-    BUDGET_TIER_STANDARD: 5,
-    BUDGET_TIER_DEEP: 8,
-    BUDGET_TIER_EXHAUSTIVE: 10,
+    BUDGET_TIER_STANDARD: 8,
+    BUDGET_TIER_DEEP: 12,
+    BUDGET_TIER_EXHAUSTIVE: 14,
 }
+
+# Passive types that need per-value family probes (bool flip, email
+# shapes, array wrap, URL/SSRF canaries).  Do not skip type_confirm /
+# semantic_rules just because multiprobe accepted character classes.
+_TYPED_FAMILY_SEMANTIC_TYPES: frozenset[str] = frozenset({
+    "boolean", "integer", "float", "email", "url", "array", "uuid", "ip",
+})
 # Module 8 parser + normalization probe estimates (engine prunes by location).
 _PARSER_PROBES_ESTIMATE: dict[str, int] = {
     BUDGET_TIER_QUICK: 0,
@@ -811,6 +821,58 @@ def _deep_followups_needed(ctx: PlanContext) -> bool:
     return False
 
 
+def _typed_family_required(ctx: PlanContext) -> bool:
+    """
+    Purpose:
+        True when the parameter's passive type needs type-family probes
+        (boolean polarity, email shapes, array wrap, numeric edges, URL).
+
+        Multiprobe character-class acceptance must not skip these — a JSON
+        boolean that reflects a mixed canary still needs a ``false`` flow.
+    Side effects: None.
+    """
+    st = (ctx.semantic_type or "").strip().lower()
+    if st in _TYPED_FAMILY_SEMANTIC_TYPES:
+        return True
+    name = (ctx.param_name or "").strip()
+    if not name:
+        return False
+    # Leaf-name fallback when stored semantic_type is weak (string/unknown)
+    # but the JSON key looks like Host / Location / email / enabled.
+    try:
+        from talos.input_validation.type_intel import resolve_passive_type
+
+        hint = resolve_passive_type(param_name=name)
+    except Exception:
+        hint = ""
+    return hint in _TYPED_FAMILY_SEMANTIC_TYPES
+
+
+def _typed_family_followups_needed(ctx: PlanContext) -> bool:
+    """
+    Purpose:
+        True when a typed parameter still needs type_confirm or
+        semantic_rules (boolean polarity, email/array catalogs, …).
+    Side effects: None.
+    """
+    if not _typed_family_required(ctx):
+        return False
+    types_needed = (
+        ctx.analysis_on("types")
+        and ctx.types_completed_count < 1
+        and not ctx.types_known
+        and not ctx.is_pending(ACTION_TYPE_CONFIRM)
+        and not ctx.is_pending(ACTION_TYPES)
+    )
+    sem_needed = (
+        ctx.analysis_on("validation")
+        and ctx.validation_completed_count < 1
+        and not ctx.is_pending(ACTION_SEMANTIC_RULES)
+        and not ctx.is_pending(ACTION_VALIDATION)
+    )
+    return types_needed or sem_needed
+
+
 def _url_sink_probes_needed(ctx: PlanContext, tier: str) -> bool:
     """
     Purpose:
@@ -931,6 +993,15 @@ def _adaptive_followups_needed(ctx: PlanContext, tier: str) -> bool:
     ):
         return True
 
+    # Typed fields (JSON boolean / email / array / URL / …) still need
+    # type-family probes even when multiprobe already settled classes.
+    if (
+        tier in (BUDGET_TIER_QUICK, BUDGET_TIER_STANDARD)
+        and _typed_family_followups_needed(ctx)
+        and ctx.remaining_budget() >= 2
+    ):
+        return True
+
     # High-confidence early stop: no more HTTP scans.
     if _early_stop_ok(ctx, tier):
         return False
@@ -953,9 +1024,15 @@ def _adaptive_followups_needed(ctx: PlanContext, tier: str) -> bool:
         and ctx.remaining_budget() >= 2
         and not _early_stop_ok(ctx, tier)
     ):
-        # Prefer early stop when reflection + acceptance classes already solid.
-        if ctx.acceptance_class_count >= 3 and confidence_is_high(
-            ctx.reflection_confidence, ctx.reflection_uncertainty
+        # Prefer early stop when reflection + acceptance classes already solid
+        # — unless the field is typed (bool/email/url/array/…) and still
+        # needs family probes.
+        if (
+            not _typed_family_required(ctx)
+            and ctx.acceptance_class_count >= 3
+            and confidence_is_high(
+                ctx.reflection_confidence, ctx.reflection_uncertainty
+            )
         ):
             return False
         return True
@@ -970,8 +1047,12 @@ def _adaptive_followups_needed(ctx: PlanContext, tier: str) -> bool:
         and ctx.remaining_budget() >= 2
         and not _early_stop_ok(ctx, tier)
     ):
-        if ctx.acceptance_class_count >= 3 and confidence_is_high(
-            ctx.reflection_confidence, ctx.reflection_uncertainty
+        if (
+            not _typed_family_required(ctx)
+            and ctx.acceptance_class_count >= 3
+            and confidence_is_high(
+                ctx.reflection_confidence, ctx.reflection_uncertainty
+            )
         ):
             return False
         # M10: rich inherited tested negatives → validation less urgent.
@@ -1444,11 +1525,18 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
                     reason="url_sink probes despite early stop (passive warrant)",
                     budget_remaining=budget_left,
                 )
-        return _plan_finalize_or_synthesize(
-            ctx,
-            budget_left,
-            reason="high-confidence early stop after multiprobe",
-        )
+        # Typed fields still need type-family probes (bool flip, email, …)
+        # even when multiprobe already settled character classes.
+        if _typed_family_followups_needed(ctx) and budget_left >= 2:
+            # Fall through to the standard type_confirm / semantic_rules
+            # emission below instead of finalizing.
+            pass
+        else:
+            return _plan_finalize_or_synthesize(
+                ctx,
+                budget_left,
+                reason="high-confidence early stop after multiprobe",
+            )
 
     # Standard: length_binary (log seed ≤5, refine ≤2) when length uncertain.
     if (
@@ -1490,7 +1578,8 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
     ):
         # Skip when multiprobe already gave solid classes + reflection.
         skip_types = (
-            ctx.acceptance_class_count >= 3
+            not _typed_family_required(ctx)
+            and ctx.acceptance_class_count >= 3
             and confidence_is_high(
                 ctx.reflection_confidence, ctx.reflection_uncertainty
             )
@@ -1522,7 +1611,8 @@ def _plan_evaluate(ctx: PlanContext, tier: str, remaining: int) -> PlanResult:
         and budget_left >= 2
     ):
         skip_sem = (
-            ctx.acceptance_class_count >= 3
+            not _typed_family_required(ctx)
+            and ctx.acceptance_class_count >= 3
             and confidence_is_high(
                 ctx.reflection_confidence, ctx.reflection_uncertainty
             )

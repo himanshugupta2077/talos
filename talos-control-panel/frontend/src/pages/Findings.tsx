@@ -10,6 +10,7 @@ import { attackTypeLabel } from "../lib/attackDisplay";
 import { formatIST } from "../lib/time";
 import { Finding, FindingGroup } from "../types";
 import FindingsBulkBar from "./findings/BulkBar";
+import { findingNavSearch } from "./findings/nav";
 
 const STATUSES = ["TRIAGING", "CONFIRMED", "REJECTED", "DUPLICATE"];
 
@@ -27,16 +28,19 @@ export default function Findings() {
   const { selected } = useProject();
   const [searchParams] = useSearchParams();
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [status, setStatus] = useState("");
-  const [view, setView] = useState<RelationView>("primary");
+  const [status, setStatus] = useState(() => searchParams.get("status") || "");
+  const [view, setView] = useState<RelationView>(() => {
+    const v = searchParams.get("view");
+    return v === "linked" || v === "all" || v === "primary" ? v : "primary";
+  });
   const [attackType, setAttackType] = useState(
     () => searchParams.get("attack_type") || ""
   );
   const [verdict, setVerdict] = useState(
     () => searchParams.get("verdict") || ""
   );
-  const [role, setRole] = useState("");
-  const [module, setModule] = useState("");
+  const [role, setRole] = useState(() => searchParams.get("role") || "");
+  const [module, setModule] = useState(() => searchParams.get("module") || "");
   const [groups, setGroups] = useState<FindingGroup[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -44,12 +48,20 @@ export default function Findings() {
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
   const navigate = useNavigate();
 
-  // Hydrate filters when deep-link query changes (K18)
+  // Hydrate filters when deep-link query changes (K18 + adjacent nav)
   useEffect(() => {
     const at = searchParams.get("attack_type");
     const vd = searchParams.get("verdict");
+    const vw = searchParams.get("view");
+    const st = searchParams.get("status");
+    const rl = searchParams.get("role");
+    const md = searchParams.get("module");
     if (at !== null) setAttackType(at);
     if (vd !== null) setVerdict(vd);
+    if (vw === "primary" || vw === "linked" || vw === "all") setView(vw);
+    if (st !== null) setStatus(st);
+    if (rl !== null) setRole(rl);
+    if (md !== null) setModule(md);
   }, [searchParams]);
 
   const load = () => {
@@ -144,6 +156,18 @@ export default function Findings() {
   const filteredIds = useMemo(() => filtered.map((f) => f.id), [filtered]);
   const allFilteredSelected =
     filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+
+  const openFinding = (id: string) =>
+    navigate(
+      `/findings/${id}${findingNavSearch({
+        view,
+        status,
+        attack_type: attackType,
+        verdict,
+        role,
+        module,
+      })}`
+    );
 
   if (!selected) return <NoProjectNotice />;
 
@@ -433,7 +457,7 @@ export default function Findings() {
         rows={filtered}
         rowKey={(f) => f.id}
         storageKey="findings"
-        onRowClick={(f) => navigate(`/findings/${f.id}`)}
+        onRowClick={(f) => openFinding(f.id)}
         emptyLabel="No findings yet — created from POSSIBLE_BAC / BYPASS / WEAK_VALIDATION (and other attack modules)."
       />
 

@@ -379,6 +379,8 @@ export default function Scheduler() {
       <MetricsStrip
         status={status}
         selectedStatus={jobFilters.status}
+        selectedJobType={jobFilters.jobType}
+        onTypeChip={(t) => patchFilters({ jobType: t })}
         onStatusChip={(s) => {
           patchFilters({ status: s });
           if (["failed", "done", "skipped", "cancelled"].includes(s)) {

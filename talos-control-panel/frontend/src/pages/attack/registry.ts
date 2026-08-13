@@ -5,6 +5,8 @@
  *  1. Append an entry here
  *  2. Add a route + module page under pages/attack/modules/ (or external workspace)
  *  3. Optionally wire hub KPIs in AttackHub / TestingHub
+ *  4. If it should run from selected Flows / Endpoints, add it in
+ *     pages/flows/flowAttacks.ts (requires Core CLI --flow first)
  *
  * Directory stays pages/attack/ for now (rename deferred); user-facing paths
  * use /testing/*.
@@ -23,7 +25,8 @@ export type AttackKpiSource =
   | "iv"
   | "errors"
   | "intruder"
-  | "url_sinks";
+  | "url_sinks"
+  | "cors";
 
 export interface AttackModuleDef {
   id: string;
@@ -203,6 +206,26 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "characterization",
     ],
     kpi: "iv",
+  },
+  {
+    id: "cors",
+    class: "active",
+    name: "CORS Misconfiguration",
+    description:
+      "Probe in-scope 200 OK endpoints with mutated Origin headers. One unique replay flow per technique; one PRIMARY finding if an attacker origin is reflected.",
+    risk: "medium",
+    status: "available",
+    path: `${TESTING_BASE}/cors`,
+    keywords: [
+      "cors",
+      "origin",
+      "access-control-allow-origin",
+      "credentials",
+      "misconfiguration",
+      "acao",
+      "acac",
+    ],
+    kpi: "cors",
   },
   {
     id: "intruder",

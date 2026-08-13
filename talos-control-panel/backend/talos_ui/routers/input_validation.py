@@ -341,6 +341,7 @@ class ScopeBody(BaseModel):
     endpoint: str | None = None
     parameter: str | None = None
     param_uuid: str | None = None
+    flows: list[str] | None = None
     ignore_cache: bool = False
     force: bool = False
     budget: str | None = None
@@ -354,7 +355,11 @@ def _scope_args(
     include_budget: bool = False,
 ) -> list[str]:
     args: list[str] = []
-    if body.host:
+    flow_ids = [f.strip() for f in (body.flows or []) if f and f.strip()]
+    if flow_ids:
+        for fid in flow_ids:
+            args += ["--flow", fid]
+    elif body.host:
         args += ["--host", body.host]
     elif body.endpoint:
         args += ["--endpoint", body.endpoint]

@@ -127,6 +127,7 @@ from talos.passive.extractors.html import extract_html_virtual_docs
 from talos.passive.extractors.sourcemap import extract_sourcemap_virtual_docs
 from talos.passive.finding_bridge import (
     build_passive_secret_cluster_key,
+    build_secret_exposure,
     create_passive_secret_finding,
     maybe_create_findings_for_detections,
 )
@@ -192,6 +193,7 @@ __all__ = [
     "get_rule_index",
     # Phase 8 — findings bridge
     "create_passive_secret_finding",
+    "build_secret_exposure",
     "maybe_create_findings_for_detections",
     "build_passive_secret_cluster_key",
     # Phases 10–11 — extractors

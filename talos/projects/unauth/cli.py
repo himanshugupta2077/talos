@@ -11,10 +11,12 @@ Purpose:
         filter  — Manage the unauth-decision-filter.yaml file (init|show|validate).
 
     'talos attack unauth run' logic:
-        1. Fetch all qualified, non-excluded endpoints via endpoint policy.
-        2. For each endpoint, use the configured baseline flow.
+        1. Fetch all qualified, non-excluded endpoints via endpoint policy,
+           or use operator `--flow UUID` (repeatable) and skip auto ranking.
+        2. For each endpoint, use the configured baseline flow (or the
+           explicit capture when `--flow` is set).
         3. Select all recipes or restrict them to one Unauth technique.
-        4. Enqueue one UNAUTH_ATTACK job per endpoint and recipe.
+        4. Enqueue one UNAUTH_ATTACK job per flow and recipe.
         5. Skip identical pending or running jobs.
         6. Print a summary.
 
@@ -163,6 +165,7 @@ def cmd_unauth_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         args    — Namespace with:
                     technique (str|None) — Restrict execution to one
                                            Unauth technique.
+                    flows (list|None)    — Explicit flow UUIDs (`--flow`).
 
     Side effects:
         Inserts scheduler_jobs rows and prints a summary.
@@ -173,12 +176,48 @@ def cmd_unauth_run(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     technique_filter: str | None = args.technique
 
-    testable = _get_testable_flows(db_path, project_id)
-    if not testable:
-        cli_error(
-            "No testable endpoints found. Ensure endpoints are qualified "
-            "(talos endpoint list) and have 2xx proxy_capture flows."
-        )
+    from talos.projects.flow_scope import lookup_flows, normalize_flow_ids
+
+    wanted = normalize_flow_ids(getattr(args, "flows", None))
+    if wanted:
+        found, missing = lookup_flows(db_path, wanted)
+        testable = []
+        skipped_blocked = 0
+        for ref in found:
+            if ref.policy_blocked:
+                skipped_blocked += 1
+                continue
+            testable.append(
+                {
+                    "endpoint_id": ref.endpoint_id,
+                    "flow_id": ref.flow_id,
+                    "host": ref.host,
+                    "path": ref.path,
+                }
+            )
+        if missing:
+            print(
+                "Unknown flow id(s): " + ", ".join(missing),
+                file=sys.stderr,
+            )
+        if skipped_blocked:
+            print(
+                f"Skipped {skipped_blocked} flow(s) on logout/dangerous/"
+                "excluded endpoints.",
+                file=sys.stderr,
+            )
+        if not testable:
+            cli_error(
+                "No usable flows. Check UUIDs and endpoint policy "
+                "(logout / dangerous / excluded)."
+            )
+    else:
+        testable = _get_testable_flows(db_path, project_id)
+        if not testable:
+            cli_error(
+                "No testable endpoints found. Ensure endpoints are qualified "
+                "(talos endpoint list) and have 2xx proxy_capture flows."
+            )
 
     # Optionally restrict recipes to one Unauth technique.
     recipes = [
@@ -344,14 +383,17 @@ def build_unauth_parser(sub: argparse._SubParsersAction) -> None:  # type: ignor
         help="Enqueue unauth attack jobs for all testable endpoints.",
         description=(
             "Scans all qualified endpoints and enqueues one UNAUTH_ATTACK job\n"
-            "per (endpoint, recipe) combination.\n\n"
+            "per (baseline flow, recipe) combination.\n\n"
+            "Pass --flow UUID (repeatable) to probe only those captures and\n"
+            "skip auto ranking. Logout / dangerous / excluded endpoints are\n"
+            "still skipped.\n\n"
             "Every job removes all configured authentication before applying\n"
             "the selected Unauth technique and optional request mutation.\n\n"
             "Examples:\n"
             "  talos attack unauth run\n"
             "  talos attack unauth run --technique baseline\n"
-            "  talos attack unauth run --technique malformed_auth\n"
-            "  talos attack unauth run --technique duplicate_malformed_header"
+            "  talos attack unauth run --flow <uuid>\n"
+            "  talos attack unauth run --flow <uuid1> --flow <uuid2>"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -364,6 +406,16 @@ def build_unauth_parser(sub: argparse._SubParsersAction) -> None:  # type: ignor
             "Restrict execution to one Unauth technique "
             "(e.g. baseline, malformed_auth, auth_null). "
             "Default: run all configured recipes."
+        ),
+    )
+    run_p.add_argument(
+        "--flow",
+        dest="flows",
+        action="append",
+        metavar="UUID",
+        help=(
+            "Probe only this captured flow (repeatable or comma-separated). "
+            "Skips auto ranking of testable endpoints."
         ),
     )
 

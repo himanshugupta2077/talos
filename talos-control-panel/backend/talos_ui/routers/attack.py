@@ -293,6 +293,7 @@ def unauth_overview(project_id: str, top_n: int = 8):
 class UnauthRunBody(BaseModel):
     """Optional technique restricts to one Unauth recipe family (CLI --technique)."""
     technique: str | None = None
+    flows: list[str] | None = None
 
 
 @router.post("/unauth/run")
@@ -307,6 +308,8 @@ def run_unauth(project_id: str, body: UnauthRunBody):
                 f"expected one of: {', '.join(UNAUTH_TECHNIQUES)}",
             )
         args += ["--technique", tech]
+    for fid in [f.strip() for f in (body.flows or []) if f and f.strip()]:
+        args += ["--flow", fid]
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
 
@@ -569,6 +572,7 @@ def _bac_build_args(
     role: str | None = None,
     module: str | None = None,
     endpoint: str | None = None,
+    flows: list[str] | None = None,
     auto_generate: bool = False,
 ) -> list[str]:
     """Build argv for one `talos attack bac <technique>` invocation."""
@@ -579,6 +583,8 @@ def _bac_build_args(
         args += ["--module", module.strip()]
     if endpoint:
         args += ["--endpoint", endpoint.strip()]
+    for fid in [f.strip() for f in (flows or []) if f and f.strip()]:
+        args += ["--flow", fid]
     if auto_generate:
         args.append("--auto-generate")
     return args
@@ -587,11 +593,18 @@ def _bac_build_args(
 def _bac_validate_scope(
     module: str | None,
     endpoint: str | None,
+    flows: list[str] | None = None,
 ) -> None:
-    if module and endpoint:
+    flow_ids = [f.strip() for f in (flows or []) if f and f.strip()]
+    scopes = [name for name, val in (
+        ("--module", module),
+        ("--endpoint", endpoint),
+        ("--flow", flow_ids),
+    ) if val]
+    if len(scopes) > 1:
         raise HTTPException(
             400,
-            "--module and --endpoint are mutually exclusive; choose one scope.",
+            f"{' and '.join(scopes)} are mutually exclusive; choose one scope.",
         )
 
 
@@ -786,6 +799,7 @@ class BacRunBody(BaseModel):
     role: str | None = None
     module: str | None = None
     endpoint: str | None = None
+    flows: list[str] | None = None
     auto_generate: bool = False
     # Multi-run only (POST /bac/run). null/omit/[] => all techniques.
     techniques: list[str] | None = None
@@ -799,7 +813,7 @@ def run_bac_multi(project_id: str, body: BacRunBody):
     Default (no techniques): all eight CLI subcommands, sequential
     `talos attack bac <technique>` invocations with shared scope flags.
     """
-    _bac_validate_scope(body.module, body.endpoint)
+    _bac_validate_scope(body.module, body.endpoint, body.flows)
     techniques = _bac_resolve_techniques(body.techniques)
 
     all_steps: list[dict] = []
@@ -810,6 +824,7 @@ def run_bac_multi(project_id: str, body: BacRunBody):
             role=body.role,
             module=body.module,
             endpoint=body.endpoint,
+            flows=body.flows,
             auto_generate=body.auto_generate,
         )
         previews.append("talos " + " ".join(args))
@@ -831,12 +846,13 @@ def run_bac(project_id: str, technique: str, body: BacRunBody):
             f"unknown technique '{technique}'; "
             f"expected one of: {', '.join(BAC_TECHNIQUES)}",
         )
-    _bac_validate_scope(body.module, body.endpoint)
+    _bac_validate_scope(body.module, body.endpoint, body.flows)
     args = _bac_build_args(
         technique,
         role=body.role,
         module=body.module,
         endpoint=body.endpoint,
+        flows=body.flows,
         auto_generate=body.auto_generate,
     )
     results = cli.run_scoped(project_id, args)
@@ -902,3 +918,218 @@ def bac_filter_apply(project_id: str, body: BacFilterApplyBody):
         raise HTTPException(500, f"Filter apply failed: {exc}") from exc
 
     return summary.to_dict()
+
+
+# ------------------------------------------------------------------ #
+# CORS misconfiguration                                                #
+# ------------------------------------------------------------------ #
+
+CORS_TECHNIQUE_FALLBACK = [
+    "baseline_origin",
+    "arbitrary_https",
+    "arbitrary_http",
+    "attacker_subdomain",
+    "subdomain_of_target",
+    "prefix_bypass",
+    "suffix_bypass",
+    "trusted_plus",
+    "unescaped_dot",
+    "encoded_dot",
+    "underscore",
+    "null_origin",
+    "wildcard_origin",
+    "localhost",
+    "loopback",
+    "scheme_downgrade",
+    "port_443",
+    "port_80",
+    "port_8080",
+    "preflight",
+]
+
+
+def _load_cors_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.cors.models import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in CORS_TECHNIQUE_FALLBACK
+        ]
+
+
+def _cors_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'cors_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+def _count_cors_candidates(db_path, record) -> int:
+    """Purpose: Same selection rules as talos attack cors candidates."""
+    try:
+        from talos.cors.candidates import (
+            DEFAULT_CANDIDATE_LIMIT,
+            select_cors_candidates,
+        )
+
+        scope: list[str] = []
+        if isinstance(record, dict):
+            scope = list(record.get("scope") or [])
+        elif record is not None:
+            scope = list(getattr(record, "scope", None) or [])
+        return len(
+            select_cors_candidates(
+                db_path,
+                in_scope_prefixes=scope,
+                limit=DEFAULT_CANDIDATE_LIMIT,
+            )
+        )
+    except Exception:
+        return 0
+
+
+@router.get("/cors/techniques")
+def cors_techniques():
+    """CORS Origin technique catalogue (matches CLI --technique)."""
+    meta = _load_cors_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/cors/results")
+def cors_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    host: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.cors.db import list_cors_results
+
+        rows = list_cors_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            host=host,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/cors/summary")
+def cors_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.cors.db import count_cors_verdicts
+
+        counts = count_cors_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/cors/overview")
+def cors_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the CORS workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.cors.db import count_cors_verdicts, list_cors_results
+
+        counts = count_cors_verdicts(db_path)
+        recent = list_cors_results(db_path, verdict="CORS_MISCONFIG", limit=top_n)
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _cors_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_cors_technique_meta()
+    candidates = _count_cors_candidates(db_path, record)
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "candidates": candidates,
+        "total_techniques": len(techniques),
+        "estimated_jobs_all": candidates * len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "recent_issues": recent,
+        "empty_state": {
+            "no_candidates": candidates == 0,
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class CorsRunBody(BaseModel):
+    """Optional technique / scope mirrors talos attack cors run."""
+    technique: str | None = None
+    limit: int | None = None
+    endpoint: str | None = None
+    host: str | None = None
+    flows: list[str] | None = None
+    right_now: bool = False
+
+
+@router.post("/cors/run")
+def run_cors(project_id: str, body: CorsRunBody):
+    known = {t["name"] for t in _load_cors_technique_meta()} or set(
+        CORS_TECHNIQUE_FALLBACK
+    )
+    args = ["attack", "cors", "run"]
+    if body.technique:
+        tech = body.technique.strip()
+        if tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown CORS technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if flow_ids:
+        for fid in flow_ids:
+            args += ["--flow", fid]
+    else:
+        if body.limit:
+            args += ["--limit", str(int(body.limit))]
+        if body.endpoint:
+            args += ["--endpoint", body.endpoint.strip()]
+        if body.host:
+            args += ["--host", body.host.strip()]
+    if body.right_now:
+        args.append("--right-now")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

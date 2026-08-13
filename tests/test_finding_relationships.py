@@ -92,6 +92,17 @@ def test_build_cluster_key_no_endpoint():
     assert findings_db.build_cluster_key("unauth", None) is None
 
 
+def test_build_cluster_key_cors_uses_host():
+    assert (
+        findings_db.build_cluster_key(
+            "cors", "ep-1", host="https://app.example.com"
+        )
+        == "CORS:https://app.example.com"
+    )
+    assert findings_db.build_cluster_key("cors", "ep-1") == "CORS:ep-1"
+    assert findings_db.build_cluster_key("cors", None) is None
+
+
 # ------------------------------------------------------------------ #
 # PRIMARY / LINKED creation                                            #
 # ------------------------------------------------------------------ #

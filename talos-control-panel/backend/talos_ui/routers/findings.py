@@ -62,6 +62,117 @@ def list_findings(
     return {"findings": rows, "view": (view or "primary").lower()}
 
 
+def _adjacent_extra_filters(
+    status: str | None,
+    attack_type: str | None,
+    verdict: str | None,
+    role: str | None,
+    module: str | None,
+) -> tuple[str, list]:
+    """Client-list filters that are not part of the default list query."""
+    extra: list[str] = []
+    params: list = []
+    if status:
+        extra.append("AND f.status=?")
+        params.append(status)
+    if attack_type:
+        extra.append("AND f.attack_type=?")
+        params.append(attack_type)
+    if verdict:
+        extra.append("AND f.verdict=?")
+        params.append(verdict)
+    if role:
+        extra.append(
+            """AND (
+                SELECT r.name FROM finding_evidence fe
+                JOIN roles r ON r.id = fe.reference_id
+                WHERE fe.finding_id = f.id AND fe.evidence_type = 'role' LIMIT 1
+            ) = ?"""
+        )
+        params.append(role)
+    if module:
+        extra.append(
+            """AND (
+                SELECT m.name FROM finding_evidence fe
+                JOIN modules m ON m.id = fe.reference_id
+                WHERE fe.finding_id = f.id AND fe.evidence_type = 'module' LIMIT 1
+            ) = ?"""
+        )
+        params.append(module)
+    return " ".join(extra), params
+
+
+def _adjacent_row(
+    db_path,
+    finding_id: str,
+    project_id: str,
+    view: str,
+    status: str | None = None,
+    attack_type: str | None = None,
+    verdict: str | None = None,
+    role: str | None = None,
+    module: str | None = None,
+):
+    extra_sql, extra_params = _adjacent_extra_filters(
+        status, attack_type, verdict, role, module
+    )
+    rel = _relation_clause(view)
+    return db.query_one(
+        db_path,
+        f"""
+        WITH ordered AS (
+            SELECT f.id,
+                   LAG(f.id) OVER (ORDER BY f.created_at DESC) AS prev_id,
+                   LEAD(f.id) OVER (ORDER BY f.created_at DESC) AS next_id
+            FROM findings f
+            WHERE f.project_id=? {rel} {extra_sql}
+        )
+        SELECT prev_id, next_id FROM ordered WHERE id = ?
+        """,
+        (project_id, *extra_params, finding_id),
+    )
+
+
+@router.get("/{finding_id}/adjacent")
+def adjacent(
+    project_id: str,
+    finding_id: str,
+    view: str = Query(
+        "primary",
+        description="primary (default list) | linked | all — same as GET /api/findings",
+    ),
+    status: str | None = None,
+    attack_type: str | None = None,
+    verdict: str | None = None,
+    role: str | None = None,
+    module: str | None = None,
+):
+    """
+    Prev/next neighbors by created_at DESC.
+
+    Filters match the Findings list so ← / → stay in the same view. If the
+    current finding is not in that window (e.g. a LINKED child opened from a
+    PRIMARY list), fall back to all findings in the project.
+    """
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    row = _adjacent_row(
+        db_path,
+        finding_id,
+        project_id,
+        view,
+        status=status,
+        attack_type=attack_type,
+        verdict=verdict,
+        role=role,
+        module=module,
+    )
+    if row is not None:
+        return row
+    row = _adjacent_row(db_path, finding_id, project_id, "all")
+    return row or {"prev_id": None, "next_id": None}
+
+
 def _body_len(value) -> int:
     """Safe length of a stored response body (bytes or str); never returns content."""
     if value is None:
@@ -224,6 +335,21 @@ def finding_detail(project_id: str, finding_id: str):
     except Exception:  # noqa: BLE001
         flow_comparison = None
 
+    secret_exposure = None
+    try:
+        import sys
+
+        root = str(config.TALOS_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from talos.passive.finding_bridge import build_secret_exposure
+
+        secret_exposure = build_secret_exposure(
+            db_path, finding_id, evidence=evidence
+        )
+    except Exception:  # noqa: BLE001
+        secret_exposure = None
+
     return {
         "finding": finding,
         "evidence": evidence,
@@ -232,6 +358,7 @@ def finding_detail(project_id: str, finding_id: str):
         "parent": parent,
         "linked": linked,
         "flow_comparison": flow_comparison,
+        "secret_exposure": secret_exposure,
     }
 
 

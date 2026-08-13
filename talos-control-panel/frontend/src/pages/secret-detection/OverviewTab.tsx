@@ -45,7 +45,7 @@ export default function OverviewTab({
     api.post("/api/passive/rescan", { mode: "all", force: true }, { project_id: projectId }),
   );
 
-  const enabled = status?.enabled ?? config?.enabled ?? false;
+  const enabled = status?.enabled ?? config?.enabled ?? true;
   const byConf = status?.by_confidence || {};
   const byCat = status?.by_category || {};
 

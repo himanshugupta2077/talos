@@ -26,7 +26,7 @@ export default function SettingsTab({
   onRefresh: () => void;
 }) {
   const [workers, setWorkers] = useState("2");
-  const [budget, setBudget] = useState("standard");
+  const [budget, setBudget] = useState("exhaustive");
   const [maxReq, setMaxReq] = useState("0");
   const [excludeHost, setExcludeHost] = useState("");
   const [excludeEndpoint, setExcludeEndpoint] = useState("");
@@ -34,7 +34,7 @@ export default function SettingsTab({
   useEffect(() => {
     if (!config) return;
     setWorkers(String(config.workers ?? 2));
-    setBudget(config.probe_strategy || "standard");
+    setBudget(config.probe_strategy || "exhaustive");
     setMaxReq(String(config.max_requests_per_param ?? 0));
   }, [config]);
 
@@ -152,10 +152,14 @@ export default function SettingsTab({
         </div>
       </Section>
 
-      <Section title="Budget & limits">
+      <Section title="Optional request limiter">
+        <p className="text-xs text-base-content/50 mb-2">
+          Run uses the full probe set (exhaustive) by default. Only lower this
+          if you need fewer HTTP requests per parameter.
+        </p>
         <div className="flex flex-wrap gap-3 items-end">
           <div>
-            <div className="text-xs text-base-content/50 mb-1">Budget tier</div>
+            <div className="text-xs text-base-content/50 mb-1">Coverage</div>
             <select
               className={selectClass}
               value={budget}
@@ -185,13 +189,9 @@ export default function SettingsTab({
               onRefresh();
             }}
           >
-            Apply budget
+            Apply limiter
           </button>
         </div>
-        <p className="text-xs text-base-content/50 mt-2">
-          standard uses multiprobe-first adaptive planning; exhaustive approximates the legacy
-          full matrix.
-        </p>
       </Section>
 
       <Section title="Auth artifacts">

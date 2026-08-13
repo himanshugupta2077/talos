@@ -15,6 +15,10 @@ Purpose:
           (e.g. integer examples but UUID accepted).
         - Semantic probes: enum-outside, numeric range, empty/null — not
           full workflow testing.
+        - Type-family catalogs: boolean polarity (true AND false), email
+          shapes, array wrap/empty, numeric edges — each a unique probe
+          / flow.  JSON inject uses native types so ``false`` stays a
+          JSON boolean, not the string ``\"false\"``.
         - Default validation core excludes exploit-shaped SQLi/XSS strings;
           those stay deep/exhaustive ``edge`` only.
         - Every rejected family writes ``tested.<family>`` with confidence.
@@ -30,6 +34,7 @@ Side effects: None.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -79,13 +84,30 @@ _NAME_URL_TOKENS: frozenset[str] = frozenset({
     "url", "redirect", "callback", "next", "return_url", "returnurl",
     "href", "link", "uri", "target", "dest", "destination",
 })
+# Exact leaf names (last dotted / bracketed segment) that warrant URL /
+# hostname characterization — including JSON keys that look like HTTP
+# headers (Host, Location, Origin) so they get the same family as the
+# real header surface.
+_NAME_URL_LEAVES: frozenset[str] = frozenset({
+    "url", "uri", "href", "src", "link", "redirect", "callback",
+    "webhook", "host", "hostname", "location", "origin", "referer",
+    "referrer", "dest", "destination", "endpoint", "website", "domain",
+    "avatar", "webhook_url", "callback_url", "return_url", "redirect_uri",
+})
 _NAME_INT_TOKENS: frozenset[str] = frozenset({
     "count", "limit", "offset", "page", "size", "qty", "quantity",
     "amount", "num", "number", "age", "port", "index",
 })
 _NAME_EMAIL_TOKENS: frozenset[str] = frozenset({"email", "mail", "e_mail"})
+_NAME_EMAIL_LEAVES: frozenset[str] = frozenset({
+    "email", "mail", "e_mail", "email_address", "user_email",
+})
 _NAME_BOOL_TOKENS: frozenset[str] = frozenset({
     "enabled", "disabled", "active", "is_", "has_", "can_", "flag",
+})
+_NAME_BOOL_LEAVES: frozenset[str] = frozenset({
+    "enabled", "disabled", "active", "inactive", "flag", "ok",
+    "success", "visible", "hidden", "verified",
 })
 
 # Max probes for type_confirm by tier (before passive pruning further reduces).
@@ -93,15 +115,17 @@ _TYPE_CONFIRM_CAP: dict[str, int] = {
     "quick": 2,
     "standard": 4,
     "deep": 8,
-    "exhaustive": 12,
+    "exhaustive": 13,
 }
 
 # Max semantic / validation-core probes by tier.
+# Standard is 8 so type-family probes (bool flip, email shapes, array
+# wrap, numeric edges) fit alongside core empty/null characterization.
 _SEMANTIC_PROBE_CAP: dict[str, int] = {
     "quick": 2,
-    "standard": 5,
-    "deep": 8,
-    "exhaustive": 12,
+    "standard": 8,
+    "deep": 12,
+    "exhaustive": 16,
 }
 
 # Core validation families (characterization, not exploit spray).
@@ -138,7 +162,48 @@ TESTED_FAMILY_KEYS: dict[str, str] = {
     "null_str": "null_str",
     "missing": "missing",
     "unicode": "unicode",
+    "boolean_false": "type:boolean_false",
+    "bool_true": "bool_true",
+    "bool_false": "bool_false",
+    "bool_yes": "bool_yes",
+    "bool_no": "bool_no",
+    "email_plus": "email_plus",
+    "email_display": "email_display",
+    "email_no_at": "email_no_at",
+    "email_comma": "email_comma",
+    "email_newline": "email_newline",
+    "email_quoted": "email_quoted",
+    "array_empty": "array_empty",
+    "array_single": "array_single",
+    "array_string": "array_string",
+    "array_object": "array_object",
+    "array_nested": "array_nested",
+    "array_null_item": "array_null_item",
+    "int_overflow": "int_overflow",
+    "int_underflow": "int_underflow",
+    "sci_notation": "sci_notation",
+    "nan": "nan",
+    "infinity": "infinity",
 }
+
+# Payload types that inject as native JSON scalars / arrays (not strings).
+_JSON_NATIVE_BOOL: frozenset[str] = frozenset({
+    "boolean", "boolean_false", "bool_true", "bool_false",
+})
+_JSON_NATIVE_INT: frozenset[str] = frozenset({
+    "integer", "negative_int", "zero", "huge_int",
+    "int_overflow", "int_underflow",
+})
+_JSON_NATIVE_FLOAT: frozenset[str] = frozenset({
+    "float", "sci_notation",
+})
+_JSON_NATIVE_NULL: frozenset[str] = frozenset({
+    "null_str",
+})
+_JSON_NATIVE_ARRAY_PREFIX: tuple[str, ...] = (
+    "array_empty", "array_single", "array_nested", "array_null_item",
+    "array_mixed", "array_object",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +314,33 @@ def resolve_passive_type(
     return "unknown"
 
 
+def _param_leaf_name(name: str) -> str:
+    """
+    Purpose:
+        Last dotted / bracketed segment of a JSON or form path, lowercased.
+        ``headers.Host`` → ``host``; ``items[].email`` → ``email``.
+    Side effects: None.
+    """
+    cleaned = (name or "").replace("[]", "")
+    cleaned = re.sub(r"\[\d+\]", "", cleaned)
+    parts = [p for p in cleaned.replace("-", "_").split(".") if p]
+    leaf = parts[-1] if parts else cleaned
+    return leaf.strip().lower()
+
+
 def _name_type_hint(name: str) -> str:
     """Lightweight name → type hint for probe prioritization."""
-    low = (name or "").lower().replace("-", "_").replace(".", "_")
-    if not low:
+    if not name:
         return ""
+    leaf = _param_leaf_name(name)
+    if leaf in _NAME_URL_LEAVES:
+        return "url"
+    if leaf in _NAME_EMAIL_LEAVES or leaf.endswith("_email"):
+        return "email"
+    if leaf in _NAME_BOOL_LEAVES or leaf.startswith("is_") or leaf.startswith("has_"):
+        return "boolean"
+
+    low = name.lower().replace("-", "_").replace(".", "_")
     if any(t in low for t in _NAME_URL_TOKENS):
         return "url"
     if any(t in low for t in _NAME_EMAIL_TOKENS):
@@ -398,7 +485,7 @@ def _priority_labels_for_type(passive: str, param_name: str | None) -> list[str]
     confirm_deny: dict[str, list[str]] = {
         "integer": ["integer", "float", "string", "empty"],
         "float": ["float", "integer", "string", "empty"],
-        "boolean": ["boolean", "integer", "string", "empty"],
+        "boolean": ["boolean", "boolean_false", "integer", "string"],
         "uuid": ["uuid", "integer", "string", "empty"],
         "email": ["email", "string", "url", "empty"],
         "url": ["url", "string", "email", "empty"],
@@ -520,6 +607,16 @@ def select_semantic_probes(
         seen.add(label)
         selected.append((label, value))
 
+    # ── Type-family catalogs (boolean flip, email, array, numeric edges) ─
+    # Each pair is a unique probe / unique replay flow.  Selected first so
+    # they are not squeezed out by generic empty/whitespace under the cap.
+    for label, value in type_family_probes(
+        passive=passive,
+        examples=examples,
+        strategy=tier,
+    ):
+        _add(label, value)
+
     # ── Semantic business-rule probes (shallow) ───────────────────────────
     if passive in ("integer", "float") or _examples_look_numeric(examples):
         _add("negative_int", "-999999")
@@ -638,6 +735,150 @@ def _examples_look_boolean(examples: list[str]) -> bool:
         return False
     allowed = {"true", "false", "yes", "no", "0", "1"}
     return all(e.strip().lower() in allowed for e in examples if e.strip())
+
+
+def type_family_probes(
+    *,
+    passive: str,
+    examples: list[str] | None = None,
+    strategy: str = "standard",
+) -> list[tuple[str, str]]:
+    """
+    Purpose:
+        Type-specific characterization payloads beyond the generic type
+        matrix.  Each pair is one unique probe (one scheduler job / flow).
+
+        - boolean: opposite polarity of observed examples; yes/no on deep
+        - email: plus-tag, display-name, missing-@, extra recipient;
+          CRLF/quoted forms on deep only
+        - array: empty / single-element / string-instead-of-array;
+          nested / object / null-item on deep
+        - integer/float: overflow / scientific / NaN on deep
+
+        Exploit-shaped strings stay off standard (same Module 7 rule).
+
+    Input:
+        passive  — resolved semantic type.
+        examples — observed example values (strings).
+        strategy — budget tier.
+    Output:
+        Ordered (payload_type, value) pairs (may be empty).
+    Side effects: None.
+    """
+    tier = (strategy or "standard").lower().strip()
+    examples = [e for e in (examples or []) if isinstance(e, str) and e.strip()]
+    out: list[tuple[str, str]] = []
+
+    if passive == "boolean" or _examples_look_boolean(examples):
+        observed = {e.strip().lower() for e in examples}
+        # Always try the opposite of what was captured (true → false).
+        if not observed or observed <= {"true", "yes", "1"}:
+            out.append(("bool_false", "false"))
+        if not observed or observed <= {"false", "no", "0"}:
+            out.append(("bool_true", "true"))
+        if "true" in observed and "false" in observed:
+            # Both seen — still confirm each polarity as its own flow.
+            out = [("bool_false", "false"), ("bool_true", "true")]
+        if tier in ("deep", "exhaustive"):
+            out.append(("bool_yes", "yes"))
+            out.append(("bool_no", "no"))
+
+    elif passive == "email":
+        out.extend((
+            ("email_plus", "probe+tag@talos.test"),
+            ("email_display", "Probe <probe@talos.test>"),
+            ("email_no_at", "probetalos.test"),
+            ("email_comma", "probe@talos.test,other@talos.test"),
+        ))
+        if tier in ("deep", "exhaustive"):
+            out.extend((
+                ("email_quoted", '"probe"@talos.test'),
+                ("email_newline", "probe@talos.test\nCc: other@talos.test"),
+            ))
+
+    elif passive == "array":
+        out.extend((
+            ("array_empty", "[]"),
+            ("array_single", '["talos"]'),
+            ("array_string", "notanarray"),
+        ))
+        if tier in ("deep", "exhaustive"):
+            out.extend((
+                ("array_object", "{}"),
+                ("array_nested", "[[]]"),
+                ("array_null_item", "[null]"),
+            ))
+
+    elif passive in ("integer", "float") or _examples_look_numeric(examples):
+        if tier in ("deep", "exhaustive"):
+            if passive == "integer" or _examples_small_positive_ints(examples):
+                out.append(("int_overflow", "2147483648"))
+                out.append(("int_underflow", "-2147483649"))
+            out.append(("sci_notation", "1e308"))
+            if tier == "exhaustive":
+                out.append(("nan", "NaN"))
+                out.append(("infinity", "Infinity"))
+
+    return out
+
+
+def json_native_probe_value(payload: str, payload_type: str | None) -> Any:
+    """
+    Purpose:
+        Convert a probe string into a JSON-native Python value when the
+        payload type is a typed scalar or JSON array/object.
+
+        Type-confusion probes (string, email shapes, URL canaries, markup)
+        stay strings.  Unknown / empty payload_type stays a string so
+        character / multiprobe / identifier injects do not change type.
+
+    Input:
+        payload      — probe payload as stored on the job.
+        payload_type — IV label (boolean, integer, array_empty, …).
+    Output:
+        bool | int | float | list | dict | None | str
+    Side effects: None.
+    """
+    label = (payload_type or "").strip().lower()
+    if label.startswith("type:"):
+        label = label[5:]
+    text = payload if isinstance(payload, str) else ""
+
+    if label in _JSON_NATIVE_NULL:
+        return None
+
+    if label in _JSON_NATIVE_BOOL:
+        low = text.strip().lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        return text
+
+    if label in _JSON_NATIVE_INT:
+        try:
+            return int(text.strip())
+        except (TypeError, ValueError):
+            return text
+
+    if label in _JSON_NATIVE_FLOAT:
+        try:
+            return float(text.strip())
+        except (TypeError, ValueError):
+            return text
+
+    if label in _JSON_NATIVE_ARRAY_PREFIX:
+        stripped = text.strip()
+        if stripped[:1] in "[{":
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError):
+                return text
+            if isinstance(parsed, (list, dict)):
+                return parsed
+        return text
+
+    return text
 
 
 def _enum_outside_value(examples: list[str]) -> str | None:
@@ -790,7 +1031,7 @@ def _compatible_types(passive: str) -> frozenset[str]:
     compat: dict[str, frozenset[str]] = {
         "integer": frozenset({"integer", "float", "timestamp", "empty"}),
         "float": frozenset({"float", "integer", "empty"}),
-        "boolean": frozenset({"boolean", "integer", "empty"}),
+        "boolean": frozenset({"boolean", "boolean_false", "integer", "empty"}),
         "uuid": frozenset({"uuid", "string", "empty"}),
         "email": frozenset({"email", "string", "empty"}),
         "url": frozenset({"url", "string", "empty"}),

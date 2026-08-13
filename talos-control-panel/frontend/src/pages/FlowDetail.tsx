@@ -120,6 +120,7 @@ export default function FlowDetail() {
       "status_code",
       "role",
       "module",
+      "attack_module",
       "search",
       "endpoint",
     ];
@@ -328,8 +329,9 @@ export default function FlowDetail() {
         <p>
           <strong>Replay now</strong> re-sends the stored request via Core; modified or
           different-role replay is not a first-class CLI action yet — use Attack for
-          BAC/unauth. Operator panels (Actions, Session, Attack results, Related) sit below
-          the main workspace.
+          BAC/unauth. <strong>Run attacks</strong> probes this flow only (CORS,
+          Unauth, BAC, IV; Auth-session generates candidates). Operator panels (Actions, Session,
+          Attack results, Related) sit below the main workspace.
         </p>
         <p>
           Keyboard: <span className="mono">←</span> / <span className="mono">→</span>{" "}

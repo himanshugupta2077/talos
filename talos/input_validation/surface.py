@@ -15,6 +15,8 @@ Scope (Module 9):
     - Transport-legal header/cookie payload gates (skip Illegal header value)
     - Multipart field values and filenames
     - GraphQL variables (variables.* paths) and XML leaf text
+    - JSON body dotted + ``items[]`` / ``items[0]`` paths with native
+      bool/number/null/array inject (typed probes stay typed)
     - Default skip list for dangerous auth artifacts
     - Uniform surface-kind labels for profiles / planner
 
@@ -921,25 +923,192 @@ def inject_form_param(body: bytes | None, name: str, value: str) -> bytes:
     return urlencode(new_pairs).encode("utf-8")
 
 
-def _set_nested(obj: object, parts: list[str], value: Any) -> None:
-    """Walk/create dict path and set the leaf. Side effects: mutates obj."""
-    if not isinstance(obj, dict) or not parts:
+@dataclass(frozen=True)
+class JsonPathPart:
+    """
+    One segment of a JSON parameter path.
+
+    Fields:
+        kind  — ``key`` (object field) or ``index`` (array slot).
+        key   — object key when kind is ``key``.
+        index — array index when kind is ``index``; ``None`` means first
+                element (``items[]`` from Endpoint Intelligence).
+    """
+
+    kind: str
+    key: str = ""
+    index: int | None = None
+
+
+# ``items[]``, ``items[0]``, or a bare ``[]`` / ``[0]`` segment.
+_JSON_INDEX_RE = re.compile(r"^(.*)\[(\d*)\]$")
+
+
+def parse_json_param_path(name: str) -> list[JsonPathPart]:
+    """
+    Purpose:
+        Split a JSON parameter name into walkable path parts.
+
+        Supports dotted objects (``address.city``), array-schema paths
+        from Endpoint Intelligence (``items[].id``), and explicit indexes
+        (``items[0].id``).
+    Input:
+        name — parameter name as stored on ``parameters.name``.
+    Output:
+        Ordered JsonPathPart list (empty when name has no segments).
+    Side effects: None.
+    """
+    parts: list[JsonPathPart] = []
+    for raw in (name or "").split("."):
+        if not raw:
+            continue
+        match = _JSON_INDEX_RE.match(raw)
+        if not match:
+            parts.append(JsonPathPart("key", key=raw))
+            continue
+        prefix, idx_text = match.group(1), match.group(2)
+        if prefix:
+            parts.append(JsonPathPart("key", key=prefix))
+        if idx_text == "":
+            parts.append(JsonPathPart("index", index=None))
+        else:
+            parts.append(JsonPathPart("index", index=int(idx_text)))
+    return parts
+
+
+def set_json_path(root: Any, name: str, value: Any) -> Any:
+    """
+    Purpose:
+        Set ``name`` on a parsed JSON document, creating intermediate
+        objects/arrays when missing.  Mutates ``root`` when it is a
+        dict or list.
+    Input:
+        root  — parsed JSON (dict/list); other types are replaced with {}.
+        name  — dotted / bracketed parameter path.
+        value — native JSON value (str/int/bool/list/dict/None).
+    Output:
+        The mutated document (or a new dict when root was not a container).
+    Side effects: Mutates root when it is a dict or list.
+    """
+    if not isinstance(root, (dict, list)):
+        root = {}
+    parts = parse_json_param_path(name)
+    if not parts:
+        return root
+    _set_json_parts(root, parts, value)
+    return root
+
+
+def delete_json_path(root: Any, name: str) -> Any:
+    """
+    Purpose:
+        Remove a JSON field at ``name`` (omit-field characterization).
+    Input:
+        root — parsed JSON document.
+        name — dotted / bracketed parameter path.
+    Output:
+        The mutated document.
+    Side effects: Mutates root when it is a dict or list.
+    """
+    if not isinstance(root, (dict, list)):
+        return root
+    parts = parse_json_param_path(name)
+    if parts:
+        _delete_json_parts(root, parts)
+    return root
+
+
+def _set_json_parts(obj: Any, parts: list[JsonPathPart], value: Any) -> None:
+    """Walk/create containers and set the leaf. Side effects: mutates obj."""
+    if not parts:
         return
     head, *tail = parts
     if not tail:
-        obj[head] = value  # type: ignore[index]
+        if head.kind == "key" and isinstance(obj, dict):
+            obj[head.key] = value
+            return
+        if head.kind == "index" and isinstance(obj, list):
+            idx = 0 if head.index is None else head.index
+            if 0 <= idx < len(obj):
+                obj[idx] = value
+            elif idx == len(obj):
+                obj.append(value)
         return
-    child = obj.get(head) if head in obj else None  # type: ignore[index]
-    if not isinstance(child, dict):
-        obj[head] = {}  # type: ignore[index]
-    _set_nested(obj[head], tail, value)  # type: ignore[index]
+
+    nxt = tail[0]
+    if head.kind == "key":
+        if not isinstance(obj, dict):
+            return
+        child = obj.get(head.key)
+        child = _ensure_json_child(child, nxt)
+        obj[head.key] = child
+        _set_json_parts(child, tail, value)
+        return
+
+    if head.kind == "index" and isinstance(obj, list):
+        idx = 0 if head.index is None else head.index
+        while len(obj) <= idx:
+            obj.append({} if nxt.kind == "key" else [])
+        child = _ensure_json_child(obj[idx], nxt)
+        obj[idx] = child
+        _set_json_parts(child, tail, value)
 
 
-def inject_json_param(body: bytes | None, name: str, value: str) -> bytes:
+def _delete_json_parts(obj: Any, parts: list[JsonPathPart]) -> None:
+    """Remove a nested JSON path. Side effects: mutates obj."""
+    if not parts:
+        return
+    head, *tail = parts
+    if not tail:
+        if head.kind == "key" and isinstance(obj, dict):
+            obj.pop(head.key, None)
+        elif head.kind == "index" and isinstance(obj, list):
+            idx = 0 if head.index is None else head.index
+            if 0 <= idx < len(obj):
+                obj.pop(idx)
+        return
+    if head.kind == "key" and isinstance(obj, dict):
+        child = obj.get(head.key)
+        if isinstance(child, (dict, list)):
+            _delete_json_parts(child, tail)
+    elif head.kind == "index" and isinstance(obj, list):
+        idx = 0 if head.index is None else head.index
+        if 0 <= idx < len(obj) and isinstance(obj[idx], (dict, list)):
+            _delete_json_parts(obj[idx], tail)
+
+
+def _ensure_json_child(child: Any, nxt: JsonPathPart) -> Any:
     """
     Purpose:
-        Set a dotted JSON path (e.g. address.city or variables.id) to value.
-        Creates intermediate objects when missing.
+        Coerce an intermediate node into the container type the next
+        path part needs (object for keys, list for indexes).
+    Side effects: None (returns a new container when coercion is needed).
+    """
+    if nxt.kind == "index":
+        return child if isinstance(child, list) else []
+    return child if isinstance(child, dict) else {}
+
+
+def inject_json_param(
+    body: bytes | None,
+    name: str,
+    value: str,
+    *,
+    payload_type: str = "",
+) -> bytes:
+    """
+    Purpose:
+        Set a JSON path to a probe value.  Typed probes (boolean / integer /
+        float / null / JSON arrays) are injected as native JSON values so a
+        field that is ``true`` is mutated to ``false``, not ``\"false\"``.
+        Type-confusion probes stay JSON strings.
+    Input:
+        body         — original request body.
+        name         — dotted / ``items[]`` path.
+        value        — probe payload string.
+        payload_type — IV probe label (boolean, integer, array_empty, …).
+    Output:
+        Mutated JSON body bytes.
     Side effects: None.
     """
     if not body:
@@ -949,12 +1118,15 @@ def inject_json_param(body: bytes | None, name: str, value: str) -> bytes:
             root = json.loads(body.decode("utf-8", errors="replace"))
         except Exception:
             return body or b"{}"
-        if not isinstance(root, dict):
+        if not isinstance(root, (dict, list)):
             root = {}
-    parts = [p for p in name.split(".") if p]
+    parts = parse_json_param_path(name)
     if not parts:
         return body or b"{}"
-    _set_nested(root, parts, value)
+    from talos.input_validation.type_intel import json_native_probe_value
+
+    native = json_native_probe_value(value, payload_type)
+    set_json_path(root, name, native)
     return json.dumps(root, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -1088,7 +1260,13 @@ def inject_multipart_filename(
 # GraphQL
 # ---------------------------------------------------------------------------
 
-def inject_graphql_param(body: bytes | None, name: str, value: str) -> bytes:
+def inject_graphql_param(
+    body: bytes | None,
+    name: str,
+    value: str,
+    *,
+    payload_type: str = "",
+) -> bytes:
     """
     Purpose:
         Inject into GraphQL JSON request bodies.
@@ -1097,6 +1275,8 @@ def inject_graphql_param(body: bytes | None, name: str, value: str) -> bytes:
         - variables.foo / variables.foo.bar → nested under variables
         - bare names → variables.<name> when a variables object exists,
           else top-level JSON path (same as inject_json_param)
+
+        Typed probes use native JSON values (see inject_json_param).
 
     Side effects: None.
     """
@@ -1117,11 +1297,11 @@ def inject_graphql_param(body: bytes | None, name: str, value: str) -> bytes:
 
     path = name
     if path.startswith("variables."):
-        path = path  # already fully qualified for inject_json
         return inject_json_param(
             json.dumps(root).encode("utf-8"),
             path,
             value,
+            payload_type=payload_type,
         )
 
     # Bare variable name under variables.
@@ -1129,12 +1309,14 @@ def inject_graphql_param(body: bytes | None, name: str, value: str) -> bytes:
     if not isinstance(variables, dict):
         root["variables"] = {}
         variables = root["variables"]
-    parts = [p for p in path.split(".") if p]
-    if parts and parts[0] == "variables":
-        parts = parts[1:]
-    if not parts:
+    rel = path
+    if rel.startswith("variables."):
+        rel = rel[len("variables."):]
+    if not rel:
         return json.dumps(root, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    _set_nested(variables, parts, value)
+    from talos.input_validation.type_intel import json_native_probe_value
+
+    set_json_path(variables, rel, json_native_probe_value(value, payload_type))
     root["variables"] = variables
     return json.dumps(root, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -1202,6 +1384,7 @@ def inject_value(
     normalized_path: str = "",
     semantic_type: str = "",
     surface_kind: str = "",
+    payload_type: str = "",
 ) -> tuple[str, dict, bytes | None]:
     """
     Purpose:
@@ -1215,6 +1398,8 @@ def inject_value(
         normalized_path  — required for reliable path injection.
         semantic_type    — passive type (filename → multipart filename).
         surface_kind     — optional precomputed kind; else detected.
+        payload_type     — IV probe label; JSON/GraphQL use it to inject
+                           native types (bool/number/null/array).
 
     Output:
         (new_url, new_headers, new_body).
@@ -1271,16 +1456,22 @@ def inject_value(
                 name.startswith("variables") or name == "operationName"
             )
         ):
-            return url, headers, inject_graphql_param(body, name, value)
+            return url, headers, inject_graphql_param(
+                body, name, value, payload_type=payload_type,
+            )
         if kind == SURFACE_XML_LEAF or "xml" in ct or "soap" in ct:
             return url, headers, inject_xml_param(body, name, value)
         if "json" in ct or kind == SURFACE_JSON_BODY:
-            return url, headers, inject_json_param(body, name, value)
+            return url, headers, inject_json_param(
+                body, name, value, payload_type=payload_type,
+            )
         if "x-www-form-urlencoded" in ct or kind == SURFACE_FORM_BODY:
             return url, headers, inject_form_param(body, name, value)
         # Unknown body: try JSON then form.
         if body and body.lstrip().startswith(b"{"):
-            return url, headers, inject_json_param(body, name, value)
+            return url, headers, inject_json_param(
+                body, name, value, payload_type=payload_type,
+            )
         if body and b"=" in body[:200]:
             return url, headers, inject_form_param(body, name, value)
         return url, headers, body

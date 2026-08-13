@@ -411,7 +411,11 @@ export default function CommandDrawer() {
   );
 
   return (
-    <div className="shrink-0 relative z-40 flex flex-col" {...autoHoverHandlers}>
+    <div
+      className="shrink-0 relative z-20 flex flex-col"
+      // Above scrolling <main> for auto-hide overlay; below the sidebar (z-30).
+      {...autoHoverHandlers}
+    >
       {/* In-flow panel (expanded, or collapsed/auto when pinned open) */}
       {reservePanel && (
         <div

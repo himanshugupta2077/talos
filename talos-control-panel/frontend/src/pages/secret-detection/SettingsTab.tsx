@@ -97,7 +97,7 @@ export default function SettingsTab({
         </div>
         <p className="text-xs text-base-content/50">
           Master switch for Secret Detection (<span className="mono">passive_scan_config.enabled</span>).
-          When off, the proxy still captures traffic but source-like responses are not enqueued
+          On by default. When off, the proxy still captures traffic but source-like responses are not enqueued
           or scanned, and no new secret findings are created. Same as{" "}
           <span className="mono">talos passive config set enabled false</span>.
           Also available on the Overview tab.

@@ -41,7 +41,6 @@ export default function InputValidation() {
   const [status, setStatus] = useState<IvStatus | null>(null);
   const [topCandidates, setTopCandidates] = useState<CandidateRow[]>([]);
   const [emptyState, setEmptyState] = useState<Record<string, boolean>>({});
-  const [budget, setBudget] = useState("standard");
 
   const setTab = (t: IvTab) => {
     const next = new URLSearchParams(searchParams);
@@ -57,7 +56,6 @@ export default function InputValidation() {
       })
       .then((r) => {
         setConfig(r.config);
-        if (r.config?.probe_strategy) setBudget(r.config.probe_strategy);
       })
       .catch(() => setConfig(null));
 
@@ -113,7 +111,7 @@ export default function InputValidation() {
       help={
         <>
           <p>
-            <strong>Overview</strong> shows budget, progress, confidence, and top
+            <strong>Overview</strong> shows progress, confidence, and top
             prioritization targets after a run.
           </p>
           <p>
@@ -128,13 +126,13 @@ export default function InputValidation() {
             <strong>Multi-level</strong> shows endpoint and host inheritance (Module 10).
           </p>
           <p>
-            <strong>Run</strong> schedules adaptive planner jobs (
-            <span className="mono">talos input-validation run --budget</span>
-            ). <strong>Settings</strong> covers enable, budget, phases, auth artifacts,
+            <strong>Run</strong> schedules the full IV probe set (
+            <span className="mono">talos input-validation run</span>
+            ). <strong>Settings</strong> covers enable, phases, auth artifacts,
             exclusions.
           </p>
           <p>
-            Happy path: Enable → Run standard → wait for scheduler → Synthesize → review
+            Happy path: Enable → Run → wait for scheduler → Synthesize → review
             Candidates → open parameter dossiers.
           </p>
         </>
@@ -171,8 +169,6 @@ export default function InputValidation() {
       {tab === "run" && (
         <RunTab
           projectId={selected.id}
-          budget={budget}
-          setBudget={setBudget}
           status={status}
           onRefresh={load}
         />

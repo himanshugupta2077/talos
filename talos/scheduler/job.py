@@ -93,6 +93,15 @@ Meta encodes candidate_id, binding_id, test_id, auth_type; one outbound flow."""
 AUTH_SESSION_JOB_TYPES: tuple[str, ...] = (AUTH_SESSION_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# CORS misconfiguration job type                                       #
+# ------------------------------------------------------------------ #
+
+CORS_ATTACK = "cors_attack"
+"""CORS misconfiguration: one Origin payload per job, one unique replay flow."""
+
+CORS_JOB_TYPES: tuple[str, ...] = (CORS_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # Input Validation job type constants                                  #
 # ------------------------------------------------------------------ #
 
@@ -157,6 +166,7 @@ JOB_TYPES: tuple[str, ...] = (
     + BAC_JOB_TYPES
     + UNAUTH_JOB_TYPES
     + AUTH_SESSION_JOB_TYPES
+    + CORS_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
 )

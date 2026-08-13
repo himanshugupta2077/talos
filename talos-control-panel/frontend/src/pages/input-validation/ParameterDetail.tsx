@@ -112,7 +112,6 @@ export default function ParameterDetail() {
       "/api/input-validation/run",
       {
         parameter: name || undefined,
-        budget: "standard",
       },
       { project_id: selected!.id },
     ),

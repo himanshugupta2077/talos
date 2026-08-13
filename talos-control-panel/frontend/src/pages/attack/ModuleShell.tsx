@@ -28,7 +28,7 @@ export default function ModuleShell({
     <div>
       <div className="mb-1">
         <Link to="/testing" className="link link-hover text-xs text-base-content/50">
-          ← All modules
+          ← Attack Module
         </Link>
       </div>
 

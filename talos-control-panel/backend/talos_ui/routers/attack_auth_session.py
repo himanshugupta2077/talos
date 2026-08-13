@@ -523,6 +523,7 @@ class AuthSessionUnbindBody(BaseModel):
 class AuthSessionGenerateBody(BaseModel):
     binding_id: Optional[str] = None
     flow_id: Optional[str] = None
+    flows: Optional[list[str]] = None
     endpoint_id: Optional[str] = None
     module: Optional[str] = None
     role: Optional[str] = None
@@ -588,8 +589,11 @@ def _generate_args(body: AuthSessionGenerateBody) -> list[str]:
     args = ["attack", "auth-session", "generate"]
     if body.binding_id and body.binding_id.strip():
         args += ["--binding", body.binding_id.strip()]
-    if body.flow_id and body.flow_id.strip():
-        args += ["--flow", body.flow_id.strip()]
+    flow_ids = [f.strip() for f in (body.flows or []) if f and f.strip()]
+    if body.flow_id and body.flow_id.strip() and body.flow_id.strip() not in flow_ids:
+        flow_ids.insert(0, body.flow_id.strip())
+    for fid in flow_ids:
+        args += ["--flow", fid]
     if endpoint:
         args += ["--endpoint", endpoint]
     if module:

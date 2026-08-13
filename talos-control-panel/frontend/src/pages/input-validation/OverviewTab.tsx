@@ -39,10 +39,10 @@ export default function OverviewTab({
   const enable = useAction("Enable IV engine", () =>
     api.post("/api/input-validation/config", { enable: true }, { project_id: projectId }),
   );
-  const run = useAction("Run IV standard", () =>
+  const run = useAction("Run IV", () =>
     api.post(
       "/api/input-validation/run",
-      { budget: "standard", ignore_cache: false },
+      { ignore_cache: false },
       { project_id: projectId },
     ),
   );
@@ -59,7 +59,7 @@ export default function OverviewTab({
           {config?.enabled ? "enabled" : "disabled"}
         </span>
         <span className="badge badge-outline">
-          budget: {status?.budget_tier || config?.probe_strategy || "standard"}
+          coverage: {status?.budget_tier || config?.probe_strategy || "exhaustive"}
         </span>
         <span className="badge badge-ghost">
           {completed}/{total || "—"} params done ({pct}%)
@@ -94,8 +94,8 @@ export default function OverviewTab({
           )}
         </div>
         <div className="panel p-3">
-          <div className="font-medium mb-1">Budget &amp; requests</div>
-          <div>Tier: {status?.budget_tier ?? "—"}</div>
+          <div className="font-medium mb-1">Requests</div>
+          <div>Coverage: {status?.budget_tier ?? "—"}</div>
           <div>Max req/param: {status?.max_requests_per_param ?? "—"}</div>
           <div>Requests used: {status?.requests_used ?? "—"}</div>
           <div>Params probed: {status?.params_probed ?? "—"}</div>
@@ -144,7 +144,7 @@ export default function OverviewTab({
         <div className="panel p-4 mb-4 text-sm">
           <div className="font-medium mb-1">No probes yet</div>
           <p className="text-base-content/60 mb-2">
-            Run a standard budget scan (~10–18 HTTP requests per unique parameter typical).
+            Run the full IV probe set for every in-scope parameter (one unique flow per probe).
           </p>
           <button
             className="btn btn-sm btn-primary"
@@ -154,7 +154,7 @@ export default function OverviewTab({
               onRefresh();
             }}
           >
-            Run standard
+            Run
           </button>
         </div>
       )}
@@ -181,7 +181,7 @@ export default function OverviewTab({
       <Section title="What to look at next">
         <div className="flex flex-wrap gap-2 mb-3">
           <button className="btn btn-xs btn-primary" disabled={run.running} onClick={async () => { await run.run(); onRefresh(); }}>
-            Run standard
+            Run
           </button>
           <button className="btn btn-xs" disabled={synthesize.running} onClick={async () => { await synthesize.run(); onRefresh(); }}>
             Synthesize

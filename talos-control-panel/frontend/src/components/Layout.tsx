@@ -9,7 +9,8 @@ type SidebarMode = "expanded" | "icons" | "auto";
 const SIDEBAR_MODE_KEY = "talos-cp-sidebar-mode";
 const COLLAPSE_DELAY_MS = 280;
 
-type NavItem = { to: string; label: string; icon: IconName };
+type NavTone = "danger";
+type NavItem = { to: string; label: string; icon: IconName; tone?: NavTone };
 type NavGroup = { label: string; items: NavItem[] };
 
 type IconName =
@@ -64,7 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Testing",
     items: [
       { to: "/scheduler", label: "Scheduler", icon: "scheduler" },
-      { to: "/testing", label: "Modules", icon: "attack" },
+      { to: "/testing", label: "Attack Module", icon: "attack", tone: "danger" },
     ],
   },
   {
@@ -209,6 +210,17 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
   chevronLeft: <path d="M14 6 8 12l6 6" />,
   chevronRight: <path d="M10 6l6 6-6 6" />,
 };
+
+function navItemToneClass(tone: NavTone | undefined, isActive: boolean): string {
+  if (tone === "danger") {
+    return isActive
+      ? "bg-error/15 text-error font-medium"
+      : "text-error/80 hover:bg-error/10 hover:text-error";
+  }
+  return isActive
+    ? "bg-primary/10 text-primary font-medium"
+    : "text-base-content/80 hover:bg-base-300/50";
+}
 
 function Icon({ name, className = "h-4 w-4" }: { name: IconName; className?: string }) {
   return (
@@ -359,25 +371,28 @@ export default function Layout() {
                       visuallyExpanded
                         ? "mx-2 gap-3 px-2.5 py-1.5 rounded-md"
                         : "mx-2 justify-center py-2 rounded-md"
-                    } ${
-                      isActive
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-base-content/80 hover:bg-base-300/50"
-                    }`
+                    } ${navItemToneClass(item.tone, isActive)}`
                   }
                 >
-                  {({ isActive }) => (
-                    <>
-                      {!visuallyExpanded && isActive && (
-                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-primary" />
-                      )}
-                      {visuallyExpanded && isActive && (
-                        <span className="absolute right-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-l bg-primary" />
-                      )}
-                      <Icon name={item.icon} className="h-[1.125rem] w-[1.125rem] shrink-0" />
-                      {visuallyExpanded && <span className="truncate">{item.label}</span>}
-                    </>
-                  )}
+                  {({ isActive }) => {
+                    const accent = item.tone === "danger" ? "bg-error" : "bg-primary";
+                    return (
+                      <>
+                        {!visuallyExpanded && isActive && (
+                          <span
+                            className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r ${accent}`}
+                          />
+                        )}
+                        {visuallyExpanded && isActive && (
+                          <span
+                            className={`absolute right-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-l ${accent}`}
+                          />
+                        )}
+                        <Icon name={item.icon} className="h-[1.125rem] w-[1.125rem] shrink-0" />
+                        {visuallyExpanded && <span className="truncate">{item.label}</span>}
+                      </>
+                    );
+                  }}
                 </NavLink>
               ))}
             </div>

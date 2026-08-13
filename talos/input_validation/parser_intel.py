@@ -708,6 +708,7 @@ def apply_parser_injection(
     body: bytes | None,
     normalized_path: str = "",
     semantic_type: str = "",
+    payload_type: str = "",
 ) -> tuple[str, dict, bytes | None]:
     """
     Purpose:
@@ -719,6 +720,7 @@ def apply_parser_injection(
         payload        — job payload (value or packed dual).
         url/headers/body — base request parts.
         normalized_path / semantic_type — Module 9 surface context for value inject.
+        payload_type — IV probe label for JSON native-type inject.
 
     Output:
         (new_url, new_headers, new_body).
@@ -738,6 +740,7 @@ def apply_parser_injection(
             body,
             normalized_path=normalized_path,
             semantic_type=semantic_type,
+            payload_type=payload_type,
         )
 
     if mode == MODE_DUP_QUERY:
@@ -789,6 +792,7 @@ def apply_parser_injection(
         body,
         normalized_path=normalized_path,
         semantic_type=semantic_type,
+        payload_type=payload_type,
     )
 
 
@@ -802,6 +806,7 @@ def _inject_simple_value(
     *,
     normalized_path: str = "",
     semantic_type: str = "",
+    payload_type: str = "",
 ) -> tuple[str, dict, bytes | None]:
     """
     Purpose:
@@ -820,6 +825,7 @@ def _inject_simple_value(
         body,
         normalized_path=normalized_path,
         semantic_type=semantic_type,
+        payload_type=payload_type,
     )
 
 
@@ -872,62 +878,39 @@ def _inject_dup_form(body: bytes | None, name: str, first: str, last: str) -> by
     return urlencode(pairs).encode("utf-8")
 
 
-def _set_nested(obj: object, parts: list[str], value: Any) -> None:
-    if not isinstance(obj, dict) or not parts:
-        return
-    head, *tail = parts
-    if not tail:
-        obj[head] = value  # type: ignore[index]
-    else:
-        child = obj.get(head) if head in obj else None  # type: ignore[index]
-        if not isinstance(child, dict):
-            obj[head] = {}  # type: ignore[index]
-        _set_nested(obj[head], tail, value)  # type: ignore[index]
-
-
 def _inject_json_typed(body: bytes | None, name: str, value: Any) -> bytes:
     """Set a JSON field to a typed value (None → null, str, etc.)."""
+    from talos.input_validation.surface import set_json_path
+
     if not body:
-        root: dict[str, Any] = {}
+        root: Any = {}
     else:
         try:
             parsed = json.loads(body.decode("utf-8", errors="replace"))
         except Exception:
             return body or b"{}"
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, (dict, list)):
             root = {}
         else:
             root = parsed
-    parts = name.split(".")
-    _set_nested(root, parts, value)
+    set_json_path(root, name, value)
     return json.dumps(root, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _inject_json_omit(body: bytes | None, name: str) -> bytes:
     """Remove a key from the JSON body (omitted field behaviour)."""
+    from talos.input_validation.surface import delete_json_path
+
     if not body:
         return b"{}"
     try:
         parsed = json.loads(body.decode("utf-8", errors="replace"))
     except Exception:
         return body or b"{}"
-    if not isinstance(parsed, dict):
+    if not isinstance(parsed, (dict, list)):
         return body or b"{}"
-    parts = name.split(".")
-    _delete_nested(parsed, parts)
+    delete_json_path(parsed, name)
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-
-def _delete_nested(obj: object, parts: list[str]) -> None:
-    if not isinstance(obj, dict) or not parts:
-        return
-    head, *tail = parts
-    if not tail:
-        obj.pop(head, None)  # type: ignore[arg-type]
-        return
-    child = obj.get(head)  # type: ignore[index]
-    if isinstance(child, dict):
-        _delete_nested(child, tail)
 
 
 def _inject_json_dup_key(

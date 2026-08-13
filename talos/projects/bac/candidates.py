@@ -35,7 +35,7 @@ Side effects: None (read-only).
 """
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +64,37 @@ class BacCandidate:
     module_id: str
     module_name: str
     flow_ids: list[str] = field(default_factory=list)
+
+
+def restrict_candidates_to_flows(
+    candidates: list[BacCandidate],
+    flow_ids: list[str],
+) -> list[BacCandidate]:
+    """
+    Purpose:
+        Keep only the operator-selected flow UUIDs on each BAC candidate.
+        Candidates with no remaining flows are dropped.
+    Input:
+        candidates — scan_candidates() output.
+        flow_ids   — operator `--flow` values (repeatable / comma-separated).
+    Output:
+        New BacCandidate list; flow_ids follow operator order.
+    """
+    from talos.projects.flow_scope import normalize_flow_ids
+
+    wanted = normalize_flow_ids(flow_ids)
+    if not wanted:
+        return list(candidates)
+    order = {fid: i for i, fid in enumerate(wanted)}
+    wanted_set = set(wanted)
+    out: list[BacCandidate] = []
+    for candidate in candidates:
+        kept = [fid for fid in candidate.flow_ids if fid in wanted_set]
+        if not kept:
+            continue
+        kept.sort(key=lambda fid: order.get(fid, 10_000))
+        out.append(replace(candidate, flow_ids=kept))
+    return out
 
 
 def scan_candidates(

@@ -10,10 +10,11 @@ Purpose:
     export JSON+Markdown with version fields, synthesize, show profile.
 
     Main execution commands:
-        talos input-validation run               — schedule jobs for the entire project
-        talos input-validation run --budget standard — set planner tier then schedule
+        talos input-validation run               — full probe set (exhaustive)
+        talos input-validation run --budget TIER — optional limiter (quick|standard|deep)
         talos input-validation run --host H      — single host
         talos input-validation run --endpoint ID — single endpoint
+        talos input-validation run --flow UUID   — parameters on those flows' endpoints
         talos input-validation run --parameter P — single parameter everywhere it appears
         talos input-validation run --ignore-cache — force re-run
 
@@ -28,9 +29,9 @@ Purpose:
         talos input-validation reflection
         talos input-validation validation
 
-    Probe volume: config --probe-strategy / --budget quick|standard|deep|exhaustive
-    (Module 5 planner schedules adaptively; multiprobe first under standard).
-    Optional hard cap: config --max-requests-per-param N.
+    Probe volume: run defaults to exhaustive (full matrix). Optional limiter:
+    --budget / --probe-strategy quick|standard|deep. Optional hard cap:
+    config --max-requests-per-param N.
 
     Surfaces (Module 9): path, query, body (JSON/form/multipart/XML/GraphQL),
     header, cookie.  Auth artifacts (session cookies, Authorization) are
@@ -43,7 +44,7 @@ Purpose:
     Capabilities & candidates (Module 11): show/export/candidates list;
     scores are prioritization only, not confirmed vulnerabilities.
 
-    Each phase command supports: --host, --endpoint, --parameter, --ignore-cache
+    Each phase command supports: --host, --endpoint, --flow, --parameter, --ignore-cache
     (--force is a deprecated alias for --ignore-cache on phase shortcuts only;
     reserved elsewhere for confirmation bypass — CLI-019).
 
@@ -52,8 +53,8 @@ Purpose:
         talos input-validation config --enable
         talos input-validation config --disable
         talos input-validation config --workers N
-        talos input-validation config --probe-strategy standard
-        talos input-validation config --budget standard   # alias for probe-strategy
+        talos input-validation config --probe-strategy exhaustive
+        talos input-validation config --budget quick      # optional limiter
         talos input-validation config --include-auth-artifacts
         talos input-validation config --analysis-on  <phase>
         talos input-validation config --analysis-off <phase>
@@ -189,7 +190,7 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
             "schedules url_sink_probes (benign talos-canary.invalid canaries)."
         ),
     )
-    _add_scope_args(p_run)
+    _add_scope_args(p_run, include_flow=True)
     p_run.add_argument(
         "--ignore-cache",
         action="store_true",
@@ -210,11 +211,10 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         metavar="TIER",
         choices=("quick", "standard", "deep", "exhaustive"),
         help=(
-            "Set planner budget tier (persists as probe_strategy) then schedule: "
-            "quick|standard|deep|exhaustive. Same as "
-            "'config --probe-strategy TIER' before run. "
-            "Also enables url_sink_probes when types analysis is on and "
-            "passive url_features warrant (benign talos-canary.invalid canaries)."
+            "Optional limiter. Default run uses exhaustive (full probe set, "
+            "including type-family and url_sink canaries). "
+            "Pass quick|standard|deep only if you want fewer HTTP requests. "
+            "Persists as probe_strategy."
         ),
     )
 
@@ -226,7 +226,7 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
             phase_name,
             help=f"Run only the {phase_name} analysis phase.",
         )
-        _add_scope_args(p_phase)
+        _add_scope_args(p_phase, include_flow=True)
         # CLI-019: re-analysis uses --ignore-cache; --force remains a
         # backwards-compatible alias. Elsewhere --force is only for
         # confirmation bypass (e.g. clear-cache).
@@ -315,7 +315,7 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         "resume",
         help="Continue from unfinished analyses (alias for 'run' with no --ignore-cache).",
     )
-    _add_scope_args(p_resume)
+    _add_scope_args(p_resume, include_flow=True)
 
     # ------------------------------------------------------------------
     # clear-cache
@@ -615,8 +615,12 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _add_scope_args(parser: argparse.ArgumentParser) -> None:
-    """Add --host, --endpoint, --parameter scope arguments to a subparser."""
+def _add_scope_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_flow: bool = False,
+) -> None:
+    """Add --host, --endpoint, --parameter (and optional --flow) scope args."""
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--host",
@@ -633,6 +637,17 @@ def _add_scope_args(parser: argparse.ArgumentParser) -> None:
         metavar="PARAM",
         help="Scope analysis to a single parameter name.",
     )
+    if include_flow:
+        group.add_argument(
+            "--flow",
+            dest="flows",
+            action="append",
+            metavar="UUID",
+            help=(
+                "Scope analysis to the unique endpoints of these captured "
+                "flows (repeatable or comma-separated)."
+            ),
+        )
 
 
 def _add_include_exclude_args(parser: argparse.ArgumentParser) -> None:
@@ -658,7 +673,7 @@ def _cmd_run(
     """
     Purpose:
         Schedule Input Validation jobs.
-        Respects --host, --endpoint, --parameter scope arguments.
+        Respects --host, --endpoint, --flow, --parameter scope arguments.
         Phase-level commands pass a phase_filter; 'run' passes None.
 
         Before scheduling, verifies that every role required by the selected
@@ -676,12 +691,18 @@ def _cmd_run(
             "Enable it with: talos input-validation config --enable"
         )
 
-    # Module 12: run --budget TIER persists probe_strategy then schedules.
+    # Full probe set by default. Older projects stored "standard" as the
+    # implicit default and would silently clip probes — upgrade those.
+    # Explicit quick/deep/exhaustive from Settings or --budget are honored.
     budget = getattr(args, "budget", None)
     if budget:
         config.probe_strategy = str(budget).lower()
         save_config(db_path, config)
         print(f"Budget tier set to '{config.probe_strategy}'.")
+    elif (config.probe_strategy or "standard").lower() == "standard":
+        config.probe_strategy = "exhaustive"
+        save_config(db_path, config)
+        print("Budget tier set to 'exhaustive' (full IV probe set).")
 
     # Phase shortcuts accept --ignore-cache (primary) or deprecated --force
     # alias (both dest=ignore_cache). run uses --ignore-cache only. clear-cache
@@ -694,15 +715,45 @@ def _cmd_run(
         include_auth = True
 
     # Determine scope.
+    from talos.projects.flow_scope import (
+        lookup_flows,
+        normalize_flow_ids,
+        unique_endpoint_ids,
+    )
+
     host = getattr(args, "host", None)
     endpoint_id = getattr(args, "endpoint", None)
     param_name = getattr(args, "parameter", None)
+    flow_ids = normalize_flow_ids(getattr(args, "flows", None))
+    flow_endpoint_ids: list[str] = []
+    if flow_ids:
+        found, missing = lookup_flows(db_path, flow_ids)
+        if missing:
+            print("Unknown flow id(s): " + ", ".join(missing), file=sys.stderr)
+        usable = [ref for ref in found if not ref.policy_blocked]
+        flow_endpoint_ids = unique_endpoint_ids(usable)
+        if not flow_endpoint_ids:
+            cli_error(
+                "No endpoints on the selected flows. Check UUIDs and "
+                "endpoint policy (logout / dangerous / excluded)."
+            )
 
     # Auth pre-check: verify every role that would be used by this scan.
     print("Checking authentication readiness ...")
-    auth_errors = iv_engine.verify_auth_for_iv_scan(
-        db_path, project_id, host=host, endpoint_id=endpoint_id, param_name=param_name
-    )
+    if flow_endpoint_ids:
+        auth_errors: list[str] = []
+        seen_err: set[str] = set()
+        for ep in flow_endpoint_ids:
+            for err in iv_engine.verify_auth_for_iv_scan(
+                db_path, project_id, endpoint_id=ep
+            ):
+                if err not in seen_err:
+                    seen_err.add(err)
+                    auth_errors.append(err)
+    else:
+        auth_errors = iv_engine.verify_auth_for_iv_scan(
+            db_path, project_id, host=host, endpoint_id=endpoint_id, param_name=param_name
+        )
     if auth_errors:
         print("Authentication pre-check failed. Fix the following before starting:", file=sys.stderr)
         for err in auth_errors:
@@ -718,7 +769,19 @@ def _cmd_run(
             "  (<role> = role name or UUID; see talos role list)"
         )
 
-    if host:
+    if flow_endpoint_ids:
+        enqueued = 0
+        for ep in flow_endpoint_ids:
+            enqueued += iv_engine.schedule_endpoint(
+                db_path, project_id, ep,
+                phase_filter=phase_filter,
+                ignore_cache=ignore_cache,
+                include_auth_artifacts=include_auth,
+            )
+        scope_desc = (
+            f"{len(flow_endpoint_ids)} endpoint(s) from {len(flow_ids)} flow(s)"
+        )
+    elif host:
         enqueued = iv_engine.schedule_host(
             db_path, project_id, host,
             phase_filter=phase_filter,

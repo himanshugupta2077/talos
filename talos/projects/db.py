@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 54
+SCHEMA_VERSION = 55
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1497,6 +1497,38 @@ CREATE INDEX IF NOT EXISTS idx_auth_session_results_endpoint_test
 
 CREATE INDEX IF NOT EXISTS idx_auth_session_results_original_test
     ON auth_session_results (original_flow_id, test_id);
+
+-- ------------------------------------------------------------------ --
+-- cors_results: one unique replay flow per Origin technique (v55)     --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS cors_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    origin_sent        TEXT NOT NULL,
+    acao               TEXT,
+    acac               TEXT,
+    acam               TEXT,
+    acah               TEXT,
+    reflected          INTEGER NOT NULL DEFAULT 0,
+    credentials        INTEGER NOT NULL DEFAULT 0,
+    wildcard           INTEGER NOT NULL DEFAULT 0,
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cors_results_verdict
+    ON cors_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_cors_results_host
+    ON cors_results (host, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -1566,6 +1598,38 @@ CREATE INDEX IF NOT EXISTS idx_auth_session_results_endpoint_test
 
 CREATE INDEX IF NOT EXISTS idx_auth_session_results_original_test
     ON auth_session_results (original_flow_id, test_id);
+"""
+
+# Shared CREATE statements for CORS engine (schema v55).
+_CORS_SCHEMA_V55_DDL = """
+CREATE TABLE IF NOT EXISTS cors_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    origin_sent        TEXT NOT NULL,
+    acao               TEXT,
+    acac               TEXT,
+    acam               TEXT,
+    acah               TEXT,
+    reflected          INTEGER NOT NULL DEFAULT 0,
+    credentials        INTEGER NOT NULL DEFAULT 0,
+    wildcard           INTEGER NOT NULL DEFAULT 0,
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cors_results_verdict
+    ON cors_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_cors_results_host
+    ON cors_results (host, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -2499,6 +2563,10 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
         # Auth-session attack engine: bindings, candidates, results.
         conn.executescript(_AUTH_SESSION_SCHEMA_V54_DDL)
 
+    if from_version < 55:
+        # CORS misconfiguration: one unique replay flow per Origin technique.
+        conn.executescript(_CORS_SCHEMA_V55_DDL)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2636,6 +2704,7 @@ def migrate_project_db(db_path: Path) -> None:
         v52 → v53: URL Sink Discovery Phase 1 — parameters.url_features JSON.
         v53 → v54: auth_session_bindings, auth_session_candidates,
                    auth_session_results (Authentication & Session Testing engine).
+        v54 → v55: cors_results — CORS misconfiguration (unique flow per probe).
     """
     if not db_path.exists():
         return
@@ -3999,6 +4068,12 @@ def migrate_project_db(db_path: Path) -> None:
             # Auth-session attack engine: bindings, candidates, results.
             conn.executescript(_AUTH_SESSION_SCHEMA_V54_DDL)
             conn.execute("UPDATE schema_version SET version = 54")
+            conn.commit()
+
+        if current < 55:
+            # CORS misconfiguration: unique replay flow per Origin technique.
+            conn.executescript(_CORS_SCHEMA_V55_DDL)
+            conn.execute("UPDATE schema_version SET version = 55")
             conn.commit()
 
 

@@ -2,6 +2,108 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Flow / endpoint multi-select attacks
+
+**Shipped:** 2026-08-13
+
+Selecting flows on `/flows` (or the top 1–5 ranked test flows per selected
+endpoint on `/endpoints`) can enqueue CORS, Unauth, BAC, and Input Validation
+jobs, and generate Auth-session candidates. Each module takes `--flow UUID`
+(repeatable). Intruder still needs a configured session.
+
+`POST /api/endpoints/test-flows` ranks 2xx `proxy_capture` flows per endpoint
+(baseline first, then POST/PATCH/PUT/GET, then recency).
+
+## CORS misconfiguration testing
+
+**Shipped:** 2026-08-13
+
+New active attack module (`talos attack cors` / Control Panel `/testing/cors`).
+
+- Selects in-scope `200 OK` captures, preferring POST / PATCH / PUT, then GET.
+- Uses the captured `Origin` when present; otherwise synthesizes one from the
+  request host URL.
+- Enqueues one `cors_attack` scheduler job per technique. Each job writes a
+  **unique** replay flow (`original_flow_id` = baseline) — same path as unauth
+  / BAC / auth-session.
+- Finding only when an attacker domain or subdomain is reflected in
+  `Access-Control-Allow-Origin`. One PRIMARY per target origin; extra
+  techniques LINKED. `ACAO: *` or credentials-only is not a standalone issue.
+
+Schema **v55**: `cors_results`.
+
+## IV: full probe set by default (no budget picker on Run)
+
+**Shipped:** 2026-08-13
+
+Budget tiers were a volume limiter (`standard` ~18 req/param, early-stop). They
+are **not** required for correctness and were clipping type-family / URL-sink
+probes. Run now uses the **full probe set** (`exhaustive`, cap 256) unless the
+operator explicitly passes `--budget quick|standard|deep`.
+
+Control Panel **Run** no longer has a budget dropdown. Settings keeps an
+optional limiter.
+
+## IV: type-family probes for JSON body fields
+
+**Shipped:** 2026-08-13
+
+### Problem
+
+A typical JSON API request with 20–50 keys (including nested objects that look
+like HTTP headers) was extracted as individual parameters, but Input Validation
+did not treat those fields like first-class typed surfaces:
+
+1. JSON inject always wrote **strings**, so `"enabled": true` became
+   `"enabled": "false"` and the app rejected the type instead of characterizing
+   the boolean.
+2. Boolean fields never tried the opposite polarity.
+3. Email, array, and Host/Location-like JSON keys did not get type-specific
+   unique flows the way HTTP headers get URL-sink canaries.
+
+### Decision
+
+| Piece | Role |
+|-------|------|
+| `surface.inject_json_param` | Native JSON bool/number/null/array inject; `items[]` / `items[0]` paths |
+| `type_intel.type_family_probes` | Per-type catalogs (bool flip, email shapes, array wrap, numeric edges) |
+| `type_confirm` | Boolean sends both `true` and `false` |
+| Planner | Do not skip type/semantic waves for typed params just because multiprobe looked “string-like” |
+| Name hints | JSON `headers.Host` / `Location` / `Origin` → `semantic_type=url` → URL-sink canaries |
+
+Characterization only — no OAST, no exploit chains, no Findings. Email CRLF
+shapes stay `deep` / `exhaustive`.
+
+### Operator notes
+
+```text
+talos input-validation config --enable
+talos input-validation run
+# optional: talos input-validation run --endpoint <id>
+```
+
+Each JSON key is still its own parameter. Each type-family payload is its own
+replay flow (`iv_scan`), same as any other IV probe.
+
+## Secret exposure: one finding + highlighted leak (default on)
+
+**Shipped:** 2026-08-13
+
+Client-Side Secret Exposure uses **one cluster per project**
+(`PASSIVE_SECRET`). The first eligible leak is the PRIMARY finding titled
+"Client-Side Secret Exposure"; every later leak is LINKED under it. Findings
+list (default PRIMARY view) shows a single row. Opening that finding
+highlights every redacted match in source context and lists LINKED children.
+
+Same payload on `GET /api/findings/{id}` as `secret_exposure`, and on
+`talos finding show` / the Markdown report.
+
+Secret detection stays **on by default** (`passive_scan_config.enabled = 1`).
+Turn off per project with `talos passive config set enabled false` or Testing →
+Secret Detection → Turn off.
+
+---
+
 ## Finding detail: Original vs Attack/Testcase Flow + Secret Detection master switch
 
 **Shipped:** 2026-08-04

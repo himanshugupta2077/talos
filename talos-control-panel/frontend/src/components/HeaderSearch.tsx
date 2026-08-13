@@ -45,10 +45,10 @@ const JUMP_ITEMS: JumpItem[] = [
   { id: "scheduler", label: "Scheduler", path: "/scheduler", group: "Testing" },
   {
     id: "testing",
-    label: "Testing modules",
+    label: "Attack Module",
     path: "/testing",
     group: "Testing",
-    keywords: "unauth bac auth-session jwt secret passive active input validation modules attack",
+    keywords: "unauth bac auth-session jwt secret passive active input validation cors modules attack testing",
   },
   {
     id: "testing-unauth",
@@ -71,6 +71,13 @@ const JUMP_ITEMS: JumpItem[] = [
     group: "Testing",
     keywords:
       "jwt mutation weak validation alg none token auth-session attack active not auth page",
+  },
+  {
+    id: "testing-cors",
+    label: "CORS Misconfiguration",
+    path: "/testing/cors",
+    group: "Testing",
+    keywords: "cors origin acao credentials misconfig attack active",
   },
   {
     id: "testing-secrets",

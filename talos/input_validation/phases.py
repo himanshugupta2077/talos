@@ -100,6 +100,7 @@ IV_TYPE_PROBES: list[tuple[str, str]] = [
     ("integer",   "42"),
     ("float",     "3.14"),
     ("boolean",   "true"),
+    ("boolean_false", "false"),
     ("uuid",      "550e8400-e29b-41d4-a716-446655440000"),
     ("email",     "probe@talos.test"),
     ("url",       "https://talos.test/probe"),
@@ -167,6 +168,7 @@ def _inject_value(
     *,
     normalized_path: str = "",
     semantic_type: str = "",
+    payload_type: str = "",
 ) -> tuple[str, dict, bytes | None]:
     """
     Purpose:
@@ -185,6 +187,7 @@ def _inject_value(
         body,
         normalized_path=normalized_path,
         semantic_type=semantic_type,
+        payload_type=payload_type,
     )
 
 
@@ -261,6 +264,7 @@ def prepare_iv_probe(
         if is_parser_payload_type(payload_type):
             mode = injection_mode_for_payload_type(payload_type)
 
+    ptype = payload_type or ""
     if mode and mode != "value":
         from talos.input_validation.parser_intel import apply_parser_injection
         new_url, new_headers, new_body = apply_parser_injection(
@@ -273,6 +277,7 @@ def prepare_iv_probe(
             body=body,
             normalized_path=norm_path,
             semantic_type=sem,
+            payload_type=ptype,
         )
     elif mode == "value" or (
         payload_type and str(payload_type).startswith("norm:")
@@ -287,6 +292,7 @@ def prepare_iv_probe(
             body,
             normalized_path=norm_path,
             semantic_type=sem,
+            payload_type=ptype,
         )
     else:
         new_url, new_headers, new_body = _inject_value(
@@ -298,6 +304,7 @@ def prepare_iv_probe(
             body,
             normalized_path=norm_path,
             semantic_type=sem,
+            payload_type=ptype,
         )
 
     mutations: dict = {}

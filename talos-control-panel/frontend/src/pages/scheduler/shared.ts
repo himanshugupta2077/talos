@@ -42,7 +42,10 @@ export const FAMILY_OPTIONS = [
   { value: "bac", label: "bac" },
   { value: "iv", label: "iv" },
   { value: "unauth", label: "unauth" },
+  { value: "cors", label: "cors" },
+  { value: "auth_session", label: "auth_session" },
   { value: "auth_test", label: "auth_test" },
+  { value: "intruder", label: "intruder" },
 ] as const;
 
 export const LIMIT_OPTIONS = [50, 100, 200, 500, 1000] as const;
@@ -96,11 +99,14 @@ export const DEFAULT_HISTORY_FILTERS: JobFilterState = {
 /** Map job_type → family for chips/colors. */
 export function jobFamily(jobType: string | null | undefined): string {
   if (!jobType) return "other";
-  if (jobType === "auth_test") return "auth";
+  if (jobType === "auth_test") return "auth_test";
   if (jobType.startsWith("replay")) return "replay";
   if (jobType.startsWith("bac")) return "bac";
   if (jobType.startsWith("iv")) return "iv";
   if (jobType.startsWith("unauth")) return "unauth";
+  if (jobType.startsWith("cors")) return "cors";
+  if (jobType.startsWith("auth_session")) return "auth_session";
+  if (jobType.startsWith("intruder")) return "intruder";
   if (!jobType.includes("_")) return jobType;
   return jobType.split("_")[0] || "other";
 }
@@ -110,7 +116,11 @@ const FAMILY_BADGE: Record<string, string> = {
   bac: "badge-warning",
   iv: "badge-secondary",
   unauth: "badge-accent",
+  cors: "badge-primary",
+  auth_session: "badge-primary",
+  auth_test: "badge-primary",
   auth: "badge-primary",
+  intruder: "badge-error",
   other: "badge-ghost",
 };
 

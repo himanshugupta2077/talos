@@ -1152,7 +1152,12 @@ def _semantic_type(
         return "timestamp"
     # Hostname / domain from url_sink first (excludes file-extension collisions
     # like report.pdf; keeps real multi-label hosts like cdn.example.com).
+    # JSON keys that look like Host / Location / Origin still map to url so
+    # IV schedules URL-sink canaries the same way the HTTP header surface does.
     if vf.possible_hostname or vf.possible_domain:
+        name_st = _name_hint(name)
+        if name_st == "url":
+            return "url"
         return "string"
     # File basenames (report.pdf, photo.png) — after hostname so multi-label
     # domains are not swallowed by the broad _FILENAME_RE (ends with .com etc.).
@@ -1200,6 +1205,15 @@ def _name_hint(name: str) -> str:
                                "x_real_ip", "x_custom_ip")):
         return "ip"
     # Broader URL-ish name hints (catalog leaf tokens).
+    # Leaf-only match for host/location/origin so ``headers.Host`` and
+    # JSON objects that embed HTTP-like keys get URL characterization
+    # without matching accidental substrings (ghost, hostel).
+    leaf = low.rsplit("_", 1)[-1] if low else ""
+    if leaf in {
+        "host", "hostname", "location", "origin", "referer", "referrer",
+        "domain", "website",
+    }:
+        return "url"
     if any(t in low for t in (
         "url", "uri", "redirect", "callback", "webhook", "return_url",
         "return_uri", "return_to", "goto", "next", "continue", "avatar",

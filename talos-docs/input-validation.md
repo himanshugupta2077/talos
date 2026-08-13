@@ -97,8 +97,8 @@ Stored in `input_validation_config` (per project). Defaults:
 | Setting | Default | Notes |
 |---------|---------|--------|
 | `enabled` | `false` | Must enable before `run` |
-| `probe_strategy` / budget | `standard` | `quick` \| `standard` \| `deep` \| `exhaustive` |
-| `max_requests_per_param` | `0` | `0` → planner tier default |
+| `probe_strategy` / coverage | `exhaustive` | Full probe set. `quick` \| `standard` \| `deep` are optional limiters (`--budget`). |
+| `max_requests_per_param` | `0` | `0` → planner tier default (`exhaustive` ≈ 256) |
 | `include_auth_artifacts` | `false` | Skip session cookies / `Authorization` unless opted in |
 | Analysis toggles | all on | baseline, multiprobe, identifier, characters, length, types, transformations, reflection, validation |
 
@@ -106,10 +106,12 @@ Stored in `input_validation_config` (per project). Defaults:
 
 | Tier | Approx. max requests | Behaviour |
 |------|----------------------|-----------|
-| `quick` | ~8 | Aggressive early stop |
-| `standard` | ~18 | Multiprobe-first; class reps; pruned types |
-| `deep` | ~40 | Drill-down, more length, edge validation |
-| `exhaustive` | ~80 | Extended / near-legacy full matrix |
+| `quick` | ~8 | Aggressive early stop (opt-in limiter) |
+| `standard` | ~18 | Multiprobe-first; class reps; pruned types (opt-in limiter) |
+| `deep` | ~40 | Drill-down, more length, edge validation (opt-in limiter) |
+| `exhaustive` | ~256 | **Default.** Full type-family, URL-sink, character, and validation matrix |
+
+`talos input-validation run` with no `--budget` uses exhaustive. Older projects that still have `standard` saved are upgraded on run so probes are not silently clipped.
 
 Auth is verified before scheduling (`verify_auth_for_iv_scan`): every role used by the scan must have a healthy session/config.
 
@@ -141,8 +143,8 @@ After each IV job settles, the scheduler calls `continue_param_plan()` so the ne
 | Identifier | `iv_identifier` | High-entropy canaries (legacy weak list mainly on exhaustive) |
 | Characters | `iv_characters` | Class representatives / drill-down (`char_drilldown`) |
 | Length | `iv_length` | Log seeds + binary midpoints (`length_binary`) |
-| Types | `iv_types` | Passive-first pruned type confirms (`type_confirm`) |
-| Validation | `iv_validation` | Core + semantic business rules (`semantic_rules`); no SQLi/XSS strings under standard |
+| Types | `iv_types` | Passive-first pruned type confirms (`type_confirm`). Boolean params send both `true` and `false`. JSON/GraphQL inject native types (see §4.4). |
+| Validation | `iv_validation` | Core + semantic business rules + **type-family catalogs** (`semantic_rules`); no SQLi/XSS strings under standard |
 | Parser | `iv_parser` | Dup keys, JSON null/empty/omit, array styles, normalization stages |
 | URL sink | `iv_url_sink` | Benign URL canaries when passive `url_features` warrants (`url_sink_probes`) — see §4.3 |
 | Transformations | analysis | Offline / finalize: trim, case, encode transforms |
@@ -255,6 +257,37 @@ Offline synthesis fills:
 ```
 
 Plus `tested.url_sink:*` family outcomes (positive and negative). **Does not** create Findings. Capability flags and candidates are derived in Module 11 (Phase 4).
+
+### 4.4 Type-family probes and JSON native inject
+
+**Source:** `type_intel.type_family_probes` / `json_native_probe_value` + `surface.inject_json_param`.
+
+Large JSON bodies (dozens of keys) are already one IV parameter per dotted path (`address.city`, `headers.Host`, `items[].id`). Each probe is still one scheduler job and one unique replay flow. What was missing is **type-aware values** and **JSON type fidelity**.
+
+**Native JSON inject.** Type-confirm and type-family probes that are meant to be scalars or arrays are written as JSON-native values:
+
+| Observed field | Probe | Injected JSON |
+|----------------|-------|----------------|
+| `"enabled": true` | `boolean_false` | `"enabled": false` (not `"false"`) |
+| `"count": 5` | `negative_int` | `"count": -999999` |
+| `"tags": ["a"]` | `array_empty` | `"tags": []` |
+| `"enabled": true` | `string` (type confusion) | `"enabled": "notabool"` |
+
+Character / multiprobe / identifier payloads stay strings.
+
+**Type-family catalogs** (selected first under `semantic_rules`, one unique flow each):
+
+| Passive type | Standard | Deep+ |
+|--------------|----------|-------|
+| `boolean` | opposite polarity (`true` → `false`) | `yes` / `no` |
+| `email` | plus-tag, display name, missing `@`, extra recipient | quoted local-part, newline (characterization, not exploit) |
+| `array` | `[]`, `["talos"]`, string-instead-of-array | `{}`, `[[]]`, `[null]` |
+| `integer` / `float` | existing negative / zero / huge | overflow, scientific notation; NaN/Infinity on exhaustive |
+| `url` / Host-like JSON keys | URL sink canaries (§4.3) — same family as HTTP `Host` / `Location` | protocol / UNC / file forms |
+
+JSON object keys that look like HTTP headers (`headers.Host`, `Location`, `Origin`, `Referer`) resolve to `semantic_type=url` so they get URL-sink canaries. Typed fields are **not** skipped just because multiprobe accepted character classes.
+
+**Array paths.** `items[].id` and `items[0].id` rewrite the first (or indexed) array element. The array parameter itself (`tags`) is replaced as a whole.
 
 **Cross-flow / stored reflection (parameter intelligence):** separately from the IV reflection analysis phase, every committed flow (proxy worker **and** replay/IV) can index distinctive request values and scan later response bodies for matches on the **same host**. Links are stored in `cross_flow_reflections` and merged into param profiles as `observed.reflection.cross_flow` (see §6–§7). Disabled by default:
 
@@ -692,7 +725,7 @@ rows = list_candidates(
 
 ```bash
 talos input-validation config --enable
-talos input-validation run --budget standard
+talos input-validation run
 talos input-validation status
 talos input-validation synthesize [--host HOST | --param-uuid UUID]
 talos input-validation show <parameter_uuid>

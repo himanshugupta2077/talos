@@ -78,7 +78,158 @@ def _has_auth_material(headers: dict, cookies: dict) -> bool:
     return False
 
 
-def _filters(source, method, host, status_code, role, module, search, endpoint_id=None):
+# Attack-module ids surfaced on the Flows list filter (not app modules).
+_KNOWN_ATTACK_MODULES = (
+    "iv",
+    "bac",
+    "unauth",
+    "cors",
+    "auth_session",
+    "auth_test",
+    "intruder",
+)
+
+_ATTACK_MODULE_ALIASES = {
+    "input_validation": "iv",
+    "iv_scan": "iv",
+    "cors_attack": "cors",
+    "cors_misconfig": "cors",
+    "cors_misconfiguration": "cors",
+    "auth-session": "auth_session",
+    "unauth_attack": "unauth",
+}
+
+
+def _table_names(db_path) -> set[str]:
+    if not db.db_exists(db_path):
+        return set()
+    return {
+        r["name"]
+        for r in db.query_all(
+            db_path, "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        if r.get("name")
+    }
+
+
+def _attack_verdict_sql(
+    tables: set[str],
+    prefer: str | None,
+    *,
+    bac_joined: bool,
+    unauth_joined: bool,
+) -> tuple[str, str]:
+    """
+    LEFT JOINs + COALESCE select for the attack-engine verdict on a flow.
+
+    prefer — when the list is filtered to one attack module, that table wins.
+    Optional tables (cors/auth_session) are skipped when the project DB is older.
+    """
+    extras: list[str] = []
+    by_mod: list[tuple[str, str]] = []
+
+    if "cors_results" in tables:
+        extras.append(
+            "LEFT JOIN cors_results cors_r ON cors_r.replay_flow_id = f.id"
+        )
+        by_mod.append(("cors", "cors_r.verdict"))
+    if "bac_results" in tables:
+        if not bac_joined:
+            extras.append("LEFT JOIN bac_results bac ON bac.replay_flow_id = f.id")
+        by_mod.append(("bac", "bac.verdict"))
+    if "unauth_results" in tables:
+        if not unauth_joined:
+            extras.append(
+                "LEFT JOIN unauth_results unauth ON unauth.replay_flow_id = f.id"
+            )
+        by_mod.append(("unauth", "unauth.verdict"))
+    if "auth_session_results" in tables:
+        extras.append(
+            "LEFT JOIN auth_session_results asess ON asess.replay_flow_id = f.id"
+        )
+        by_mod.append(("auth_session", "asess.verdict"))
+    if "auth_test_results" in tables:
+        extras.append(
+            "LEFT JOIN auth_test_results atest ON atest.replay_flow_id = f.id"
+        )
+        by_mod.append(("auth_test", "atest.verdict"))
+    if "scheduler_jobs" in tables:
+        extras.append(
+            """
+            LEFT JOIN (
+                SELECT replayed_flow_id AS fid, MAX(verdict) AS verdict
+                FROM scheduler_jobs
+                WHERE replayed_flow_id IS NOT NULL AND verdict IS NOT NULL
+                GROUP BY replayed_flow_id
+            ) sjv ON sjv.fid = f.id
+            """
+        )
+        by_mod.append(("_job", "sjv.verdict"))
+
+    if not by_mod:
+        return "", ", NULL AS attack_verdict"
+
+    ordered: list[str] = []
+    if prefer:
+        for mod, expr in by_mod:
+            if mod == prefer:
+                ordered.append(expr)
+                break
+    for _mod, expr in by_mod:
+        if expr not in ordered:
+            ordered.append(expr)
+    return " ".join(extras), f", COALESCE({', '.join(ordered)}) AS attack_verdict"
+
+
+def _normalize_attack_module(value: str | None) -> str | None:
+    raw = (value or "").strip().lower().replace("-", "_")
+    if not raw:
+        return None
+    return _ATTACK_MODULE_ALIASES.get(raw, raw)
+
+
+def _attack_module_sql(alias: str = "f") -> str:
+    """
+    Classify a flow as an attack-module product (IV/BAC/CORS/…).
+
+    Prefer flow_meta.attack_module, then generated_by, then replay_reason/source.
+    Application `modules.name` is a different concept (see module= filter).
+    """
+    meta_mod = f"lower(COALESCE(json_extract({alias}.flow_meta, '$.attack_module'), ''))"
+    generated = f"lower(COALESCE(json_extract({alias}.flow_meta, '$.generated_by'), ''))"
+    reason = f"lower(COALESCE({alias}.replay_reason, ''))"
+    source = f"lower(COALESCE({alias}.source, ''))"
+    return f"""
+        CASE
+          WHEN {meta_mod} IN ('bac','unauth','cors','auth_session','auth_test','iv','intruder')
+            THEN {meta_mod}
+          WHEN {generated} IN ('input_validation','iv') THEN 'iv'
+          WHEN {generated} = 'intruder' THEN 'intruder'
+          WHEN {generated} IN ('bac','unauth','cors','auth_session','auth_test')
+            THEN {generated}
+          WHEN {reason} LIKE 'input_validation%' OR {source} = 'iv_scan' THEN 'iv'
+          WHEN {reason} LIKE 'cors%' THEN 'cors'
+          WHEN {reason} LIKE 'unauth%' THEN 'unauth'
+          WHEN {reason} LIKE 'auth_session%' THEN 'auth_session'
+          WHEN {reason} LIKE 'bac%' THEN 'bac'
+          WHEN {reason} = 'auth_test' THEN 'auth_test'
+          WHEN {reason} LIKE 'intruder%' THEN 'intruder'
+          ELSE NULL
+        END
+    """
+
+
+def _filters(
+    source,
+    method,
+    host,
+    status_code,
+    role,
+    module,
+    search,
+    endpoint_id=None,
+    attack_module=None,
+):
     conditions, params = [], []
     if source:
         conditions.append("f.source = ?")
@@ -98,6 +249,10 @@ def _filters(source, method, host, status_code, role, module, search, endpoint_i
     if module:
         conditions.append("COALESCE(m.name, '—') = ?")
         params.append(module)
+    want_attack = _normalize_attack_module(attack_module)
+    if want_attack:
+        conditions.append(f"({_attack_module_sql('f')}) = ?")
+        params.append(want_attack)
     if endpoint_id:
         conditions.append("f.endpoint_id = ?")
         params.append(endpoint_id)
@@ -155,6 +310,7 @@ def list_flows(
     status_code: int | None = None,
     role: str | None = None,
     module: str | None = None,
+    attack_module: str | None = None,
     search: str | None = None,
     endpoint: str | None = None,
     endpoint_id: str | None = None,
@@ -170,9 +326,18 @@ def list_flows(
     record = db.get_project_record(project_id)
     db_path = config.project_db_path(project_id, record)
     ep = endpoint_id or endpoint
-    where, params = _filters(source, method, host, status_code, role, module, search, ep)
+    where, params = _filters(
+        source, method, host, status_code, role, module, search, ep, attack_module
+    )
     joins = "LEFT JOIN roles r ON r.id = f.role_id LEFT JOIN modules m ON m.id = f.module_id"
     want_flags = include and "flags" in {p.strip() for p in include.split(",")}
+    tables = _table_names(db_path)
+    verdict_joins, verdict_select = _attack_verdict_sql(
+        tables,
+        _normalize_attack_module(attack_module),
+        bac_joined=bool(want_flags and "bac_results" in tables),
+        unauth_joined=bool(want_flags and "unauth_results" in tables),
+    )
 
     flag_select = ""
     flag_joins = ""
@@ -211,10 +376,13 @@ def list_flows(
         f"""
         SELECT f.id, f.method, f.host, f.path, f.query, f.status_code, f.source,
                f.captured_at, f.endpoint_id, f.original_flow_id, f.replay_reason,
-               COALESCE(r.name, '—') AS role_name, COALESCE(m.name, '—') AS module_name
+               COALESCE(r.name, '—') AS role_name, COALESCE(m.name, '—') AS module_name,
+               {_attack_module_sql("f")} AS attack_module
+               {verdict_select}
                {flag_select}
         FROM flows f
         {joins}
+        {verdict_joins}
         {flag_joins}
         {where}
         ORDER BY f.captured_at DESC LIMIT ? OFFSET ?
@@ -251,7 +419,25 @@ def flow_filters(project_id: str):
             "statuses": [],
             "roles": [],
             "modules": [],
+            "attack_modules": list(_KNOWN_ATTACK_MODULES),
         }
+    discovered_attack = [
+        r["attack_module"]
+        for r in db.query_all(
+            db_path,
+            f"""
+            SELECT attack_module FROM (
+                SELECT {_attack_module_sql("f")} AS attack_module
+                FROM flows f
+            )
+            WHERE attack_module IS NOT NULL
+            GROUP BY attack_module
+            ORDER BY attack_module
+            """,
+        )
+        if r.get("attack_module")
+    ]
+    extras = [m for m in discovered_attack if m not in _KNOWN_ATTACK_MODULES]
     return {
         "sources": [
             r["source"]
@@ -289,6 +475,7 @@ def flow_filters(project_id: str):
                 "SELECT DISTINCT m.name FROM flows f JOIN modules m ON m.id=f.module_id ORDER BY m.name",
             )
         ],
+        "attack_modules": list(_KNOWN_ATTACK_MODULES) + extras,
     }
 
 
@@ -579,6 +766,7 @@ def adjacent(
     status_code: int | None = None,
     role: str | None = None,
     module: str | None = None,
+    attack_module: str | None = None,
     search: str | None = None,
     endpoint: str | None = None,
     endpoint_id: str | None = None,
@@ -592,7 +780,9 @@ def adjacent(
     record = db.get_project_record(project_id)
     db_path = config.project_db_path(project_id, record)
     ep = endpoint_id or endpoint
-    where, params = _filters(source, method, host, status_code, role, module, search, ep)
+    where, params = _filters(
+        source, method, host, status_code, role, module, search, ep, attack_module
+    )
     joins = "LEFT JOIN roles r ON r.id = f.role_id LEFT JOIN modules m ON m.id = f.module_id"
 
     # When no filters, keep the simple global window (fast path).

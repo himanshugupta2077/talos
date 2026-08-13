@@ -938,6 +938,7 @@ def list_detections(
     suppressed: Optional[bool] = None,
     has_finding: Optional[bool] = None,
     value_fingerprint: Optional[str] = None,
+    finding_id: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[Detection]:
@@ -954,6 +955,7 @@ def list_detections(
         suppressed        — True/False filter; None = both
         has_finding       — True → finding_id set; False → null; None = both
         value_fingerprint — secret cluster key component
+        finding_id        — detections already linked to this finding
         limit / offset    — pagination
 
     Output:
@@ -992,6 +994,9 @@ def list_detections(
     if value_fingerprint:
         clauses.append("d.value_fingerprint = ?")
         params.append(value_fingerprint)
+    if finding_id:
+        clauses.append("d.finding_id = ?")
+        params.append(finding_id)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     lim = max(1, int(limit))

@@ -501,11 +501,11 @@ always running a fixed ~70-probe matrix. Default tier is **standard**
 | 2: Identifier | Additional reflection markers (legacy weak list: deep/exhaustive only) |
 | 3: Characters | Class representatives / drill-down (skipped under standard when multiprobe confident) |
 | 4: Length | Binary/log length search (fixed matrix only on exhaustive) |
-| 5: Types | Passive-first type_confirm (pruned under standard; full on exhaustive) |
-| 5b: URL sink | Benign URL canaries when passive `url_features` warrants → `observed.url_sink` (Phase 3); Phase 4 → `network_resource_sink` + value-first candidates |
+| 5: Types | Passive-first type_confirm (pruned under standard; full on exhaustive). Boolean fields send **both** `true` and `false` as unique flows. JSON bodies inject native types (bool/number/array), not stringified values. |
+| 5b: URL sink | Benign URL canaries when passive `url_features` warrants → `observed.url_sink` (Phase 3); Phase 4 → `network_resource_sink` + value-first candidates. JSON keys like `headers.Host` / `Location` / URL-shaped values get the same canaries as HTTP header surfaces. |
 | 6: Transformations | Detect trim, lowercase, normalization, escaping, encoding (enriched by M8 pipeline) |
 | 7: Reflection | Endpoint-specific reflection analysis (not globally cached) |
-| 8: Validation | Semantic rules + core validation; exploit-shaped strings deep+ only; tested{} negatives |
+| 8: Validation | Semantic rules + type-family catalogs (boolean polarity, email shapes, array wrap/empty, numeric edges) + core validation; exploit-shaped strings deep+ only; each probe is its own replay flow; tested{} negatives |
 | 8b: Parser | Normalization pipeline + parser fingerprint (dup keys, JSON null/empty, arrays); quick skips |
 
 **Budget tiers:** `quick` · `standard` (default) · `deep` · `exhaustive` (legacy-like).
@@ -594,7 +594,7 @@ and profiles (read APIs under `/api/input-validation/…`; UI at `/attack/input-
 
 ```bash
 talos input-validation config --enable
-talos input-validation run --budget standard
+talos input-validation run
 talos input-validation run --host api.example.com
 talos input-validation run --endpoint <id>
 talos input-validation run --parameter username
@@ -609,7 +609,7 @@ talos input-validation reflection --endpoint <id> --ignore-cache
 
 **Migration (pre-revamp caches):** existing `iv_probe_results` →
 `synthesize` (zero HTTP). Stale full-matrix cache after upgrade →
-`clear-cache --force` then `run --budget standard`. Fresh projects preferred
+`clear-cache --force` then `run`. Fresh projects preferred
 in beta.
 
 ---

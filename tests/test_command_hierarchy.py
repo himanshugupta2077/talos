@@ -71,6 +71,15 @@ def test_talos_helper_auth_config_documents_session_recovery() -> None:
     assert re.search(r"^\s+reset-health\s+", text, re.M)
 
 
+def test_talos_helper_documents_cors_attack() -> None:
+    """Root help must advertise talos attack cors commands."""
+    text = _root_help_text()
+    assert "cors candidates" in text
+    assert "cors run" in text
+    assert "cors results list|show" in text
+    assert "cors status" in text
+
+
 def test_talos_helper_documents_layered_config() -> None:
     """Root help must advertise CLI-022 talos config commands."""
     text = _root_help_text()

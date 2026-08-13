@@ -486,6 +486,27 @@ def test_generate_project_scope(client):
     assert run_scoped.call_args[0][1] == ["attack", "auth-session", "generate"]
 
 
+def test_generate_with_flows(client):
+    with patch("talos_ui.routers.attack_auth_session.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/auth-session/generate",
+            params={"project_id": "demo"},
+            json={"flows": ["flow-a", "flow-b"], "include_unsafe_methods": True},
+        )
+    assert res.status_code == 200
+    assert run_scoped.call_args[0][1] == [
+        "attack",
+        "auth-session",
+        "generate",
+        "--flow",
+        "flow-a",
+        "--flow",
+        "flow-b",
+        "--include-unsafe-methods",
+    ]
+
+
 def test_generate_endpoint_scope_with_families_and_unsafe(client):
     with patch("talos_ui.routers.attack_auth_session.cli.run_scoped") as run_scoped:
         run_scoped.return_value = [_ok_result()]

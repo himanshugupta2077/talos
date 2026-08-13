@@ -459,9 +459,11 @@ talos finding report --group "Client Report" > client-report.md
 
 # 8b. Passive secret detection (client-side secrets + disclosures)
 # Zero-HTTP scan of captured HTML/JS/JSON/CSS/maps after FlowWorker commit.
-# HIGH/CONFIRMED secrets → findings (cluster PASSIVE_SECRET:<fingerprint>).
+# HIGH/CONFIRMED secrets → one cluster (PASSIVE_SECRET): first PRIMARY, rest LINKED.
 # Infrastructure disclosures stay in passive_detections only (no auto-finding).
-# Master switch: passive_scan_config.enabled (project DB). Control Panel:
+# Master switch: passive_scan_config.enabled (project DB, ON by default).
+# One finding per leaked value; `talos finding show` highlights the match.
+# Control Panel:
 #   Testing → Secret Detection → Turn on/off (Overview or Settings).
 talos passive status
 talos passive config show
@@ -1547,7 +1549,7 @@ in v1).
 | `x_real_ip_localhost` | bac_header_inject |
 | `x_forwarded_host` | bac_header_inject |
 
-`--technique NAME` restricts to recipes whose technique field equals `NAME` (for example `--technique baseline` runs the baseline core recipe plus all baseline+mutation combinations).
+`--technique NAME` restricts to recipes whose technique field equals `NAME` (for example `--technique baseline` runs the baseline core recipe plus all baseline+mutation combinations). `--flow UUID` (repeatable) probes only those captures and skips auto ranking of testable endpoints.
 
 Successful `BYPASS` verdicts create findings under attack module `unauth` (display label: **Unauthenticated Execution**).
 
@@ -1556,11 +1558,50 @@ jobs for qualified endpoints that have no result yet). Distinct from
 `talos attack unauth run`. Default is off.
 
 ```bash
+talos attack unauth run --flow <uuid>
+talos attack unauth run --flow <uuid1> --flow <uuid2>
 talos attack unauth config show
 # Auto Run : Disabled
 talos attack unauth config --auto-run on
 talos attack unauth config --auto-run off
 ```
+
+---
+
+## Attack — CORS misconfiguration (`cors`)
+
+Active module. Selects in-scope `proxy_capture` flows with **200 OK**, preferring
+**POST / PATCH / PUT**, then **GET**. Prefers a captured `Origin` header; if none
+is present, synthesizes `scheme://host` from the request URL.
+
+`talos attack cors run` enqueues one `cors_attack` scheduler job per
+(baseline flow, Origin technique). Default auto-select is the top 5
+in-scope 200 OK endpoints. `--flow UUID` (repeatable) probes only those
+captures and skips ranking. Each job writes a **unique replay flow**
+(`source=auto_replay`, `original_flow_id` = baseline) — same contract as unauth
+/ BAC / auth-session. The captured baseline is never mutated.
+
+A finding is created only when an **attacker-controlled origin** (random
+`.invalid` domain or attacker subdomain of the target) is reflected in
+`Access-Control-Allow-Origin`. Multiple techniques on the same target origin
+cluster as one **PRIMARY** (`CORS:<scheme://netloc>`) with later techniques
+**LINKED**. `Access-Control-Allow-Credentials: true` or `ACAO: *` are extra
+evidence on that finding, never standalone issues.
+
+```bash
+talos attack cors candidates
+talos attack cors techniques
+talos attack cors run
+talos attack cors run --technique arbitrary_https
+talos attack cors run --flow <uuid>
+talos attack cors run --flow <uuid1> --flow <uuid2>
+talos attack cors run --right-now
+talos attack cors results list
+talos attack cors results show <replay_flow_id>
+talos attack cors status
+```
+
+Control Panel: `/testing/cors` (Overview / Run / Results).
 
 ---
 
@@ -1727,6 +1768,7 @@ Design: `docs/design-auth-session-testing-engine.md`.
 | Project (default) | *(none)* |
 | Module | `--module <name\|uuid>` |
 | Endpoint | `--endpoint <uuid>` |
+| Selected flows | `--flow <uuid>` (repeatable) |
 
 `--role NAME|UUID` filters attacker role within any scope.
 `--module` accepts a module **name or UUID** (same rule as roles).
@@ -1738,6 +1780,7 @@ talos attack bac session-swap --role customer --auto-generate
 talos attack bac session-swap --module payments
 talos attack bac session-swap --module <module_uuid>
 talos attack bac session-swap --endpoint <endpoint_uuid>
+talos attack bac session-swap --flow <uuid> --flow <uuid>
 
 talos attack bac method-fuzz --role customer
 talos attack bac content-type --role customer
@@ -1813,12 +1856,12 @@ talos input-validation config
 #   (benign talos-canary.invalid canaries → observed.url_sink; no Findings yet)
 #   Kill-switch: talos config set url_sink.iv_probes.enabled false --project
 #   Inventory-only rows (location=response, virtual jwt.*) are never scheduled.
-# Operator path (Module 12): endpoint params → run --budget → show → candidates
+# Operator path (Module 12): endpoint params → run (full probe set) → show → candidates
 talos endpoint params <endpoint_id> --network-resource
-talos input-validation run --budget standard
 talos input-validation run
 talos input-validation run --host api.example.com
 talos input-validation run --endpoint <endpoint_id>
+talos input-validation run --flow <uuid> --flow <uuid>
 talos input-validation run --parameter username
 talos input-validation run --ignore-cache   # re-run (ignore cache); planner resumes waves
 talos input-validation run --include-auth-artifacts  # one-shot: probe session/auth params
@@ -2035,7 +2078,7 @@ parsing probe tables. XSS candidates from stored links require an existing
 
 ```bash
 talos input-validation config --enable
-talos input-validation run --budget standard   # planner adaptive; ~10–18 req/param typical
+talos input-validation run                     # full probe set (exhaustive)
 # … wait for scheduler …
 talos input-validation status                  # requests_used, confidence buckets, plan
 talos input-validation show <parameter_uuid>   # profile + candidates (no SQL)
@@ -2046,8 +2089,8 @@ talos input-validation candidates --min-score 60
 16 hex chars (not the legacy weak `__TL__` list). Identifier weak list runs
 only under deep/exhaustive.
 
-**Budget tiers:** `quick` ~5–8 · `standard` ~10–18 · `deep` ~25–40 ·
-`exhaustive` ~70 (legacy full matrix escape hatch).
+**Coverage:** default `exhaustive` (~256 req/param max, full matrix). Optional
+limiters: `quick` ~8 · `standard` ~18 · `deep` ~40 (`--budget TIER`).
 
 **Old IV cache / pre-revamp projects**
 
@@ -2055,7 +2098,7 @@ only under deep/exhaustive.
 |-----------|------------|
 | Probes exist, no profiles | `talos input-validation synthesize` (zero new HTTP) |
 | Profiles missing candidates | `synthesize` again (or `candidates --recompute` for display) |
-| Stale matrix after upgrade | `clear-cache --force` then `run --budget standard` |
+| Stale matrix after upgrade | `clear-cache --force` then `run` |
 | Fresh beta project | Preferred — open a new project after upgrades |
 
 Schema tables (`iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`)

@@ -10,8 +10,9 @@ Purpose:
         enabled                : False  — tester must explicitly enable
         workers                : 2
         analyses               : all phases enabled (including multiprobe)
-        probe_strategy         : standard — multiprobe first; weak identifiers
-                                 only on deep/exhaustive (Module 4)
+        probe_strategy         : exhaustive — full probe set (type-family,
+                                 URL sink, chars, validation). Smaller tiers
+                                 remain opt-in limiters via --budget.
         max_requests_per_param : 0 — use planner tier default (Module 5)
         include_auth_artifacts : False — skip session cookies / Authorization
                                  unless operator opts in (Module 9)
@@ -35,7 +36,7 @@ PROBE_STRATEGIES: tuple[str, ...] = (
     "deep",
     "exhaustive",
 )
-DEFAULT_PROBE_STRATEGY = "standard"
+DEFAULT_PROBE_STRATEGY = "exhaustive"
 
 
 @dataclass
@@ -65,7 +66,8 @@ class IVConfig:
         enabled                — Whether IV runs at all. Default False.
         workers                — Concurrent analysis workers. Default 2.
         analyses               — Per-phase toggles.
-        probe_strategy         — quick|standard|deep|exhaustive (planner budget).
+        probe_strategy         — quick|standard|deep|exhaustive (planner
+                                 budget). Default exhaustive = full probe set.
         max_requests_per_param — Hard HTTP cap per parameter; 0 = tier default
                                  (Module 5 planner).
         include_auth_artifacts — When False (default), session cookies and

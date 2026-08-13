@@ -330,6 +330,33 @@ export default function AttackHub() {
           .catch(() => undefined);
       });
 
+    // CORS misconfiguration (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/cors/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.CORS_MISCONFIG ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          cors: {
+            chips: [
+              {
+                label: "issues",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Intruder (active high-volume)
     api
       .get<{
@@ -388,13 +415,13 @@ export default function AttackHub() {
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-xl font-semibold">Testing modules</h1>
+          <h1 className="text-xl font-semibold">Attack Module</h1>
           <p className="text-sm text-base-content/60 mt-0.5 max-w-xl">
             Launch and review security tests. Passive modules observe captured
             traffic; Active modules send requests against the target.
           </p>
         </div>
-        <ModuleHelp title="How Testing modules are organized">
+        <ModuleHelp title="How Attack Module is organized">
           <p>
             <strong>Passive</strong> — scan what you already captured (secrets,
             error disclosures). Safe to leave enabled; no outbound validation.

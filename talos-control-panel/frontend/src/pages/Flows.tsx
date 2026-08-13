@@ -6,12 +6,19 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
+import { useAction } from "../hooks/useAction";
 import { ModuleHelp, NoProjectNotice } from "../components/Common";
 import DataTable, { Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
 import { formatIST } from "../lib/time";
+import { attackModuleShortLabel } from "../lib/attackDisplay";
 import { FlowRow, Role } from "../types";
 import FlowActions from "./flows/FlowActions";
+import FlowsAttackBar from "./flows/FlowsAttackBar";
+import {
+  defaultSelectedAttackIds,
+  runFlowAttacks,
+} from "./flows/flowAttacks";
 
 interface Filters {
   sources: string[];
@@ -20,6 +27,7 @@ interface Filters {
   statuses: number[];
   roles: string[];
   modules: string[];
+  attack_modules: string[];
 }
 
 interface FlowListRow extends FlowRow {
@@ -29,6 +37,8 @@ interface FlowListRow extends FlowRow {
   has_bac?: boolean;
   has_unauth?: boolean;
   has_finding_evidence?: boolean;
+  attack_module?: string | null;
+  attack_verdict?: string | null;
 }
 
 export default function Flows() {
@@ -44,6 +54,7 @@ export default function Flows() {
     statuses: [],
     roles: [],
     modules: [],
+    attack_modules: [],
   });
   const [source, setSource] = useState(searchParams.get("source") || "");
   const [method, setMethod] = useState(searchParams.get("method") || "");
@@ -51,11 +62,24 @@ export default function Flows() {
   const [status, setStatus] = useState(searchParams.get("status_code") || "");
   const [role, setRole] = useState(searchParams.get("role") || "");
   const [module, setModule] = useState(searchParams.get("module") || "");
+  const [attackModule, setAttackModule] = useState(
+    searchParams.get("attack_module") || ""
+  );
   const [search, setSearch] = useState(searchParams.get("search") || "");
   const [loading, setLoading] = useState(false);
   const [menuFlow, setMenuFlow] = useState<FlowListRow | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedAttackIds, setSelectedAttackIds] = useState<string[]>(
+    defaultSelectedAttackIds
+  );
   const navigate = useNavigate();
+
+  const projectId = selected?.id;
+  const runAttacks = useAction(
+    "Run attacks on selected flows",
+    (ids: string[]) => runFlowAttacks(projectId || "", ids, selectedAttackIds)
+  );
 
   useEffect(() => {
     if (!selected) return;
@@ -76,6 +100,7 @@ export default function Flows() {
         status_code: status,
         role,
         module,
+        attack_module: attackModule,
         search,
         endpoint: endpointFilter || undefined,
         include: "flags",
@@ -84,8 +109,22 @@ export default function Flows() {
         setRows(r.flows);
         setTotal(r.total);
       })
-      .finally(() => setLoading(false));
-  }, [selected, source, method, host, status, role, module, search, endpointFilter]);
+      .finally(() => {
+        setLoading(false);
+        setSelectedIds(new Set());
+      });
+  }, [
+    selected,
+    source,
+    method,
+    host,
+    status,
+    role,
+    module,
+    attackModule,
+    search,
+    endpointFilter,
+  ]);
 
   // Keep list filters in URL so detail adjacent can stay filter-aware
   useEffect(() => {
@@ -97,11 +136,43 @@ export default function Flows() {
     if (status) next.set("status_code", status);
     if (role) next.set("role", role);
     if (module) next.set("module", module);
+    if (attackModule) next.set("attack_module", attackModule);
     if (search) next.set("search", search);
     setSearchParams(next, { replace: true });
-  }, [source, method, host, status, role, module, search, endpointFilter, setSearchParams]);
+  }, [
+    source,
+    method,
+    host,
+    status,
+    role,
+    module,
+    attackModule,
+    search,
+    endpointFilter,
+    setSearchParams,
+  ]);
 
   if (!selected) return <NoProjectNotice />;
+
+  const visibleIds = rows.map((r) => r.id);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    setSelectedIds((prev) => {
+      if (allVisibleSelected) return new Set();
+      return new Set(visibleIds);
+    });
+  };
 
   const openDetail = (id: string, hash?: string) => {
     const qs = searchParams.toString();
@@ -109,6 +180,32 @@ export default function Flows() {
   };
 
   const columns: Column<FlowListRow>[] = [
+    {
+      key: "select",
+      header: (
+        <input
+          type="checkbox"
+          className="checkbox checkbox-xs"
+          checked={allVisibleSelected}
+          onChange={toggleAllVisible}
+          title="Select all visible"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+      sortable: false,
+      alwaysVisible: true,
+      defaultWidth: 48,
+      minWidth: 40,
+      render: (r) => (
+        <input
+          type="checkbox"
+          className="checkbox checkbox-xs"
+          checked={selectedIds.has(r.id)}
+          onChange={() => toggleRow(r.id)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+    },
     {
       key: "captured_at",
       header: "Time",
@@ -189,6 +286,38 @@ export default function Flows() {
       ),
     },
     { key: "source", header: "Source", defaultWidth: 96 },
+    {
+      key: "attack_module",
+      header: "Attack",
+      defaultWidth: 120,
+      sortValue: (r) => r.attack_module || "",
+      render: (r) =>
+        r.attack_module ? (
+          <span
+            className="badge badge-xs badge-outline whitespace-nowrap"
+            title={attackModuleShortLabel(r.attack_module)}
+          >
+            {r.attack_module === "cors"
+              ? "CORS"
+              : attackModuleShortLabel(r.attack_module)}
+          </span>
+        ) : (
+          <span className="text-base-content/35">—</span>
+        ),
+    },
+    ...(attackModule
+      ? [
+          {
+            key: "attack_verdict",
+            header: "Verdict",
+            defaultWidth: 140,
+            sortValue: (r: FlowListRow) => r.attack_verdict || "",
+            render: (r: FlowListRow) => (
+              <StatusBadge value={r.attack_verdict} />
+            ),
+          } satisfies Column<FlowListRow>,
+        ]
+      : []),
     { key: "role_name", header: "Role", defaultWidth: 100 },
     { key: "module_name", header: "Module", defaultWidth: 100 },
     {
@@ -233,6 +362,7 @@ render: (r) => {
                     endpoint_id: r.endpoint_id,
                   }}
                   onDone={() => setMenuFlow(null)}
+                  onRequestAttacks={() => setSelectedIds(new Set([r.id]))}
                   className="menu menu-sm p-0"
                 />
               </div>
@@ -254,14 +384,18 @@ render: (r) => {
       <ModuleHelp title="How Flows work">
         <p>
           Flows are stored HTTP transactions from proxy capture, replay, IV, and
-          attacks. Filter the table, then open a row for the inspection workspace
-          (request/response, replay chain, attack results).
+          attacks. Filter the table (including <strong>attack</strong> for IV,
+          BAC, CORS, unauth, …). An attack filter also shows each row’s engine
+          verdict (CORS_MISCONFIG, POSSIBLE_BAC, BYPASS, …). Open a row for the
+          inspection workspace (request/response, replay chain, attack results).
         </p>
         <p>
-          Row <strong>⋮</strong> under the Actions column matches the detail Actions
-          panel: replay now, enqueue, export Markdown, assign login/control flow,
-          copy helpers. Signal icons (↺ Δ A F) appear only when Core tables have
-          related rows.
+          Select one or more rows and use the bar to run attacks on those
+          flows only — CORS, Unauth, BAC, IV, or generate Auth-session
+          candidates. Intruder still needs a configured session. Row{" "}
+          <strong>⋮</strong> matches the detail Actions panel (run attacks,
+          replay, export, assign login/control). Signal icons (↺ Δ A F) appear
+          only when Core tables have related rows.
         </p>
         <p>
           Table: drag a column’s right edge to resize, drag a header to reorder,
@@ -341,6 +475,18 @@ render: (r) => {
             </option>
           ))}
         </select>
+        <select
+          className={selectClass}
+          value={attackModule}
+          onChange={(e) => setAttackModule(e.target.value)}
+        >
+          <option value="">attack: any</option>
+          {(filters.attack_modules || []).map((m) => (
+            <option key={m} value={m}>
+              {attackModuleShortLabel(m)}
+            </option>
+          ))}
+        </select>
       </div>
 
       <p className="text-[11px] text-base-content/45 mb-2">
@@ -353,9 +499,28 @@ render: (r) => {
         rows={rows}
         rowKey={(r) => r.id}
         loading={loading}
-        storageKey="flows"
+        storageKey="flows-v2"
         onRowClick={(r) => openDetail(r.id)}
+        rowClassName={(r) => (selectedIds.has(r.id) ? "bg-primary/10" : "")}
         emptyLabel="No flows captured yet."
+      />
+
+      <FlowsAttackBar
+        flowCount={selectedIds.size}
+        selectedAttackIds={selectedAttackIds}
+        busy={runAttacks.running}
+        onToggleAttack={(id) => {
+          setSelectedAttackIds((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+          );
+        }}
+        onClear={() => setSelectedIds(new Set())}
+        onRun={async () => {
+          const ids = [...selectedIds];
+          if (!ids.length) return;
+          await runAttacks.run(ids);
+          setSelectedIds(new Set());
+        }}
       />
     </div>
   );

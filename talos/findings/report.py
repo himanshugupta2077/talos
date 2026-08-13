@@ -47,6 +47,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_AUTH_TEST_RESULT,
     EVIDENCE_TYPE_UNAUTH_RESULT,
     EVIDENCE_TYPE_AUTH_SESSION_RESULT,
+    EVIDENCE_TYPE_CORS_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
     EVIDENCE_TYPE_ANALYST_NOTE,
@@ -122,6 +123,36 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
         sections.append(f"**Role:** {role_data.get('name') or role_ev.get('reference_id') or '?'}  ")
     sections.append("")
 
+    # --- Leaked secret (passive_secret) ---
+    try:
+        from talos.passive.finding_bridge import build_secret_exposure
+
+        exposure = build_secret_exposure(db_path, finding_id, evidence=evidence)
+    except Exception:  # noqa: BLE001
+        exposure = None
+    if exposure and exposure.get("hits"):
+        sections.append("## Leaked Secret\n")
+        for hit in exposure["hits"]:
+            redacted = hit.get("redacted_value") or "(redacted)"
+            detector = hit.get("detector_id") or "unknown"
+            level = hit.get("confidence_level") or ""
+            loc = hit.get("url") or hit.get("path") or "unknown path"
+            sections.append(f"- **Value:** `{redacted}`")
+            sections.append(f"- **Detector:** `{detector}` ({level})")
+            if hit.get("matched_key"):
+                sections.append(f"- **Matched key:** `{hit['matched_key']}`")
+            sections.append(f"- **Location:** `{loc}`")
+            start = hit.get("match_start") or 0
+            end = hit.get("match_end") or 0
+            sections.append(f"- **Offsets:** `{start}–{end}`")
+            before = hit.get("context_before") or ""
+            after = hit.get("context_after") or ""
+            if before or after:
+                sections.append(
+                    f"- **Context:** `…{before}>>>{redacted}<<<{after}…`"
+                )
+            sections.append("")
+
     # --- Endpoint Intelligence ---
     endpoint_ev = _find_evidence(evidence, EVIDENCE_TYPE_ENDPOINT)
     if endpoint_ev and endpoint_ev.get("reference_id"):
@@ -154,6 +185,23 @@ def generate_finding_report(db_path: Path, finding_id: str) -> str:
                 sections.append(f"- **Attack Type:** `{bac_data['attack_type']}`")
             if bac_data.get("variant"):
                 sections.append(f"- **Variant:** `{bac_data['variant']}`")
+        sections.append("")
+
+    # --- CORS attack metadata ---
+    cors_ev = _find_evidence(evidence, EVIDENCE_TYPE_CORS_RESULT)
+    if cors_ev:
+        cors_data = _parse_json(cors_ev.get("data", "{}"))
+        sections.append("## CORS Misconfiguration Details\n")
+        if cors_data.get("technique"):
+            sections.append(f"- **Technique:** `{cors_data['technique']}`")
+        if cors_data.get("origin_sent"):
+            sections.append(f"- **Origin sent:** `{cors_data['origin_sent']}`")
+        if cors_data.get("acao"):
+            sections.append(f"- **Access-Control-Allow-Origin:** `{cors_data['acao']}`")
+        if cors_data.get("acac"):
+            sections.append(f"- **Access-Control-Allow-Credentials:** `{cors_data['acac']}`")
+        if cors_data.get("risk_hint"):
+            sections.append(f"- **Risk hint:** `{cors_data['risk_hint']}`")
         sections.append("")
 
     # --- Original Captured Flow ---
