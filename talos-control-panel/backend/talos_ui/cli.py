@@ -36,8 +36,16 @@ def _talos_env() -> dict[str, str]:
 
     venv_bin = str(Path(config.TALOS_PYTHON).parent)
     env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+    # Child Python must use UTF-8 stdio. Windows locale encoding (cp1252)
+    # cannot encode schema arrows or captured target text.
+    env["PYTHONIOENCODING"] = "utf-8"
 
     return env
+
+
+# Decode Talos CLI pipes as UTF-8 so Windows cp1252 locale does not raise
+# UnicodeDecodeError on arrows / box drawing / target Unicode.
+_CLI_TEXT = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 @dataclass
 class CommandResult:
@@ -88,9 +96,9 @@ def run(
             cwd=config.TALOS_ROOT,
             env=_talos_env(),
             capture_output=True,
-            text=True,
             input=stdin_text,
             timeout=timeout or config.CLI_TIMEOUT,
+            **_CLI_TEXT,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
         return CommandResult(
@@ -176,9 +184,9 @@ def run_with_editor_content(
                 argv,
                 cwd=config.TALOS_ROOT,
                 capture_output=True,
-                text=True,
                 timeout=timeout or config.CLI_TIMEOUT,
                 env={**_talos_env(), **env},
+                **_CLI_TEXT,
             )
             duration_ms = int((time.monotonic() - start) * 1000)
             return CommandResult(
@@ -423,8 +431,8 @@ class ProcessManager:
             "env": _talos_env(),
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
-            "text": True,
             "bufsize": 1,
+            **_CLI_TEXT,
         }
 
         if os.name == "nt":

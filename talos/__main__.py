@@ -29,7 +29,12 @@ import logging
 import os
 import sys
 
-from talos.cli_output import EXIT_USAGE, cli_error, cli_usage_error
+from talos.cli_output import (
+    EXIT_USAGE,
+    cli_error,
+    cli_usage_error,
+    configure_stdio,
+)
 from talos.config import TalosConfig
 from talos.projects.manager import (
     ProjectManager,
@@ -141,6 +146,8 @@ def main(argv: list[str] | None = None) -> None:
         - May set TALOS_PROJECT when --project is given.
         - Delegates to subcommand CLI modules.
     """
+    # Before any print / argparse help: Windows cp1252 cannot encode → / ✓ / trees.
+    configure_stdio()
     if argv is None:
         argv = sys.argv[1:]
 

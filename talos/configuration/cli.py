@@ -32,6 +32,7 @@ Data flow:
     argv → ConfigurationManager → stdout
 Side effects:
     set/unset/edit write YAML (and may dual-write SQLite).
+    Configures UTF-8 stdio so Windows cp1252 consoles can print schema arrows.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ from talos.cli_output import (
     cli_precondition_error,
     cli_success,
     cli_usage_error,
+    configure_stdio,
     wants_json,
 )
 from talos.configuration.defaults import (
@@ -83,6 +85,7 @@ def run_config_cli(manager: ProjectManager, argv: list[str]) -> None:
     Side effects:
         Reads/writes configuration; prints to stdout; may exit.
     """
+    configure_stdio()
     parser = build_parser()
     if not argv or argv[0] in ("-h", "--help"):
         parser.print_help()

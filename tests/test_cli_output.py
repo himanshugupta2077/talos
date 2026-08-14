@@ -33,6 +33,7 @@ from talos.cli_output import (
     cli_success,
     cli_usage_error,
     cli_warning,
+    configure_stdio,
     confirm_or_exit,
     confirm_or_force,
     get_output_format,
@@ -338,3 +339,96 @@ def test_json_ready_path_and_enum() -> None:
     assert ready["path"] == "/tmp/x"
     assert ready["status"] == "active"
     assert ready["tags"] == ["a"]
+
+
+class _Cp1252Stream:
+    """Minimal stdout stand-in that encodes like a Windows console."""
+
+    def __init__(self) -> None:
+        self.encoding = "cp1252"
+        self.chunks: list[bytes] = []
+
+    def write(self, text: str) -> int:
+        encoded = text.encode(self.encoding)
+        self.chunks.append(encoded)
+        return len(text)
+
+    def reconfigure(self, *, encoding: str | None = None, errors: str | None = None, **_: object) -> None:
+        if encoding:
+            self.encoding = encoding
+
+    def flush(self) -> None:
+        return None
+
+
+class _Cp1252StreamNoReconfigure:
+    """cp1252 stream whose encoding cannot be changed (reconfigure missing)."""
+
+    encoding = "cp1252"
+
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        self.chunks.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+def test_configure_stdio_lets_arrow_print_on_cp1252(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _Cp1252Stream()
+    monkeypatch.setattr("sys.stdout", stream)
+    configure_stdio()
+    cli_json({"text": "Input Validation → Endpoints → …"})
+    payload = b"".join(stream.chunks).decode(stream.encoding)
+    assert "Input Validation → Endpoints" in payload
+    json.loads(payload)
+
+
+def test_cli_json_does_not_raise_when_reconfigure_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _Cp1252StreamNoReconfigure()
+    monkeypatch.setattr("sys.stdout", stream)
+    cli_json({"text": "Input Validation → Endpoints"})
+    # Replacement keeps JSON valid even if the arrow cannot be encoded.
+    assert stream.chunks
+    joined = "".join(stream.chunks)
+    json.loads(joined)
+    assert "Input Validation" in joined
+
+
+def test_config_schema_json_survives_cp1252(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from talos.configuration.defaults import build_config_schema
+
+    payload = build_config_schema()
+    dumped = json.dumps(payload, indent=2, ensure_ascii=False)
+    assert "\u2192" in dumped
+    stream = _Cp1252Stream()
+    monkeypatch.setattr("sys.stdout", stream)
+    configure_stdio()
+    cli_json(payload)
+    decoded = b"".join(stream.chunks).decode("utf-8")
+    loaded = json.loads(decoded)
+    assert loaded["sections"]
+    burp = next(section for section in loaded["sections"] if section["id"] == "burp")
+    assert "→" in burp["description"]
+
+
+def test_root_help_survives_cp1252(monkeypatch: pytest.MonkeyPatch) -> None:
+    from talos.__main__ import main
+
+    stream = _Cp1252Stream()
+    monkeypatch.setattr("sys.stdout", stream)
+    monkeypatch.setattr("sys.stderr", stream)
+    with pytest.raises(SystemExit) as exc:
+        main(["-h"])
+    assert exc.value.code == 0
+    assert b"Talos" in b"".join(stream.chunks)

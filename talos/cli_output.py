@@ -85,7 +85,7 @@ import sys
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TextIO
 
 # ------------------------------------------------------------------ #
 # Exit codes (single source of truth — CLI-012)                        #
@@ -122,6 +122,127 @@ OUTPUT_FORMAT_JSON: str = "json"
 
 OUTPUT_FORMATS: tuple[str, ...] = (OUTPUT_FORMAT_TABLE, OUTPUT_FORMAT_JSON)
 """Allowed values for --format."""
+
+
+# ------------------------------------------------------------------ #
+# Windows / locale-safe stdio                                          #
+# ------------------------------------------------------------------ #
+#
+# Windows consoles default to cp1252. print() of arrows (→), box drawing,
+# check marks, or captured target text then raises UnicodeEncodeError.
+# Reconfigure streams to UTF-8 once at process start; write helpers still
+# fall back to replacement so a hostile/wrapped stream cannot crash the CLI.
+
+_WINDOWS_CONSOLE_UTF8: int = 65001
+"""Windows code page for UTF-8 (chcp 65001)."""
+
+
+def _reconfigure_utf8(stream: Any) -> None:
+    """
+    Purpose:
+        Point a text stream at UTF-8 with replacement errors when the
+        runtime supports TextIO.reconfigure (Python 3.7+).
+    Input:
+        stream — sys.stdout / sys.stderr, or None.
+    Output: None.
+    Side effects: May change the stream encoding. Never raises.
+    """
+    if stream is None:
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return
+
+
+def _enable_windows_utf8_console() -> None:
+    """
+    Purpose:
+        Ask the Windows console to interpret our UTF-8 bytes as UTF-8
+        so arrows render instead of mojibake after reconfigure.
+    Input: None.
+    Output: None.
+    Side effects: May call SetConsoleCP / SetConsoleOutputCP. Never raises.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleOutputCP(_WINDOWS_CONSOLE_UTF8)
+        kernel32.SetConsoleCP(_WINDOWS_CONSOLE_UTF8)
+    except Exception:
+        return
+
+
+def configure_stdio() -> None:
+    """
+    Purpose:
+        Make stdout/stderr UTF-8 so Windows cp1252 consoles do not crash
+        on schema arrows, help text, or captured target Unicode.
+    Input: None.
+    Output: None.
+    Side effects:
+        Reconfigures sys.stdout and sys.stderr when possible. On Windows,
+        may switch the console code page to UTF-8. Safe to call more than
+        once.
+    """
+    _enable_windows_utf8_console()
+    _reconfigure_utf8(sys.stdout)
+    _reconfigure_utf8(sys.stderr)
+
+
+def _cli_write(text: str, *, file: TextIO | Any) -> None:
+    """
+    Purpose:
+        Write text to a stream without raising UnicodeEncodeError.
+    Input:
+        text — already-formatted payload, including any trailing newline.
+        file — destination stream (stdout or stderr).
+    Output: None.
+    Side effects: Writes to file. Falls back to the binary buffer or
+        replacement characters when the stream encoding cannot represent
+        a character.
+    """
+    try:
+        file.write(text)
+        return
+    except UnicodeEncodeError:
+        pass
+    buffer = getattr(file, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8", errors="replace"))
+            return
+        except (AttributeError, OSError, ValueError, TypeError):
+            pass
+    encoding = getattr(file, "encoding", None) or "ascii"
+    file.write(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
+def _cli_print(
+    *args: object,
+    sep: str = " ",
+    end: str = "\n",
+    file: TextIO | Any | None = None,
+) -> None:
+    """
+    Purpose:
+        print() replacement used by cli_* helpers. Configures UTF-8 stdio
+        then writes without raising UnicodeEncodeError.
+    Input:
+        args — values joined with sep (same as print).
+        sep / end / file — print() counterparts.
+    Output: None.
+    Side effects: May reconfigure stdio; writes to file (default stdout).
+    """
+    configure_stdio()
+    stream = sys.stdout if file is None else file
+    _cli_write(sep.join(str(item) for item in args) + end, file=stream)
 
 
 def add_format_argument(
@@ -222,7 +343,7 @@ def cli_json(data: Any) -> None:
     Output: None.
     Side effects: Writes to stdout.
     """
-    print(json.dumps(json_ready(data), indent=2, ensure_ascii=False))
+    _cli_print(json.dumps(json_ready(data), indent=2, ensure_ascii=False))
 
 
 def cli_exit(code: int = EXIT_OK) -> NoReturn:
@@ -253,13 +374,13 @@ def cli_success(
     Output: None
     Side effects: Writes to stdout. Does not exit (success is EXIT_OK by default).
     """
-    print(message)
+    _cli_print(message)
     if not fields:
         return
-    print()
+    _cli_print()
     for key, value in fields.items():
-        print(f"{key}:")
-        print(value)
+        _cli_print(f"{key}:")
+        _cli_print(value)
 
 
 def cli_info(message: str) -> None:
@@ -271,7 +392,7 @@ def cli_info(message: str) -> None:
     Output: None
     Side effects: Writes to stdout.
     """
-    print(message)
+    _cli_print(message)
 
 
 def cli_warning(message: str) -> None:
@@ -283,7 +404,7 @@ def cli_warning(message: str) -> None:
     Output: None
     Side effects: Writes to stderr. Does not change the process exit code.
     """
-    print(f"Warning:\n\n{message}", file=sys.stderr)
+    _cli_print(f"Warning:\n\n{message}", file=sys.stderr)
 
 
 def cli_error(
@@ -303,7 +424,7 @@ def cli_error(
     Output: None (does not return when exit_code is set).
     Side effects: Writes to stderr; may terminate the process.
     """
-    print(f"Error:\n\n{message}", file=sys.stderr)
+    _cli_print(f"Error:\n\n{message}", file=sys.stderr)
     if exit_code is not None:
         sys.exit(exit_code)
 
@@ -344,7 +465,7 @@ def cli_cancelled(*, exit: bool = False) -> None:
     Output: None (does not return when exit=True).
     Side effects: Writes "Cancelled." to stdout; may sys.exit(130).
     """
-    print("Cancelled.")
+    _cli_print("Cancelled.")
     if exit:
         sys.exit(EXIT_CANCELLED)
 
