@@ -183,6 +183,41 @@ def test_zero_create_time_rebound_on_status(
     mgr.stop()
 
 
+def test_runtime_lock_windows_branch_seeds_byte_and_uses_msvcrt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the win32 lock path on Linux CI; empty files must still lock."""
+    import types
+
+    lock_path = tmp_path / "empty.lock"
+    calls = {"lock": 0, "unlock": 0}
+
+    fake_msvcrt = types.SimpleNamespace(
+        LK_NBLCK=1,
+        LK_UNLCK=2,
+    )
+
+    def locking(fd: int, mode: int, nbytes: int) -> None:
+        assert nbytes == 1
+        if mode == fake_msvcrt.LK_NBLCK:
+            calls["lock"] += 1
+            return
+        if mode == fake_msvcrt.LK_UNLCK:
+            calls["unlock"] += 1
+            return
+        raise OSError("unexpected msvcrt.locking mode")
+
+    fake_msvcrt.locking = locking
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    lock = RuntimeLock(lock_path)
+    with lock:
+        assert lock_path.stat().st_size >= 1
+        assert calls["lock"] == 1
+    assert calls["unlock"] == 1
+
+
 def test_status_deferred_when_lock_held(
     data_dir: Path, project: MagicMock, tmp_path: Path
 ) -> None:

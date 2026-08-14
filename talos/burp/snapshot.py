@@ -13,14 +13,14 @@ Purpose:
     Each file starts with a meta line, then flat record lines. Values are
     strings so the Burp extension's JSON parser can read them.
 
-Dependencies: json, os, fcntl, pathlib; talos.burp.trace
+Dependencies: json, os, pathlib; talos.burp.trace;
+    talos.proxy.runtime.lock, talos.proxy.runtime.atomic_io
 Data flow: maybe_apply_burp_headers / prepare_send_headers → record_request
 Side effects: Appends (and occasionally compacts) files under ~/.talos/burp/.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -31,6 +31,8 @@ from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import urlparse
 
 from talos.burp.trace import BurpTrace, normalize_host
+from talos.proxy.runtime.atomic_io import atomic_write_text
+from talos.proxy.runtime.lock import RuntimeLock
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +89,10 @@ def ensure_project_snapshot(project_id: str, project_name: str = "") -> Optional
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     try:
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                if path.exists() and path.stat().st_size > 0:
-                    return path
-                path.write_text(_line(_meta_row(pid, name)), encoding="utf-8")
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        with RuntimeLock(lock_path):
+            if path.exists() and path.stat().st_size > 0:
+                return path
+            path.write_text(_line(_meta_row(pid, name)), encoding="utf-8")
     except OSError as exc:
         logger.debug("burp snapshot ensure failed: %s", exc)
         return None
@@ -934,17 +932,13 @@ def _append_row(path: Path, project_id: str, project_name: str, row: Mapping[str
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     try:
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                created = not path.exists() or path.stat().st_size == 0
-                with path.open("a", encoding="utf-8") as handle:
-                    if created:
-                        handle.write(_line(_meta_row(project_id, project_name)))
-                    handle.write(_line(row))
-                _maybe_compact(path, project_id, project_name)
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        with RuntimeLock(lock_path):
+            created = not path.exists() or path.stat().st_size == 0
+            with path.open("a", encoding="utf-8") as handle:
+                if created:
+                    handle.write(_line(_meta_row(project_id, project_name)))
+                handle.write(_line(row))
+            _maybe_compact(path, project_id, project_name)
     except OSError as exc:
         logger.debug("burp snapshot write failed: %s", exc)
 
@@ -973,16 +967,10 @@ def _maybe_compact(path: Path, project_id: str, project_name: str) -> None:
     payload = _line(_meta_row(project_id, project_name)) + "".join(
         (line if line.endswith("\n") else line + "\n") for line in kept + extras
     )
-    tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(path)
+        atomic_write_text(path, payload, prefix=f".{path.name}.", suffix=".tmp")
     except OSError as exc:
         logger.debug("burp snapshot compact failed: %s", exc)
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _meta_row(project_id: str, project_name: str) -> dict[str, str]:

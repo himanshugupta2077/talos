@@ -131,6 +131,7 @@ class RuntimeLock:
         fd = os.open(str(self._path), flags, 0o644)
         try:
             if sys.platform == "win32":
+                self._ensure_lock_byte(fd)
                 locked = self._windows_try_lock(fd)
             else:
                 import fcntl
@@ -151,6 +152,12 @@ class RuntimeLock:
             except OSError:
                 pass
             raise
+
+    def _ensure_lock_byte(self, fd: int) -> None:
+        """msvcrt.locking needs a byte range; seed one on a new lock file."""
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        os.lseek(fd, 0, os.SEEK_SET)
 
     def _windows_try_lock(self, fd: int) -> bool:
         import msvcrt

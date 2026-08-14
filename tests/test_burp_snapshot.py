@@ -324,6 +324,67 @@ def test_ensure_project_snapshot_creates_dir(tmp_path: Path, monkeypatch) -> Non
     assert listed["new-proj"].name == "New Proj"
 
 
+def test_snapshot_module_has_no_fcntl_import() -> None:
+    """Windows has no fcntl; CLI startup imports this module unconditionally."""
+    import inspect
+
+    from talos import burp as burp_pkg
+    from talos.burp import snapshot as snap
+
+    assert "import fcntl" not in inspect.getsource(snap)
+    assert "import fcntl" not in inspect.getsource(burp_pkg)
+
+
+def test_cli_import_chain_survives_missing_fcntl() -> None:
+    """
+    Regression: `talos project create` on Windows died at
+    `from talos.replay.cli import run_replay_cli` because burp.snapshot
+    imported fcntl at module load.
+    """
+    import os
+    import subprocess
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    script = r"""
+import builtins
+import sys
+
+real_import = builtins.__import__
+
+def no_fcntl(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "fcntl" or (isinstance(name, str) and name.startswith("fcntl.")):
+        raise ModuleNotFoundError("No module named 'fcntl'")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = no_fcntl
+sys.modules.pop("fcntl", None)
+
+from talos.burp.snapshot import ensure_project_snapshot, resolve_project_identity
+from talos.replay.cli import run_replay_cli
+
+assert callable(ensure_project_snapshot)
+assert callable(resolve_project_identity)
+assert callable(run_replay_cli)
+print("ok")
+"""
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(repo) if not existing else os.pathsep.join([str(repo), existing])
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(repo),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_snapshot_compact_keeps_last_n(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TALOS_BURP_DIR", str(tmp_path / "burp"))
     monkeypatch.setattr("talos.burp.snapshot.MAX_RECORDS", 3)
