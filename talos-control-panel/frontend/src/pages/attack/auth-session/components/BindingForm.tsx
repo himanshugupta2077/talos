@@ -58,9 +58,9 @@ export default function BindingForm({
   return (
     <Section title="Bind JWT field">
       <p className="text-xs text-base-content/60 mb-3">
-        Bind an auth_config header or cookie name to the JWT auth type so generate
-        knows which presented credential to mutate. Names must already exist on
-        the{" "}
+        Bind an auth_config header or cookie name to the JWT mutator. After
+        bind, Talos auto-picks up to five target flows. Names must already exist
+        on the{" "}
         <Link className="link link-primary" to="/auth">
           Auth page
         </Link>

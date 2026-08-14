@@ -160,7 +160,7 @@ export default function ConfigTab({
             <span>
               <strong>No reclassify/apply in v1.</strong> Edit{" "}
               <span className="mono">{filterFilename}</span> on disk, then{" "}
-              <strong>re-run</strong> approved candidates to rescore. Historical
+              <strong>re-run</strong> the JWT tests to rescore. Historical
               result rows are not rewritten.
             </span>
           </div>

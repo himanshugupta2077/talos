@@ -6,11 +6,13 @@ Purpose:
     job settles with ``WEAK_VALIDATION`` (KD16 — settle / right-now only;
     never called from deep inside the mutation engine).
 
-    Title formula (Appendix B):
-        "{ATTACK_DISPLAY} — {test_id} on {METHOD} {path}"
+    Title formula:
+        PRIMARY — "{ATTACK_DISPLAY} — weak JWT validation"
+        LINKED  — "{ATTACK_DISPLAY} — {test_id} on {METHOD} {path}"
 
-    Cluster: AUTH_SESSION:<endpoint_id>:<auth_type> via
+    Cluster: AUTH_SESSION:<auth_type> via
     create_finding_from_verdict(..., auth_type=..., title=...).
+    First WEAK_VALIDATION is PRIMARY; later JWT findings are LINKED.
 
     risk_hint lives in auth_session_result evidence JSON only — findings table
     has no severity column (resolved open question). Not stored as analyst_note.
@@ -31,6 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 import talos.replay.db as replay_db
+import talos.findings.db as findings_db
 from talos.auth_session.models import VERDICT_WEAK_VALIDATION
 from talos.findings.creator import create_finding_from_verdict
 from talos.findings.model import ATTACK_DISPLAY
@@ -45,14 +48,17 @@ def build_finding_title(
     test_id: str,
     method: Optional[str],
     path: Optional[str],
+    is_primary: bool = False,
+    auth_type: str = "jwt",
 ) -> str:
     """
     Purpose:
-        Deterministic finding title (Appendix B).
-    Output:
-        e.g. ``Authentication & Session Testing — jwt.alg_none on GET /api/me``
+        PRIMARY uses a type-level title; LINKED names the test + route.
     """
     label = ATTACK_DISPLAY.get(ATTACK_MODULE, "Authentication & Session Testing")
+    if is_primary:
+        kind = (auth_type or "jwt").strip() or "jwt"
+        return f"{label} — weak {kind.upper()} validation"
     m = (method or "?").strip() or "?"
     p = (path or "?").strip() or "?"
     return f"{label} — {test_id} on {m} {p}"
@@ -106,7 +112,23 @@ def maybe_create_auth_session_finding(
         except Exception as exc:  # noqa: BLE001
             _log.debug("[auth_session] baseline flow lookup for title: %s", exc)
 
-    title = build_finding_title(test_id=test_id, method=method, path=path)
+    cluster_key = findings_db.build_cluster_key(
+        ATTACK_MODULE,
+        endpoint_id,
+        auth_type=auth_type,
+    )
+    existing = (
+        findings_db.get_primary_by_cluster(db_path, cluster_key)
+        if cluster_key
+        else None
+    )
+    title = build_finding_title(
+        test_id=test_id,
+        method=method,
+        path=path,
+        is_primary=existing is None,
+        auth_type=auth_type,
+    )
 
     # Context for evidence JSON (no severity column on findings table).
     result_data: dict = {

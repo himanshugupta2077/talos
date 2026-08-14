@@ -132,31 +132,25 @@ export default function BindingsTab({
       defaultWidth: 160,
       render: (r) => {
         const counts = r.candidate_counts || {};
-        const soft =
-          (counts.pending || 0) + (counts.rejected || 0) > 0 &&
-          !(counts.approved || counts.running || counts.done || counts.failed);
-        const protectedCount =
-          (counts.approved || 0) +
-          (counts.running || 0) +
-          (counts.done || 0) +
-          (counts.failed || 0);
+        const running = counts.running || 0;
+        const leftover = (counts.total || 0) > 0;
 
-        if (protectedCount > 0) {
+        if (running > 0) {
           return (
             <span
               className="text-[11px] text-base-content/50"
-              title="CLI refuses unbind when approved/running/done/failed or results exist"
+              title="Wait for running tests to finish before removing this binding"
             >
-              protected
+              running
             </span>
           );
         }
 
-        if (soft) {
+        if (leftover) {
           return (
             <ConfirmButton
               className="btn btn-xs btn-error btn-outline"
-              confirmText="Force-unbind and cascade-delete pending/rejected?"
+              confirmText="Remove this binding and its target flows / results?"
               onConfirm={async () => {
                 try {
                   await unbind.run(r.id, true);
@@ -166,7 +160,7 @@ export default function BindingsTab({
                 }
               }}
             >
-              Unbind --force
+              Remove binding
             </ConfirmButton>
           );
         }
@@ -185,7 +179,7 @@ export default function BindingsTab({
               }
             }}
           >
-            Unbind
+            Remove binding
           </button>
         );
       },
@@ -209,7 +203,8 @@ export default function BindingsTab({
         }
       >
         <p className="text-xs text-base-content/60 mb-2">
-          Each binding maps one auth_config field to the JWT mutator. Prerequisite:{" "}
+          Each binding maps one auth_config field to the JWT mutator. Binding
+          auto-picks up to five target flows (GET, POST, PATCH/PUT). Prerequisite:{" "}
           <Link className="link link-primary" to="/auth">
             Auth page
           </Link>

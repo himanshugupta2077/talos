@@ -293,19 +293,41 @@ async def execute_cors_job(
         "original_flow_id": flow_id,
         "replay_error": None,
         "replay_reason": "cors_attack",
-        "flow_meta": json.dumps(
-            {
-                "attack_module": "cors",
-                "technique": technique,
-                "technique_family": family,
-                "origin_sent": origin_sent,
-                "baseline_origin": meta.get("baseline_origin"),
-                "origin_was_present": meta.get("origin_was_present"),
-                "nonce": meta.get("nonce"),
-                "preflight": bool(method_override),
-            }
-        ),
     }
+
+    from talos.burp.outbound import prepare_send_headers
+    from talos.burp.trace import ENGINE_CORS
+
+    flow_meta = {
+        "attack_module": "cors",
+        "technique": technique,
+        "technique_family": family,
+        "origin_sent": origin_sent,
+        "baseline_origin": meta.get("baseline_origin"),
+        "origin_was_present": meta.get("origin_was_present"),
+        "nonce": meta.get("nonce"),
+        "preflight": bool(method_override),
+    }
+    send_headers, flow_meta = prepare_send_headers(
+        send_headers,
+        db_path=db_path,
+        engine=ENGINE_CORS,
+        flow=replayed,
+        extras={
+            "technique": technique,
+            "variant": family,
+            "origin": origin_sent,
+        },
+        endpoint_id=str(endpoint_id or ""),
+        host=str(replayed.get("host") or ""),
+        flow_meta=flow_meta,
+    )
+    replayed["flow_meta"] = json.dumps(flow_meta)
+    replayed["request_headers"] = (
+        json.dumps(send_headers)
+        if isinstance(send_headers, dict)
+        else json.dumps(dict(send_headers))
+    )
 
     failure_reason: Optional[str] = None
     try:
@@ -318,7 +340,11 @@ async def execute_cors_job(
             resp = await client.request(
                 method=method,
                 url=replayed["url"],
-                headers=list(send_headers.items()),
+                headers=(
+                    list(send_headers.items())
+                    if isinstance(send_headers, dict)
+                    else send_headers
+                ),
                 content=body,
             )
         replayed.update(
@@ -330,6 +356,9 @@ async def execute_cors_job(
                 "content_type": resp.headers.get("content-type", ""),
             }
         )
+        from talos.burp.snapshot import record_send_response
+
+        record_send_response(flow_meta, project_id, resp)
     except httpx.ConnectError as exc:
         failure_reason = f"connection_error: {exc}"
         replayed["replay_error"] = "connection_error"
@@ -342,6 +371,11 @@ async def execute_cors_job(
     except Exception as exc:  # noqa: BLE001
         failure_reason = f"unexpected_error: {exc}"
         replayed["replay_error"] = "unexpected_error"
+
+    if failure_reason:
+        from talos.burp.snapshot import record_send_failure
+
+        record_send_failure(flow_meta, project_id, failure_reason)
 
     try:
         replay_db.insert_replayed_flow(db_path, replayed)

@@ -234,6 +234,33 @@ def test_list_findings_defaults_to_primary(client, home):
     assert primary["linked_count"] == 2
 
 
+def test_project_summary_primary_and_total_findings(client, home):
+    _talos_home, projects_root, registry = home
+    db_path = _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS endpoints (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS scheduler_jobs (
+          job_id TEXT PRIMARY KEY,
+          status TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/api/projects/demo/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["findings_primary"] == 2
+    assert body["findings_total"] == 4
+    assert body["findings_triaging"] == 3
+    assert body["findings_confirmed"] == 1
+
+
 def test_list_findings_linked_and_all(client, home):
     _talos_home, projects_root, registry = home
     _seed_findings_db(projects_root)
@@ -366,6 +393,7 @@ def test_finding_detail_secret_exposure(client, home):
                     "secret_type": "aws_access_key",
                     "matched_key": "accessKeyId",
                     "redacted_value": "AKIA****0001",
+                    "raw_value": "AKIAIOSFODNN7EXAMPLE0001",
                     "confidence_level": "CONFIRMED_PATTERN",
                     "confidence_score": 95,
                     "match_start": 20,
@@ -395,6 +423,8 @@ def test_finding_detail_secret_exposure(client, home):
     assert exp["count"] >= 1
     hit = exp["hits"][0]
     assert hit["redacted_value"] == "AKIA****0001"
+    assert hit["raw_value"] == "AKIAIOSFODNN7EXAMPLE0001"
+    assert hit["secret_type"] == "aws_access_key"
     assert hit["context_before"] == 'const accessKeyId = "'
     assert hit["context_after"] == '";'
     assert hit["detector_id"] == "aws_access_key_id"

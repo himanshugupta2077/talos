@@ -716,7 +716,9 @@ def clear_all_iv_cache(db_path: Path) -> tuple[int, int]:
     """
     Purpose:
         Delete all Input Validation cache data.
-        Does **not** delete intelligence profiles (use clear_all_iv_profiles).
+        Does **not** delete probe evidence or intelligence profiles.
+        Operator re-runs that must start at baseline should use
+        ``reset_iv_scan_state`` (clear-cache / run --ignore-cache).
     Output:
         (param_rows_deleted, reflection_rows_deleted)
     Side effects: DB write.
@@ -724,6 +726,293 @@ def clear_all_iv_cache(db_path: Path) -> tuple[int, int]:
     param_deleted = clear_param_cache(db_path)
     refl_deleted = clear_reflection_cache(db_path)
     return param_deleted, refl_deleted
+
+
+def reset_iv_scan_state(
+    db_path: Path,
+    *,
+    host: str | None = None,
+    endpoint_id: str | None = None,
+    param_name: str | None = None,
+) -> dict[str, int]:
+    """
+    Purpose:
+        Wipe IV evidence that keeps the planner from starting at baseline.
+
+        Deletes, for the selected scope:
+            - iv_probe_results (sent-probe evidence)
+            - iv_param_cache / iv_reflection_cache (phase resume)
+            - iv_param_profiles and scoped endpoint/app profiles
+            - pending/paused iv_* scheduler jobs (so leftovers cannot
+              write results back after the reset)
+
+        Scope is mutually exclusive, first match wins:
+            host → one host
+            endpoint_id → parameters of that endpoint (param identity is
+                host|location|name, so shared-identity probes go too)
+            param_name → that parameter name on every host
+            none → entire project
+
+        Does not delete captured flows.
+    Output:
+        Counts keyed by probes, param_cache, reflection_cache,
+        param_profiles, endpoint_profiles, app_profiles, jobs_cancelled.
+    Side effects: DB write.
+    """
+    empty = {
+        "probes": 0,
+        "param_cache": 0,
+        "reflection_cache": 0,
+        "param_profiles": 0,
+        "endpoint_profiles": 0,
+        "app_profiles": 0,
+        "jobs_cancelled": 0,
+    }
+    now = _now_utc()
+    with sqlite3.connect(str(db_path)) as conn:
+        if host:
+            counts = _reset_iv_scan_state_for_host(conn, host, now)
+        elif endpoint_id:
+            counts = _reset_iv_scan_state_for_endpoint(conn, endpoint_id, now)
+        elif param_name:
+            counts = _reset_iv_scan_state_for_parameter(conn, param_name, now)
+        else:
+            counts = _reset_iv_scan_state_all(conn, now)
+        conn.commit()
+    return {**empty, **counts}
+
+
+def _delete_pending_iv_jobs(
+    conn: sqlite3.Connection,
+    now: str,
+    extra_sql: str = "",
+    extra_params: tuple[object, ...] = (),
+) -> int:
+    """Cancel pending/paused iv_* jobs, optionally narrowed by extra_sql."""
+    sql = (
+        """
+        UPDATE scheduler_jobs
+        SET status = 'cancelled', finished_at = ?,
+            failure_reason = 'iv_scan_reset'
+        WHERE job_type LIKE 'iv_%'
+          AND status IN ('pending', 'paused')
+        """
+        + extra_sql
+    )
+    cur = conn.execute(sql, (now, *extra_params))
+    return cur.rowcount
+
+
+def _reset_iv_scan_state_all(
+    conn: sqlite3.Connection,
+    now: str,
+) -> dict[str, int]:
+    return {
+        "probes": conn.execute("DELETE FROM iv_probe_results").rowcount,
+        "param_cache": conn.execute("DELETE FROM iv_param_cache").rowcount,
+        "reflection_cache": conn.execute("DELETE FROM iv_reflection_cache").rowcount,
+        "param_profiles": conn.execute("DELETE FROM iv_param_profiles").rowcount,
+        "endpoint_profiles": conn.execute("DELETE FROM iv_endpoint_profiles").rowcount,
+        "app_profiles": conn.execute("DELETE FROM iv_app_profiles").rowcount,
+        "jobs_cancelled": _delete_pending_iv_jobs(conn, now),
+    }
+
+
+def _reset_iv_scan_state_for_host(
+    conn: sqlite3.Connection,
+    host: str,
+    now: str,
+) -> dict[str, int]:
+    return {
+        "probes": conn.execute(
+            "DELETE FROM iv_probe_results WHERE host = ?", (host,)
+        ).rowcount,
+        "param_cache": conn.execute(
+            "DELETE FROM iv_param_cache WHERE host = ?", (host,)
+        ).rowcount,
+        "reflection_cache": conn.execute(
+            """
+            DELETE FROM iv_reflection_cache
+            WHERE endpoint_id IN (SELECT id FROM endpoints WHERE host = ?)
+            """,
+            (host,),
+        ).rowcount,
+        "param_profiles": conn.execute(
+            "DELETE FROM iv_param_profiles WHERE host = ?", (host,)
+        ).rowcount,
+        "endpoint_profiles": conn.execute(
+            "DELETE FROM iv_endpoint_profiles WHERE host = ?", (host,)
+        ).rowcount,
+        "app_profiles": conn.execute(
+            "DELETE FROM iv_app_profiles WHERE host = ?", (host,)
+        ).rowcount,
+        "jobs_cancelled": _delete_pending_iv_jobs(
+            conn,
+            now,
+            """
+              AND (
+                endpoint_id IN (SELECT id FROM endpoints WHERE host = ?)
+                OR json_extract(meta, '$.host') = ?
+              )
+            """,
+            (host, host),
+        ),
+    }
+
+
+def _endpoint_param_identities(
+    conn: sqlite3.Connection,
+    endpoint_id: str,
+) -> list[tuple[str, str, str, str]]:
+    """(host, location, param_name, param_uuid) for one endpoint."""
+    rows = conn.execute(
+        """
+        SELECT e.host, p.location, p.name
+        FROM parameters p
+        JOIN endpoints e ON e.id = p.endpoint_id
+        WHERE e.id = ?
+        """,
+        (endpoint_id,),
+    ).fetchall()
+    return [
+        (host, location, name, make_param_uuid(host, location, name))
+        for host, location, name in rows
+    ]
+
+
+def _reset_iv_scan_state_for_endpoint(
+    conn: sqlite3.Connection,
+    endpoint_id: str,
+    now: str,
+) -> dict[str, int]:
+    identities = _endpoint_param_identities(conn, endpoint_id)
+    uuids = [item[3] for item in identities]
+    hosts = sorted({item[0] for item in identities if item[0]})
+    if not hosts:
+        row = conn.execute(
+            "SELECT host FROM endpoints WHERE id = ?", (endpoint_id,)
+        ).fetchone()
+        if row and row[0]:
+            hosts = [row[0]]
+
+    probes = 0
+    if uuids:
+        placeholders = ",".join("?" * len(uuids))
+        probes += conn.execute(
+            f"DELETE FROM iv_probe_results WHERE param_uuid IN ({placeholders})",
+            uuids,
+        ).rowcount
+    probes += conn.execute(
+        "DELETE FROM iv_probe_results WHERE endpoint_id = ?",
+        (endpoint_id,),
+    ).rowcount
+
+    param_cache = 0
+    for host, location, name, _uuid in identities:
+        param_cache += conn.execute(
+            """
+            DELETE FROM iv_param_cache
+            WHERE host = ? AND location = ? AND param_name = ?
+            """,
+            (host, location, name),
+        ).rowcount
+
+    param_profiles = 0
+    if uuids:
+        placeholders = ",".join("?" * len(uuids))
+        param_profiles = conn.execute(
+            f"DELETE FROM iv_param_profiles WHERE param_uuid IN ({placeholders})",
+            uuids,
+        ).rowcount
+
+    app_profiles = 0
+    if hosts:
+        placeholders = ",".join("?" * len(hosts))
+        app_profiles = conn.execute(
+            f"DELETE FROM iv_app_profiles WHERE host IN ({placeholders})",
+            hosts,
+        ).rowcount
+
+    return {
+        "probes": probes,
+        "param_cache": param_cache,
+        "reflection_cache": conn.execute(
+            "DELETE FROM iv_reflection_cache WHERE endpoint_id = ?",
+            (endpoint_id,),
+        ).rowcount,
+        "param_profiles": param_profiles,
+        "endpoint_profiles": conn.execute(
+            "DELETE FROM iv_endpoint_profiles WHERE endpoint_id = ?",
+            (endpoint_id,),
+        ).rowcount,
+        "app_profiles": app_profiles,
+        "jobs_cancelled": _delete_pending_iv_jobs(
+            conn,
+            now,
+            """
+              AND (
+                endpoint_id = ?
+                OR json_extract(meta, '$.endpoint_id') = ?
+              )
+            """,
+            (endpoint_id, endpoint_id),
+        ),
+    }
+
+
+def _reset_iv_scan_state_for_parameter(
+    conn: sqlite3.Connection,
+    param_name: str,
+    now: str,
+) -> dict[str, int]:
+    hosts = [
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT host FROM iv_probe_results WHERE param_name = ?
+            UNION
+            SELECT DISTINCT host FROM iv_param_profiles WHERE param_name = ?
+            UNION
+            SELECT DISTINCT host FROM iv_param_cache WHERE param_name = ?
+            """,
+            (param_name, param_name, param_name),
+        ).fetchall()
+        if row[0]
+    ]
+    app_profiles = 0
+    if hosts:
+        placeholders = ",".join("?" * len(hosts))
+        app_profiles = conn.execute(
+            f"DELETE FROM iv_app_profiles WHERE host IN ({placeholders})",
+            hosts,
+        ).rowcount
+
+    return {
+        "probes": conn.execute(
+            "DELETE FROM iv_probe_results WHERE param_name = ?",
+            (param_name,),
+        ).rowcount,
+        "param_cache": conn.execute(
+            "DELETE FROM iv_param_cache WHERE param_name = ?",
+            (param_name,),
+        ).rowcount,
+        "reflection_cache": conn.execute(
+            "DELETE FROM iv_reflection_cache WHERE param_name = ?",
+            (param_name,),
+        ).rowcount,
+        "param_profiles": conn.execute(
+            "DELETE FROM iv_param_profiles WHERE param_name = ?",
+            (param_name,),
+        ).rowcount,
+        "endpoint_profiles": 0,
+        "app_profiles": app_profiles,
+        "jobs_cancelled": _delete_pending_iv_jobs(
+            conn,
+            now,
+            " AND json_extract(meta, '$.parameter_name') = ?",
+            (param_name,),
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

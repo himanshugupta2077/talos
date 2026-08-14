@@ -854,15 +854,34 @@ async def _send_and_store(
         "original_flow_id": original_flow_id,
         "replay_error": None,
         "replay_reason": "unauth_attack",
-        # Structured metadata: attack module, auth mutation, request mutation.
-        "flow_meta": json.dumps({
-            "attack_module": "unauth",
-            "auth_mutation_family": auth_mutation_family,
-            "auth_mutation": auth_mutation_label,
-            "request_mutation_family": request_mutation_family,
-            "request_mutation": req_mut_name,
-        }),
     }
+
+    from talos.burp.outbound import prepare_send_headers
+    from talos.burp.trace import ENGINE_UNAUTH
+
+    flow_meta = {
+        "attack_module": "unauth",
+        "auth_mutation_family": auth_mutation_family,
+        "auth_mutation": auth_mutation_label,
+        "request_mutation_family": request_mutation_family,
+        "request_mutation": req_mut_name,
+    }
+    send_headers, flow_meta = prepare_send_headers(
+        send_headers,
+        db_path=db_path,
+        engine=ENGINE_UNAUTH,
+        flow=replayed,
+        extras={
+            "technique": auth_mutation_label or auth_mutation_family or "unauth",
+            "variant": req_mut_name or "",
+        },
+        endpoint_id=str(original_flow.get("endpoint_id") or ""),
+        host=str(replayed.get("host") or ""),
+        flow_meta=flow_meta,
+    )
+    replayed["flow_meta"] = json.dumps(flow_meta)
+    if isinstance(send_headers, dict):
+        replayed["request_headers"] = json.dumps(send_headers)
 
     failure_reason: Optional[str] = None
 
@@ -890,6 +909,9 @@ async def _send_and_store(
             "response_body": resp_body,
             "content_type": resp.headers.get("content-type", ""),
         })
+        from talos.burp.snapshot import record_send_response
+
+        record_send_response(flow_meta, project_id, resp)
 
     except httpx.ConnectError as exc:
         failure_reason = f"connection_error: {exc}"
@@ -906,6 +928,11 @@ async def _send_and_store(
     except Exception as exc:  # noqa: BLE001
         failure_reason = f"unexpected_error: {exc}"
         replayed["replay_error"] = "unexpected_error"
+
+    if failure_reason:
+        from talos.burp.snapshot import record_send_failure
+
+        record_send_failure(flow_meta, project_id, failure_reason)
 
     # Persist replay flow.
     try:

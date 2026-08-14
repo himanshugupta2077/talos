@@ -13,7 +13,8 @@ Purpose:
         talos config edit [--global]
         talos config <section> [show|set|unset|edit] …
 
-    Sections: proxy, capture, scheduler, attack, http
+    Sections: proxy, capture, scheduler, attack, http, parameter_intel,
+    url_sink, burp
 
     HTTP Manipulation Engine (``talos config http …``) manages declarative
     request/response rules under ``http.rules``. See ``http_cli.py``.

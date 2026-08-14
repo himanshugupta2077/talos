@@ -234,8 +234,16 @@ class TestClearCacheForceIsConfirm:
     ) -> None:
         with (
             patch(
-                "talos.input_validation.db.clear_all_iv_cache",
-                return_value=(0, 0),
+                "talos.input_validation.db.reset_iv_scan_state",
+                return_value={
+                    "probes": 0,
+                    "param_cache": 0,
+                    "reflection_cache": 0,
+                    "param_profiles": 0,
+                    "endpoint_profiles": 0,
+                    "app_profiles": 0,
+                    "jobs_cancelled": 0,
+                },
             ) as clear,
             patch("talos.cli_output.is_interactive", return_value=True),
             patch(
@@ -244,8 +252,10 @@ class TestClearCacheForceIsConfirm:
             ),
         ):
             text = _run_iv(manager_enabled, ["clear-cache", "--force"])
-        clear.assert_called_once_with(db_path)
-        assert "Cache cleared" in text
+        clear.assert_called_once_with(
+            db_path, host=None, endpoint_id=None, param_name=None
+        )
+        assert "Reset IV scan state" in text
 
     def test_clear_cache_noninteractive_requires_force(
         self, manager_enabled: MagicMock

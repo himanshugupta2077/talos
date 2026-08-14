@@ -30,6 +30,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from talos.burp.outbound import prepare_send_headers
+from talos.burp.trace import ENGINE_INTRUDER
 from talos.intruder import db as intruder_db
 from talos.intruder.config_schema import merge_defaults
 from talos.intruder.findings_bridge import findings_config_from, maybe_promote_result
@@ -541,17 +543,52 @@ async def run_session_segment(
                 failure_reason = None
                 resp_body = b""
                 resp_headers: dict[str, str] = {}
+                burp_meta: dict | None = None
                 try:
+                    var_bits: list[str] = []
+                    if isinstance(bindings, dict):
+                        for key, value in list(bindings.items())[:4]:
+                            var_bits.append(f"{key}={value}")
+                    parsed_url = urlparse(spec.url)
+                    send_headers, burp_meta = prepare_send_headers(
+                        dict(spec.headers),
+                        db_path=db_path,
+                        engine=ENGINE_INTRUDER,
+                        flow={
+                            "method": spec.method,
+                            "path": parsed_url.path or "/",
+                            "normalized_path": normalized_path or parsed_url.path or "/",
+                            "host": request_host,
+                            "url": spec.url,
+                            "project_id": project_id,
+                            "endpoint_id": session.get("endpoint_id")
+                            or baseline.get("endpoint_id"),
+                        },
+                        extras={
+                            "technique": "intruder",
+                            "attempt": str(attempt_index),
+                            "variant": ", ".join(var_bits),
+                        },
+                        endpoint_id=str(
+                            session.get("endpoint_id")
+                            or baseline.get("endpoint_id")
+                            or ""
+                        ),
+                        host=request_host,
+                    )
                     resp = await client.request(
                         method=spec.method,
                         url=spec.url,
-                        headers=spec.headers,
+                        headers=send_headers,
                         content=spec.body,
                     )
                     status_code = resp.status_code
                     resp_body = resp.content or b""
                     resp_headers = {k: v for k, v in resp.headers.items()}
                     success = True
+                    from talos.burp.snapshot import record_send_response
+
+                    record_send_response(burp_meta, project_id, resp)
                 except httpx.TimeoutException:
                     failure_reason = "timeout"
                 except httpx.HTTPError as exc:
@@ -560,6 +597,10 @@ async def run_session_segment(
                     failure_reason = f"error:{exc}"
                 finally:
                     timing.release(host=request_host)
+                if failure_reason:
+                    from talos.burp.snapshot import record_send_failure
+
+                    record_send_failure(burp_meta, project_id, failure_reason)
 
                 duration_ms = (time.monotonic() - t0) * 1000.0
                 metrics = build_metrics_from_response(

@@ -2,6 +2,165 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Burp extension: Repeater terminator + Findings tree
+
+**Shipped:** 2026-08-14
+
+- Bodyless requests (unauth GETs that end with an empty `Authorization:`)
+  now keep two blank lines after the header block so **Send to Repeater**
+  no longer warns that the header block is missing a terminator.
+- **Findings** is the first top-level tree node. Opening it groups
+  findings by attack type (`Unauthenticated Execution (20)`, CORS, …)
+  with the same request/response persistence as other engines.
+- Secret Detection Detail shows the unmasked secret (raw value), not
+  the `****` redaction used in list UIs.
+
+Reload `burp-extension/build/libs/talos-burp-1.2.2.jar`. Opening a
+Talos project backfills existing findings into the snapshot.
+
+## Burp extension: full original requests + unmasked secrets
+
+**Shipped:** 2026-08-14
+
+Secret Detection and Error Intelligence rows in the Talos tab now
+keep the captured request (headers and body). Origins stored as
+`http://host:port` no longer collapse the viewer to a method + Host
+stub. The Detail column shows `type · unmasked value` (for example
+`email · admin@juice-sh.op`). The Findings **Leaked secret** panel
+does the same.
+
+Reload `burp-extension/build/libs/talos-burp-1.2.1.jar`.
+
+## Burp extension: HTTP responses + auto-refresh
+
+**Shipped:** 2026-08-14
+
+The Talos tab now shows the HTTP response for each probe and updates
+itself as tests run.
+
+- After a test completes, Talos writes status + headers + body into
+  `~/.talos/burp/<project-id>.jsonl`. Live Burp traffic is paired the
+  same way (HTTP handler + request match, not only proxy message ids).
+- The tab polls that snapshot about once a second and merges new rows
+  without clearing the selected request.
+- Failed sends (connection error, timeout) show the error in the
+  response pane instead of leaving it blank.
+- Opening a project backfills responses from stored flows for older
+  request-only snapshot rows.
+
+Reload `burp-extension/build/libs/talos-burp-1.2.1.jar` and restart the
+Talos scheduler.
+
+## Burp extension: Talos-project snapshots + binding
+
+**Shipped:** 2026-08-14
+
+The Talos tab is bound to **one Talos project**. Trees never mix across
+clients, and Community / temp Burp projects no longer lose the tree.
+
+- Talos writes `~/.talos/burp/<project-id>.jsonl` as engines run.
+- Open Burp → pick the Talos project (or accept the bind banner). The
+  tree hydrates from that snapshot.
+- A saved Burp Professional project remembers the binding. Community
+  starts unbound and does not guess.
+- Traffic tagged with a different Talos project is not merged; Switch
+  or Ignore.
+
+Reload `burp-extension/build/libs/talos-burp-1.1.0.jar`.
+
+## JWT testing: simpler bind → top 5 flows → run
+
+**Shipped:** 2026-08-14
+
+Auth-Session Testing no longer needs an approve step.
+
+- Bind a JWT field and Talos auto-picks up to five target flows (one GET,
+  one POST, one PATCH or PUT, then fill).
+- Add or remove those flows from the Control Panel **Target flows** tab or
+  `talos attack auth-session candidates add|remove --flow UUID`.
+- Remove a binding any time nothing is running (`unbind --force` deletes
+  targets and results).
+- Run uses the latest captured JWT, or paste a custom `--jwt` for every
+  selected flow.
+- First `WEAK_VALIDATION` finding is PRIMARY; later JWT findings are
+  linked under it (`AUTH_SESSION:jwt`).
+
+```bash
+talos attack auth-session bind --type jwt --header Authorization
+talos attack auth-session candidates add --flow <uuid>
+talos attack auth-session run
+talos attack auth-session run --jwt 'Bearer eyJ…'
+```
+
+## Burp extension: out-of-band ingest (no X-Talos-* in HTTP history)
+
+**Shipped:** 2026-08-13
+
+Burp HTTP history always keeps the original inbound request — an
+extension cannot rewrite that view. The Talos extension now listens on
+`127.0.0.1:17384` and Talos posts grouping metadata there. Attack
+requests through Burp no longer carry `X-Talos-*` when the extension is
+loaded, so HTTP history stays clean.
+
+Reload `burp-extension/build/libs/talos-burp-1.1.0.jar` **and restart
+the Talos scheduler**. Confirm Extender output: `Talos ingest listening
+on http://127.0.0.1:17384`.
+
+If the extension is not loaded, Talos still falls back to `X-Talos-*`
+headers (those will show in history).
+
+## Burp extension: strip headers, persist tree, more engines
+
+**Shipped:** 2026-08-13
+
+- Proxy handler records grouped traffic; last-mile HTTP handler still
+  strips leftover `X-Talos-*` if an older Talos stamped them.
+- HTTP handler strips every `X-Talos-*` header again on the last mile so
+  the target never receives them (Proxy-only `continueWith` does not
+  always change the outbound bytes).
+- Tree no longer depends on the Burp project file (see snapshot
+  binding above). Clear button removed.
+- Live updates no longer steal the selected request.
+- Tree is Engine → `GET /path (n)` (no "Endpoints" row, no `[host]`).
+- Wired engines: Input Validation, Unauthenticated Execution, BAC,
+  Auth-Session Testing, CORS Misconfiguration, Intruder.
+
+Reload `burp-extension/build/libs/talos-burp-1.1.0.jar` and restart the
+Talos scheduler after upgrading.
+
+## Burp Suite metadata headers + extension
+
+**Shipped:** 2026-08-13
+
+When Burp is the project upstream proxy, Input Validation probes carry
+`X-Talos-*` grouping headers so a Burp extension can show them as a tree:
+
+```text
+Input Validation
+  Endpoints
+    GET /api/users/{id}
+    POST /login
+```
+
+Click an endpoint to inspect the request/response for each probe.
+
+- Layered config section `burp` (`burp.enabled` default true,
+  `burp.header_prefix` default `X-Talos`).
+- Headers attach only when enabled **and** an upstream URL is set
+  (Direct mode never leaks them to the target).
+- The Burp extension (`burp-extension/`) records the tagged request,
+  then strips the headers before they reach the application.
+- Later engines (auth-session, CORS, …) will reuse the same contract;
+  only Input Validation is wired today.
+
+```bash
+talos config set proxy.upstream.url http://127.0.0.1:8081
+talos config set burp.enabled true
+cd burp-extension && gradle jar
+```
+
+See `docs/burp-extension.md`.
+
 ## Flow / endpoint multi-select attacks
 
 **Shipped:** 2026-08-13
@@ -4358,7 +4517,8 @@ jobs visible/pausable/resumable.
 **Resume support:** Completed phases are cached individually. Restart or scope
 to a single parameter with `--parameter username` to continue from where you left off.
 
-**Force refresh:** Use `--ignore-cache` to re-run all phases.
+**Force refresh:** Use `--ignore-cache` on `run` (or `clear-cache` then `run`)
+to reset probe results and profiles and start at baseline.
 
 **New CLI commands:**
 

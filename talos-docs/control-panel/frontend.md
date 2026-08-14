@@ -63,10 +63,10 @@ The header answers, at a glance: project/role/module context, what Talos is doin
 | Region | Content |
 |--------|---------|
 | **Context** | Project pill (`Project: name` → `/projects`), active Role / Module chips (`HeaderRoleModule`) |
-| **Runtime** | Proxy status menu (`HeaderProxyMenu`), Scheduler status + active queue count (`HeaderSchedulerMenu`), Findings triaging signal (`HeaderFindings`) |
+| **Runtime** | Proxy status menu (`HeaderProxyMenu`), Scheduler status + active queue count (`HeaderSchedulerMenu`), Findings primary / total (`HeaderFindings`) |
 | **Utilities** | IST clock, Search/jump palette (`Ctrl/Cmd+K`), activity console toggle (`$_`), theme toggle |
 
-Proxy labels are uppercase Talos-derived lifecycle strings (`RUNNING`, `STARTING`, `RESTARTING`, `STOPPING`, `STOPPED`, `FAILED`). Scheduler shows execution state (`RUNNING` / `PAUSED` / `WAITING`) plus active queue depth (pending + running + paused). Findings count is **TRIAGING only** (actionable signal).
+Proxy labels are uppercase Talos-derived lifecycle strings (`RUNNING`, `STARTING`, `RESTARTING`, `STOPPING`, `STOPPED`, `FAILED`). Scheduler shows execution state (`RUNNING` / `PAUSED` / `WAITING`) plus active queue depth (pending + running + paused). Findings chip shows **PRIMARY then total** (`3 / 12`); warning highlight stays on TRIAGING.
 
 Global overlays / chrome:
 
@@ -81,7 +81,7 @@ Navigation groups (from `NAV_GROUPS`):
 | Overview | `/`, `/projects`, `/proxy` |
 | Model | `/roles-modules`, `/access`, `/auth` |
 | Capture | `/repeater`, `/endpoints`, `/flows`, `/mutations` (HTTP Rules) |
-| Testing | `/scheduler`, `/testing` (Modules hub + secrets, errors, unauth, bac, input-validation); `/attack/*` redirects to `/testing/*` |
+| Testing | `/scheduler`, `/testing` (hub). Available Active modules nest under **Attack Module** (`/testing/unauth`, `/bac`, `/auth-session`, `/input-validation`, `/cors`, `/intruder`). Passive workspaces stay hub/search only. `/attack/*` redirects to `/testing/*` |
 | Configuration | `/talos-config` |
 | Results | `/findings`, `/console` |
 
@@ -143,7 +143,7 @@ Page-level behavior: [pages.md](./pages.md).
 | `AppHeader` | `AppHeader.tsx` | Global top header shell (context + runtime + utilities) |
 | `HeaderProxyMenu` | `HeaderProxyMenu.tsx` | Proxy status pill + lifecycle hover menu |
 | `HeaderSchedulerMenu` | `HeaderSchedulerMenu.tsx` | Scheduler status · queue + pause/resume menu |
-| `HeaderFindings` | `HeaderFindings.tsx` | TRIAGING findings signal → `/findings` |
+| `HeaderFindings` | `HeaderFindings.tsx` | PRIMARY / total findings → `/findings` |
 | `HeaderRoleModule` | `HeaderRoleModule.tsx` | Active role/module chips + switchers |
 | `HeaderSearch` | `HeaderSearch.tsx` | Jump palette (`Ctrl/Cmd+K`) |
 | `HeaderCommandButton` | `HeaderCommandButton.tsx` | Toggle activity console drawer |

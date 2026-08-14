@@ -192,10 +192,14 @@ def test_create_finding_primary(project: Project):
         data = _json.loads(data)
     assert data.get("context_before")
     assert data.get("redacted_value")
-    exposure = build_secret_exposure(project.db_path, fid)
+    exposure = build_secret_exposure(
+        project.db_path, fid, evidence=evidence
+    )
     assert exposure is not None
     assert exposure["count"] >= 1
     assert exposure["hits"][0]["redacted_value"]
+    assert exposure["hits"][0]["raw_value"] == det.raw_value
+    assert exposure["hits"][0]["secret_type"] == "aws_access_key"
 
 
 def test_same_secret_two_docs_primary_then_linked(project: Project):

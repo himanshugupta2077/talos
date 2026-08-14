@@ -94,6 +94,22 @@ def _copy_headers_drop_template(dest: Path) -> None:
         )
 
 
+def _sync_burp_snapshot(project: Project) -> None:
+    """Create ~/.talos/burp/<id>.jsonl so the Burp picker lists this project."""
+    try:
+        from talos.burp.snapshot import (
+            backfill_findings_from_db,
+            backfill_responses_from_db,
+            ensure_project_snapshot,
+        )
+
+        ensure_project_snapshot(project.id, project.name)
+        backfill_responses_from_db(project.id, project.db_path)
+        backfill_findings_from_db(project.id, project.db_path)
+    except Exception:
+        logger.debug("burp snapshot sync skipped for %s", project.id, exc_info=True)
+
+
 class ProjectError(Exception):
     """Base error for all project management failures."""
 
@@ -311,6 +327,7 @@ class ProjectManager:
 
         registry[project_id] = project.to_dict()
         self._save_registry(registry)
+        _sync_burp_snapshot(project)
 
         logger.info("Created project '%s' at %s", project_id, data_dir)
         return project
@@ -348,6 +365,7 @@ class ProjectManager:
         # Ensure schema is current on open — init_project_db is idempotent
         # and handles migrations for databases created at older schema versions.
         init_project_db(project.db_path)
+        _sync_burp_snapshot(project)
         logger.info("Opened project '%s'", project_id)
         return project
 
@@ -405,6 +423,9 @@ class ProjectManager:
         self._save_registry(registry)
         self._invalidate_override_if(project_id)
 
+        from talos.burp.snapshot import remove_project_snapshot
+
+        remove_project_snapshot(project_id)
         if purge:
             data_path = Path(project.data_dir)
             if data_path.exists():
@@ -503,6 +524,9 @@ class ProjectManager:
 
         self._save_registry(registry)
         project = Project.from_dict(registry[new_id])
+        from talos.burp.snapshot import rename_project_snapshot
+
+        rename_project_snapshot(project_id, project.id, project.name)
         logger.info(
             "Renamed project '%s' → '%s' (name=%r)",
             project_id,

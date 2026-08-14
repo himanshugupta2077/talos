@@ -81,12 +81,12 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
     name: "Auth-Session Testing",
     shortLabel: "Auth-session",
     description:
-      "Generate JWT / session mutation candidates for these flows. Approve in Auth-session before HTTP runs.",
+      "Add these flows as JWT test targets. Run from Auth-Session Testing with the latest or a custom JWT.",
     class: "active",
     risk: "medium",
     status: "available",
     workspacePath: `${TESTING_BASE}/auth-session`,
-    cliHint: "talos attack auth-session generate --flow",
+    cliHint: "talos attack auth-session candidates add --flow",
     jobsPerFlow: 0,
     run: (projectId, flowIds) =>
       api.post(

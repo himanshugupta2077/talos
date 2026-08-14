@@ -16,7 +16,7 @@ Purpose:
         talos input-validation run --endpoint ID — single endpoint
         talos input-validation run --flow UUID   — parameters on those flows' endpoints
         talos input-validation run --parameter P — single parameter everywhere it appears
-        talos input-validation run --ignore-cache — force re-run
+        talos input-validation run --ignore-cache — reset evidence and re-run from baseline
 
     Phase-level commands (shorthand for --phase X):
         talos input-validation baseline
@@ -66,7 +66,7 @@ Purpose:
         talos input-validation resume            — continue from unfinished analyses
 
     Cache:
-        talos input-validation clear-cache                         — delete all IV cache data
+        talos input-validation clear-cache                         — reset probes, profiles, cache
         talos input-validation clear-cache --host api.example.com  — scoped to one host
         talos input-validation clear-cache --endpoint <id>         — scoped to one endpoint
         talos input-validation clear-cache --parameter <name>      — scoped to one parameter name
@@ -194,7 +194,7 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_run.add_argument(
         "--ignore-cache",
         action="store_true",
-        help="Ignore cached analyses and re-run everything.",
+        help="Reset probe results and profiles, then re-run from baseline.",
     )
     p_run.add_argument(
         "--include-auth-artifacts",
@@ -322,7 +322,7 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     # ------------------------------------------------------------------
     p_clear = sub.add_parser(
         "clear-cache",
-        help="Delete cached Input Validation results (all, or scoped to host/endpoint/parameter).",
+        help="Reset IV probe results, profiles, and cache (all, or scoped).",
     )
     _add_scope_args(p_clear)
     add_force_argument(p_clear)
@@ -959,9 +959,11 @@ def _cmd_clear_cache(
 ) -> None:
     """
     Purpose:
-        Delete IV cache data.  Scope is controlled by --host, --endpoint,
-        or --parameter; without any flag the entire cache is cleared.
-        Confirms interactively unless --force; non-interactive requires --force.
+        Reset IV probe results, intelligence profiles, and phase cache so
+        the next planner run starts at baseline.  Scope is --host,
+        --endpoint, or --parameter; without a flag the whole project is
+        reset.  Confirms interactively unless --force; non-interactive
+        requires --force.
     """
     project = _require_active(manager)
     db_path = project.db_path
@@ -980,26 +982,31 @@ def _cmd_clear_cache(
         scope = "entire project"
 
     confirm_or_exit(
-        f"Clear IV cache for {scope}?",
+        f"Reset IV probes, profiles, and cache for {scope}? "
+        "The next run starts at baseline.",
         force=bool(getattr(args, "force", False)),
     )
 
-    if host:
-        param_n = iv_db.clear_param_cache(db_path, host=host)
-        refl_n = iv_db.clear_reflection_cache(db_path, host=host)
-    elif endpoint_id:
-        param_n = iv_db.clear_param_cache_for_endpoint(db_path, endpoint_id)
-        refl_n = iv_db.clear_reflection_cache(db_path, endpoint_id=endpoint_id)
-    elif param_name:
-        param_n = iv_db.clear_param_cache(db_path, param_name=param_name)
-        refl_n = iv_db.clear_reflection_cache(db_path, param_name=param_name)
-    else:
-        param_n, refl_n = iv_db.clear_all_iv_cache(db_path)
-
+    counts = iv_db.reset_iv_scan_state(
+        db_path,
+        host=host,
+        endpoint_id=endpoint_id,
+        param_name=param_name,
+    )
+    jobs_bit = (
+        f"; {counts['jobs_cancelled']} pending IV job(s) cancelled"
+        if counts["jobs_cancelled"]
+        else ""
+    )
     print(
-        f"Cache cleared for {scope}: "
-        f"{param_n} parameter analysis entries, "
-        f"{refl_n} reflection entries deleted."
+        f"Reset IV scan state for {scope}: "
+        f"{counts['probes']} probe(s), "
+        f"{counts['param_profiles']} parameter profile(s), "
+        f"{counts['endpoint_profiles']} endpoint profile(s), "
+        f"{counts['app_profiles']} app profile(s), "
+        f"{counts['param_cache']} parameter cache, "
+        f"{counts['reflection_cache']} reflection cache deleted"
+        f"{jobs_bit}."
     )
 
 

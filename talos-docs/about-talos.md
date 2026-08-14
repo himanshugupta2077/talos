@@ -586,8 +586,10 @@ and profiles (read APIs under `/api/input-validation/…`; UI at `/attack/input-
   `schema_version`, capabilities, candidates). Offline rebuild:
   `talos input-validation synthesize`.
 - **Resume:** On restart, planner continues from completed evidence. Use
-  `--ignore-cache` to re-run (on `run` and on any phase shortcut). `--force` is
-  **not** used for re-analysis (CLI-019); it remains confirmation bypass only
+  `run --ignore-cache` or `clear-cache` then `run` to wipe probe results and
+  profiles for the scope and start at baseline. Phase shortcuts with
+  `--ignore-cache` re-enqueue that phase only. `--force` is **not** used for
+  re-analysis (CLI-019); it remains confirmation bypass only
   (e.g. `clear-cache --force`).
 
 ## Scope and Control

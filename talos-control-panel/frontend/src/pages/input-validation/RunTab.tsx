@@ -45,7 +45,7 @@ export default function RunTab({
       { project_id: projectId },
     ),
   );
-  const clearCache = useAction("Clear IV cache", () =>
+  const clearCache = useAction("Reset IV scan", () =>
     api.post("/api/input-validation/clear-cache", scopeBody(scopeType, scopeValue), {
       project_id: projectId,
     }),
@@ -95,7 +95,9 @@ export default function RunTab({
         <p className="text-xs text-base-content/50 mb-3">
           Runs the full IV probe set for every in-scope parameter (one unique
           flow per probe). No budget picker — every type-family, URL-sink,
-          character, and validation probe is scheduled.
+          character, and validation probe is scheduled. ignore-cache and
+          Clear cache wipe probe results and profiles for this scope so the
+          planner starts at baseline again.
         </p>
         <div className="flex flex-wrap gap-3 items-center mb-3">
           <label className="label cursor-pointer gap-2 py-0">
@@ -105,7 +107,7 @@ export default function RunTab({
               checked={ignoreCache}
               onChange={(e) => setIgnoreCache(e.target.checked)}
             />
-            <span className="label-text text-xs">ignore-cache</span>
+            <span className="label-text text-xs">ignore-cache (re-run from baseline)</span>
           </label>
           <label className="label cursor-pointer gap-2 py-0">
             <input
@@ -151,7 +153,7 @@ export default function RunTab({
           </button>
           <ConfirmButton
             className="btn btn-sm btn-ghost"
-            confirmText="Clear IV cache for this scope?"
+            confirmText="Reset IV probes, profiles, and cache for this scope? Next Run starts at baseline."
             onConfirm={async () => {
               await clearCache.run();
               onRefresh();

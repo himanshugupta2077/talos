@@ -88,7 +88,9 @@ Shared poller for the **global top header** so individual pages do not each poll
 | `schedulerStatus` | From `GET /api/scheduler/status` (counts + config + DB execution state); null without project |
 | `schedulerStateLabel` | `RUNNING` / `PAUSED` / `WAITING` / … |
 | `schedulerQueueCount` | Active jobs: pending + running + paused |
-| `findingsTriaging` | TRIAGING count from project summary (header signal); null without project |
+| `findingsPrimary` | PRIMARY findings count (header first number); null without project |
+| `findingsTotal` | PRIMARY + LINKED findings count (header second number) |
+| `findingsTriaging` | TRIAGING count from project summary (warning highlight); null without project |
 | `findingsConfirmed` | CONFIRMED count (tooltips) |
 | `roles` / `modules` | Full lists for header switchers |
 | `activeRole` | Role with `is_active` from `GET /api/roles` |

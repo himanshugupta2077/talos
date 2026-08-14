@@ -27,11 +27,12 @@ DISCLAIMER = (
     "Active attack · medium risk. "
     "Auth-Session Testing mutates a presented credential (JWT structure, "
     "algorithm, signature, claims, kid) and replays one HTTP request per "
-    "approved testcase against the live target. Use only on authorized "
+    "test against the live target. Use only on authorized "
     "bug bounty / client-approved scope. "
     "Distinct from Unauth (auth removed), BAC (other-role session), and "
     "classic Authentication Bypass (auth test / BYPASS). "
-    "Operator must approve candidates before run — pending tests never auto-fire. "
+    "Bind a JWT field, review the auto-picked target flows, then run. "
+    "Uses the latest captured JWT unless you supply a custom token. "
     "WEAK_VALIDATION is evidence of weak token validation, not a freeform exploit."
 )
 
@@ -216,7 +217,21 @@ def _recent_weak(db_path: Path, top_n: int) -> list[dict]:
         return []
 
 
-def _approved_count(
+def _target_flow_count(db_path: Path) -> int:
+    try:
+        row = db.query_one(
+            db_path,
+            """
+            SELECT COUNT(DISTINCT baseline_flow_id) AS n
+            FROM auth_session_candidates
+            """,
+        )
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _runnable_count(
     db_path: Path,
     *,
     endpoint_id: Optional[str] = None,
@@ -227,7 +242,7 @@ def _approved_count(
                 db_path,
                 """
                 SELECT COUNT(*) AS n FROM auth_session_candidates
-                WHERE status = 'approved' AND endpoint_id = ?
+                WHERE status IN ('pending', 'approved') AND endpoint_id = ?
                 """,
                 (endpoint_id,),
             )
@@ -236,12 +251,21 @@ def _approved_count(
                 db_path,
                 """
                 SELECT COUNT(*) AS n FROM auth_session_candidates
-                WHERE status = 'approved'
+                WHERE status IN ('pending', 'approved')
                 """,
             )
         return int(row["n"]) if row else 0
     except Exception:
         return 0
+
+
+def _approved_count(
+    db_path: Path,
+    *,
+    endpoint_id: Optional[str] = None,
+) -> int:
+    """Back-compat alias: runnable tests (pending + leftover approved)."""
+    return _runnable_count(db_path, endpoint_id=endpoint_id)
 
 
 def _parse_csv_or_list(value: Optional[list[str] | str]) -> list[str]:
@@ -289,6 +313,7 @@ def auth_session_summary(project_id: str):
         "counts": counts,
         "candidates_by_status": by_status,
         "bindings": len(bindings),
+        "targets_total": _target_flow_count(db_path),
     }
 
 
@@ -361,6 +386,8 @@ def auth_session_overview(
         "jobs_pending": pending,
         "jobs_running": running,
         "estimated_jobs_approved": estimated,
+        "estimated_jobs": estimated,
+        "targets_total": _target_flow_count(db_path),
         "auth_config_ready": auth_ready,
         "bindings_valid": bindings_valid,
         "filter_filename": fmeta["filter_filename"],
@@ -498,6 +525,80 @@ def auth_session_candidate_detail(project_id: str, candidate_id: str):
     if not row:
         raise HTTPException(404, f"candidate not found: {candidate_id}")
     return {"item": dict(row)}
+
+
+@router.get("/auth-session/targets")
+def auth_session_targets(
+    project_id: str,
+    binding_id: Optional[str] = None,
+):
+    """Unique target flows (the operator-facing candidate set)."""
+    db_path = _db_path(project_id)
+    params: list[Any] = []
+    sql = """
+        SELECT c.baseline_flow_id AS flow_id,
+               c.binding_id AS binding_id,
+               c.endpoint_id AS endpoint_id,
+               COUNT(*) AS test_count,
+               SUM(CASE WHEN c.status IN ('pending', 'approved') THEN 1 ELSE 0 END)
+                   AS runnable_count,
+               SUM(CASE WHEN c.status = 'running' THEN 1 ELSE 0 END) AS running_count,
+               MAX(c.created_at) AS created_at,
+               f.method AS method,
+               f.path AS path,
+               f.host AS host,
+               f.url AS url,
+               f.status_code AS status_code
+        FROM auth_session_candidates c
+        LEFT JOIN flows f ON f.id = c.baseline_flow_id
+    """
+    if binding_id and binding_id.strip():
+        sql += " WHERE c.binding_id = ?"
+        params.append(binding_id.strip())
+    sql += """
+        GROUP BY c.baseline_flow_id, c.binding_id, c.endpoint_id,
+                 f.method, f.path, f.host, f.url, f.status_code
+        ORDER BY created_at ASC
+    """
+    try:
+        items = db.query_all(db_path, sql, tuple(params))
+    except Exception:
+        items = []
+    return {"items": items, "count": len(items)}
+
+
+class AuthSessionTargetAddBody(BaseModel):
+    flow_id: str
+    binding_id: Optional[str] = None
+
+
+class AuthSessionTargetRemoveBody(BaseModel):
+    flow_id: str
+    binding_id: Optional[str] = None
+
+
+@router.post("/auth-session/targets/add")
+def auth_session_targets_add(project_id: str, body: AuthSessionTargetAddBody):
+    flow_id = (body.flow_id or "").strip()
+    if not flow_id:
+        raise HTTPException(400, "flow_id required")
+    args = ["attack", "auth-session", "candidates", "add", "--flow", flow_id]
+    if body.binding_id and body.binding_id.strip():
+        args += ["--binding", body.binding_id.strip()]
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+@router.post("/auth-session/targets/remove")
+def auth_session_targets_remove(project_id: str, body: AuthSessionTargetRemoveBody):
+    flow_id = (body.flow_id or "").strip()
+    if not flow_id:
+        raise HTTPException(400, "flow_id required")
+    args = ["attack", "auth-session", "candidates", "remove", "--flow", flow_id]
+    if body.binding_id and body.binding_id.strip():
+        args += ["--binding", body.binding_id.strip()]
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
 
 
 # ------------------------------------------------------------------ #
@@ -958,6 +1059,7 @@ class AuthSessionRunBody(BaseModel):
     test_ids: Optional[list[str]] = None
     families: Optional[list[str]] = None
     binding_id: Optional[str] = None
+    jwt: Optional[str] = None
     right_now: bool = False
 
 
@@ -970,7 +1072,7 @@ def _count_approved_matching(
     families: Optional[list[str]] = None,
     binding_id: Optional[str] = None,
 ) -> int:
-    clauses = ["status = 'approved'"]
+    clauses = ["status IN ('pending', 'approved')"]
     params: list[Any] = []
     ids = _clean_ids(candidate_ids)
     if ids:
@@ -1023,6 +1125,9 @@ def _run_args(body: AuthSessionRunBody) -> list[str]:
     binding = (body.binding_id or "").strip() or None
     if binding:
         args += ["--binding", binding]
+    jwt = (body.jwt or "").strip()
+    if jwt:
+        args += ["--jwt", jwt]
     if body.right_now:
         args.append("--right-now")
     return args
@@ -1043,7 +1148,7 @@ def auth_session_run_estimate(
     family: Optional[list[str]] = Query(default=None),
     candidate: Optional[list[str]] = Query(default=None),
 ):
-    """Count approved candidates matching run filters (K10)."""
+    """Count runnable tests matching run filters."""
     db_path = _db_path(project_id)
     test_ids = _parse_csv_or_list(test_id)
     families = _parse_csv_or_list(family)
@@ -1059,6 +1164,7 @@ def auth_session_run_estimate(
     )
     return {
         "approved_matching": n,
+        "runnable_matching": n,
         "filters": {
             "endpoint_id": endpoint_id,
             "binding_id": binding_id,
@@ -1072,7 +1178,7 @@ def auth_session_run_estimate(
 @router.post("/auth-session/run")
 def auth_session_run(project_id: str, body: AuthSessionRunBody):
     """
-    Enqueue or right-now run approved candidates.
+    Enqueue or right-now run selected target tests (no approve required).
 
     right_now contract (K11):
       E == 0 → 400
@@ -1101,12 +1207,12 @@ def auth_session_run(project_id: str, body: AuthSessionRunBody):
         if estimate == 0:
             raise HTTPException(
                 400,
-                "no approved candidates in scope for --right-now",
+                "no runnable tests in scope for --right-now",
             )
         if estimate > 20:
             raise HTTPException(
                 400,
-                f"right-now refused: {estimate} approved candidates in scope "
+                f"right-now refused: {estimate} tests in scope "
                 f"(limit 20). Enqueue without right_now for large batches.",
             )
         timeout = _right_now_timeout(estimate)

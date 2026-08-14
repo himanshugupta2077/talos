@@ -57,6 +57,7 @@ interface SecretHit {
   secret_type?: string | null;
   matched_key?: string | null;
   redacted_value?: string | null;
+  raw_value?: string | null;
   confidence_level?: string | null;
   confidence_score?: number | null;
   match_start?: number;
@@ -120,17 +121,26 @@ function SecretExposureSection({
       title={hits.length > 1 ? `Leaked secret (${hits.length} locations)` : "Leaked secret"}
     >
       <p className="text-xs text-base-content/50 mb-3">
-        Highlighted span is the exact match Secret Detection flagged. Values are
-        redacted; raw material stays in evidence when that option is on.
+        Highlighted span is the exact match Secret Detection flagged, including
+        the secret type (email, token, …) and the unmasked value when it was
+        stored on the finding.
       </p>
       <div className="space-y-3">
         {hits.map((hit, i) => {
           const loc = hit.url || hit.path || "unknown path";
           const detId = hit.detection_id;
+          const displayed = (hit.raw_value || hit.redacted_value || "").trim();
           return (
             <div key={detId || `${loc}-${i}`} className="panel p-3 border-l-4 border-l-warning/60">
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <RedactedValue value={hit.redacted_value} className="text-sm font-semibold" />
+                {hit.secret_type && (
+                  <span className="badge badge-outline badge-sm">{hit.secret_type}</span>
+                )}
+                {displayed ? (
+                  <span className="mono text-sm font-semibold break-all">{displayed}</span>
+                ) : (
+                  <RedactedValue value={hit.redacted_value} className="text-sm font-semibold" />
+                )}
                 {hit.confidence_level && (
                   <ConfidenceChip
                     level={hit.confidence_level}
@@ -140,9 +150,6 @@ function SecretExposureSection({
                 {hit.detector_id && (
                   <span className="badge badge-ghost badge-sm mono">{hit.detector_id}</span>
                 )}
-                {hit.secret_type && (
-                  <span className="badge badge-outline badge-sm">{hit.secret_type}</span>
-                )}
                 {hit.matched_key && (
                   <span className="text-xs mono text-base-content/60">
                     key={hit.matched_key}
@@ -151,7 +158,7 @@ function SecretExposureSection({
               </div>
               <SecretHighlight
                 contextBefore={hit.context_before}
-                redactedValue={hit.redacted_value}
+                redactedValue={displayed || hit.redacted_value}
                 contextAfter={hit.context_after}
               />
               <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-base-content/60">

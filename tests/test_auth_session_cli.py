@@ -242,6 +242,7 @@ def test_talos_helper_documents_auth_session() -> None:
     assert re.search(r"^\s+auth-session bind\|unbind\|show-bindings", text, re.M)
     assert "auth-session generate" in text
     assert "auth-session candidates" in text
+    assert "auth-session candidates list|show|add|remove" in text
     assert "auth-session approve|reject|unapprove" in text
     assert "auth-session run" in text
     assert "auth-session results" in text
@@ -321,6 +322,88 @@ def test_unapprove_cli_and_unbind_path(manager: MagicMock, db_path: Path) -> Non
     assert as_db.list_bindings(db_path) == []
 
 
+def test_bind_auto_selects_targets_and_run_skips_approve(
+    manager: MagicMock, db_path: Path
+) -> None:
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
+        )
+    assert "Auto-selected" in out.getvalue() or "target" in out.getvalue().lower()
+    pending = as_db.list_candidates(db_path, status=STATUS_PENDING)
+    assert pending
+
+    listed = io.StringIO()
+    with redirect_stdout(listed):
+        run_auth_session_cli(manager, _parse_as(["candidates", "list"]))
+    text = listed.getvalue()
+    assert "GET" in text
+    assert FLOW in text or "/api/me" in text
+
+    # Run without approve — scoped to one test_id so we do not fire the suite.
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["run", "--test-id", "jwt.alg_none"])
+        )
+    assert "Jobs enqueued" in out.getvalue()
+
+
+def test_candidates_add_remove_and_force_unbind(
+    manager: MagicMock, db_path: Path
+) -> None:
+    run_auth_session_cli(
+        manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
+    )
+    extra = "flow-extra"
+    jwt = _jwt()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO flows
+                (id, project_id, captured_at, method, url, host, path,
+                 query, request_headers, request_cookies, status_code,
+                 response_headers, content_type, endpoint_id, role_id,
+                 module_id, tags, source)
+            VALUES (?, ?, ?, 'POST', 'https://api.example.com/api/x',
+                    'api.example.com', '/api/x', '', ?, '{}', 200,
+                    '{}', 'application/json', ?, '', '', '[]', 'proxy_capture')
+            """,
+            (
+                extra,
+                PROJECT_ID,
+                NOW,
+                json.dumps({"Authorization": f"Bearer {jwt}"}),
+                EP,
+            ),
+        )
+        conn.commit()
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["candidates", "add", "--flow", extra])
+        )
+    assert "Added flow" in out.getvalue()
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager, _parse_as(["candidates", "remove", "--flow", extra])
+        )
+    assert "Removed" in out.getvalue()
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        run_auth_session_cli(
+            manager,
+            _parse_as(["unbind", "--header", "Authorization", "--force"]),
+        )
+    assert "Unbound" in out.getvalue()
+    assert as_db.list_bindings(db_path) == []
+
+
 def test_show_bindings_json(manager: MagicMock, db_path: Path) -> None:
     as_db.insert_binding(
         db_path, location="header", name="Authorization", auth_type="jwt"
@@ -349,16 +432,8 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
     bind_data = json.loads(out.getvalue())
     assert bind_data["name"] == "Authorization"
     assert bind_data["auth_type"] == "jwt"
-
-    out = io.StringIO()
-    with redirect_stdout(out):
-        run_auth_session_cli(
-            manager,
-            _parse_as(["generate", "--endpoint", EP, "--format", "json"]),
-        )
-    gen = json.loads(out.getvalue())
-    assert gen["created"] > 0
-    assert "bindings_processed" in gen
+    created = int((bind_data.get("seed") or {}).get("created") or 0)
+    assert created > 0
     # Full Phase 5 matrix for RS256 includes cross-family edges.
     pending = as_db.list_candidates(db_path, status=STATUS_PENDING)
     degrade_ids = {c.test_id for c in pending if c.test_id.startswith("jwt.alg_degrade.")}
@@ -373,8 +448,8 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
         )
     st = json.loads(out.getvalue())
     assert st["bindings"] == 1
-    assert st["candidates_total"] == gen["created"]
-    assert st["candidates_by_status"].get("pending", 0) == gen["created"]
+    assert st["candidates_total"] == created
+    assert st["candidates_by_status"].get("pending", 0) == created
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -383,7 +458,7 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
             _parse_as(["approve", "--all-pending", "--format", "json"]),
         )
     ap = json.loads(out.getvalue())
-    assert ap["approved_count"] == gen["created"]
+    assert ap["approved_count"] == created
 
     out = io.StringIO()
     with redirect_stdout(out):
@@ -391,7 +466,7 @@ def test_status_and_json_actions(manager: MagicMock, db_path: Path) -> None:
     text = out.getvalue()
     assert "Auth-session status" in text
     assert "approved" in text.lower()
-    assert str(gen["created"]) in text
+    assert str(created) in text
 
 
 def test_unknown_family_rejected_on_approve(manager: MagicMock, db_path: Path) -> None:
@@ -410,17 +485,20 @@ def test_unapprove_blocked_when_job_pending(
     run_auth_session_cli(
         manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
     )
-    run_auth_session_cli(
-        manager,
-        _parse_as([
-            "generate", "--endpoint", EP,
-            "--test-id", "jwt.alg_degrade.rs256_to_es256",
-        ]),
+    rows = as_db.list_candidates(
+        db_path,
+        status=STATUS_PENDING,
+        test_ids=["jwt.alg_degrade.rs256_to_es256"],
     )
-    run_auth_session_cli(manager, _parse_as(["approve", "--all-pending"]))
+    assert rows
+    cid = rows[0].id
+    as_db.approve_candidates(db_path, [cid])
     out = io.StringIO()
     with redirect_stdout(out):
-        run_auth_session_cli(manager, _parse_as(["run", "--format", "json"]))
+        run_auth_session_cli(
+            manager,
+            _parse_as(["run", "--candidate", cid, "--format", "json"]),
+        )
     run_data = json.loads(out.getvalue())
     assert run_data["jobs_enqueued"] == 1
 

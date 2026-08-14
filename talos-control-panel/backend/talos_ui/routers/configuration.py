@@ -39,6 +39,7 @@ _SECTIONS = (
     "http",
     "parameter_intel",
     "url_sink",
+    "burp",
 )
 
 
@@ -217,6 +218,19 @@ def _section_summaries(values: dict[str, Any], sources: dict[str, str]) -> list[
                 f" · IV probes {'on' if us_iv else 'off'}"
             ),
             "source": _dominant_source(sources, "url_sink"),
+        }
+    )
+
+    burp_on = values.get("burp.enabled", True)
+    burp_prefix = values.get("burp.header_prefix") or "X-Talos"
+    cards.append(
+        {
+            "section": "burp",
+            "label": "Burp Suite",
+            "summary": (
+                f"Headers {'on' if burp_on else 'off'} · {burp_prefix}"
+            ),
+            "source": _dominant_source(sources, "burp"),
         }
     )
 

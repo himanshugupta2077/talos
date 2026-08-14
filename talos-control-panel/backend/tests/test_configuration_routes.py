@@ -196,6 +196,36 @@ def test_effective_section_url_sink_accepted(client):
         assert "url_sink" in labels
 
 
+def test_effective_section_burp_accepted(client):
+    """CP _SECTIONS includes burp so the Burp filter is not 400."""
+    with patch("talos_ui.routers.configuration.cli.run") as run:
+        run.return_value = _ok_result(
+            json.dumps(
+                {
+                    "values": {
+                        "burp.enabled": True,
+                        "burp.header_prefix": "X-Talos",
+                    },
+                    "sources": {
+                        "burp.enabled": "default",
+                        "burp.header_prefix": "default",
+                    },
+                }
+            )
+        )
+        res = client.get(
+            "/api/configuration/effective",
+            params={"project_id": "demo", "section": "burp"},
+        )
+        assert res.status_code == 200
+        argv = run.call_args[0][0]
+        assert "--section" in argv and "burp" in argv
+        body = res.json()
+        assert body["values"]["burp.enabled"] is True
+        labels = {c.get("section") for c in body.get("section_cards") or []}
+        assert "burp" in labels
+
+
 def test_effective_section_unknown_still_400(client):
     res = client.get(
         "/api/configuration/effective",

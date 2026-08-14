@@ -222,6 +222,35 @@ class ReplayScheduler:
         """
         self._thread.start()
         _log.info("ReplayScheduler started for project %s.", self._project.id)
+        self._log_burp_header_status()
+
+    def _log_burp_header_status(self) -> None:
+        """
+        Purpose:
+            Log whether this process will stamp X-Talos-* on IV probes.
+            Makes a stale scheduler (old code / no upstream) obvious.
+        Side effects: One INFO line.
+        """
+        try:
+            from talos.burp.config import ensure_process_burp_config
+            from talos.projects.proxy_config import get_upstream_url
+
+            cfg = ensure_process_burp_config(Path(self._project.db_path).parent)
+            upstream = get_upstream_url(self._project.db_path)
+            if cfg.enabled and upstream:
+                _log.info(
+                    "Burp metadata headers ON (prefix=%s, upstream=%s).",
+                    cfg.header_prefix,
+                    upstream,
+                )
+            else:
+                _log.info(
+                    "Burp metadata headers OFF (enabled=%s, upstream=%s).",
+                    cfg.enabled,
+                    upstream or "none",
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Burp metadata header status unavailable: %s", exc)
 
     def stop(self) -> None:
         """
@@ -1573,6 +1602,21 @@ class ReplayScheduler:
                 "endpoint_id": endpoint_id,
             },
         }
+        from talos.burp.trace import attach_iv_burp_trace
+
+        attach_iv_burp_trace(
+            flow_meta,
+            flow=flow,
+            endpoint_id=endpoint_id,
+            host=host,
+            parameter_name=parameter_name,
+            location=location,
+            analysis=analysis,
+            payload_type=payload_type,
+            project_id=project_id,
+            project_name=str(getattr(self._project, "name", "") or ""),
+        )
+
         # Module 4: attach multiprobe plan so evidence is self-describing.
         multiprobe_meta = meta.get("multiprobe")
         if multiprobe_meta:

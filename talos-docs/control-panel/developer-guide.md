@@ -25,7 +25,9 @@ Do not write to `talos.db` from Python in the Control Panel.
 3. Load data with `useEffect` + `api.get`
 4. Mutations with `useAction("Label", () => api.post(..., { project_id: selected!.id }))`
 5. Register route in `App.tsx` inside the `Layout` parent
-6. Add nav item to `NAV_GROUPS` in `Layout.tsx` if it should appear in the sidebar
+6. Add nav item to `NAV_GROUPS` in `Layout.tsx` if it should appear in the sidebar.
+   Available Active attack modules are listed under **Attack Module** automatically
+   from `availableModulesForClass("active")` in `pages/attack/registry.ts`.
 7. Prefer existing components: `DataTable`, `Section`, `StatusBadge`, `UuidChip`, `Modal`, `ConfirmButton`
 
 Detail pages typically use `useParams()` and optional adjacent navigation.

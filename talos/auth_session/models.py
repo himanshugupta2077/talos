@@ -50,6 +50,15 @@ CANDIDATE_STATUSES: frozenset[str] = frozenset({
     STATUS_FAILED,
 })
 
+# Bind auto-selects this many method-diverse target flows.
+DEFAULT_TARGET_LIMIT = 5
+
+# Run no longer requires approve. Pending (and leftover approved) enqueue.
+RUNNABLE_STATUSES: frozenset[str] = frozenset({
+    STATUS_PENDING,
+    STATUS_APPROVED,
+})
+
 
 # ------------------------------------------------------------------ #
 # Verdicts (KD7)                                                       #

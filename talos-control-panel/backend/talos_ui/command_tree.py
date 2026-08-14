@@ -657,7 +657,7 @@ COMMAND_TREE: list[dict] = [
             cmd(
                 "attack.auth-session.unbind",
                 ["attack", "auth-session", "unbind"],
-                "Remove a binding (refuses protected candidate states)",
+                "Remove a binding (--force deletes targets and results)",
                 [
                     arg("header", flag="--header", help="Header field name"),
                     arg("cookie", flag="--cookie", help="Cookie field name"),
@@ -666,7 +666,7 @@ COMMAND_TREE: list[dict] = [
                         "force",
                         flag="--force",
                         kind="boolean",
-                        help="Cascade-delete pending/rejected candidates first",
+                        help="Cascade-delete target flows, tests, and results",
                     ),
                 ],
             ),
@@ -708,6 +708,24 @@ COMMAND_TREE: list[dict] = [
                         kind="boolean",
                         help="Allow POST/PUT/PATCH/DELETE baselines",
                     ),
+                ],
+            ),
+            cmd(
+                "attack.auth-session.candidates.add",
+                ["attack", "auth-session", "candidates", "add"],
+                "Add a target flow and generate JWT tests for it",
+                [
+                    arg("flow", flag="--flow", help="Baseline flow UUID"),
+                    arg("binding", flag="--binding", help="Binding UUID"),
+                ],
+            ),
+            cmd(
+                "attack.auth-session.candidates.remove",
+                ["attack", "auth-session", "candidates", "remove"],
+                "Remove a target flow and its JWT tests",
+                [
+                    arg("flow", flag="--flow", help="Baseline flow UUID"),
+                    arg("binding", flag="--binding", help="Limit to one binding UUID"),
                 ],
             ),
             cmd(
@@ -813,13 +831,13 @@ COMMAND_TREE: list[dict] = [
             cmd(
                 "attack.auth-session.run",
                 ["attack", "auth-session", "run"],
-                "Enqueue approved candidates (or --right-now)",
+                "Enqueue JWT tests for selected target flows (or --right-now)",
                 [
                     arg(
                         "candidate",
                         flag="--candidate",
                         kind="multi",
-                        help="Repeatable approved candidate UUIDs",
+                        help="Repeatable candidate UUIDs",
                     ),
                     arg("endpoint", flag="--endpoint", help="Scope to endpoint UUID"),
                     arg(
@@ -835,6 +853,11 @@ COMMAND_TREE: list[dict] = [
                         help="Repeatable family filter",
                     ),
                     arg("binding", flag="--binding", help="Limit to one binding UUID"),
+                    arg(
+                        "jwt",
+                        flag="--jwt",
+                        help="Custom JWT for every selected flow (default: latest captured)",
+                    ),
                     arg(
                         "right_now",
                         flag="--right-now",
@@ -1017,7 +1040,7 @@ COMMAND_TREE: list[dict] = [
                 arg("limit", flag="--limit", kind="number"),
                 arg("include_values", flag="--include-values", kind="boolean"),
             ]),
-            cmd("iv.clear_cache", ["input-validation", "clear-cache"], "Clear IV cache", [
+            cmd("iv.clear_cache", ["input-validation", "clear-cache"], "Reset IV probes, profiles, and cache", [
                 arg("host", flag="--host"), arg("endpoint", flag="--endpoint"), arg("parameter", flag="--parameter"),
             ]),
             cmd("iv.exclude.endpoint", ["input-validation", "exclude", "endpoint"], "Exclude endpoint from IV", [arg("endpoint_id", required=True)]),

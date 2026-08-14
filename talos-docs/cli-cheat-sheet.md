@@ -338,7 +338,7 @@ talos [--project ID] [-h|--help]
 │  ├─ synthesize [--host|--param-uuid] [--dry-run]
 │  ├─ candidates [--attack] [--min-score] [--host] [--capability]
 │  ├─ reflections [--param-uuid] [--host]   # cross-flow / stored links
-│  ├─ clear-cache [--force]   # --force = confirm bypass only
+│  ├─ clear-cache [--force]   # reset probes/profiles; --force = confirm only
 │  ├─ exclude|include endpoint|host
 │  ├─ show <parameter_uuid> | --endpoint ID | --host H
 │  ├─ export parameter|host [--format markdown|json]
@@ -735,7 +735,15 @@ talos config scheduler set max_delay 15
 talos config attack set unauth_auto_run on
 talos config capture show
 talos config http list
+talos config burp
+talos config set burp.enabled true
+talos config set burp.header_prefix X-Talos
 ```
+
+Burp Suite metadata headers (`burp.enabled`, `burp.header_prefix`) tag
+outbound Input Validation probes so the Talos Burp extension can group
+them (Input Validation → Endpoints → `GET /path`). Headers attach only
+when enabled **and** `proxy.upstream.url` is set. See `docs/burp-extension.md`.
 
 | Section | Useful keys |
 |---------|-------------|
@@ -1632,62 +1640,46 @@ talos auth set --header Authorization   # or --cookie name
 talos attack auth-session bind --type jwt --header Authorization
 talos attack auth-session bind --type jwt --cookie access_token [--role admin]
 talos attack auth-session show-bindings [--format json]
-talos attack auth-session unbind --header Authorization [--force]
+talos attack auth-session unbind --header Authorization --force
 ```
 
-Binding field must already exist in `auth_config`. Unbind refuses when
-approved/running/done/failed candidates or result rows exist; `--force`
-cascade-deletes pending/rejected only.
+Binding field must already exist in `auth_config`. Bind auto-selects up to
+five JWT-bearing target flows (one GET, one POST, one PATCH or PUT, then
+fill). `--force` unbind cascade-deletes those targets, mutation rows, and
+results. Unbind refuses only while a test is still running.
 
-### Generate candidates (no HTTP)
-
-```bash
-talos attack auth-session generate --endpoint <uuid>
-talos attack auth-session generate --flow <uuid>
-talos attack auth-session generate --module <name|uuid>
-talos attack auth-session generate --test-id jwt.alg_none --family algorithm
-talos attack auth-session generate --force-refresh   # pending|rejected only
-talos attack auth-session generate --include-unsafe-methods  # allow POST/PUT/…
-talos attack auth-session generate --endpoint <uuid> --format json
-```
-
-Default baselines: safe methods only (GET/HEAD/OPTIONS). Insert-if-absent on
-`(binding_id, test_id, baseline_flow_id)`. Re-generate after suite upgrades
-creates **new** pending rows for new test_ids only (existing done rows kept).
-
-### Review / approve / reject
+### Target flows (add / remove)
 
 ```bash
-talos attack auth-session candidates list [--status pending] [--endpoint UUID] \
-  [--test-id ID] [--family FAM] [--format table|json]
+talos attack auth-session candidates list                 # unique target flows
+talos attack auth-session candidates list --status pending  # per-test rows
+talos attack auth-session candidates add --flow <uuid>
+talos attack auth-session candidates remove --flow <uuid>
 talos attack auth-session candidates show <candidate_id>
-talos attack auth-session approve <id> [<id>…]
-talos attack auth-session approve --all-pending [--endpoint UUID] [--test-id …]
-talos attack auth-session approve --retry-failed   # failed → approved (re-test)
-talos attack auth-session reject <id>… [--reason "…"]
-talos attack auth-session reject --all-pending
-talos attack auth-session unapprove --all-approved
-talos attack auth-session unapprove <id>…
-talos attack auth-session status [--endpoint UUID] [--format json]
+talos attack auth-session generate --flow <uuid>          # same as add
+talos attack auth-session status [--format json]
 ```
 
-Statuses: `pending` → `approved` | `rejected`. Re-approve `failed`/`done` for
-re-test. Unapprove (`approved` → `pending`) to re-review or unbind.
-Scheduler: `approved` → `running` → `done` | `failed`.
-`status` shows bindings + candidate/result tallies.
+`generate` still exists for scoped/filtered test creation (endpoint, family,
+test-id). Default generate without `--include-unsafe-methods` still skips
+POST/PUT/PATCH; bind auto-select and `candidates add` include them.
 
-### Run (one job per approved test_id)
+Approve / reject / unapprove remain available but are **not required**.
+Run acts on pending (and leftover approved) rows.
+
+### Run (latest JWT, or a custom token)
 
 ```bash
-talos attack auth-session run [--endpoint UUID] [--candidate UUID] \
-  [--test-id ID] [--family FAM] [--binding UUID]
+talos attack auth-session run
+talos attack auth-session run --jwt 'Bearer eyJ…'
 talos attack auth-session run --test-id jwt.alg_none --right-now
-talos attack auth-session run --endpoint <uuid> --format json
+talos attack auth-session run --binding <uuid> --format json
 ```
 
-Enqueues `auth_session_attack` jobs (PRIORITY_MANUAL). Meta-aware dedupe on
-`(flow_id, test_id, binding_id)`. `--right-now` executes in-process (one HTTP
-request per candidate). Each test_id = one new outbound flow.
+Default token source is the newest captured JWT on the bound field. `--jwt`
+overrides that token for every selected flow. Each test_id is one outbound
+HTTP request. First `WEAK_VALIDATION` finding is PRIMARY; later JWT findings
+are LINKED under `AUTH_SESSION:jwt`.
 
 ### Results
 
@@ -1703,7 +1695,7 @@ Table mode prints a **by-verdict tally** under the list. JSON mode returns
 Verdicts: filter match first when `auth-session-decision-filter.yaml` exists;
 else heuristic — `WEAK_VALIDATION` (2xx + diff SAME), `SECURE` (401/403/407/3xx
 or filter soft-fail body), `UNKNOWN` (else). Findings on `WEAK_VALIDATION`
-only (`talos finding list`); cluster `AUTH_SESSION:<endpoint_id>:<auth_type>`.
+only (`talos finding list`); cluster `AUTH_SESSION:<auth_type>` (first PRIMARY, later LINKED).
 
 ### Decision filter
 
@@ -1863,7 +1855,7 @@ talos input-validation run --host api.example.com
 talos input-validation run --endpoint <endpoint_id>
 talos input-validation run --flow <uuid> --flow <uuid>
 talos input-validation run --parameter username
-talos input-validation run --ignore-cache   # re-run (ignore cache); planner resumes waves
+talos input-validation run --ignore-cache   # reset probes/profiles then start at baseline
 talos input-validation run --include-auth-artifacts  # one-shot: probe session/auth params
 
 # Status: budget tier, requests_used, confidence buckets, pending plan actions

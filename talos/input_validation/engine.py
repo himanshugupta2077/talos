@@ -45,7 +45,10 @@ Purpose:
 
     Resume behaviour:
         Planner skips completed evidence and continues from current state.
-        --ignore-cache resets cache before scheduling.
+        --ignore-cache on a planner run (no phase filter) resets probe
+        results, profiles, and cache for the selected scope so the next
+        wave starts at baseline. Phase shortcuts with --ignore-cache only
+        re-enqueue that phase.
 
     This engine NEVER sends requests directly.  Execution happens through
     the scheduler when jobs are picked up by the scheduler daemon.
@@ -529,6 +532,31 @@ def _probes_for_phase(
     return list(_PHASE_PROBES_STATIC.get(phase, []))
 
 
+def _maybe_reset_for_ignore_cache(
+    db_path: Path,
+    ignore_cache: bool,
+    phase_filter: str | None,
+    *,
+    host: str | None = None,
+    endpoint_id: str | None = None,
+    param_name: str | None = None,
+) -> None:
+    """
+    Purpose:
+        On a planner re-run (--ignore-cache, no phase shortcut), wipe probe
+        evidence and profiles so plan_next starts at baseline.
+        Phase shortcuts keep existing evidence and only skip completed checks.
+    Side effects: May delete IV scan state for the selected scope.
+    """
+    if ignore_cache and not phase_filter:
+        iv_db.reset_iv_scan_state(
+            db_path,
+            host=host,
+            endpoint_id=endpoint_id,
+            param_name=param_name,
+        )
+
+
 def schedule_project(
     db_path: Path,
     project_id: str,
@@ -544,16 +572,18 @@ def schedule_project(
         db_path       — Project database path.
         project_id    — Project UUID.
         phase_filter  — If set, only schedule this specific phase.
-        ignore_cache  — If True, clear existing cache before scheduling.
+        ignore_cache  — If True and this is a planner run (no phase_filter),
+                        reset probe results + profiles + cache first.
         include_auth_artifacts — Module 9 one-shot override (None = config).
     Output:
         Number of jobs enqueued.
     Side effects:
-        - May clear iv cache if ignore_cache is True.
+        - May reset IV scan state if ignore_cache is True (planner run).
         - Inserts rows into scheduler_jobs.
     """
-    if ignore_cache:
-        iv_db.clear_all_iv_cache(db_path)
+    _maybe_reset_for_ignore_cache(
+        db_path, ignore_cache, phase_filter,
+    )
 
     config = load_config(db_path)
     if include_auth_artifacts is not None:
@@ -580,8 +610,9 @@ def schedule_host(
         Number of jobs enqueued.
     Side effects: Same as schedule_project.
     """
-    if ignore_cache:
-        iv_db.clear_param_cache(db_path, host=host)
+    _maybe_reset_for_ignore_cache(
+        db_path, ignore_cache, phase_filter, host=host,
+    )
 
     config = load_config(db_path)
     if include_auth_artifacts is not None:
@@ -608,8 +639,9 @@ def schedule_endpoint(
         Number of jobs enqueued.
     Side effects: Same as schedule_project, scoped to one endpoint.
     """
-    if ignore_cache:
-        iv_db.clear_reflection_cache(db_path, endpoint_id=endpoint_id)
+    _maybe_reset_for_ignore_cache(
+        db_path, ignore_cache, phase_filter, endpoint_id=endpoint_id,
+    )
 
     config = load_config(db_path)
     if include_auth_artifacts is not None:
@@ -637,6 +669,9 @@ def schedule_parameter(
         Number of jobs enqueued.
     Side effects: Same as schedule_project, scoped to one parameter name.
     """
+    _maybe_reset_for_ignore_cache(
+        db_path, ignore_cache, phase_filter, param_name=param_name,
+    )
     config = load_config(db_path)
     if include_auth_artifacts is not None:
         config.include_auth_artifacts = bool(include_auth_artifacts)

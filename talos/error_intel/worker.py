@@ -479,6 +479,7 @@ def process_error_scan_job(
             created,
             (cluster.fingerprint or "")[:12],
         )
+        _record_burp_error(db_path, job, obs, cluster)
         return {
             "stored": True,
             "duplicate": False,
@@ -495,6 +496,34 @@ def process_error_scan_job(
             getattr(job, "flow_id", "?"),
         )
         return None
+
+
+def _record_burp_error(db_path: Path, job: ErrorIntelJob, obs: Any, cluster: Any) -> None:
+    """Best-effort Burp snapshot; never raises into the scan path."""
+    try:
+        from talos.burp.snapshot import record_module_hit
+        from talos.burp.trace import ENGINE_ERROR_INTEL
+
+        record_module_hit(
+            project_id=job.project_id,
+            engine=ENGINE_ERROR_INTEL,
+            extras={
+                "technique": getattr(cluster, "category", "") or "error",
+                "detail": getattr(cluster, "exception_type", "")
+                or getattr(obs, "id", "")
+                or "error",
+            },
+            record_id=f"error:{getattr(obs, 'id', '') or job.flow_id}",
+            status=int(job.status_code or 0),
+            db_path=db_path,
+            flow_id=job.flow_id,
+            url=job.url,
+            host=job.host,
+            path=job.path,
+            endpoint_id=job.endpoint_id or "",
+        )
+    except Exception:
+        logger.debug("burp error-intel snapshot skipped", exc_info=True)
 
 
 def process_error_scan_sync(

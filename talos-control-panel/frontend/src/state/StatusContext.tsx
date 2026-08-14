@@ -24,6 +24,10 @@ interface StatusContextValue {
   schedulerStateLabel: string;
   /** Active queue depth (pending + running + paused). */
   schedulerQueueCount: number;
+  /** PRIMARY findings count (header first number; null when no project). */
+  findingsPrimary: number | null;
+  /** PRIMARY + LINKED findings count (header second number). */
+  findingsTotal: number | null;
   /** Actionable findings signal: TRIAGING count (null when no project). */
   findingsTriaging: number | null;
   /** Confirmed findings count (header badge context). */
@@ -58,6 +62,8 @@ export function StatusProvider({ children }: { children: ReactNode }) {
   const { selected } = useProject();
   const [proxyStatus, setProxyStatus] = useState<ProxyRuntimeStatus>(defaultProxyStatus);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
+  const [findingsPrimary, setFindingsPrimary] = useState<number | null>(null);
+  const [findingsTotal, setFindingsTotal] = useState<number | null>(null);
   const [findingsTriaging, setFindingsTriaging] = useState<number | null>(null);
   const [findingsConfirmed, setFindingsConfirmed] = useState<number | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -97,6 +103,8 @@ export function StatusProvider({ children }: { children: ReactNode }) {
         setActiveRole(roleList.find((r) => !!r.is_active) || null);
         setActiveModule(moduleList.find((m) => !!m.is_active) || null);
         setSchedulerStatus(sched);
+        setFindingsPrimary(summary.findings_primary ?? 0);
+        setFindingsTotal(summary.findings_total ?? 0);
         setFindingsTriaging(summary.findings_triaging ?? 0);
         setFindingsConfirmed(summary.findings_confirmed ?? 0);
       } catch {
@@ -105,6 +113,8 @@ export function StatusProvider({ children }: { children: ReactNode }) {
         setActiveRole(null);
         setActiveModule(null);
         setSchedulerStatus(null);
+        setFindingsPrimary(null);
+        setFindingsTotal(null);
         setFindingsTriaging(null);
         setFindingsConfirmed(null);
       }
@@ -114,6 +124,8 @@ export function StatusProvider({ children }: { children: ReactNode }) {
       setActiveRole(null);
       setActiveModule(null);
       setSchedulerStatus(null);
+      setFindingsPrimary(null);
+      setFindingsTotal(null);
       setFindingsTriaging(null);
       setFindingsConfirmed(null);
     }
@@ -144,6 +156,8 @@ export function StatusProvider({ children }: { children: ReactNode }) {
         schedulerStatus,
         schedulerStateLabel,
         schedulerQueueCount,
+        findingsPrimary,
+        findingsTotal,
         findingsTriaging,
         findingsConfirmed,
         roles,

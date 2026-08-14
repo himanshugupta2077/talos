@@ -7,6 +7,7 @@
  *  3. Optionally wire hub KPIs in AttackHub / TestingHub
  *  4. If it should run from selected Flows / Endpoints, add it in
  *     pages/flows/flowAttacks.ts (requires Core CLI --flow first)
+ *  5. Available active modules appear under Attack Module in the sidebar automatically
  *
  * Directory stays pages/attack/ for now (rename deferred); user-facing paths
  * use /testing/*.
@@ -169,7 +170,7 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
     class: "active",
     name: "Auth-Session Testing",
     description:
-      "Mutate presented JWTs (alg, signature, claims, structure) to detect weak validation. Approve-first; one HTTP request per approved test.",
+      "Mutate presented JWTs (alg, signature, claims, structure) to detect weak validation. Bind a field, pick target flows, run with the latest or a custom JWT.",
     risk: "medium",
     status: "available",
     path: `${TESTING_BASE}/auth-session`,
@@ -278,6 +279,11 @@ export function getAttackModule(id: string): AttackModuleDef | undefined {
 
 export function modulesForClass(cls: AttackClass): AttackModuleDef[] {
   return ATTACK_MODULES.filter((m) => m.class === cls);
+}
+
+/** Available workspaces of a class — used by the Attack Module sidebar subtree. */
+export function availableModulesForClass(cls: AttackClass): AttackModuleDef[] {
+  return ATTACK_MODULES.filter((m) => m.class === cls && m.status === "available");
 }
 
 export function filterModules(query: string): AttackModuleDef[] {

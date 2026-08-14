@@ -10,6 +10,7 @@
 | `docs/updates.md` | Release notes / change log |
 | `docs/about-talos.md` | Vision and design notes (**non-authoritative**; do not use for CLI or schema) |
 | `docs/bac-decision-filter.md` | BAC decision filter configuration reference |
+| `docs/burp-extension.md` | Burp upstream metadata headers + Talos Burp extension |
 
 **Source of truth:** implementation under `talos/`. When this document disagrees with code, the code wins.
 
@@ -463,7 +464,10 @@ talos
     ├── Cache strategy:
     │     param-level analyses cached by (host, location, param_name) → shared across endpoints
     │     reflection cached by (endpoint_id, param_name, location) → per-endpoint
-    │     resume: planner continues from completed evidence; --ignore-cache resets
+    │     resume: planner continues from completed evidence
+    │     clear-cache / run --ignore-cache: reset probes + profiles + cache
+    │     so the next planner run starts at baseline (phase --ignore-cache
+    │     only re-enqueues that phase)
     │     (CLI-019: --ignore-cache on run + phase shortcuts; --force = confirm only)
     │
     └── Enriches Endpoint Intelligence after completion
@@ -1835,7 +1839,8 @@ Scripts should treat only `0` as success. Use `130` to distinguish interactive a
 | `talos.__main__` | Parse global `--project` + top-level command; wire config → manager → CLI handler; export `TALOS_PROJECT` for children | Business logic |
 | `talos.cli_output` | Shared CLI success/warning/error/cancel/confirm formatting, EXIT_* codes (CLI-011/012), confirmation policy + `--force` (CLI-015), and `--format json` helpers (CLI-014) | Business logic |
 | `talos.config.TalosConfig` | Resolve storage root from env or default (paths only; not app settings) | Create directories; project selection |
-| `talos.configuration` | Layered config manager, EffectiveConfig, HTTPManipulationEngine, `talos config` + `talos config http` CLI (CLI-022) | Application settings for proxy/capture/scheduler/attack/http |
+| `talos.configuration` | Layered config manager, EffectiveConfig, HTTPManipulationEngine, `talos config` + `talos config http` CLI (CLI-022); sections include `burp` | Application settings for proxy/capture/scheduler/attack/http/burp |
+| `talos.burp` | Burp metadata header contract (`X-Talos-*`), process-cached `burp.*` knobs, IV `flow_meta["burp"]` trace | Burp UI (lives in `burp-extension/`); never talks to Burp itself |
 | `talos.projects.model.Project` | Data shape + serialization only | I/O, side effects |
 | `talos.projects.model.ScopeConstraints` | Capture constraint values + serialization | Enforcement |
 | `talos.projects.db` | Schema init for one project's SQLite DB | Hold connections, run queries |
@@ -2227,7 +2232,7 @@ Session Testing package (`talos.auth_session` — attack engine; distinct from
 library. Phase 2: bind/generate/approve/reject CLI. Phase 3: engine +
 `auth_session_attack` scheduler jobs + `run` / `results` (one job per test_id).
 Phase 4: `auth-session-decision-filter.yaml` (filter-then-heuristic) +
-`WEAK_VALIDATION` findings (`AUTH_SESSION:<endpoint>:<auth_type>`).
+`WEAK_VALIDATION` findings (`AUTH_SESSION:<auth_type>`; first PRIMARY, later LINKED).
 Phase 5: full JWT algorithm-degradation matrix (same-family downgrades +
 cross-family RS/ES/PS/HS edges; core owns pure `alg=none`); CLI polish
 (`status`, `--format json` on action paths, results verdict tallies); docs.
@@ -2439,8 +2444,12 @@ EffectiveConfig  (immutable snapshot)
 | Legacy | SQLite + `headers_drop.txt` + constraints | bridged on load; dual-written on set |
 
 **CLI:** `talos config show|effective|get|set|unset|edit` and section resources
-`talos config proxy|capture|scheduler|attack|http`. HTTP rules use the dedicated
-resource `talos config http` (list/create/match/actions/export/…).
+`talos config proxy|capture|scheduler|attack|http|parameter_intel|url_sink|burp`.
+HTTP rules use the dedicated resource `talos config http`
+(list/create/match/actions/export/…). `burp.enabled` / `burp.header_prefix`
+control `X-Talos-*` grouping headers on outbound attack requests (Input
+Validation first). Headers attach only when enabled and an upstream proxy
+is set. See `docs/burp-extension.md`.
 
 **Runtime:** Proxy addon loads `EffectiveConfig` once at startup. The
 **HTTP Manipulation Engine** (`http.enabled` + concatenated `http.rules` from
@@ -2492,7 +2501,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry (`docs/design-auth-session-testing-engine.md`)
 - [x] Auth-session bindings & candidates (Phase 2) — `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list`; insert-if-absent generate; operator approve lifecycle
 - [x] Auth-session engine & scheduler (Phase 3) — heuristic verdict; `execute_auth_session_job` (one mutation / one flow); `auth_session_attack` job type + settle; `run` / `results` CLI; meta-aware dedupe
-- [x] Auth-session filter & findings (Phase 4) — `auth-session-decision-filter.yaml` (filter init|show|validate); score filter-then-heuristic; `WEAK_VALIDATION` → TRIAGING findings from settle/`--right-now` via findings_bridge; cluster `AUTH_SESSION:<endpoint>:<auth_type>`
+- [x] Auth-session filter & findings (Phase 4) — `auth-session-decision-filter.yaml` (filter init|show|validate); score filter-then-heuristic; `WEAK_VALIDATION` → TRIAGING findings from settle/`--right-now` via findings_bridge; cluster `AUTH_SESSION:<auth_type>`
 - [x] Auth-session docs & suite polish (Phase 5) — full alg-degradation matrix (RS/ES/PS same-family downgrades + cross-family); `status` CLI; `--format json` on generate/approve/run/results; cheat sheet + architecture + updates + Talos Helper; Control Panel still out of scope
 - [x] Broken Access Control (BAC) — access-matrix candidate generation, eight attack modules + parser-confuse, decision filter, scoped `--endpoint`/`--module NAME|UUID`/`--role NAME|UUID`, results in `bac_results`, findings on `POSSIBLE_BAC`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip POSSIBLE_BAC→SECURE (`talos attack bac filter apply [--dry-run] [--force]`, `talos.projects.bac.reclassify`) (`talos.projects.bac`)
 - [x] Input Validation Engine — eight analysis phases via scheduler job types `iv_*`; disabled by default; parameter cache tables; CLI `talos input-validation` (`talos.input_validation`)
@@ -2538,7 +2547,8 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Project lifecycle management (CLI-017) — `talos project rename <id> <new_name>` (display name + slug re-key, directory move, DB `project_id` rewrite); `talos project description <id> [TEXT…]` show/set; `talos project delete [--purge] [--force]` (default preserves disk; `--purge` rmtree data_dir with double interactive confirm) (`talos.projects.manager`, `talos.projects.cli`).
 - [x] Input Validation flag consistency (CLI-019) — phase shortcuts use `--ignore-cache` (not `--force`) to re-run completed analyses; `--force` on phase cmds kept only as a deprecated alias for `--ignore-cache`; `--force` reserved for confirmation bypass elsewhere (e.g. `clear-cache`); `run` already used `--ignore-cache` only (`talos.input_validation.cli`).
 - [x] Session recovery commands (CLI-021) — operators recover stuck sessions and degraded health confidence without SQLite edits: `talos auth-config clear-session <role>` wires `clear_manual_session_config()` (prints `Session cleared.`); `talos auth-config reset-health <role>` wires `reset_suspicion()` (prints `Health suspicion reset.`); role name or UUID (`talos.projects.auth_config_cli`, `talos.projects.auth_provider`, `talos.projects.auth`).
-- [x] Layered configuration system (CLI-022) — single `EffectiveConfig` from defaults → global `config.yaml` → legacy project stores → `project.yaml` → CLI; `talos config show|effective|get|set|unset|edit|schema` and section resources (`proxy`/`capture`/`scheduler`/`attack`/`http`); HTTP Manipulation Engine for declarative `http.rules`; dual-write keeps legacy SQLite CLIs working; proxy addon and proxy/scheduler/attack helpers consume the manager (`talos.configuration`); Control Panel `/talos-config` + `/mutations` (HTTP Rules) + `/api/configuration` for effective values, sources, global/project scope.
+- [x] Layered configuration system (CLI-022) — single `EffectiveConfig` from defaults → global `config.yaml` → legacy project stores → `project.yaml` → CLI; `talos config show|effective|get|set|unset|edit|schema` and section resources (`proxy`/`capture`/`scheduler`/`attack`/`http`/`parameter_intel`/`url_sink`/`burp`); HTTP Manipulation Engine for declarative `http.rules`; dual-write keeps legacy SQLite CLIs working; proxy addon and proxy/scheduler/attack helpers consume the manager (`talos.configuration`); Control Panel `/talos-config` + `/mutations` (HTTP Rules) + `/api/configuration` for effective values, sources, global/project scope.
+- [x] Burp Suite integration — `burp.enabled` / `burp.header_prefix` layered knobs; IV jobs stamp `flow_meta["burp"]`; when the extension is loaded Talos posts traces to `127.0.0.1:17384` so proxied requests carry no `X-Talos-*` (HTTP history cannot be rewritten); header fallback if ingest is down; Java Montoya extension (`burp-extension/`) trees Engine → Endpoints (`talos.burp`, `docs/burp-extension.md`).
 - [x] **AI Layer Phase A** — policy-gated agent foundation (`talos.ai`): Workflow Engine (session lifecycle, frozen project pin, one-active-per-project, BudgetCounters, audit); capability-based mode grants (`suggest-only` default / `step` GA / experimental `auto-*`); Talos Tool Protocol (`ToolSpec` / `ToolPolicy` / `ToolHandler`, registry list/get only — **no** `call()`); `PolicyValidator` → sealed `ExecutionPlan` + single-use capability token; `Executor` sole invoke path; READ inventory/intel/context tools + `role.set_active` / `module.set_active` (exists-only); schema v49 (`ai_sessions`, `ai_audit_events`, `ai_project_prefs`); CLI `talos ai start|stop|resume|reset-budget|status|mode|tools list|audit list`. Design: `docs/design-talos-ai-layer.md`. Tests: `tests/test_ai_phase_a.py`.
 - [x] **AI Layer Phase B** — offline agent loop: structured app notes (v50) with optimistic revision concurrency; immutable `ActionSuggestion` + `ExecutionPlan` + observations + PTT (v51); `HeuristicPlanner` (`provider=none`); CLI `suggest [--auto-reads]`, `approve`, `deny`, `pending`, `plans show`, `notes show|edit|export`; tools `notes.app.get|patch`, `task_tree.list|upsert`; suggest-only hard-rejects execute/approve. **No AI client-data redaction** (authorized BB/pentest product). Tests: `tests/test_ai_phase_b.py`.
 - [x] **AI Layer Phase C** — stdio MCP (`talos ai mcp serve`) over WorkflowEngine → PolicyValidator → Executor; LLM providers `none` / `ollama` / `openai-compatible` / `anthropic` + `LLMPlanner` with heuristic fallback; operator config `~/.talos/ai/config.yaml` + `TALOS_AI_API_KEY` via `talos ai config show|set|unset|edit` (never a tool); `llm_tokens` budget accounting. **Still no** `talos/ai/redaction.py` (Key Decision 9). Tests: `tests/test_ai_phase_c.py`.

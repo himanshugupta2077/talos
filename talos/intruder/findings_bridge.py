@@ -295,6 +295,20 @@ def promote_result(
     except Exception as exc:  # noqa: BLE001
         _log.warning("[intruder.findings] link finding_id failed: %s", exc)
 
+    try:
+        from talos.burp.snapshot import record_finding
+
+        record_finding(
+            project_id=project_id,
+            finding_id=finding_id,
+            db_path=db_path,
+            attack_type=ATTACK_TYPE_INTRUDER,
+            title=title,
+            flow_id=str(flow_id or base_flow_id or ""),
+        )
+    except Exception:  # noqa: BLE001
+        _log.debug("[intruder.findings] burp snapshot skipped", exc_info=True)
+
     return finding_id
 
 

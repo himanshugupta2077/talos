@@ -26,7 +26,7 @@ export const SHIPPED_TABS: readonly AuthSessionTab[] = [
 const ALL_TAB_DEFS: { id: AuthSessionTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "bindings", label: "Bindings" },
-  { id: "candidates", label: "Candidates" },
+  { id: "candidates", label: "Target flows" },
   { id: "run", label: "Run" },
   { id: "results", label: "Results" },
   { id: "config", label: "Filter & Suite" },
@@ -102,6 +102,22 @@ export interface AuthSessionCandidate {
   endpoint_path?: string | null;
 }
 
+/** Unique baseline flow selected as a JWT test target. */
+export interface AuthSessionTarget {
+  flow_id: string;
+  binding_id: string;
+  endpoint_id?: string | null;
+  test_count: number;
+  runnable_count: number;
+  running_count: number;
+  created_at?: string;
+  method?: string | null;
+  path?: string | null;
+  host?: string | null;
+  url?: string | null;
+  status_code?: number | null;
+}
+
 export interface AuthSessionResultRow {
   replay_flow_id: string;
   original_flow_id?: string;
@@ -146,6 +162,8 @@ export interface AuthSessionOverview {
   jobs_pending: number;
   jobs_running: number;
   estimated_jobs_approved: number;
+  estimated_jobs?: number;
+  targets_total?: number;
   auth_config_ready: boolean;
   bindings_valid: boolean;
   filter_filename?: string;

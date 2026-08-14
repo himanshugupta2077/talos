@@ -29,6 +29,7 @@ IV intentionally avoids exploit-shaped payloads on the default `standard` budget
 |----------|--------|
 | Default state | **Disabled** — operator must enable |
 | HTTP | Only via the Talos **scheduler** (no direct sends) |
+| Burp | When `burp.enabled` and an upstream proxy is set, each probe carries `X-Talos-*` grouping headers (engine=`input-validation`, group=`endpoints`) |
 | Scope unit | Parameter identity: `sha256(host\|location\|name)[:32]` |
 | Output | Versioned intelligence profiles + attack **candidates** |
 
@@ -47,6 +48,8 @@ Planner (adaptive DAG)  ──►  Scheduler jobs (iv_*)
         │                           │
         │                           ▼
         │                    Replay + inject probe value
+        │                    (+ X-Talos-* headers when burp.enabled
+        │                       and an upstream proxy is configured)
         │                           │
         │                           ▼
         │                    iv_probe_results (+ flow body)
@@ -133,6 +136,15 @@ INIT → ENSURE_BASELINE → MULTIPROBE → EVALUATE
 ```
 
 After each IV job settles, the scheduler calls `continue_param_plan()` so the next wave is enqueued only when needed. Explicit phase CLI shortcuts can bypass the planner for a single phase.
+
+**Re-run from baseline.** The planner treats `iv_probe_results` and profile `requests_used` / `synthesize_done` as completed work. `clear-cache` and `run --ignore-cache` therefore reset, for the selected scope:
+
+- `iv_probe_results`
+- `iv_param_profiles` plus scoped endpoint/app profiles
+- `iv_param_cache` / `iv_reflection_cache`
+- pending/paused `iv_*` scheduler jobs
+
+A following planner `run` starts at baseline again. Phase shortcuts with `--ignore-cache` only re-enqueue that phase; they do not wipe other evidence.
 
 ### 4.2 Phases (what gets sent)
 

@@ -100,7 +100,7 @@ def build_cluster_key(
         unauth       → UNAUTH:<endpoint_id>
         auth_test    → AUTH_TEST:<endpoint_id>
         bac          → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
-        auth_session → AUTH_SESSION:<endpoint_id>:<auth_type>
+        auth_session → AUTH_SESSION:<auth_type>  (one PRIMARY per JWT type)
         cors         → CORS:<scheme://netloc>  (one PRIMARY per target origin)
         other        → <MODULE>:<endpoint_id>
 
@@ -116,7 +116,7 @@ def build_cluster_key(
                            (finding is created as standalone PRIMARY).
         attacker_role_id — BAC only.
         target_role_id   — BAC only.
-        auth_type        — auth_session only (jwt, …); defaults to 'unknown'.
+        auth_type        — auth_session only (jwt, …); defaults to 'jwt'.
         host             — cors only: target origin key (scheme://netloc).
     Output:
         cluster_key string, or None when clustering is not possible.
@@ -130,6 +130,10 @@ def build_cluster_key(
             return f"CORS:{endpoint_id}"
         return None
 
+    if module == "auth_session":
+        kind = (auth_type or "jwt").strip() or "jwt"
+        return f"AUTH_SESSION:{kind}"
+
     if not endpoint_id:
         return None
 
@@ -141,8 +145,6 @@ def build_cluster_key(
         ar = attacker_role_id or "-"
         tr = target_role_id or "-"
         return f"BAC:{endpoint_id}:{ar}:{tr}"
-    if module == "auth_session":
-        return f"AUTH_SESSION:{endpoint_id}:{auth_type or 'unknown'}"
     return f"{module.upper()}:{endpoint_id}"
 
 

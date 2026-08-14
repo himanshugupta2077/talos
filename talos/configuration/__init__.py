@@ -20,6 +20,9 @@ Purpose:
     HTTP request/response mutation is owned by the HTTP Manipulation Engine
     (``http.enabled`` + ``http.rules``), applied by the proxy addon.
 
+    The ``burp`` section controls X-Talos-* metadata headers on outbound
+    attack requests for the Talos Burp extension.
+
 Public surface:
     ConfigurationManager, EffectiveConfig, load_effective_config,
     HTTPManipulationEngine, BUILTIN_DEFAULTS, ConfigError
@@ -39,6 +42,7 @@ from talos.configuration.manager import (
 )
 from talos.configuration.model import (
     AttackConfigSection,
+    BurpConfigSection,
     CaptureConfigSection,
     CrossFlowConfigSection,
     EffectiveConfig,
@@ -55,6 +59,7 @@ __all__ = [
     "BUILTIN_DEFAULTS",
     "DEFAULT_DROP_HEADERS",
     "AttackConfigSection",
+    "BurpConfigSection",
     "CaptureConfigSection",
     "ConfigError",
     "ConfigurationManager",

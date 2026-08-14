@@ -379,7 +379,9 @@ class DetectorOrchestrator:
                 finding_id=None,
                 raw_value_stored=store_raw,
                 created_at=None,
-                raw_value=raw.raw_value if store_raw else None,
+                # Always keep the raw secret in memory so the Burp tab
+                # Detail column can show it. store_raw only gates DB/evidence.
+                raw_value=raw.raw_value,
             )
             out.append(det)
 

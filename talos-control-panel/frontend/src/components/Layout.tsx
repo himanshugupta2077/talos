@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import AppHeader from "./AppHeader";
 import CommandDrawer from "./CommandDrawer";
 import ToastStack from "./ToastStack";
+import { availableModulesForClass } from "../pages/attack/registry";
 
 type SidebarMode = "expanded" | "icons" | "auto";
 
@@ -10,8 +11,22 @@ const SIDEBAR_MODE_KEY = "talos-cp-sidebar-mode";
 const COLLAPSE_DELAY_MS = 280;
 
 type NavTone = "danger";
-type NavItem = { to: string; label: string; icon: IconName; tone?: NavTone };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: IconName;
+  tone?: NavTone;
+  /** Exact path match (hub). Default is prefix match for nested workspaces. */
+  end?: boolean;
+  children?: NavChild[];
+};
+type NavChild = { to: string; label: string };
 type NavGroup = { label: string; items: NavItem[] };
+
+const ACTIVE_ATTACK_NAV: NavChild[] = availableModulesForClass("active").map((m) => ({
+  to: m.path,
+  label: m.name,
+}));
 
 type IconName =
   | "dashboard"
@@ -65,7 +80,14 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Testing",
     items: [
       { to: "/scheduler", label: "Scheduler", icon: "scheduler" },
-      { to: "/testing", label: "Attack Module", icon: "attack", tone: "danger" },
+      {
+        to: "/testing",
+        label: "Attack Module",
+        icon: "attack",
+        tone: "danger",
+        end: true,
+        children: ACTIVE_ATTACK_NAV,
+      },
     ],
   },
   {
@@ -222,6 +244,13 @@ function navItemToneClass(tone: NavTone | undefined, isActive: boolean): string 
     : "text-base-content/80 hover:bg-base-300/50";
 }
 
+function sectionIsActive(pathname: string, item: NavItem): boolean {
+  // Hub items use `end` so the parent is not "current" on a child page, but the
+  // icon rail still needs a section highlight for any nested /testing/* path.
+  if (item.end && !item.children?.length) return pathname === item.to;
+  return pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
+
 function Icon({ name, className = "h-4 w-4" }: { name: IconName; className?: string }) {
   return (
     <svg
@@ -243,6 +272,95 @@ function readSidebarMode(): SidebarMode {
   const raw = localStorage.getItem(SIDEBAR_MODE_KEY);
   if (raw === "expanded" || raw === "icons" || raw === "auto") return raw;
   return "expanded";
+}
+
+export function SidebarNav({ visuallyExpanded }: { visuallyExpanded: boolean }) {
+  const location = useLocation();
+  return (
+    <nav
+      className={`flex-1 overflow-y-auto overflow-x-hidden py-2 ${
+        visuallyExpanded ? "" : "sidebar-rail-scroll"
+      }`}
+    >
+      {NAV_GROUPS.map((group, groupIndex) => (
+        <div key={group.label} className="mb-3">
+          {visuallyExpanded ? (
+            <div className="px-4 py-1 text-[11px] uppercase tracking-wider text-base-content/40">
+              {group.label}
+            </div>
+          ) : (
+            groupIndex > 0 && (
+              <div className="mx-3 mb-1.5 border-t border-base-300/70" aria-hidden />
+            )
+          )}
+          {group.items.map((item) => {
+            const inSection = sectionIsActive(location.pathname, item);
+            const showChildren = visuallyExpanded && (item.children?.length ?? 0) > 0;
+            return (
+              <div key={item.to}>
+                <NavLink
+                  to={item.to}
+                  end={item.end ?? item.to === "/"}
+                  aria-label={item.label}
+                  title={visuallyExpanded ? undefined : item.label}
+                  className={({ isActive }) =>
+                    `group relative flex items-center text-sm transition-colors ${
+                      visuallyExpanded
+                        ? "mx-2 gap-3 px-2.5 py-1.5 rounded-md"
+                        : "mx-2 justify-center py-2 rounded-md"
+                    } ${navItemToneClass(item.tone, isActive || (!visuallyExpanded && inSection))}`
+                  }
+                >
+                  {({ isActive }) => {
+                    const marked = isActive || (!visuallyExpanded && inSection);
+                    const accent = item.tone === "danger" ? "bg-error" : "bg-primary";
+                    return (
+                      <>
+                        {!visuallyExpanded && marked && (
+                          <span
+                            className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r ${accent}`}
+                          />
+                        )}
+                        {visuallyExpanded && isActive && (
+                          <span
+                            className={`absolute right-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-l ${accent}`}
+                          />
+                        )}
+                        <Icon name={item.icon} className="h-[1.125rem] w-[1.125rem] shrink-0" />
+                        {visuallyExpanded && <span className="truncate">{item.label}</span>}
+                      </>
+                    );
+                  }}
+                </NavLink>
+                {showChildren && (
+                  <div className="mb-0.5 ml-5 mr-2 border-l border-error/25 pl-2">
+                    {item.children!.map((child) => (
+                      <NavLink
+                        key={child.to}
+                        to={child.to}
+                        aria-label={child.label}
+                        title={child.label}
+                        className={({ isActive }) =>
+                          `flex items-center rounded-md px-2 py-1 text-[12px] leading-snug transition-colors ${navItemToneClass(
+                            item.tone,
+                            isActive,
+                          )}`
+                        }
+                      >
+                        {({ isActive }) => (
+                          <span className={isActive ? "font-medium" : ""}>{child.label}</span>
+                        )}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </nav>
+  );
 }
 
 export default function Layout() {
@@ -306,14 +424,14 @@ export default function Layout() {
       {/* Layout spacer — only full width when pinned expanded; auto uses icon rail width. */}
       <div
         className={`shrink-0 transition-[width] duration-200 ease-out ${
-          reservedWide ? "w-56" : "w-16"
+          reservedWide ? "w-60" : "w-16"
         }`}
         aria-hidden
       />
 
       <aside
         className={`fixed inset-y-0 left-0 z-30 flex flex-col border-r border-base-300 bg-base-200 transition-[width,box-shadow] duration-200 ease-out ${
-          visuallyExpanded ? "w-56" : "w-16"
+          visuallyExpanded ? "w-60" : "w-16"
         } ${isOverlayExpand ? "shadow-xl shadow-base-content/10" : ""}`}
         onMouseEnter={onSidebarEnter}
         onMouseLeave={onSidebarLeave}
@@ -343,61 +461,7 @@ export default function Layout() {
           )}
         </div>
 
-        <nav
-          className={`flex-1 overflow-y-auto overflow-x-hidden py-2 ${
-            visuallyExpanded ? "" : "sidebar-rail-scroll"
-          }`}
-        >
-          {NAV_GROUPS.map((group, groupIndex) => (
-            <div key={group.label} className="mb-3">
-              {visuallyExpanded ? (
-                <div className="px-4 py-1 text-[11px] uppercase tracking-wider text-base-content/40">
-                  {group.label}
-                </div>
-              ) : (
-                groupIndex > 0 && (
-                  <div className="mx-3 mb-1.5 border-t border-base-300/70" aria-hidden />
-                )
-              )}
-              {group.items.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === "/"}
-                  aria-label={item.label}
-                  title={visuallyExpanded ? undefined : item.label}
-                  className={({ isActive }) =>
-                    `group relative flex items-center text-sm transition-colors ${
-                      visuallyExpanded
-                        ? "mx-2 gap-3 px-2.5 py-1.5 rounded-md"
-                        : "mx-2 justify-center py-2 rounded-md"
-                    } ${navItemToneClass(item.tone, isActive)}`
-                  }
-                >
-                  {({ isActive }) => {
-                    const accent = item.tone === "danger" ? "bg-error" : "bg-primary";
-                    return (
-                      <>
-                        {!visuallyExpanded && isActive && (
-                          <span
-                            className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r ${accent}`}
-                          />
-                        )}
-                        {visuallyExpanded && isActive && (
-                          <span
-                            className={`absolute right-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-l ${accent}`}
-                          />
-                        )}
-                        <Icon name={item.icon} className="h-[1.125rem] w-[1.125rem] shrink-0" />
-                        {visuallyExpanded && <span className="truncate">{item.label}</span>}
-                      </>
-                    );
-                  }}
-                </NavLink>
-              ))}
-            </div>
-          ))}
-        </nav>
+        <SidebarNav visuallyExpanded={visuallyExpanded} />
 
         {/* Sidebar chrome: pin/collapse + mode menu */}
         <div

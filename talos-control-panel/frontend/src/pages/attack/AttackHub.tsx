@@ -83,6 +83,7 @@ export default function AttackHub() {
       .get<{
         counts: Record<string, number>;
         candidates_by_status: Record<string, number>;
+        targets_total?: number;
       }>("/api/attack/auth-session/summary", { project_id: pid })
       .then((summary) => {
         const c = summary.counts || {};
@@ -90,20 +91,22 @@ export default function AttackHub() {
         const weak = c.WEAK_VALIDATION ?? 0;
         const pending = by.pending ?? 0;
         const approved = by.approved ?? 0;
+        const ready = pending + approved;
+        const targets = summary.targets_total ?? 0;
         setKpiMap((prev) => ({
           ...prev,
           auth_session: {
             chips: [
               { label: "weak", value: weak, tone: weak > 0 ? "danger" : "muted" },
               {
-                label: "pending",
-                value: pending,
-                tone: pending > 0 ? "warn" : "muted",
+                label: "targets",
+                value: targets,
+                tone: targets > 0 ? "ok" : "muted",
               },
               {
-                label: "approved",
-                value: approved,
-                tone: approved > 0 ? "ok" : "muted",
+                label: "ready",
+                value: ready,
+                tone: ready > 0 ? "ok" : "muted",
               },
             ],
             // Full parity (Phase 5) — no inventory statusLine
@@ -435,8 +438,9 @@ export default function AttackHub() {
             Global triage stays on <strong>Findings</strong>.
           </p>
           <p>
-            New modules appear here as cards under the right class — no new
-            top-level nav items.
+            New modules appear here as cards under the right class. Available
+            Active modules also list under <strong>Attack Module</strong> in
+            the sidebar.
           </p>
         </ModuleHelp>
       </div>

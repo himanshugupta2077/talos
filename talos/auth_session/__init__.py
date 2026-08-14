@@ -22,7 +22,7 @@ Naming note (KD1):
 
 Phase 1 (foundation): models, JWT codec/mutators, suite catalog, schema v54.
 Phase 2 (bindings & candidates): db, extract, candidates generate, CLI
-    (bind / generate / approve / reject / suite list).
+    (bind auto-picks top 5 flows; add/remove; run with latest or custom JWT).
 Phase 3 (engine & scheduler): heuristic verdict, execute_auth_session_job,
     auth_session_attack jobs, run / results CLI.
 Phase 4 (filter & findings): auth-session-decision-filter.yaml, score with
@@ -32,7 +32,7 @@ Phase 5 (docs & polish): full algorithm-degradation matrix, status CLI,
 
 Dependencies: stdlib only for JWT mutations (base64, json); url_sink.jwt_claims
     for extract_jwt_token / decode_jwt_payload reuse; httpx for replay.
-Data flow: binding → candidates → approve → run → engine → results → findings
+Data flow: binding → top-5 target flows → run (latest/custom JWT) → engine → results → findings
 Side effects: Outbound HTTP; results / replay flows; findings on WEAK_VALIDATION.
 """
 

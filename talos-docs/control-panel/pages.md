@@ -152,7 +152,7 @@ The primary Control Panel surface for **layered Talos configuration** (`Effectiv
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | View and edit global + project configuration with source attribution (DEFAULT / GLOBAL / LEGACY / PROJECT / CLI) |
-| **Route query** | `?tab=overview\|settings\|files`, `?section=proxy\|capture\|http\|…`, `?scope=project\|global` |
+| **Route query** | `?tab=overview\|settings\|files`, `?section=proxy\|capture\|http\|burp\|…`, `?scope=project\|global` |
 | **Backend** | `GET /api/configuration/context\|schema\|effective\|settings\|get`; `POST /value`, `POST /unset`; `POST /open-directory` |
 | **CLI** | `config show\|effective\|get\|set\|unset\|schema` (project via `--project` / `run_scoped`; global via `--global` without scoping) |
 | **DB** | None — never reads `scheduler_config` / `proxy_config` / `attack_config` for effective values |
@@ -167,7 +167,7 @@ Tabs:
 | **Settings** | Generic leaf table (scalar keys; `http.rules` managed on HTTP Rules workspace) |
 | **Files** | Global/project paths, copy/open directory, effective JSON dump (no raw YAML editor in v1) |
 
-Related workspaces keep contextual controls but link here for ownership: Proxy, Scheduler, HTTP Rules (`http.enabled`), Attack unauth auto-run, Projects capture constraints.
+Related workspaces keep contextual controls but link here for ownership: Proxy, Scheduler, HTTP Rules (`http.enabled`), Attack unauth auto-run, Projects capture constraints, Burp Suite metadata headers (`burp.enabled`).
 
 ---
 
@@ -462,7 +462,7 @@ Priority presets: Lowest(10) … Highest(100); advanced mode exposes numeric pri
 
 **Files:** `Attack.tsx` (hub re-export) + `pages/attack/*` + module workspaces
 
-Testing is a **hub + module** workspace (sidebar label **Modules** under the **Testing** group). Modules are classified as **Passive** (observe captured traffic only) or **Active** (outbound requests / auth mutation). Canonical URLs are under `/testing/*`; `/attack/*` permanently redirects.
+Testing is a **hub + module** workspace (sidebar label **Attack Module** under the **Testing** group). Modules are classified as **Passive** (observe captured traffic only) or **Active** (outbound requests / auth mutation). Available Active modules nest under Attack Module in the sidebar. Canonical URLs are under `/testing/*`; `/attack/*` permanently redirects.
 
 | Route | Purpose |
 |-------|---------|
@@ -493,7 +493,7 @@ Testing is a **hub + module** workspace (sidebar label **Modules** under the **T
 | **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results, cors_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
 | **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
 | **Workflow** | Hub → open module card → run / triage → Findings for global lifecycle |
-| **Nav** | Sidebar group **Testing** → **Modules** (`/testing`) + **Scheduler** (modules are not separate nav entries) |
+| **Nav** | Sidebar group **Testing** → **Scheduler** + **Attack Module** (`/testing`). Available Active modules (Unauth, BAC, Auth-Session, Input Validation, CORS, Intruder) nest under Attack Module. Passive modules stay hub-only. |
 
 ### CORS Misconfiguration (`/testing/cors`)
 
@@ -551,16 +551,16 @@ JWT mutation testing workspace (active, medium risk) with **full CLI parity**. *
 
 | Tab | Role |
 |-----|------|
-| **Overview** | Readiness, candidate/verdict KPIs, job pressure, recent WEAK_VALIDATION, deep-links to Findings/Run/Candidates |
-| **Bindings** | List + bind JWT field from auth_config picker; unbind / unbind `--force` (ConfirmButton) |
-| **Candidates** | Generate (project / endpoint / module / flow) + inventory + multi-select bulk approve/reject/unapprove (K19 binding expand) + detail drawer |
-| **Run** | Scope filters, approved estimate, enqueue or right-now (K11: refuse E>20; elevated timeout ≤20) |
-| **Results** | Filterable WEAK_VALIDATION / SECURE / UNKNOWN table; drawer with flow + finding links; poll while jobs in flight |
-| **Filter & Suite** | Decision filter init/show/validate + open data dir (no apply in v1); JWT suite catalog (+ alg degrade expansion) |
+| **Overview** | Readiness, target-flow / verdict KPIs, job pressure, recent WEAK_VALIDATION |
+| **Bindings** | Bind a JWT field from auth_config; auto-picks up to 5 flows; remove binding (force-cascade) |
+| **Target flows** | Unique GET/POST/PATCH-or-PUT baselines; add or remove a flow UUID |
+| **Run** | Latest captured JWT or a custom token; enqueue or right-now (K11: refuse E>20) |
+| **Results** | Filterable WEAK_VALIDATION / SECURE / UNKNOWN table; drawer with flow + finding links |
+| **Filter & Suite** | Decision filter init/show/validate + JWT suite catalog |
 
-Hub card chips: weak / pending / approved (no inventory statusLine). Findings list maps `auth_session` → “Authentication & Session Testing” and hydrates `?attack_type=` / `?verdict=`.
+Hub card chips: weak / targets / ready. Findings list maps `auth_session` → “Authentication & Session Testing”. First WEAK_VALIDATION is PRIMARY; later JWT findings are LINKED (`AUTH_SESSION:jwt`).
 
-Pipeline: auth_config → bind → generate (pending, no HTTP) → **approve** → run (`auth_session_attack`, one job per approved test_id) → WEAK_VALIDATION \| SECURE \| UNKNOWN. Mutations via `cli.run_scoped`; inventory via read-only SQLite.
+Pipeline: auth_config → bind (auto-picks top 5 flows) → add/remove flows → run (`auth_session_attack`, latest or custom JWT) → WEAK_VALIDATION \| SECURE \| UNKNOWN. No approve step.
 
 **Adding a module:** append to `ATTACK_MODULES` in `registry.ts`, add route + panel under `pages/attack/modules/`, optionally wire hub KPIs.
 
@@ -569,7 +569,7 @@ Pipeline: auth_config → bind → generate (pending, no HTTP) → **approve** �
 ## Input Validation (`/testing/input-validation`)
 
 **Files:** `InputValidation.tsx` + `pages/input-validation/*`  
-**IA:** Active module under **Attack** hub (not a separate sidebar item).
+**IA:** Active module under **Attack Module** in the sidebar and the Testing hub.
 
 IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 intelligence surface.
 
@@ -579,7 +579,7 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 | `?tab=candidates` | Attack prioritization board (filters, drill-down) |
 | `?tab=parameters` | Parameter intelligence inventory |
 | `?tab=multi-level` | Endpoint + host profile lists (M10) |
-| `?tab=run` | Scope, budget run/resume/synthesize/clear, phase shortcuts |
+| `?tab=run` | Scope, run/resume/synthesize/clear (clear + ignore-cache reset probes/profiles), phase shortcuts |
 | `?tab=settings` | Enable, workers, budget, max req, phases, auth artifacts, excludes |
 | `/testing/input-validation/params/:paramUuid` | Parameter dossier (capabilities, candidates, observed cards, tested, probes→flows) |
 | `/testing/input-validation/endpoints/:endpointId` | Endpoint intelligence dossier |

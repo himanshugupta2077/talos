@@ -100,6 +100,13 @@ const JUMP_ITEMS: JumpItem[] = [
     group: "Testing",
     keywords: "iv xss sqli reflection probe characterization attack active",
   },
+  {
+    id: "testing-intruder",
+    label: "Intruder",
+    path: "/testing/intruder",
+    group: "Testing",
+    keywords: "intruder fuzz wordlist sniper pitchfork cluster bomb payload attack active",
+  },
   { id: "findings", label: "Findings", path: "/findings", group: "Results" },
   { id: "console", label: "Console", path: "/console", group: "Results", keywords: "cli raw" },
   { id: "config", label: "Talos Configuration", path: "/talos-config", group: "Configuration" },

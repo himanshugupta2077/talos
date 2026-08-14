@@ -441,3 +441,56 @@ def test_connection_error_unknown(db_path: Path) -> None:
     assert outcome.failure_reason is not None
     assert "connection_error" in outcome.failure_reason
     assert outcome.replayed_flow_id is not None
+
+
+def test_custom_jwt_is_used_instead_of_baseline(db_path: Path) -> None:
+    binding_id, cand_id = _seed_candidate(db_path)
+    custom = encode_jwt(
+        {"alg": "RS256", "typ": "JWT"},
+        {"sub": "custom", "role": "user", "exp": 9999999999},
+        "sig-custom",
+    )
+    meta = _meta(binding_id, cand_id)
+    meta["custom_jwt"] = f"Bearer {custom}"
+    with _mock_httpx(200, BODY) as mock_cls:
+        outcome = asyncio.run(
+            execute_auth_session_job(FLOW, meta, db_path, PROJECT_ID)
+        )
+        headers = dict(mock_cls.return_value.request.await_args.kwargs["headers"])
+    assert outcome.failure_reason is None
+    auth = headers.get("Authorization") or next(
+        (v for k, v in headers.items() if str(k).lower() == "authorization"),
+        None,
+    )
+    assert auth is not None
+    assert "sig-original" not in auth
+    # Mutation is applied to the custom token, not the baseline token.
+    assert "sig-custom" not in auth or "alg" in auth.lower()
+
+
+def test_resolve_token_prefers_latest_then_custom() -> None:
+    from talos.auth_session.engine import _resolve_token_context
+    from talos.auth_session.models import AuthSessionBinding
+
+    binding = AuthSessionBinding(
+        id="b1",
+        location="header",
+        name="Authorization",
+        auth_type="jwt",
+    )
+    custom = encode_jwt(
+        {"alg": "HS256", "typ": "JWT"},
+        {"sub": "op", "exp": 9999999999},
+        "sig-op",
+    )
+    ctx, skip = _resolve_token_context(
+        flow={"id": "f", "request_headers": "{}"},
+        binding=binding,
+        meta={"custom_jwt": f"Bearer {custom}"},
+        db_path=Path("/no/such.db"),
+        project_id="p",
+    )
+    assert skip is None
+    assert ctx is not None
+    assert ctx.payload.get("sub") == "op"
+    assert ctx.scheme == "Bearer"

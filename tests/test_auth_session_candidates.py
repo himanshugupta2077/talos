@@ -376,3 +376,112 @@ def test_prefer_does_not_return_non_jwt_primary(db_path: Path) -> None:
     )
     assert chosen is None
     assert source == "none"
+
+
+def _add_method_endpoint(
+    db_path: Path,
+    *,
+    ep_id: str,
+    flow_id: str,
+    method: str,
+    path: str,
+    captured_at: str = NOW,
+) -> None:
+    jwt = _make_jwt(role="user")
+    bearer = f"Bearer {jwt}"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO endpoints
+                (id, project_id, method, host, path, normalized_path,
+                 content_type, auth_required, roles_seen, first_seen, last_seen)
+            VALUES (?, ?, ?, 'api.example.com', ?, ?,
+                    'application/json', 1, '[]', ?, ?)
+            """,
+            (ep_id, PROJECT_ID, method, path, path, captured_at, captured_at),
+        )
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, excluded,
+                 dangerous, logout, qualified, qualification_reason,
+                 baseline_flow_id, baseline_status, updated_at)
+            VALUES (?, 'HIGH', 50, 0, 0, 0, 1, 'flow_2xx', ?, 200, ?)
+            """,
+            (ep_id, flow_id, captured_at),
+        )
+        conn.execute(
+            """
+            INSERT INTO flows
+                (id, project_id, captured_at, method, url, host, path,
+                 query, request_headers, request_cookies, status_code,
+                 response_headers, content_type, endpoint_id, role_id,
+                 module_id, tags, source)
+            VALUES (?, ?, ?, ?, ?,
+                    'api.example.com', ?, '', ?, '{}', 200,
+                    '{}', 'application/json', ?, '', '', '[]', 'proxy_capture')
+            """,
+            (
+                flow_id,
+                PROJECT_ID,
+                captured_at,
+                method,
+                f"https://api.example.com{path}",
+                path,
+                json.dumps({"Authorization": bearer}),
+                ep_id,
+            ),
+        )
+        conn.commit()
+
+
+def test_select_top_jwt_targets_method_diversity(db_path: Path) -> None:
+    from talos.auth_session.candidates import select_top_jwt_targets
+
+    _add_method_endpoint(
+        db_path, ep_id="ep-patch", flow_id="flow-patch",
+        method="PATCH", path="/api/item",
+    )
+    _add_method_endpoint(
+        db_path, ep_id="ep-put", flow_id="flow-put",
+        method="PUT", path="/api/item2",
+    )
+    _add_method_endpoint(
+        db_path, ep_id="ep-get2", flow_id="flow-get2",
+        method="GET", path="/api/other",
+    )
+    binding = _bind(db_path)
+    picks = select_top_jwt_targets(db_path, PROJECT_ID, binding, limit=5)
+    methods = [p.method.upper() for p in picks]
+    assert "GET" in methods
+    assert "POST" in methods
+    assert "PATCH" in methods
+    assert methods.count("PUT") == 0 or "PATCH" in methods
+    assert len(picks) <= 5
+    assert len({p.flow_id for p in picks}) == len(picks)
+
+
+def test_add_and_remove_target_flow(db_path: Path) -> None:
+    from talos.auth_session.candidates import (
+        add_target_flow,
+        list_target_flows,
+        remove_target_flow,
+    )
+
+    binding = _bind(db_path)
+    stats = add_target_flow(db_path, PROJECT_ID, binding, FLOW_POST)
+    assert stats.created > 0
+    targets = list_target_flows(db_path, binding_id=binding.id)
+    ids = {t["flow_id"] for t in targets}
+    assert FLOW_POST in ids
+
+    result = remove_target_flow(
+        db_path, binding_id=binding.id, flow_id=FLOW_POST
+    )
+    assert result["ok"] is True
+    assert result["deleted"] > 0
+    leftover = {
+        t["flow_id"]
+        for t in list_target_flows(db_path, binding_id=binding.id)
+    }
+    assert FLOW_POST not in leftover

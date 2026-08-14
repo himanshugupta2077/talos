@@ -2,13 +2,13 @@ import { Link } from "react-router-dom";
 import { useStatus } from "../state/StatusContext";
 
 /**
- * Header findings signal — clearly defined as TRIAGING count (needs review).
- * Links to Findings.
+ * Header findings signal — PRIMARY count first, then total (PRIMARY + LINKED).
+ * Warning highlight stays on TRIAGING (needs review). Links to Findings.
  */
 export default function HeaderFindings() {
-  const { findingsTriaging } = useStatus();
+  const { findingsPrimary, findingsTotal, findingsTriaging } = useStatus();
 
-  if (findingsTriaging === null) {
+  if (findingsPrimary === null || findingsTotal === null) {
     return (
       <span className="btn btn-xs btn-ghost border border-base-300 opacity-60 pointer-events-none">
         Findings: —
@@ -16,11 +16,14 @@ export default function HeaderFindings() {
     );
   }
 
-  const hasOpen = findingsTriaging > 0;
+  const hasOpen = (findingsTriaging ?? 0) > 0;
+  const label = `${findingsPrimary} primary, ${findingsTotal} total`;
 
   return (
     <Link
       to="/findings"
+      title={label}
+      aria-label={`Findings: ${label}`}
       className={`btn btn-xs gap-1.5 mono ${
         hasOpen ? "btn-warning" : "btn-ghost border border-base-300"
       }`}
@@ -30,7 +33,7 @@ export default function HeaderFindings() {
           hasOpen ? "bg-warning-content" : "bg-base-content/30"
         }`}
       />
-      Findings: {findingsTriaging}
+      Findings: {findingsPrimary} / {findingsTotal}
     </Link>
   );
 }

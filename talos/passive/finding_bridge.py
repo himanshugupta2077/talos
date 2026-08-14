@@ -311,6 +311,19 @@ def create_passive_secret_finding(
         relation_type,
         detection.secret_type,
     )
+    try:
+        from talos.burp.snapshot import record_finding
+
+        record_finding(
+            project_id=project_id,
+            finding_id=finding_id,
+            db_path=db_path,
+            attack_type=ATTACK_TYPE_PASSIVE_SECRET,
+            title=title,
+            flow_id=(occurrence.flow_id if occurrence else "") or "",
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("burp passive finding snapshot skipped", exc_info=True)
     return finding_id
 
 
@@ -654,6 +667,11 @@ def build_secret_exposure(
                     occ = None
             hit = _hit_from_detection(det, occ)
             hit["finding_id"] = fid
+            raw = (det.raw_value or "").strip() or _raw_from_evidence(
+                evidence, det.id
+            )
+            if raw:
+                hit["raw_value"] = raw
             hits.append(hit)
 
     if not hits and evidence:
@@ -690,6 +708,7 @@ def _hit_from_detection(det: Detection, occ) -> dict:
         "secret_type": det.secret_type,
         "matched_key": det.matched_key,
         "redacted_value": det.redacted_value,
+        "raw_value": (det.raw_value or "").strip() or None,
         "confidence_level": det.confidence_level,
         "confidence_score": det.confidence_score,
         "match_start": det.match_start,
@@ -699,6 +718,20 @@ def _hit_from_detection(det: Detection, occ) -> dict:
         "encoding_chain": list(det.encoding_chain or []),
         "finding_id": det.finding_id,
     }
+
+
+def _raw_from_evidence(evidence: Optional[list[dict]], detection_id: Optional[str]) -> str:
+    """Pull store_raw evidence for a detection id. Side effects: None."""
+    if not evidence or not detection_id:
+        return ""
+    for ev in evidence:
+        if (ev.get("evidence_type") or "") != EVIDENCE_TYPE_PASSIVE_DETECTION:
+            continue
+        if ev.get("reference_id") != detection_id:
+            continue
+        data = _as_dict(ev.get("data"))
+        return str(data.get("raw_value") or "").strip()
+    return ""
 
 
 def _as_dict(value) -> dict:
@@ -736,6 +769,7 @@ def _hit_from_evidence(ev: dict, evidence: list[dict]) -> dict:
         "secret_type": data.get("secret_type"),
         "matched_key": data.get("matched_key"),
         "redacted_value": data.get("redacted_value") or "",
+        "raw_value": (data.get("raw_value") or "").strip() or None,
         "confidence_level": data.get("confidence_level"),
         "confidence_score": data.get("confidence_score"),
         "match_start": data.get("match_start") or 0,

@@ -6,15 +6,13 @@ Purpose:
     Entry point: ``talos attack auth-session <subcommand>``
 
     Subcommands:
-        bind              Bind auth_config field → auth type (jwt)
-        unbind            Remove binding (RESTRICT / --force cascade)
+        bind              Bind auth_config field → jwt; auto-picks top 5 flows
+        unbind            Remove binding (--force cascade-deletes targets)
         show-bindings     List bindings
-        generate          Create pending candidates (no HTTP)
-        candidates list|show
-        approve           pending|failed|done → approved
-        reject            pending → rejected
-        unapprove         approved → pending
-        run               Enqueue approved candidates (or --right-now)
+        generate          Create mutation tests for selected flows (no HTTP)
+        candidates list|show|add|remove
+        approve / reject / unapprove  (optional; run no longer requires approve)
+        run               Enqueue selected flows (latest or --jwt token)
         results list|show
         status            Overview: bindings + candidate/result tallies
         filter init|show|validate
@@ -43,14 +41,23 @@ from talos.cli_output import (
     wants_json,
 )
 from talos.auth_session import db as as_db
-from talos.auth_session.candidates import generate_candidates
+from talos.auth_session.candidates import (
+    add_target_flow,
+    auto_seed_targets_for_binding,
+    generate_candidates,
+    list_target_flows,
+    remove_target_flow,
+)
 from talos.auth_session.config import dump_binding_config
+from talos.auth_session.extract import token_context_from_raw
 from talos.auth_session.models import (
     AUTH_TYPE_JWT,
+    DEFAULT_TARGET_LIMIT,
     KNOWN_AUTH_TYPES,
     KNOWN_FAMILIES,
     LOCATION_COOKIE,
     LOCATION_HEADER,
+    RUNNABLE_STATUSES,
     STATUS_APPROVED,
     STATUS_DONE,
     STATUS_FAILED,
@@ -80,8 +87,8 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
         "auth-session",
         help=(
-            "Authentication & Session Testing — bind JWT fields, generate "
-            "mutation candidates, approve, run (one job per test_id); "
+            "Authentication & Session Testing — bind a JWT field, auto-pick "
+            "top 5 target flows, run mutations (latest or custom JWT); "
             "decision filter + WEAK_VALIDATION findings."
         ),
         description=(
@@ -91,17 +98,17 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
             "Workflow:\n"
             "  1. talos auth set --header Authorization\n"
             "  2. talos attack auth-session bind --type jwt --header Authorization\n"
-            "  3. talos attack auth-session generate --endpoint <uuid>\n"
-            "  4. talos attack auth-session candidates list --status pending\n"
-            "  5. talos attack auth-session approve --all-pending "
-            "[--test-id jwt.alg_none]\n"
-            "  6. talos attack auth-session run [--right-now]\n"
-            "  7. talos attack auth-session results list "
+            "     (auto-selects one GET, one POST, one PATCH/PUT, up to 5)\n"
+            "  3. talos attack auth-session candidates add --flow <uuid>\n"
+            "     talos attack auth-session candidates remove --flow <uuid>\n"
+            "  4. talos attack auth-session run [--jwt TOKEN]\n"
+            "  5. talos attack auth-session results list "
             "--verdict WEAK_VALIDATION\n"
-            "  8. talos finding list\n\n"
-            "Each approved test_id is one scheduler job and one new outbound "
-            "HTTP flow. Algorithm degradation expands from the observed JWT "
-            "alg (full product matrix; core jwt.alg_none* owns pure none)."
+            "  6. talos finding list\n\n"
+            "Run uses the newest captured JWT for the bound field, or "
+            "--jwt to test a custom token against every selected flow. "
+            "First WEAK_VALIDATION finding is PRIMARY; later JWT findings "
+            "are LINKED under it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -155,7 +162,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     # ---- unbind ---- #
     p_unbind = as_sub.add_parser(
         "unbind",
-        help="Remove a binding (refuses when approved/running/results exist).",
+        help="Remove a binding (use --force to cascade-delete targets/results).",
     )
     uloc = p_unbind.add_mutually_exclusive_group(required=True)
     uloc.add_argument("--header", dest="header_name", metavar="NAME")
@@ -170,8 +177,8 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         "--force",
         action="store_true",
         help=(
-            "Cascade-delete pending/rejected candidates then remove binding. "
-            "Still refuses approved/running/done/failed or results."
+            "Cascade-delete target flows, mutation rows, and results, then "
+            "remove the binding. Refuses only while a candidate is running."
         ),
     )
     p_unbind.set_defaults(_as_handler=cmd_unbind)
@@ -252,7 +259,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     # ---- candidates ---- #
     p_cand = as_sub.add_parser(
         "candidates",
-        help="List or show mutation candidates.",
+        help="List, show, add, or remove target flows / mutation tests.",
     )
     cand_sub = p_cand.add_subparsers(dest="candidates_cmd", metavar="<action>")
     cand_sub.required = True
@@ -294,6 +301,46 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     p_cshow.add_argument("candidate_id", metavar="UUID")
     add_format_argument(p_cshow)
     p_cshow.set_defaults(_as_handler=cmd_candidates_show)
+
+    p_cadd = cand_sub.add_parser(
+        "add",
+        help="Add one target flow and generate JWT tests for it.",
+    )
+    p_cadd.add_argument(
+        "--flow",
+        dest="flow_id",
+        required=True,
+        metavar="UUID",
+        help="Baseline flow to add.",
+    )
+    p_cadd.add_argument(
+        "--binding",
+        dest="binding_id",
+        metavar="UUID",
+        help="Binding UUID (default: the only / first binding).",
+    )
+    add_format_argument(p_cadd)
+    p_cadd.set_defaults(_as_handler=cmd_candidates_add)
+
+    p_crem = cand_sub.add_parser(
+        "remove",
+        help="Remove a target flow (all JWT tests on that baseline).",
+    )
+    p_crem.add_argument(
+        "--flow",
+        dest="flow_id",
+        required=True,
+        metavar="UUID",
+        help="Baseline flow to drop.",
+    )
+    p_crem.add_argument(
+        "--binding",
+        dest="binding_id",
+        metavar="UUID",
+        help="Limit delete to one binding.",
+    )
+    add_format_argument(p_crem)
+    p_crem.set_defaults(_as_handler=cmd_candidates_remove)
 
     # ---- approve ---- #
     p_appr = as_sub.add_parser(
@@ -411,7 +458,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
     # ---- run ---- #
     p_run = as_sub.add_parser(
         "run",
-        help="Enqueue approved candidates as auth_session_attack jobs (one per test_id).",
+        help="Enqueue JWT tests for selected target flows (no approve required).",
     )
     p_run.add_argument(
         "--candidate",
@@ -419,7 +466,7 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         action="append",
         default=None,
         metavar="UUID",
-        help="Repeatable: only these approved candidate UUIDs.",
+        help="Repeatable: only these candidate UUIDs.",
     )
     p_run.add_argument("--endpoint", dest="endpoint_id", metavar="UUID")
     p_run.add_argument(
@@ -443,6 +490,15 @@ def build_auth_session_parser(sub: argparse._SubParsersAction) -> None:
         dest="binding_id",
         metavar="UUID",
         help="Limit to one binding.",
+    )
+    p_run.add_argument(
+        "--jwt",
+        dest="custom_jwt",
+        metavar="TOKEN",
+        help=(
+            "Custom JWT (Bearer … or compact) used for every selected flow. "
+            "Default: newest captured JWT for the bound field."
+        ),
     )
     p_run.add_argument(
         "--right-now",
@@ -766,8 +822,20 @@ def cmd_bind(manager: ProjectManager, args: argparse.Namespace) -> None:
     except Exception as exc:  # IntegrityError etc.
         cli_error(f"Failed to create binding: {exc}")
 
+    seed = auto_seed_targets_for_binding(
+        db_path,
+        project.id,
+        binding,
+        role_id=role_id,
+        limit=DEFAULT_TARGET_LIMIT,
+    )
+    targets = list_target_flows(db_path, binding_id=binding.id)
+
     if wants_json(args):
-        cli_json(_binding_to_dict(binding))
+        payload = _binding_to_dict(binding)
+        payload["targets"] = targets
+        payload["seed"] = seed.as_dict()
+        cli_json(payload)
         return
 
     print(f"Bound {location} '{name}' → {binding.auth_type}")
@@ -775,7 +843,19 @@ def cmd_bind(manager: ProjectManager, args: argparse.Namespace) -> None:
     print("UUID:")
     print(binding.id)
     print()
-    print("Next: talos attack auth-session generate [--endpoint UUID | --flow UUID]")
+    if targets:
+        print(f"Auto-selected {len(targets)} target flow(s):")
+        for t in targets:
+            method = t.get("method") or "?"
+            path = t.get("path") or t.get("url") or t.get("flow_id")
+            print(f"  {method:<6} {path}  ({t.get('test_count', 0)} tests)")
+        print()
+        print("Add/remove: talos attack auth-session candidates add|remove --flow UUID")
+        print("Run:        talos attack auth-session run [--jwt TOKEN]")
+    else:
+        print("No JWT-bearing GET/POST/PATCH/PUT flows found yet.")
+        print("Capture authenticated traffic, then:")
+        print("  talos attack auth-session candidates add --flow UUID")
 
 
 def cmd_unbind(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -795,35 +875,34 @@ def cmd_unbind(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     counts = as_db.count_candidates_for_binding(db_path, binding.id)
     has_results = as_db.binding_has_results(db_path, binding.id)
+    running = int(counts.get(STATUS_RUNNING) or 0)
+    leftover = int(counts.get("total") or 0) + (1 if has_results else 0)
 
-    blocked_statuses = ("approved", "running", "done", "failed")
-    blocked = {s: counts.get(s, 0) for s in blocked_statuses if counts.get(s, 0)}
-    if blocked or has_results:
-        parts = [f"{s}={n}" for s, n in blocked.items()]
-        if has_results:
-            parts.append("results_exist=yes")
-        hint = (
-            "Unapprove approved candidates first "
-            "(`talos attack auth-session unapprove --all-approved`), "
-            "then unbind --force for remaining pending/rejected. "
-            "v1 refuses delete when done/failed or result rows exist."
-        )
+    if running:
         cli_precondition_error(
-            "Cannot unbind: binding has protected candidates or results "
-            f"({', '.join(parts)}). {hint}"
+            f"Cannot unbind: {running} candidate(s) still running. "
+            "Wait for settle or cancel the scheduler job first."
         )
 
-    pending = counts.get(STATUS_PENDING, 0)
-    rejected = counts.get("rejected", 0)
-    soft = pending + rejected
-    if soft > 0 and not args.force:
+    if leftover and not args.force:
         cli_precondition_error(
-            f"Binding has {pending} pending and {rejected} rejected candidate(s). "
-            "Re-run with --force to cascade-delete pending/rejected and unbind."
+            f"Binding has {counts.get('total', 0)} candidate(s)"
+            f"{' and results' if has_results else ''}. "
+            "Re-run with --force to remove the binding and its targets."
         )
 
-    if soft > 0 and args.force:
-        as_db.cascade_reject_pending_for_binding(db_path, binding.id)
+    if leftover and args.force:
+        wiped = as_db.cascade_delete_binding(db_path, binding.id)
+        if not wiped.get("ok"):
+            cli_precondition_error(
+                wiped.get("reason") or "Failed to cascade-delete binding."
+            )
+        print(
+            f"Unbound {binding.location} '{binding.name}' "
+            f"(id={binding.id}; deleted {wiped.get('deleted_candidates', 0)} "
+            f"candidates, {wiped.get('deleted_results', 0)} results)"
+        )
+        return
 
     try:
         deleted = as_db.delete_binding(db_path, binding.id)
@@ -922,8 +1001,8 @@ def cmd_generate(manager: ProjectManager, args: argparse.Namespace) -> None:
             print(f"  - {reason}")
     print()
     if stats.created or stats.refreshed:
-        print("Review: talos attack auth-session candidates list --status pending")
-        print("Approve: talos attack auth-session approve --all-pending")
+        print("Review: talos attack auth-session candidates list")
+        print("Run:    talos attack auth-session run [--jwt TOKEN]")
     elif "no_bindings" in stats.skip_reasons:
         print("No bindings. Create one: talos attack auth-session bind --type jwt --header Authorization")
 
@@ -932,6 +1011,42 @@ def cmd_candidates_list(manager: ProjectManager, args: argparse.Namespace) -> No
     project = _require_active(manager)
     families = getattr(args, "families", None)
     _validate_families(families)
+    detail = bool(
+        getattr(args, "status", None)
+        or getattr(args, "test_ids", None)
+        or families
+    )
+    if not detail:
+        targets = list_target_flows(
+            project.db_path,
+            binding_id=getattr(args, "binding_id", None),
+        )
+        if getattr(args, "endpoint_id", None):
+            ep = args.endpoint_id
+            targets = [t for t in targets if t.get("endpoint_id") == ep]
+        if wants_json(args):
+            cli_json(targets)
+            return
+        if not targets:
+            print("No target flows. Bind a JWT field or add one:")
+            print("  talos attack auth-session candidates add --flow UUID")
+            return
+        print(
+            f"{'METHOD':<8}  {'PATH':<36}  {'TESTS':<6}  {'RUNNABLE':<8}  FLOW"
+        )
+        print("-" * 110)
+        for t in targets:
+            print(
+                f"{(t.get('method') or '?'):<8}  "
+                f"{(t.get('path') or t.get('url') or '-')[:36]:<36}  "
+                f"{t.get('test_count', 0):<6}  "
+                f"{t.get('runnable_count', 0):<8}  "
+                f"{t.get('flow_id')}"
+            )
+        print()
+        print(f"Total: {len(targets)} target flow(s)")
+        return
+
     rows = as_db.list_candidates(
         project.db_path,
         status=getattr(args, "status", None),
@@ -973,6 +1088,74 @@ def cmd_candidates_show(manager: ProjectManager, args: argparse.Namespace) -> No
     print(f"  Meta              : {cand.meta_json}")
     print(f"  Created           : {cand.created_at}")
     print(f"  Updated           : {cand.updated_at}")
+
+
+def _default_binding(db_path, binding_id: Optional[str]):
+    if binding_id:
+        binding = as_db.get_binding(db_path, binding_id)
+        if binding is None:
+            cli_error(f"Binding '{binding_id}' not found.")
+        return binding
+    rows = as_db.list_bindings(db_path)
+    if not rows:
+        cli_error(
+            "No bindings. Create one: talos attack auth-session bind "
+            "--type jwt --header Authorization"
+        )
+    if len(rows) > 1:
+        cli_usage_error(
+            "Multiple bindings — pass --binding UUID. "
+            + ", ".join(f"{b.location}:{b.name}={b.id}" for b in rows)
+        )
+    return rows[0]
+
+
+def cmd_candidates_add(manager: ProjectManager, args: argparse.Namespace) -> None:
+    project = _require_active(manager)
+    binding = _default_binding(project.db_path, getattr(args, "binding_id", None))
+    stats = add_target_flow(
+        project.db_path,
+        project.id,
+        binding,
+        args.flow_id,
+    )
+    payload = {
+        "binding_id": binding.id,
+        "flow_id": args.flow_id,
+        "created": stats.created,
+        "skipped_existing": stats.skipped_existing,
+        "skip_reasons": list(stats.skip_reasons[:20]),
+    }
+    if wants_json(args):
+        cli_json(payload)
+        return
+    if stats.created == 0 and stats.skipped_existing == 0:
+        reason = stats.skip_reasons[0] if stats.skip_reasons else "no tests created"
+        cli_error(f"Could not add flow: {reason}")
+    print(
+        f"Added flow {args.flow_id} to {binding.location}:{binding.name} "
+        f"(created={stats.created}, existing={stats.skipped_existing})"
+    )
+
+
+def cmd_candidates_remove(manager: ProjectManager, args: argparse.Namespace) -> None:
+    project = _require_active(manager)
+    binding_id = getattr(args, "binding_id", None)
+    result = remove_target_flow(
+        project.db_path,
+        binding_id=binding_id,
+        flow_id=args.flow_id,
+    )
+    if wants_json(args):
+        cli_json(result)
+        return
+    if not result.get("ok"):
+        cli_precondition_error(result.get("reason") or "Could not remove flow.")
+    deleted = int(result.get("deleted") or 0)
+    if deleted == 0:
+        print(f"No JWT tests for flow {args.flow_id}.")
+        return
+    print(f"Removed {deleted} JWT test(s) for flow {args.flow_id}")
 
 
 def _validate_families(families: Optional[list[str]]) -> None:
@@ -1162,8 +1345,9 @@ def cmd_unapprove(manager: ProjectManager, args: argparse.Namespace) -> None:
 def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     """
     Purpose:
-        Enqueue one auth_session_attack job per approved candidate, or
-        execute immediately with --right-now.
+        Enqueue one auth_session_attack job per runnable target test, or
+        execute immediately with --right-now. Uses the latest captured JWT
+        unless --jwt is supplied.
     Side effects:
         Scheduler job rows and/or outbound HTTP + result rows.
     """
@@ -1174,10 +1358,29 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     families = getattr(args, "families", None)
     _validate_families(families)
 
+    custom_jwt = (getattr(args, "custom_jwt", None) or "").strip() or None
+    if custom_jwt:
+        bindings = as_db.list_bindings(db_path)
+        binding = None
+        bid = getattr(args, "binding_id", None)
+        if bid:
+            binding = as_db.get_binding(db_path, bid)
+        elif len(bindings) == 1:
+            binding = bindings[0]
+        elif bindings:
+            binding = bindings[0]
+        if binding is None:
+            cli_error("Cannot validate --jwt: no binding found.")
+        ctx, skip = token_context_from_raw(custom_jwt, binding)
+        if ctx is None:
+            cli_usage_error(
+                f"--jwt is not a detectable JWT ({skip or 'token_not_detectable'})."
+            )
+
     candidate_ids = getattr(args, "candidate_ids", None)
     rows = as_db.list_candidates(
         db_path,
-        status=STATUS_APPROVED,
+        statuses=list(RUNNABLE_STATUSES),
         endpoint_id=getattr(args, "endpoint_id", None),
         binding_id=getattr(args, "binding_id", None),
         test_ids=getattr(args, "test_ids", None),
@@ -1187,15 +1390,22 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     if not rows:
         cli_error(
-            "No approved candidates match filters. "
-            "Approve first: talos attack auth-session approve --all-pending"
+            "No runnable target tests match filters. "
+            "Bind a JWT field or add a flow: "
+            "talos attack auth-session candidates add --flow UUID"
         )
 
     right_now = bool(getattr(args, "right_now", False))
     as_json = wants_json(args)
 
     if right_now:
-        _run_right_now(db_path, project_id, rows, as_json=as_json)
+        _run_right_now(
+            db_path,
+            project_id,
+            rows,
+            as_json=as_json,
+            custom_jwt=custom_jwt,
+        )
         return
 
     enqueued = 0
@@ -1220,6 +1430,8 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             "baseline_flow_id": cand.baseline_flow_id,
             "endpoint_id": cand.endpoint_id,
         }
+        if custom_jwt:
+            meta_dict["custom_jwt"] = custom_jwt
         job_id = str(uuid.uuid4())
         sched_db.enqueue_job(
             db_path=db_path,
@@ -1237,10 +1449,12 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     if as_json:
         payload = {
             "mode": "enqueue",
+            "matched": len(rows),
             "approved_matched": len(rows),
             "jobs_enqueued": enqueued,
             "dedup_skipped": dedup_skipped,
             "job_ids": job_ids,
+            "custom_jwt": bool(custom_jwt),
         }
         if enqueued == 0 and not dedup_skipped:
             # Fail after printing JSON is unfriendly to scripts; error only.
@@ -1250,7 +1464,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     print("Auth-session run complete")
     print()
-    print(f"  Approved matched   : {len(rows)}")
+    print(f"  Tests matched      : {len(rows)}")
     print(f"  Jobs enqueued      : {enqueued}")
     if dedup_skipped:
         print(f"  Skipped (dup)      : {dedup_skipped}")
@@ -1277,8 +1491,9 @@ def _run_right_now(
     rows: list,
     *,
     as_json: bool = False,
+    custom_jwt: Optional[str] = None,
 ) -> None:
-    """Execute approved candidates immediately (one HTTP request each)."""
+    """Execute runnable candidates immediately (one HTTP request each)."""
     from talos.auth_session.engine import execute_auth_session_job
     from talos.auth_session.findings_bridge import maybe_create_auth_session_finding
     from talos.auth_session.models import VERDICT_WEAK_VALIDATION
@@ -1302,6 +1517,8 @@ def _run_right_now(
             "baseline_flow_id": cand.baseline_flow_id,
             "endpoint_id": cand.endpoint_id,
         }
+        if custom_jwt:
+            meta["custom_jwt"] = custom_jwt
         try:
             outcome = asyncio.run(
                 execute_auth_session_job(
@@ -1390,7 +1607,9 @@ def _run_right_now(
     if as_json:
         cli_json({
             "mode": "right_now",
+            "matched": len(rows),
             "approved_matched": len(rows),
+            "custom_jwt": bool(custom_jwt),
             "done": done,
             "failed": failed,
             "findings": findings,
@@ -1666,12 +1885,10 @@ def cmd_status(manager: ProjectManager, args: argparse.Namespace) -> None:
             if v not in ("WEAK_VALIDATION", "SECURE", "UNKNOWN"):
                 print(f"    {v:<16} : {n}")
     else:
-        print("    (none yet — run approved candidates)")
+        print("    (none yet — run selected target flows)")
     print()
-    if by_status.get(STATUS_PENDING):
-        print("Next: talos attack auth-session approve --all-pending")
-    elif by_status.get(STATUS_APPROVED):
-        print("Next: talos attack auth-session run [--right-now]")
+    if by_status.get(STATUS_PENDING) or by_status.get(STATUS_APPROVED):
+        print("Next: talos attack auth-session run [--jwt TOKEN]")
     elif by_verdict.get("WEAK_VALIDATION"):
         print("Inspect: talos attack auth-session results list "
               "--verdict WEAK_VALIDATION")

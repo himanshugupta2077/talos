@@ -78,6 +78,7 @@ const SECTION_FILTERS = [
   { id: "http", label: "HTTP" },
   { id: "parameter_intel", label: "Parameter intel" },
   { id: "url_sink", label: "URL Sink" },
+  { id: "burp", label: "Burp Suite" },
 ];
 
 /** Complex keys managed on dedicated workspaces (not generic leaf table). */

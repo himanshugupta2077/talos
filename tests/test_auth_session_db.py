@@ -277,6 +277,29 @@ def test_cascade_reject_and_delete(db_path: Path) -> None:
     assert as_db.delete_binding(db_path, b.id) is True
 
 
+def test_cascade_delete_binding_wipes_results(db_path: Path) -> None:
+    b = as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    cand = as_db.insert_candidate(
+        db_path,
+        binding_id=b.id,
+        baseline_flow_id="f1",
+        auth_type="jwt",
+        test_id="jwt.alg_none",
+        test_family="algorithm",
+        title="t",
+        mutation_summary="m",
+    )
+    as_db.set_candidate_status(
+        db_path, cand.id, STATUS_DONE, allowed_from=None
+    )
+    wiped = as_db.cascade_delete_binding(db_path, b.id)
+    assert wiped["ok"] is True
+    assert as_db.get_binding(db_path, b.id) is None
+    assert as_db.list_candidates(db_path, binding_id=b.id) == []
+
+
 def test_header_binding_lookup_case_insensitive(db_path: Path) -> None:
     as_db.insert_binding(
         db_path, location="header", name="Authorization", auth_type="jwt"

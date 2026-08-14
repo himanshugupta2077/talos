@@ -85,40 +85,38 @@ export default function AuthSessionModule() {
             (strip), BAC (role swap), and Auth page (config only).
           </p>
           <p>
-            <strong>Workflow:</strong> Auth page (header/cookie names) → Bind →
-            Generate candidates → <strong>Approve</strong> → Run → triage{" "}
-            <span className="mono">WEAK_VALIDATION</span> → tune decision filter
-            / suite and re-run.
+            <strong>Workflow:</strong> Auth page (header/cookie names) → Bind
+            (auto-picks up to five flows) → add/remove target flows → Run with
+            the latest or a custom JWT → triage{" "}
+            <span className="mono">WEAK_VALIDATION</span>. First JWT finding is
+            primary; later ones are linked under it.
           </p>
           <p>
             <strong>Overview</strong> — readiness KPIs and recent weak results.
           </p>
           <p>
-            <strong>Bindings</strong> — map auth_config fields to jwt mutator.
+            <strong>Bindings</strong> — map an auth_config field to the JWT
+            mutator; remove a binding any time it is not running.
           </p>
           <p>
-            <strong>Candidates</strong> — generate pending tests; approve /
-            reject / unapprove (operator gate before HTTP).
+            <strong>Candidates</strong> — the target flows (GET / POST /
+            PATCH or PUT). Add or remove flows; no approve step.
           </p>
           <p>
-            <strong>Run</strong> — enqueue approved tests (or right-now for ≤20).
+            <strong>Run</strong> — enqueue the JWT suite against those flows.
           </p>
           <p>
             <strong>Results</strong> — WEAK_VALIDATION / SECURE / UNKNOWN triage.
           </p>
           <p>
-            <strong>Filter & Suite</strong> — decision filter init/show/validate
-            and JWT suite catalog (no apply in v1).
-          </p>
-          <p>
-            Example: bind <span className="mono">Authorization</span>, generate
-            for an endpoint, approve <span className="mono">jwt.alg_none</span>,
-            run — WEAK_VALIDATION means the mutated token was accepted.
+            Example: bind <span className="mono">Authorization</span>, keep the
+            auto-picked GET/POST/PATCH flows, run — WEAK_VALIDATION means a
+            mutated token was accepted.
           </p>
           <p>
             CLI:{" "}
             <span className="mono">
-              talos attack auth-session bind|generate|approve|run|results|filter|suite …
+              talos attack auth-session bind|candidates add|run --jwt …|results
             </span>
           </p>
         </>

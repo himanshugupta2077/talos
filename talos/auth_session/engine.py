@@ -64,7 +64,12 @@ import httpx
 
 import talos.replay.db as replay_db
 from talos.auth_session import db as as_db
-from talos.auth_session.extract import extract_token_context, get_auth_field_value
+from talos.auth_session.extract import (
+    extract_token_context,
+    find_latest_token_context,
+    get_auth_field_value,
+    token_context_from_raw,
+)
 from talos.auth_session.models import (
     LOCATION_COOKIE,
     LOCATION_HEADER,
@@ -196,7 +201,13 @@ async def execute_auth_session_job(
             reason="binding_not_found",
         )
 
-    ctx, skip = extract_token_context(flow, binding)
+    ctx, skip = _resolve_token_context(
+        flow=flow,
+        binding=binding,
+        meta=meta,
+        db_path=db_path,
+        project_id=project_id,
+    )
     if ctx is None:
         return _fail(
             flow_id=baseline_flow_id,
@@ -289,6 +300,43 @@ async def execute_auth_session_job(
         db_path=db_path,
         project_id=project_id,
     )
+
+
+# ------------------------------------------------------------------ #
+# Token source (custom JWT → latest captured → baseline flow)          #
+# ------------------------------------------------------------------ #
+
+
+def _resolve_token_context(
+    *,
+    flow: dict,
+    binding,
+    meta: dict,
+    db_path: Path,
+    project_id: str,
+):
+    """
+    Purpose:
+        Prefer an operator-supplied JWT, else the newest captured JWT
+        for this binding, else the token on the baseline flow.
+    """
+    custom = str(meta.get("custom_jwt") or "").strip()
+    if custom:
+        ctx, skip = token_context_from_raw(custom, binding)
+        if ctx is None:
+            return None, skip or "custom_jwt_not_detectable"
+        return ctx, None
+
+    ctx, _src_flow, skip = find_latest_token_context(
+        db_path, project_id, binding
+    )
+    if ctx is not None:
+        return ctx, None
+
+    ctx, flow_skip = extract_token_context(flow, binding)
+    if ctx is not None:
+        return ctx, None
+    return None, skip or flow_skip or "token_not_detectable"
 
 
 # ------------------------------------------------------------------ #
@@ -460,7 +508,9 @@ def _assert_field_changed(
     """Fail closed if the bound field still holds the original value."""
     orig = get_auth_field_value(original_flow, location, field_name)
     new = get_auth_field_value(modified_flow, location, field_name)
-    if orig is not None and new is not None and orig == new:
+    if new is None:
+        raise ValueError(f"mutated auth value missing on {location} {field_name}")
+    if orig is not None and orig == new:
         raise ValueError(f"original auth value survived on {location} {field_name}")
 
 
@@ -571,16 +621,37 @@ async def _send_and_store(
         "original_flow_id": original_flow_id,
         "replay_error": None,
         "replay_reason": "auth_session_attack",
-        "flow_meta": json.dumps({
-            "attack_module": "auth_session",
-            "auth_type": auth_type,
-            "test_id": test_id,
-            "test_family": test_family,
-            "candidate_id": candidate_id,
-            "binding_id": binding_id,
-            "mutation_summary": mutation_summary,
-        }),
     }
+
+    from talos.burp.outbound import prepare_send_headers
+    from talos.burp.trace import ENGINE_AUTH_SESSION
+
+    flow_meta = {
+        "attack_module": "auth_session",
+        "auth_type": auth_type,
+        "test_id": test_id,
+        "test_family": test_family,
+        "candidate_id": candidate_id,
+        "binding_id": binding_id,
+        "mutation_summary": mutation_summary,
+    }
+    send_headers, flow_meta = prepare_send_headers(
+        send_headers,
+        db_path=db_path,
+        engine=ENGINE_AUTH_SESSION,
+        flow=replayed,
+        extras={
+            "technique": auth_type,
+            "variant": test_id,
+            "analysis": test_family or "",
+        },
+        endpoint_id=str(endpoint_id or original_flow.get("endpoint_id") or ""),
+        host=str(replayed.get("host") or ""),
+        flow_meta=flow_meta,
+    )
+    replayed["flow_meta"] = json.dumps(flow_meta)
+    if isinstance(send_headers, dict):
+        replayed["request_headers"] = json.dumps(send_headers)
 
     failure_reason: Optional[str] = None
 
@@ -608,6 +679,9 @@ async def _send_and_store(
             "response_body_truncated": len(resp_body) if resp_body else 0,
             "content_type": resp.headers.get("content-type", ""),
         })
+        from talos.burp.snapshot import record_send_response
+
+        record_send_response(flow_meta, project_id, resp)
 
     except httpx.ConnectError as exc:
         failure_reason = f"connection_error: {exc}"
@@ -624,6 +698,11 @@ async def _send_and_store(
     except Exception as exc:  # noqa: BLE001
         failure_reason = f"unexpected_error: {exc}"
         replayed["replay_error"] = "unexpected_error"
+
+    if failure_reason:
+        from talos.burp.snapshot import record_send_failure
+
+        record_send_failure(flow_meta, project_id, failure_reason)
 
     try:
         replay_db.insert_replayed_flow(db_path, replayed)

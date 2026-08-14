@@ -54,6 +54,7 @@ from talos.configuration.merge import (
 from talos.configuration.http_rules import parse_rules, sort_rules
 from talos.configuration.model import (
     AttackConfigSection,
+    BurpConfigSection,
     CaptureConfigSection,
     CrossFlowConfigSection,
     EffectiveConfig,
@@ -518,6 +519,17 @@ class ConfigurationManager:
             score_threshold=score_threshold,
         )
 
+        burp_raw = merged.get("burp") or {}
+        if not isinstance(burp_raw, dict):
+            burp_raw = {}
+        header_prefix = burp_raw.get("header_prefix", "X-Talos")
+        if not isinstance(header_prefix, str) or not header_prefix.strip():
+            header_prefix = "X-Talos"
+        burp = BurpConfigSection(
+            enabled=bool(burp_raw.get("enabled", True)),
+            header_prefix=header_prefix.strip(),
+        )
+
         return EffectiveConfig(
             proxy=ProxyConfigSection(
                 upstream_enabled=enabled,
@@ -542,6 +554,7 @@ class ConfigurationManager:
             ),
             parameter_intel=ParameterIntelConfigSection(cross_flow=cross_flow),
             url_sink=url_sink,
+            burp=burp,
             raw=merged,
             sources=sources,
             global_path=str(self.global_path),

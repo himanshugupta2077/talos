@@ -82,7 +82,7 @@ export default function OverviewTab({
           className="btn btn-xs btn-outline"
           onClick={() => onGoTab("candidates")}
         >
-          Candidates / Approve
+          Target flows
         </button>
         <button
           type="button"
@@ -148,41 +148,31 @@ export default function OverviewTab({
 
       {!empty.no_bindings && empty.no_candidates && (
         <div className="panel p-4 mb-4 text-sm text-base-content/70">
-          No candidates yet. Use{" "}
+          No target flows yet. Capture authenticated traffic, then add a flow
+          on the{" "}
           <button
             type="button"
             className="link link-primary"
             onClick={() => onGoTab("candidates")}
           >
-            Generate
+            Target flows
           </button>{" "}
-          to create pending mutation tests (no HTTP).
+          tab — or re-bind after browsing the app.
         </div>
       )}
 
-      {pending > 0 && (
-        <div className="alert alert-warning text-xs py-2 mb-4">
-          {pending} pending candidate{pending === 1 ? "" : "s"} need approval
-          before run.{" "}
-          <button
-            type="button"
-            className="link link-primary"
-            onClick={() => onGoTab("candidates")}
-          >
-            Open Candidates → approve
-          </button>
-        </div>
-      )}
-
-      {approved > 0 && (
+      {(pending > 0 || approved > 0) && (
         <div className="alert alert-info text-xs py-2 mb-4">
-          {approved} approved candidate{approved === 1 ? "" : "s"} ready to run.{" "}
+          {overview?.targets_total ?? 0} target flow
+          {(overview?.targets_total ?? 0) === 1 ? "" : "s"} ·{" "}
+          {overview?.estimated_jobs ?? overview?.estimated_jobs_approved ?? 0}{" "}
+          JWT tests ready.{" "}
           <button
             type="button"
             className="link link-primary"
             onClick={() => onGoTab("run")}
           >
-            Open Run →
+            Run →
           </button>
         </div>
       )}
@@ -267,9 +257,9 @@ export default function OverviewTab({
               )}
             </li>
             <li>
-              Approved ready to run:{" "}
+              Tests ready to run:{" "}
               <span className="tabular-nums font-medium">
-                {overview?.estimated_jobs_approved ?? 0}
+                {overview?.estimated_jobs ?? overview?.estimated_jobs_approved ?? 0}
               </span>
             </li>
             <li>

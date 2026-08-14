@@ -176,7 +176,7 @@ def create_finding_from_verdict(
             unauth       → UNAUTH:<endpoint_id>
             auth_test    → AUTH_TEST:<endpoint_id>
             bac          → BAC:<endpoint_id>:<attacker>:<target>
-            auth_session → AUTH_SESSION:<endpoint_id>:<auth_type>
+            auth_session → AUTH_SESSION:<auth_type>
             cors         → CORS:<scheme://netloc>
 
         The first finding in a cluster becomes PRIMARY; later findings in
@@ -391,7 +391,39 @@ def create_finding_from_verdict(
         verdict,
         relation_type,
     )
+    _snapshot_finding_for_burp(
+        db_path=db_path,
+        project_id=project_id,
+        finding_id=finding_id,
+        attack_type=attack_module,
+        title=title,
+        flow_id=replayed_flow_id or original_flow_id or "",
+    )
     return finding_id
+
+
+def _snapshot_finding_for_burp(
+    db_path: Path,
+    project_id: str,
+    finding_id: str,
+    attack_type: str,
+    title: str,
+    flow_id: str,
+) -> None:
+    """Best-effort Findings tree row for the Burp extension. Never raises."""
+    try:
+        from talos.burp.snapshot import record_finding
+
+        record_finding(
+            project_id=project_id,
+            finding_id=finding_id,
+            db_path=db_path,
+            attack_type=attack_type,
+            title=title,
+            flow_id=flow_id,
+        )
+    except Exception:  # noqa: BLE001
+        _log.debug("[findings] burp snapshot skipped", exc_info=True)
 
 
 # ------------------------------------------------------------------ #

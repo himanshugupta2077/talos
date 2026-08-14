@@ -152,6 +152,8 @@ def project_summary(project_id: str):
         return {
             "flows": 0,
             "endpoints": 0,
+            "findings_primary": 0,
+            "findings_total": 0,
             "findings_triaging": 0,
             "findings_confirmed": 0,
             "scheduler_pending": 0,
@@ -161,6 +163,12 @@ def project_summary(project_id: str):
     return {
         "flows": db.scalar(db_path, "SELECT COUNT(*) FROM flows"),
         "endpoints": db.scalar(db_path, "SELECT COUNT(*) FROM endpoints"),
+        "findings_primary": db.scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings "
+            "WHERE COALESCE(relation_type, 'PRIMARY') = 'PRIMARY'",
+        ),
+        "findings_total": db.scalar(db_path, "SELECT COUNT(*) FROM findings"),
         "findings_triaging": db.scalar(
             db_path, "SELECT COUNT(*) FROM findings WHERE status='TRIAGING'"
         ),

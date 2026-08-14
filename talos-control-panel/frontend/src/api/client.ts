@@ -126,6 +126,8 @@ export function formatProxyStateLabel(
 export interface ProjectSummary {
   flows: number;
   endpoints: number;
+  findings_primary: number;
+  findings_total: number;
   findings_triaging: number;
   findings_confirmed: number;
   scheduler_pending: number;

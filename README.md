@@ -22,6 +22,7 @@ Talos is an open-source web application pentest automation framework built aroun
 | `docs/updates.md` | Release notes / change log |
 | `docs/about-talos.md` | Vision / design notes (non-authoritative) |
 | `docs/bac-decision-filter.md` | BAC decision filter configuration |
+| `docs/burp-extension.md` | Burp upstream headers + Talos Burp extension |
 | `talos-control-panel/README.md` | Integrated Control Panel (UI) setup and architecture |
 
 ---
@@ -57,6 +58,7 @@ Replay / Scheduler → Attack Modules → Findings
 - Configurable body size limits and noise header filtering
 - Bounded in-memory queue (proxy thread never blocks)
 - Optional upstream proxy mode (Burp / ZAP / corporate) — fully dynamic from project config or CLI; no hardcoded upstream host/port
+- Burp Suite extension + `X-Talos-*` metadata headers so IV probes group as Input Validation → Endpoints in Burp (`docs/burp-extension.md`)
 
 ### Normalization and Endpoint Intelligence
 - Strips tracking parameters; canonicalizes URLs

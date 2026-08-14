@@ -113,15 +113,12 @@ def _parse_as(argv: list[str]):
     return parser.parse_args(["auth-session", *argv])
 
 
-def _approve_one(db_path: Path, manager: MagicMock) -> str:
+def _seed_one(db_path: Path, manager: MagicMock) -> str:
     run_auth_session_cli(
         manager, _parse_as(["bind", "--type", "jwt", "--header", "Authorization"])
     )
-    run_auth_session_cli(manager, _parse_as(["generate", "--endpoint", EP]))
-    # Approve a single deterministic test_id to keep run small
     rows = as_db.list_candidates(db_path, status=STATUS_PENDING, test_ids=["jwt.alg_none"])
     assert rows
-    as_db.approve_candidates(db_path, [rows[0].id])
     return rows[0].id
 
 
@@ -131,17 +128,26 @@ def test_job_type_registered() -> None:
 
 
 def test_run_enqueues_one_job_per_candidate(manager: MagicMock, db_path: Path) -> None:
-    cid = _approve_one(db_path, manager)
-    # Approve a second distinct test_id
+    cid = _seed_one(db_path, manager)
     rows = as_db.list_candidates(
         db_path, status=STATUS_PENDING, test_ids=["jwt.invalid_signature"]
     )
     assert rows
-    as_db.approve_candidates(db_path, [rows[0].id])
 
     out = io.StringIO()
     with redirect_stdout(out):
-        run_auth_session_cli(manager, _parse_as(["run"]))
+        run_auth_session_cli(
+            manager,
+            _parse_as(
+                [
+                    "run",
+                    "--test-id",
+                    "jwt.alg_none",
+                    "--test-id",
+                    "jwt.invalid_signature",
+                ]
+            ),
+        )
     text = out.getvalue()
     assert "Jobs enqueued" in text
     assert "2" in text or "Jobs enqueued      : 2" in text
@@ -163,7 +169,7 @@ def test_run_enqueues_one_job_per_candidate(manager: MagicMock, db_path: Path) -
 
 
 def test_run_dedupe_skips_pending_duplicate(manager: MagicMock, db_path: Path) -> None:
-    cid = _approve_one(db_path, manager)
+    cid = _seed_one(db_path, manager)
     cand = as_db.get_candidate(db_path, cid)
     assert cand is not None
 
@@ -252,6 +258,27 @@ def test_mark_candidate_running_done_failed(db_path: Path) -> None:
     running = as_db.mark_candidate_running(db_path, cand.id)
     assert running is not None
     assert running.status == STATUS_RUNNING
+
+
+def test_mark_pending_candidate_running(db_path: Path) -> None:
+    binding = as_db.insert_binding(
+        db_path, location="header", name="Authorization", auth_type="jwt"
+    )
+    cand = as_db.insert_candidate(
+        db_path,
+        binding_id=binding.id,
+        baseline_flow_id=FLOW,
+        auth_type="jwt",
+        test_id="jwt.alg_none",
+        test_family="algorithm",
+        title="t",
+        mutation_summary="m",
+        endpoint_id=EP,
+        status=STATUS_PENDING,
+    )
+    running = as_db.mark_candidate_running(db_path, cand.id)
+    assert running is not None
+    assert running.status == STATUS_RUNNING
     done = as_db.mark_candidate_done(db_path, cand.id)
     assert done is not None
     assert done.status == STATUS_DONE
@@ -324,7 +351,7 @@ def test_insert_and_list_results(db_path: Path) -> None:
 
 
 def test_run_right_now(manager: MagicMock, db_path: Path) -> None:
-    cid = _approve_one(db_path, manager)
+    cid = _seed_one(db_path, manager)
     resp = MagicMock()
     resp.status_code = 200
     resp.content = BODY

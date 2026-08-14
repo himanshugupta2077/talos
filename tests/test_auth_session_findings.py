@@ -104,16 +104,28 @@ def test_build_cluster_key_auth_session() -> None:
     key = findings_db.build_cluster_key(
         "auth_session", EP, auth_type="jwt"
     )
-    assert key == f"AUTH_SESSION:{EP}:jwt"
+    assert key == "AUTH_SESSION:jwt"
     key2 = findings_db.build_cluster_key("auth_session", EP)
-    assert key2 == f"AUTH_SESSION:{EP}:unknown"
+    assert key2 == "AUTH_SESSION:jwt"
+    key3 = findings_db.build_cluster_key("auth_session", None, auth_type="jwt")
+    assert key3 == "AUTH_SESSION:jwt"
 
 
 def test_title_formula() -> None:
-    title = build_finding_title(
+    primary = build_finding_title(
+        test_id="jwt.alg_none",
+        method="GET",
+        path="/api/me",
+        is_primary=True,
+        auth_type="jwt",
+    )
+    assert primary == (
+        "Authentication & Session Testing — weak JWT validation"
+    )
+    linked = build_finding_title(
         test_id="jwt.alg_none", method="GET", path="/api/me"
     )
-    assert title == (
+    assert linked == (
         "Authentication & Session Testing — jwt.alg_none on GET /api/me"
     )
 
@@ -172,9 +184,9 @@ def test_maybe_create_finding_weak(db_path: Path) -> None:
     assert finding["attack_type"] == "auth_session"
     assert finding["verdict"] == VERDICT_WEAK_VALIDATION
     assert finding["relation_type"] == RELATION_TYPE_PRIMARY
-    assert finding["cluster_key"] == f"AUTH_SESSION:{EP}:jwt"
+    assert finding["cluster_key"] == "AUTH_SESSION:jwt"
     assert finding["title"] == (
-        "Authentication & Session Testing — jwt.alg_none on GET /api/me"
+        "Authentication & Session Testing — weak JWT validation"
     )
     assert "WEAK_VALIDATION (jwt.alg_none)" not in finding["title"]
 

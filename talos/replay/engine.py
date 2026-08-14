@@ -19,28 +19,36 @@ Design constraints (hard — do not violate):
     - Failed replays are stored, not silently discarded.
 
 Dependencies: asyncio, httpx, json, uuid, datetime, pathlib
-              talos.replay.db, talos.projects.proxy_config
+              talos.replay.db, talos.projects.proxy_config, talos.burp.headers
 Data flow:
     CLI → replay_flow / replay_endpoint
         → _execute_replay
             → get_upstream_url(db_path) → httpx.AsyncClient(proxy=…)
+            → maybe_apply_burp_headers (when flow_meta.burp + burp.enabled)
             → httpx.AsyncClient.request()
             → replay_db.insert_replayed_flow()
 Side effects:
     - Sends outbound HTTP request (via project upstream proxy when configured).
+    - May add X-Talos-* grouping headers for the Burp extension.
     - Writes one new flow row per call to the project database.
 """
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+_log = logging.getLogger(__name__)
+_burp_attach_logged = False
+
 import httpx
 
 import talos.replay.db as replay_db
+from talos.burp.headers import maybe_apply_burp_headers
+from talos.burp.outbound import _request_path
 from talos.projects.annotations import get_annotations
 from talos.projects.proxy_config import get_upstream_url
 from talos.replay.diff import DiffResult, compute_diff
@@ -235,7 +243,10 @@ async def _execute_replay(
                         'input_validation').
         flow_meta     — Optional structured metadata dict stored as JSON on the
                         replay flow.  Used by IV and future attack modules to
-                        make every replay flow self-describing.
+                        make every replay flow self-describing. When
+                        flow_meta['burp'] is present, burp.enabled is on, and
+                        an upstream proxy is configured, the Burp extension
+                        is offered the trace (ingest, or X-Talos-* fallback).
     Output:
         ReplayOutcome.
     Side effects:
@@ -318,11 +329,41 @@ async def _execute_replay(
 
     failure_reason: Optional[str] = None
 
+    # Upstream is project-configured only (proxy_config); None → Direct.
+    # Burp metadata headers attach only when an upstream is set so they
+    # never leak to the target in Direct mode.
+    if isinstance(flow_meta, dict):
+        burp_meta = flow_meta.get("burp")
+        if isinstance(burp_meta, dict) and not burp_meta.get("project_id"):
+            burp_meta["project_id"] = project_id
+    upstream_url = get_upstream_url(db_path)
+    headers = maybe_apply_burp_headers(
+        headers,
+        flow_meta,
+        has_upstream=bool(upstream_url),
+        project_data_dir=Path(db_path).parent,
+        method=str(flow.get("method") or ""),
+        host=str(flow.get("host") or ""),
+        path=_request_path(flow),
+        url=str(flow.get("url") or ""),
+        body=body,
+    )
+    # Persist the headers that were actually sent (mutations + Talos tags).
+    replayed["request_headers"] = json.dumps(headers)
+    global _burp_attach_logged
+    if not _burp_attach_logged and any(
+        str(name).lower().startswith("x-talos-") for name in headers
+    ):
+        _burp_attach_logged = True
+        _log.info(
+            "Attached X-Talos-* metadata headers (upstream=%s).",
+            upstream_url,
+        )
+
     try:
-        # Upstream is project-configured only (proxy_config); None → direct.
         async with httpx.AsyncClient(
             verify=False,
-            proxy=get_upstream_url(db_path),
+            proxy=upstream_url,
             follow_redirects=False,
             timeout=_REPLAY_TIMEOUT,
         ) as client:
@@ -345,6 +386,9 @@ async def _execute_replay(
                 "content_type": resp.headers.get("content-type", ""),
             }
         )
+        from talos.burp.snapshot import record_send_response
+
+        record_send_response(flow_meta, project_id, resp)
 
     except httpx.ConnectError as exc:
         failure_reason = f"connection_error: {exc}"
@@ -363,6 +407,11 @@ async def _execute_replay(
     except Exception as exc:  # noqa: BLE001
         failure_reason = f"unexpected_error: {exc}"
         replayed["replay_error"] = "unexpected_error"
+
+    if failure_reason:
+        from talos.burp.snapshot import record_send_failure
+
+        record_send_failure(flow_meta, project_id, failure_reason)
 
     # Store every replay attempt — success or failure.
     # Failures are stored with NULL status_code and a replay_error label.

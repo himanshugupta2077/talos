@@ -31,6 +31,7 @@ Side effects:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ from talos.passive.constants import (
     SourceKind,
 )
 from talos.passive.models import Detection, SourceDocument, SourceOccurrence
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ #
@@ -924,7 +927,10 @@ def insert_detection(
         ).fetchone()
     if row is None:
         return None
-    return _detection_from_row(row)
+    stored = _detection_from_row(row)
+    stored.raw_value = detection.raw_value
+    _record_burp_passive(db_path, stored)
+    return stored
 
 
 def list_detections(
@@ -1063,3 +1069,52 @@ def link_detection_finding(
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+def _record_burp_passive(db_path: Path, detection: Detection) -> None:
+    """Best-effort Burp snapshot; never raises into the scan path."""
+    try:
+        from talos.burp.snapshot import record_module_hit
+        from talos.burp.trace import ENGINE_PASSIVE
+
+        project_id = ""
+        flow_id = url = host = path = endpoint_id = ""
+        if detection.document_id:
+            doc = get_document(db_path, detection.document_id)
+            if doc is not None:
+                project_id = doc.project_id or ""
+                flow_id = doc.first_flow_id or ""
+        if detection.occurrence_id:
+            occ = get_occurrence(db_path, detection.occurrence_id)
+            if occ is not None:
+                flow_id = occ.flow_id or flow_id
+                url = occ.url or ""
+                host = occ.host or ""
+                path = occ.path or ""
+                endpoint_id = occ.endpoint_id or ""
+        if not project_id:
+            return
+        kind = (detection.secret_type or detection.detector_id or "secret").strip()
+        value = (detection.raw_value or "").strip()
+        if not value:
+            value = (detection.redacted_value or "").strip()
+        if len(value) > 512:
+            value = value[:512]
+        detail = f"{kind} · {value}" if kind and value else (value or kind)
+        record_module_hit(
+            project_id=project_id,
+            engine=ENGINE_PASSIVE,
+            extras={
+                "technique": kind,
+                "detail": detail,
+            },
+            record_id=f"passive:{detection.id}",
+            db_path=db_path,
+            flow_id=flow_id,
+            url=url,
+            host=host,
+            path=path,
+            endpoint_id=endpoint_id or "",
+        )
+    except Exception:
+        logger.debug("burp passive snapshot skipped", exc_info=True)

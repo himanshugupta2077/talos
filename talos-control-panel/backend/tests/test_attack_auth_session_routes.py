@@ -117,6 +117,7 @@ def _make_project_db(path: Path) -> Path:
             method TEXT,
             path TEXT,
             host TEXT,
+            url TEXT,
             status_code INTEGER,
             captured_at TEXT
         );
@@ -168,8 +169,10 @@ def _make_project_db(path: Path) -> Path:
     )
     conn.execute(
         """
-        INSERT INTO flows (id, method, path, host, status_code, captured_at)
-        VALUES ('replay-1', 'GET', '/api/me', 'app.example', 200, '2026-01-02T00:00:00Z')
+        INSERT INTO flows (id, method, path, host, url, status_code, captured_at)
+        VALUES
+        ('replay-1', 'GET', '/api/me', 'app.example', 'https://app.example/api/me', 200, '2026-01-02T00:00:00Z'),
+        ('flow-1', 'GET', '/api/me', 'app.example', 'https://app.example/api/me', 200, '2026-01-01T00:00:00Z')
         """
     )
     conn.execute(
@@ -245,7 +248,9 @@ def test_summary_and_overview_shape(client, tmp_path, monkeypatch):
     assert ov["bindings"] == 1
     assert ov["candidates_total"] == 2
     assert ov["results_total"] == 2
-    assert ov["estimated_jobs_approved"] == 1
+    assert ov["estimated_jobs_approved"] == 2
+    assert ov["estimated_jobs"] == 2
+    assert ov["targets_total"] == 1
     assert ov["jobs_pending"] == 1
     assert ov["auth_config_ready"] is True
     assert ov["bindings_valid"] is True
@@ -868,7 +873,7 @@ def test_run_enqueue_argv(client, tmp_path):
     assert run_scoped.call_args[1].get("timeout") is None or "timeout" not in run_scoped.call_args[1]
     body = res.json()
     assert body["right_now"] is False
-    assert body["estimate"] == 1  # cand-2 approved signature? cand-2 is signature family approved
+    assert body["estimate"] == 1  # only the approved signature-family row
 
 
 def test_run_right_now_elevated_timeout(client, tmp_path, monkeypatch):
@@ -893,8 +898,8 @@ def test_run_right_now_elevated_timeout(client, tmp_path, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert body["right_now"] is True
-    assert body["estimate"] == 1
-    assert body["timeout_seconds"] == 60  # max(60, min(600, 30*1)) = 60
+    assert body["estimate"] == 2
+    assert body["timeout_seconds"] == 60  # max(60, min(600, 30*2)) = 60
     assert run_scoped.call_args[1]["timeout"] == 60
     assert "--right-now" in run_scoped.call_args[0][1]
 
@@ -966,7 +971,8 @@ def test_run_estimate(client, tmp_path):
                 params={"project_id": "demo", "binding_id": "bind-1"},
             )
     assert res.status_code == 200
-    assert res.json()["approved_matching"] == 1
+    assert res.json()["approved_matching"] == 2
+    assert res.json()["runnable_matching"] == 2
 
 
 def test_results_list_and_detail(client, tmp_path):
@@ -1082,6 +1088,70 @@ def test_suite_rejects_non_jwt(client):
     assert res.status_code == 400
 
 
+def test_targets_list_and_mutations(tmp_path, client):
+    from talos_ui.routers import attack_auth_session as mod
+
+    db_path = tmp_path / "t.db"
+    _make_project_db(db_path)
+    with patch.object(mod.db, "get_project_record", return_value={}):
+        with patch.object(mod.config, "project_db_path", return_value=db_path):
+            listed = client.get(
+                "/api/attack/auth-session/targets",
+                params={"project_id": "p1"},
+            )
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["count"] >= 1
+    assert any(item.get("flow_id") for item in body["items"])
+
+    with patch.object(mod.cli, "run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result(["attack", "auth-session", "candidates", "add"])]
+        add = client.post(
+            "/api/attack/auth-session/targets/add",
+            params={"project_id": "p1"},
+            json={"flow_id": "flow-1", "binding_id": "bind-1"},
+        )
+    assert add.status_code == 200
+    assert run_scoped.call_args[0][1][:5] == [
+        "attack",
+        "auth-session",
+        "candidates",
+        "add",
+        "--flow",
+    ]
+
+    with patch.object(mod.cli, "run_scoped") as run_scoped:
+        run_scoped.return_value = [
+            _ok_result(["attack", "auth-session", "candidates", "remove"])
+        ]
+        rem = client.post(
+            "/api/attack/auth-session/targets/remove",
+            params={"project_id": "p1"},
+            json={"flow_id": "flow-1"},
+        )
+    assert rem.status_code == 200
+    assert "remove" in run_scoped.call_args[0][1]
+
+
+def test_run_passes_custom_jwt(client):
+    from talos_ui.routers import attack_auth_session as mod
+
+    with patch.object(mod.db, "get_project_record", return_value={}):
+        with patch.object(mod.config, "project_db_path", return_value="/tmp/x.db"):
+            with patch.object(mod, "_count_approved_matching", return_value=2):
+                with patch.object(mod.cli, "run_scoped") as run_scoped:
+                    run_scoped.return_value = [_ok_result(["attack", "auth-session", "run"])]
+                    res = client.post(
+                        "/api/attack/auth-session/run",
+                        params={"project_id": "p1"},
+                        json={"jwt": "eyJhbGciOiJub25lIn0.e30.", "right_now": False},
+                    )
+    assert res.status_code == 200
+    argv = run_scoped.call_args[0][1]
+    assert "--jwt" in argv
+    assert "eyJhbGciOiJub25lIn0.e30." in argv
+
+
 def test_command_tree_phase3_5_commands():
     from talos_ui.command_tree import find_command, build_argv
 
@@ -1114,6 +1184,19 @@ def test_command_tree_phase3_5_commands():
         "--right-now",
     ]
 
+    add = find_command("attack.auth-session.candidates.add")
+    assert add is not None
+    assert build_argv(add, {"flow": "flow-1"}) == [
+        "attack",
+        "auth-session",
+        "candidates",
+        "add",
+        "--flow",
+        "flow-1",
+    ]
+    remove = find_command("attack.auth-session.candidates.remove")
+    assert remove is not None
+
     for cid in (
         "attack.auth-session.reject",
         "attack.auth-session.unapprove",
@@ -1121,5 +1204,7 @@ def test_command_tree_phase3_5_commands():
         "attack.auth-session.filter.show",
         "attack.auth-session.filter.validate",
         "attack.auth-session.suite.list",
+        "attack.auth-session.candidates.add",
+        "attack.auth-session.candidates.remove",
     ):
         assert find_command(cid) is not None, cid

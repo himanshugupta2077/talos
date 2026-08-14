@@ -26,7 +26,7 @@ Complete inventory of HTTP routes exposed by `talos_ui`. Unless noted, mutation 
 | POST | `/api/projects/close` | Close active | — | `CommandResult` | `project close` | — |
 | POST | `/api/projects` | Create project | body: `name`, `description?`, `scope[]` | `CommandResult` | `project create …` | — |
 | GET | `/api/projects/{project_id}` | Project detail | path | `{ project, active_project_id }` | — | registry |
-| GET | `/api/projects/{project_id}/summary` | Dashboard counters | path | counts object | — | `flows`, `endpoints`, `findings`, `scheduler_jobs`, `roles`, `modules` |
+| GET | `/api/projects/{project_id}/summary` | Dashboard counters | path | counts object | — | `flows`, `endpoints`, `findings` (`findings_primary`, `findings_total`, triaging/confirmed), `scheduler_jobs`, `roles`, `modules` |
 | POST | `/api/projects/{project_id}/open` | Activate project | path | `CommandResult` | `project open` | — |
 | DELETE | `/api/projects/{project_id}` | Delete / purge | query `force?`, `purge?` | `CommandResult` | `project delete [--purge] [--force]` | — |
 | POST | `/api/projects/{project_id}/rename` | Rename (may re-slug) | body: `new_name` | `CommandResult` | `project rename` | — |
@@ -414,7 +414,7 @@ Valid techniques: `session-swap`, `method-fuzz`, `content-type`, `url-fuzz`, `he
 | GET | `/overview` | Overview bundle | `top_n?` | status + top candidates + empty_state | — | same |
 | POST | `/run` | Schedule planner jobs | scope + budget + ignore_cache | steps | `run` | — |
 | POST | `/resume` | Resume | scope | steps | `resume` | — |
-| POST | `/clear-cache` | Clear cache (`--force`) | scope | steps | `clear-cache` | — |
+| POST | `/clear-cache` | Reset probes, profiles, and cache (`--force`) | scope | steps | `clear-cache` | — |
 | POST | `/phase/{phase}` | Run one phase | scope | steps or error | phase cmd | — |
 | POST | `/synthesize` | Offline profiles | host? / param_uuid? | steps | `synthesize` | — |
 | POST | `/exclude/*` · `/include/*` | Scope exclusions | path | steps | exclude/include | — |

@@ -162,6 +162,21 @@ class UrlSinkConfigSection:
 
 
 @dataclass(frozen=True)
+class BurpConfigSection:
+    """
+    Purpose:
+        Effective Burp Suite metadata-header settings.
+    Fields:
+        enabled       — master switch; headers attach only when True and
+                        an upstream proxy is configured.
+        header_prefix — HTTP header name prefix (default X-Talos).
+    """
+
+    enabled: bool = True
+    header_prefix: str = "X-Talos"
+
+
+@dataclass(frozen=True)
 class EffectiveConfig:
     """
     Purpose:
@@ -176,6 +191,7 @@ class EffectiveConfig:
         http             — HTTP manipulation engine (rules + master switch).
         parameter_intel  — parameter intelligence (cross-flow reflection).
         url_sink         — URL Sink Discovery kill-switches + score gate.
+        burp             — Burp Suite metadata headers for the Talos extension.
         raw              — full merged dict tree (for generic get / effective views).
         sources          — dotted path → ValueSource for inheritance display.
         global_path      — path to global config file (may not exist yet).
@@ -191,6 +207,7 @@ class EffectiveConfig:
         default_factory=ParameterIntelConfigSection
     )
     url_sink: UrlSinkConfigSection = field(default_factory=UrlSinkConfigSection)
+    burp: BurpConfigSection = field(default_factory=BurpConfigSection)
     raw: dict = field(default_factory=dict)
     sources: dict[str, ValueSource] = field(default_factory=dict)
     global_path: Optional[str] = None

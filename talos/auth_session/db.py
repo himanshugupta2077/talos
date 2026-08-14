@@ -31,6 +31,7 @@ from talos.auth_session.models import (
     CANDIDATE_STATUSES,
     KNOWN_AUTH_TYPES,
     KNOWN_LOCATIONS,
+    RUNNABLE_STATUSES,
     STATUS_APPROVED,
     STATUS_DONE,
     STATUS_FAILED,
@@ -50,8 +51,8 @@ APPROVE_SOURCE_STATUSES: frozenset[str] = frozenset({
     STATUS_DONE,
 })
 REJECT_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_PENDING})
-# Scheduler claims approved candidates before engine runs.
-RUN_SOURCE_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED})
+# Scheduler claims pending (or leftover approved) candidates before engine runs.
+RUN_SOURCE_STATUSES: frozenset[str] = frozenset(RUNNABLE_STATUSES)
 # Settle from running / approved (right-now race) / pending (recovery when
 # operator unapproved after enqueue but before claim — see unapprove guard).
 SETTLE_SOURCE_STATUSES: frozenset[str] = frozenset({
@@ -450,6 +451,146 @@ def cascade_reject_pending_for_binding(
         )
         conn.commit()
         return cur.rowcount
+
+
+def cascade_delete_binding(
+    db_path: Path,
+    binding_id: str,
+) -> dict[str, Any]:
+    """
+    Purpose:
+        Remove a binding and its candidates/results. Refuses while any
+        candidate is still ``running``.
+    Output:
+        ``{ok, reason?, deleted_results, deleted_candidates}``
+    Side effects: DB deletes.
+    """
+    migrate_project_db(db_path)
+    counts = count_candidates_for_binding(db_path, binding_id)
+    running = int(counts.get(STATUS_RUNNING) or 0)
+    if running:
+        return {
+            "ok": False,
+            "reason": f"binding has {running} running candidate(s)",
+            "deleted_results": 0,
+            "deleted_candidates": 0,
+        }
+    with _connect(db_path) as conn:
+        res_cur = conn.execute(
+            "DELETE FROM auth_session_results WHERE binding_id = ?",
+            (binding_id,),
+        )
+        cand_cur = conn.execute(
+            "DELETE FROM auth_session_candidates WHERE binding_id = ?",
+            (binding_id,),
+        )
+        conn.execute(
+            "DELETE FROM auth_session_bindings WHERE id = ?",
+            (binding_id,),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "deleted_results": int(res_cur.rowcount or 0),
+            "deleted_candidates": int(cand_cur.rowcount or 0),
+        }
+
+
+def list_target_flows(
+    db_path: Path,
+    *,
+    binding_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Unique baseline flows that currently have JWT test candidates.
+    """
+    if not db_path.exists():
+        return []
+    migrate_project_db(db_path)
+    params: list[Any] = []
+    sql = """
+        SELECT c.baseline_flow_id AS flow_id,
+               c.binding_id AS binding_id,
+               c.endpoint_id AS endpoint_id,
+               COUNT(*) AS test_count,
+               SUM(CASE WHEN c.status IN ('pending', 'approved') THEN 1 ELSE 0 END)
+                   AS runnable_count,
+               SUM(CASE WHEN c.status = 'running' THEN 1 ELSE 0 END) AS running_count,
+               MAX(c.created_at) AS created_at,
+               f.method AS method,
+               f.path AS path,
+               f.host AS host,
+               f.url AS url,
+               f.status_code AS status_code
+        FROM auth_session_candidates c
+        LEFT JOIN flows f ON f.id = c.baseline_flow_id
+    """
+    if binding_id:
+        sql += " WHERE c.binding_id = ?"
+        params.append(binding_id)
+    sql += """
+        GROUP BY c.baseline_flow_id, c.binding_id, c.endpoint_id,
+                 f.method, f.path, f.host, f.url, f.status_code
+        ORDER BY created_at ASC
+    """
+    with _connect(db_path, rw=False) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append({
+            "flow_id": row["flow_id"],
+            "binding_id": row["binding_id"],
+            "endpoint_id": row["endpoint_id"],
+            "test_count": int(row["test_count"] or 0),
+            "runnable_count": int(row["runnable_count"] or 0),
+            "running_count": int(row["running_count"] or 0),
+            "created_at": row["created_at"] or "",
+            "method": row["method"] or "",
+            "path": row["path"] or "",
+            "host": row["host"] or "",
+            "url": row["url"] or "",
+            "status_code": row["status_code"],
+        })
+    return out
+
+
+def delete_candidates_for_flow(
+    db_path: Path,
+    *,
+    flow_id: str,
+    binding_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Purpose:
+        Delete JWT test rows for one target flow. Refuses if any are running.
+    """
+    migrate_project_db(db_path)
+    clauses = ["baseline_flow_id = ?"]
+    params: list[Any] = [flow_id]
+    if binding_id:
+        clauses.append("binding_id = ?")
+        params.append(binding_id)
+    where = " AND ".join(clauses)
+    with _connect(db_path) as conn:
+        running = conn.execute(
+            f"SELECT COUNT(*) AS n FROM auth_session_candidates "
+            f"WHERE {where} AND status = ?",
+            (*params, STATUS_RUNNING),
+        ).fetchone()
+        n_running = int(running["n"] if running else 0)
+        if n_running:
+            return {
+                "ok": False,
+                "reason": f"{n_running} candidate(s) still running",
+                "deleted": 0,
+            }
+        cur = conn.execute(
+            f"DELETE FROM auth_session_candidates WHERE {where}",
+            params,
+        )
+        conn.commit()
+        return {"ok": True, "deleted": int(cur.rowcount or 0)}
 
 
 # ------------------------------------------------------------------ #
@@ -879,7 +1020,7 @@ def mark_candidate_running(
 ) -> Optional[AuthSessionCandidate]:
     """
     Purpose:
-        Transition candidate approved → running (scheduler claim / right-now).
+        Transition candidate pending|approved → running (scheduler claim / right-now).
     Output:
         Updated candidate, or None if missing / wrong source status.
     Side effects: DB write.

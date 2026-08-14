@@ -30,6 +30,7 @@ from talos.auth_session import db as as_db
 from talos.auth_session.config import is_safe_method, suite_config_from_binding
 from talos.auth_session.extract import extract_token_context
 from talos.auth_session.models import (
+    DEFAULT_TARGET_LIMIT,
     STATUS_PENDING,
     STATUS_REJECTED,
     AuthSessionBinding,
@@ -324,6 +325,190 @@ def select_baselines_for_binding(
         )
 
     return selections
+
+
+def _selection_recency(selection: BaselineSelection) -> str:
+    """Newest captured_at first; missing timestamps sort last."""
+    flow = selection.flow or {}
+    return str(flow.get("captured_at") or "")
+
+
+def select_top_jwt_targets(
+    db_path: Path,
+    project_id: str,
+    binding: AuthSessionBinding,
+    *,
+    role_id: Optional[str] = None,
+    limit: int = DEFAULT_TARGET_LIMIT,
+    stats: Optional[GenerateStats] = None,
+) -> list[BaselineSelection]:
+    """
+    Purpose:
+        Pick a small method-diverse set of JWT-bearing baselines.
+
+        Slots (when traffic exists):
+          1. one GET
+          2. one POST
+          3. one PATCH, else one PUT
+          4–N. remaining unused endpoints, newest first
+
+        POST / PATCH / PUT are included on purpose (JWT validation is
+        useful on mutating methods). Cap is ``limit`` (default 5).
+    """
+    stats = stats or GenerateStats()
+    pool = select_baselines_for_binding(
+        db_path,
+        project_id,
+        binding,
+        role_id=role_id,
+        include_unsafe_methods=True,
+        stats=stats,
+    )
+    if not pool:
+        return []
+
+    # Newest first within each method bucket.
+    pool = sorted(pool, key=_selection_recency, reverse=True)
+
+    picked: list[BaselineSelection] = []
+    used_keys: set[str] = set()
+
+    def _key(sel: BaselineSelection) -> str:
+        if sel.endpoint_id:
+            return f"ep:{sel.endpoint_id}"
+        return f"flow:{sel.flow_id}"
+
+    def _take(predicate) -> Optional[BaselineSelection]:
+        for sel in pool:
+            key = _key(sel)
+            if key in used_keys:
+                continue
+            if predicate(sel):
+                used_keys.add(key)
+                return sel
+        return None
+
+    for pred in (
+        lambda s: (s.method or "").upper() == "GET",
+        lambda s: (s.method or "").upper() == "POST",
+        lambda s: (s.method or "").upper() == "PATCH",
+    ):
+        found = _take(pred)
+        if found is not None:
+            picked.append(found)
+        if len(picked) >= limit:
+            return picked
+
+    if not any((s.method or "").upper() == "PATCH" for s in picked):
+        found = _take(lambda s: (s.method or "").upper() == "PUT")
+        if found is not None:
+            picked.append(found)
+
+    for sel in pool:
+        if len(picked) >= limit:
+            break
+        key = _key(sel)
+        if key in used_keys:
+            continue
+        used_keys.add(key)
+        picked.append(sel)
+
+    return picked[:limit]
+
+
+def auto_seed_targets_for_binding(
+    db_path: Path,
+    project_id: str,
+    binding: AuthSessionBinding,
+    *,
+    role_id: Optional[str] = None,
+    limit: int = DEFAULT_TARGET_LIMIT,
+) -> GenerateStats:
+    """
+    Purpose:
+        After bind, create mutation candidates for the top target flows.
+    Side effects: DB writes.
+    """
+    stats = GenerateStats()
+    stats.bindings_processed = 1
+    selections = select_top_jwt_targets(
+        db_path,
+        project_id,
+        binding,
+        role_id=role_id,
+        limit=limit,
+        stats=stats,
+    )
+    for selection in selections:
+        generate_for_binding_baseline(
+            db_path,
+            binding,
+            selection,
+            stats=stats,
+        )
+    return stats
+
+
+def add_target_flow(
+    db_path: Path,
+    project_id: str,
+    binding: AuthSessionBinding,
+    flow_id: str,
+) -> GenerateStats:
+    """
+    Purpose:
+        Add one explicit baseline flow and generate its JWT tests.
+    Side effects: DB writes.
+    """
+    stats = GenerateStats()
+    stats.bindings_processed = 1
+    selections = select_baselines_for_binding(
+        db_path,
+        project_id,
+        binding,
+        flow_id=flow_id,
+        include_unsafe_methods=True,
+        stats=stats,
+    )
+    for selection in selections:
+        generate_for_binding_baseline(
+            db_path,
+            binding,
+            selection,
+            stats=stats,
+        )
+    return stats
+
+
+def remove_target_flow(
+    db_path: Path,
+    *,
+    binding_id: Optional[str],
+    flow_id: str,
+) -> dict[str, Any]:
+    """
+    Purpose:
+        Drop all mutation rows for one target flow.
+        Refuses while any candidate for that flow is running.
+    Side effects: DB deletes.
+    """
+    return as_db.delete_candidates_for_flow(
+        db_path,
+        binding_id=binding_id,
+        flow_id=flow_id,
+    )
+
+
+def list_target_flows(
+    db_path: Path,
+    *,
+    binding_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Unique baseline flows currently selected as JWT targets.
+    """
+    return as_db.list_target_flows(db_path, binding_id=binding_id)
 
 
 def _mutation_summary_for_case(

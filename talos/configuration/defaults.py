@@ -85,6 +85,13 @@ BUILTIN_DEFAULTS: dict = {
         },
         "score_threshold": 45,  # possible_network_resource / inventory gate
     },
+    # Burp Suite metadata headers on outbound attack requests.
+    # Headers are only attached when this is on AND an upstream proxy is set,
+    # so Direct-mode traffic never leaks X-Talos-* to the target.
+    "burp": {
+        "enabled": True,
+        "header_prefix": "X-Talos",
+    },
 }
 
 # Top-level sections exposed as first-class CLI resources.
@@ -96,6 +103,7 @@ CONFIG_SECTIONS: tuple[str, ...] = (
     "http",
     "parameter_intel",
     "url_sink",
+    "burp",
 )
 
 # Dot-path keys that operators commonly get/set (for help and validation).
@@ -126,6 +134,8 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "url_sink.html_js.enabled",
     "url_sink.iv_probes.enabled",
     "url_sink.score_threshold",
+    "burp.enabled",
+    "burp.header_prefix",
 )
 
 # Machine-readable presentation + type metadata for Control Panel / automation.
@@ -167,6 +177,14 @@ SECTION_META: dict[str, dict] = {
         "description": (
             "Passive URL/hostname inventory (talos.url_sink) and optional IV "
             "benign canary probes (url_sink_probes). Kill-switches and score gate."
+        ),
+    },
+    "burp": {
+        "label": "Burp Suite",
+        "description": (
+            "Metadata headers on outbound attack requests so the Talos Burp "
+            "extension can group traffic (Input Validation → Endpoints → …). "
+            "Headers attach only when enabled and an upstream proxy is set."
         ),
     },
 }
@@ -433,6 +451,31 @@ SETTING_SCHEMA: tuple[dict, ...] = (
         "description": (
             "Minimum url_features.score for possible_network_resource inventory "
             "gates and IV canary warrant (default 45)."
+        ),
+    },
+    {
+        "key": "burp.enabled",
+        "section": "burp",
+        "label": "Burp metadata headers",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When true, outbound Input Validation probes (and later engines) "
+            "carry X-Talos-* grouping headers for the Talos Burp extension. "
+            "Headers are skipped in Direct mode (no upstream proxy) so they "
+            "never reach the target without Burp in the path."
+        ),
+    },
+    {
+        "key": "burp.header_prefix",
+        "section": "burp",
+        "label": "Header prefix",
+        "type": "string",
+        "default": "X-Talos",
+        "description": (
+            "HTTP header name prefix. Default X-Talos produces X-Talos-Engine, "
+            "X-Talos-Group, X-Talos-Endpoint, and related metadata headers. "
+            "The Burp extension must use the same prefix."
         ),
     },
 )

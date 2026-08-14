@@ -6,9 +6,7 @@ import { ConfirmButton, Section } from "../../../components/Common";
 import type { StepsResponse } from "../../../types";
 import {
   CONFIRM_ESTIMATE_THRESHOLD,
-  KNOWN_FAMILIES,
   RIGHT_NOW_MAX,
-  inputClass,
   selectClass,
   type AuthSessionBinding,
   type AuthSessionOverview,
@@ -25,11 +23,8 @@ export default function RunTab({
   onRefresh: () => void;
 }) {
   const [bindings, setBindings] = useState<AuthSessionBinding[]>([]);
-  const [endpointId, setEndpointId] = useState("");
   const [bindingId, setBindingId] = useState("");
-  const [family, setFamily] = useState("");
-  const [testId, setTestId] = useState("");
-  const [candidateIds, setCandidateIds] = useState("");
+  const [customJwt, setCustomJwt] = useState("");
   const [rightNow, setRightNow] = useState(false);
   const [estimate, setEstimate] = useState<number | null>(null);
   const [estimateLoading, setEstimateLoading] = useState(false);
@@ -44,35 +39,21 @@ export default function RunTab({
       .catch(() => setBindings([]));
   }, [projectId]);
 
-  const parseCandidateIds = useCallback(() => {
-    return candidateIds
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }, [candidateIds]);
-
   const loadEstimate = useCallback(() => {
     setEstimateLoading(true);
     const params: Record<string, string | undefined> = {
       project_id: projectId,
     };
-    if (endpointId.trim()) params.endpoint_id = endpointId.trim();
     if (bindingId) params.binding_id = bindingId;
-    if (family) params.family = family;
-    if (testId.trim()) params.test_id = testId.trim();
-    const cids = parseCandidateIds();
-    // API accepts repeated candidate; send comma-joined (backend parses CSV)
-    if (cids.length) params.candidate = cids.join(",");
-
     api
-      .get<{ approved_matching: number }>(
+      .get<{ approved_matching: number; runnable_matching?: number }>(
         "/api/attack/auth-session/run-estimate",
         params
       )
-      .then((r) => setEstimate(r.approved_matching ?? 0))
+      .then((r) => setEstimate(r.runnable_matching ?? r.approved_matching ?? 0))
       .catch(() => setEstimate(null))
       .finally(() => setEstimateLoading(false));
-  }, [projectId, endpointId, bindingId, family, testId, parseCandidateIds]);
+  }, [projectId, bindingId]);
 
   useEffect(() => {
     loadEstimate();
@@ -80,21 +61,21 @@ export default function RunTab({
 
   const jobsInFlight =
     (overview?.jobs_pending ?? 0) + (overview?.jobs_running ?? 0) > 0;
-  const e = estimate ?? overview?.estimated_jobs_approved ?? 0;
+  const e =
+    estimate ??
+    overview?.estimated_jobs ??
+    overview?.estimated_jobs_approved ??
+    0;
   const rightNowDisabled = rightNow && e > RIGHT_NOW_MAX;
   const needsConfirm = e > CONFIRM_ESTIMATE_THRESHOLD || rightNow;
+  const jwtTrimmed = customJwt.trim();
 
   const run = useAction("Run auth-session attack", () =>
     api.post(
       "/api/attack/auth-session/run",
       {
-        endpoint_id: endpointId.trim() || undefined,
         binding_id: bindingId || undefined,
-        families: family ? [family] : undefined,
-        test_ids: testId.trim() ? [testId.trim()] : undefined,
-        candidate_ids: parseCandidateIds().length
-          ? parseCandidateIds()
-          : undefined,
+        jwt: jwtTrimmed || undefined,
         right_now: rightNow,
       },
       { project_id: projectId }
@@ -103,16 +84,11 @@ export default function RunTab({
 
   const cliPreview = useMemo(() => {
     const parts = ["talos attack auth-session run"];
-    for (const id of parseCandidateIds()) {
-      parts.push(`--candidate ${id}`);
-    }
-    if (endpointId.trim()) parts.push(`--endpoint ${endpointId.trim()}`);
-    if (testId.trim()) parts.push(`--test-id ${testId.trim()}`);
-    if (family) parts.push(`--family ${family}`);
     if (bindingId) parts.push(`--binding ${bindingId}`);
+    if (jwtTrimmed) parts.push("--jwt <custom>");
     if (rightNow) parts.push("--right-now");
     return parts.join(" ");
-  }, [endpointId, bindingId, family, testId, rightNow, parseCandidateIds]);
+  }, [bindingId, jwtTrimmed, rightNow]);
 
   const doRun = async () => {
     try {
@@ -136,10 +112,10 @@ export default function RunTab({
 
       <div className="alert text-xs py-2 bg-base-200 border border-base-300">
         <span>
-          <strong>Only approved candidates enqueue.</strong> Pending must be
-          approved on the Candidates tab first. Each approved test is one{" "}
-          <span className="mono">auth_session_attack</span> job and one outbound
-          HTTP request.
+          Tests the selected target flows with the{" "}
+          <strong>latest captured JWT</strong> for the bound field, unless you
+          paste a custom token below. First WEAK_VALIDATION finding is primary;
+          later JWT findings are linked under it.
         </span>
       </div>
 
@@ -156,82 +132,46 @@ export default function RunTab({
         </div>
       )}
 
-      <Section title="Scope filters">
+      <Section title="Token">
         <div className="panel p-4 space-y-3">
           <p className="text-xs text-base-content/60">
-            Filters narrow which <strong>approved</strong> candidates run.
-            Leave empty to run all approved in the project.
+            Leave empty to use whatever JWT was captured most recently. Paste a
+            compact JWT (or <span className="mono">Bearer …</span>) to test that
+            token on every selected flow.
           </p>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="form-control">
-              <span className="label-text text-xs">Binding</span>
-              <select
-                className={selectClass}
-                value={bindingId}
-                onChange={(e) => setBindingId(e.target.value)}
-              >
-                <option value="">All</option>
-                {bindings.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.location}:{b.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-control">
-              <span className="label-text text-xs">Family</span>
-              <select
-                className={selectClass}
-                value={family}
-                onChange={(e) => setFamily(e.target.value)}
-              >
-                <option value="">All</option>
-                {KNOWN_FAMILIES.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-control min-w-[10rem]">
-              <span className="label-text text-xs">Endpoint UUID</span>
-              <input
-                className={`${inputClass} mono`}
-                value={endpointId}
-                onChange={(e) => setEndpointId(e.target.value)}
-                placeholder="optional"
-              />
-            </label>
-            <label className="form-control min-w-[8rem]">
-              <span className="label-text text-xs">test_id</span>
-              <input
-                className={`${inputClass} mono`}
-                value={testId}
-                onChange={(e) => setTestId(e.target.value)}
-                placeholder="optional"
-              />
-            </label>
-            <label className="form-control min-w-[14rem] flex-1">
-              <span className="label-text text-xs">
-                Candidate UUIDs (space/comma separated)
-              </span>
-              <input
-                className={`${inputClass} mono w-full`}
-                value={candidateIds}
-                onChange={(e) => setCandidateIds(e.target.value)}
-                placeholder="optional subset"
-              />
-            </label>
-          </div>
+          <textarea
+            className="textarea textarea-bordered textarea-xs w-full font-mono"
+            rows={3}
+            value={customJwt}
+            onChange={(e) => setCustomJwt(e.target.value)}
+            placeholder="optional custom JWT"
+          />
         </div>
       </Section>
 
-      <Section title="Enqueue / right-now">
+      <Section title="Run">
         <div className="panel p-4 space-y-3">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-end gap-3">
+            {bindings.length > 1 && (
+              <label className="form-control">
+                <span className="label-text text-xs">Binding</span>
+                <select
+                  className={selectClass}
+                  value={bindingId}
+                  onChange={(e) => setBindingId(e.target.value)}
+                >
+                  <option value="">All</option>
+                  {bindings.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.location}:{b.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="text-sm">
               <span className="text-base-content/50 text-xs block mb-0.5">
-                Approved matching scope
+                Tests ready
               </span>
               <span className="font-semibold tabular-nums text-lg">
                 {estimateLoading ? "…" : e}
@@ -252,24 +192,21 @@ export default function RunTab({
                 onChange={(e) => setRightNow(e.target.checked)}
               />
               <span className="label-text text-xs">
-                Right now (bypass scheduler; sequential HTTP)
+                Right now (bypass scheduler)
               </span>
             </label>
           </div>
 
           {rightNow && (
             <div className="alert alert-warning text-xs py-2">
-              <span>
-                <strong>Elevated outbound risk.</strong> Right-now executes
-                immediately in-process. Max {RIGHT_NOW_MAX} approved in scope —
-                larger batches must enqueue without right-now.
-              </span>
+              Right-now executes immediately in-process. Max {RIGHT_NOW_MAX}{" "}
+              tests — larger batches must enqueue.
             </div>
           )}
 
           {rightNowDisabled && (
             <div className="alert alert-error text-xs py-2">
-              Right-now refused: {e} approved (limit {RIGHT_NOW_MAX}). Uncheck
+              Right-now refused: {e} tests (limit {RIGHT_NOW_MAX}). Uncheck
               right-now to enqueue via the scheduler.
             </div>
           )}
@@ -284,8 +221,8 @@ export default function RunTab({
                 className="btn btn-sm btn-primary"
                 confirmText={
                   rightNow
-                    ? `Execute ${e} approved candidate(s) right now against the live target?`
-                    : `Enqueue ~${e} auth-session job(s)?`
+                    ? `Execute ${e} JWT test(s) right now against the live target?`
+                    : `Enqueue ~${e} JWT test(s)?`
                 }
                 onConfirm={doRun}
               >
@@ -294,7 +231,7 @@ export default function RunTab({
                 ) : rightNow ? (
                   "Run right now"
                 ) : (
-                  "Enqueue attack"
+                  "Run JWT tests"
                 )}
               </ConfirmButton>
             ) : (
@@ -309,7 +246,7 @@ export default function RunTab({
                 ) : rightNow ? (
                   "Run right now"
                 ) : (
-                  "Enqueue attack"
+                  "Run JWT tests"
                 )}
               </button>
             )}
@@ -326,14 +263,9 @@ export default function RunTab({
               to="/testing/auth-session?tab=candidates"
               className="btn btn-sm btn-ghost"
             >
-              Candidates
+              Target flows
             </Link>
           </div>
-
-          <p className="text-xs text-base-content/50">
-            Default enqueue is usually quick; execution happens on the
-            scheduler. Results appear under the Results tab as jobs complete.
-          </p>
         </div>
       </Section>
 
@@ -342,12 +274,6 @@ export default function RunTab({
           <pre className="panel p-3 text-xs mono whitespace-pre-wrap max-h-64 overflow-auto">
             {lastStdout}
           </pre>
-          <p className="text-xs text-base-content/50 mt-2">
-            Full steps also appear in the Console drawer.{" "}
-            <Link className="link" to="/scheduler">
-              Monitor jobs →
-            </Link>
-          </p>
         </Section>
       )}
     </div>
