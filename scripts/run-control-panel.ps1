@@ -33,7 +33,30 @@ if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DefaultTalosRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 
-if (-not $env:TALOS_ROOT) { $env:TALOS_ROOT = $DefaultTalosRoot }
+function Test-TalosRepoRoot {
+    param([string]$Candidate)
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
+    return Test-Path -LiteralPath (Join-Path $Candidate "pyproject.toml")
+}
+
+# Honor TALOS_ROOT only when it actually looks like this repo. A leftover
+# User/System env var (common after a GitHub zip extract named talos-main)
+# used to win over the clone that contains this script.
+$envTalosRoot = $env:TALOS_ROOT
+if (Test-TalosRepoRoot $envTalosRoot) {
+    $env:TALOS_ROOT = $envTalosRoot
+} elseif (Test-TalosRepoRoot $DefaultTalosRoot) {
+    if ($envTalosRoot) {
+        Write-Host "[warn] TALOS_ROOT=$envTalosRoot is not a Talos repo (missing pyproject.toml)."
+        Write-Host "[warn] Ignoring stale TALOS_ROOT and using $DefaultTalosRoot"
+    }
+    $env:TALOS_ROOT = $DefaultTalosRoot
+} elseif ($envTalosRoot) {
+    $env:TALOS_ROOT = $envTalosRoot
+} else {
+    $env:TALOS_ROOT = $DefaultTalosRoot
+}
+
 if (-not $env:CP_ROOT) { $env:CP_ROOT = Join-Path $env:TALOS_ROOT "talos-control-panel" }
 if (-not $env:CP_BACKEND_PORT) { $env:CP_BACKEND_PORT = "8420" }
 if (-not $env:CP_FRONTEND_PORT) { $env:CP_FRONTEND_PORT = "5173" }
@@ -319,7 +342,7 @@ function Test-CommandExists {
 
 function Invoke-Setup {
     if (-not (Test-Path (Join-Path $TalosRoot "pyproject.toml"))) {
-        throw "TALOS_ROOT does not look like the Talos repo: $TalosRoot (expected pyproject.toml)"
+        throw "TALOS_ROOT does not look like the Talos repo: $TalosRoot (expected pyproject.toml). Unset TALOS_ROOT if a stale User/System env var is pointing at an old extract (often ...\talos-main), or set it to the clone that contains this script."
     }
     if (-not (Test-Path $CpBackendDir)) {
         throw "Control panel backend not found: $CpBackendDir"

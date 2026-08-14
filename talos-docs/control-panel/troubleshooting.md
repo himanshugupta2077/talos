@@ -12,6 +12,13 @@ Launcher cannot find `pyproject.toml` at `TALOS_ROOT`.
 
 - Run from the monorepo or set `TALOS_ROOT` to the clone root
 - Ensure you are not pointing at `talos-control-panel/` alone
+- A leftover `TALOS_ROOT` env var overrides auto-detect. GitHub zip extracts are often named `talos-main`; if you later cloned into another folder, unset the stale value:
+
+  PowerShell (this session): `Remove-Item Env:TALOS_ROOT`
+  PowerShell (User env): `[Environment]::SetEnvironmentVariable("TALOS_ROOT", $null, "User")`
+  bash: `unset TALOS_ROOT`
+
+  Current launchers ignore a stale `TALOS_ROOT` when the script's own repo root has `pyproject.toml`.
 
 ### `Control panel not found under CP_ROOT`
 

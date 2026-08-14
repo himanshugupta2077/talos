@@ -23,7 +23,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scripts/ lives at <repo>/scripts → repo root is parent
 DEFAULT_TALOS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TALOS_ROOT="${TALOS_ROOT:-$DEFAULT_TALOS_ROOT}"
+
+_is_talos_repo_root() {
+    [[ -n "${1:-}" && -f "$1/pyproject.toml" ]]
+}
+
+# Honor TALOS_ROOT only when it actually looks like this repo. A leftover
+# env var (common after a GitHub zip extract named talos-main) used to win
+# over the clone that contains this script.
+_ENV_TALOS_ROOT="${TALOS_ROOT:-}"
+if _is_talos_repo_root "$_ENV_TALOS_ROOT"; then
+    TALOS_ROOT="$_ENV_TALOS_ROOT"
+elif _is_talos_repo_root "$DEFAULT_TALOS_ROOT"; then
+    if [[ -n "$_ENV_TALOS_ROOT" ]]; then
+        echo "[warn] TALOS_ROOT=$_ENV_TALOS_ROOT is not a Talos repo (missing pyproject.toml)."
+        echo "[warn] Ignoring stale TALOS_ROOT and using $DEFAULT_TALOS_ROOT"
+    fi
+    TALOS_ROOT="$DEFAULT_TALOS_ROOT"
+elif [[ -n "$_ENV_TALOS_ROOT" ]]; then
+    TALOS_ROOT="$_ENV_TALOS_ROOT"
+else
+    TALOS_ROOT="$DEFAULT_TALOS_ROOT"
+fi
+
 CP_ROOT="${CP_ROOT:-$TALOS_ROOT/talos-control-panel}"
 
 : "${CP_BACKEND_PORT:=8420}"
@@ -43,6 +65,8 @@ PID_FILE="$CP_ROOT/.frontend.pid"
 if [[ ! -f "$TALOS_ROOT/pyproject.toml" ]]; then
     echo "[error] TALOS_ROOT does not look like the Talos repo: $TALOS_ROOT"
     echo "        Expected pyproject.toml at that path."
+    echo "        Unset TALOS_ROOT if a stale env var points at an old extract"
+    echo "        (often .../talos-main), or set it to the clone that contains this script."
     exit 1
 fi
 if [[ ! -d "$CP_BACKEND_DIR" || ! -d "$CP_FRONTEND_DIR" ]]; then

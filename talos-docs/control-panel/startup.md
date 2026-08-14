@@ -90,7 +90,8 @@ sequenceDiagram
 
 #### 1. Path resolution
 
-- `TALOS_ROOT` defaults to the repository root containing `pyproject.toml`
+- `TALOS_ROOT` defaults to the repository root containing `pyproject.toml` (parent of `scripts/`)
+- A set `TALOS_ROOT` is used only if that path has `pyproject.toml`; otherwise the launcher falls back to the script's repo root and warns
 - `CP_ROOT` defaults to `talos-control-panel/` under that root
 - Errors if layout is wrong
 
