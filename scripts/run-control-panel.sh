@@ -28,6 +28,17 @@ _is_talos_repo_root() {
     [[ -n "${1:-}" && -f "$1/pyproject.toml" ]]
 }
 
+_is_cp_root() {
+    [[ -n "${1:-}" && -d "$1/backend" && -d "$1/frontend" ]]
+}
+
+_is_under_path() {
+    local child="${1:-}"
+    local parent="${2:-}"
+    [[ -n "$child" && -n "$parent" ]] || return 1
+    [[ "$child" == "$parent" || "$child" == "$parent"/* ]]
+}
+
 # Honor TALOS_ROOT only when it actually looks like this repo. A leftover
 # env var (common after a GitHub zip extract named talos-main) used to win
 # over the clone that contains this script.
@@ -46,7 +57,25 @@ else
     TALOS_ROOT="$DEFAULT_TALOS_ROOT"
 fi
 
-CP_ROOT="${CP_ROOT:-$TALOS_ROOT/talos-control-panel}"
+DEFAULT_CP_ROOT="$TALOS_ROOT/talos-control-panel"
+_ENV_CP_ROOT="${CP_ROOT:-}"
+_REMAPPED_TALOS_ROOT=0
+if [[ -n "$_ENV_TALOS_ROOT" && "$TALOS_ROOT" != "$_ENV_TALOS_ROOT" ]]; then
+    _REMAPPED_TALOS_ROOT=1
+fi
+if _is_cp_root "$_ENV_CP_ROOT" && ! { [[ "$_REMAPPED_TALOS_ROOT" -eq 1 ]] && _is_under_path "$_ENV_CP_ROOT" "$_ENV_TALOS_ROOT" && _is_cp_root "$DEFAULT_CP_ROOT"; }; then
+    CP_ROOT="$_ENV_CP_ROOT"
+elif _is_cp_root "$DEFAULT_CP_ROOT"; then
+    if [[ -n "$_ENV_CP_ROOT" ]]; then
+        echo "[warn] CP_ROOT=$_ENV_CP_ROOT is not a Control Panel tree (missing backend/ or frontend/), or it sits under a stale TALOS_ROOT."
+        echo "[warn] Ignoring stale CP_ROOT and using $DEFAULT_CP_ROOT"
+    fi
+    CP_ROOT="$DEFAULT_CP_ROOT"
+elif [[ -n "$_ENV_CP_ROOT" ]]; then
+    CP_ROOT="$_ENV_CP_ROOT"
+else
+    CP_ROOT="$DEFAULT_CP_ROOT"
+fi
 
 : "${CP_BACKEND_PORT:=8420}"
 : "${CP_FRONTEND_PORT:=5173}"
@@ -54,7 +83,16 @@ CP_ROOT="${CP_ROOT:-$TALOS_ROOT/talos-control-panel}"
 # Long budget for large IV/attack enqueue and slow hosts (override via env).
 : "${TALOS_CP_CLI_TIMEOUT:=600}"
 export TALOS_CP_CLI_TIMEOUT
-TALOS_VENV="${TALOS_VENV:-$TALOS_ROOT/.venv}"
+
+DEFAULT_TALOS_VENV="$TALOS_ROOT/.venv"
+_ENV_TALOS_VENV="${TALOS_VENV:-}"
+if [[ "$_REMAPPED_TALOS_ROOT" -eq 1 && -n "$_ENV_TALOS_VENV" ]] && _is_under_path "$_ENV_TALOS_VENV" "$_ENV_TALOS_ROOT"; then
+    echo "[warn] TALOS_VENV=$_ENV_TALOS_VENV is under stale TALOS_ROOT."
+    echo "[warn] Ignoring stale TALOS_VENV and using $DEFAULT_TALOS_VENV"
+    TALOS_VENV="$DEFAULT_TALOS_VENV"
+else
+    TALOS_VENV="${TALOS_VENV:-$DEFAULT_TALOS_VENV}"
+fi
 
 CP_BACKEND_DIR="$CP_ROOT/backend"
 CP_FRONTEND_DIR="$CP_ROOT/frontend"
@@ -72,6 +110,8 @@ fi
 if [[ ! -d "$CP_BACKEND_DIR" || ! -d "$CP_FRONTEND_DIR" ]]; then
     echo "[error] Control panel not found under: $CP_ROOT"
     echo "        Expected backend/ and frontend/ directories."
+    echo "        Unset CP_ROOT if a stale env var points at an old extract"
+    echo "        (often .../talos-main/talos-control-panel)."
     exit 1
 fi
 

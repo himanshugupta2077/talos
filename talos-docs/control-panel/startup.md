@@ -92,7 +92,8 @@ sequenceDiagram
 
 - `TALOS_ROOT` defaults to the repository root containing `pyproject.toml` (parent of `scripts/`)
 - A set `TALOS_ROOT` is used only if that path has `pyproject.toml`; otherwise the launcher falls back to the script's repo root and warns
-- `CP_ROOT` defaults to `talos-control-panel/` under that root
+- `CP_ROOT` defaults to `talos-control-panel/` under that root; a set `CP_ROOT` is used only if it has `backend/` and `frontend/`, and is remapped when it still sits under a discarded `TALOS_ROOT`
+- `TALOS_VENV` under a discarded `TALOS_ROOT` is remapped to `$TALOS_ROOT/.venv`
 - Errors if layout is wrong
 
 #### 2. Prerequisite binaries

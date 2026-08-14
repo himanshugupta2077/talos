@@ -39,6 +39,27 @@ function Test-TalosRepoRoot {
     return Test-Path -LiteralPath (Join-Path $Candidate "pyproject.toml")
 }
 
+function Test-ControlPanelRoot {
+    param([string]$Candidate)
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
+    return (Test-Path -LiteralPath (Join-Path $Candidate "backend")) -and
+           (Test-Path -LiteralPath (Join-Path $Candidate "frontend"))
+}
+
+function Test-IsUnderPath {
+    param([string]$Child, [string]$Parent)
+    if ([string]::IsNullOrWhiteSpace($Child) -or [string]::IsNullOrWhiteSpace($Parent)) { return $false }
+    try {
+        $childFull = [System.IO.Path]::GetFullPath($Child).TrimEnd('\', '/')
+        $parentFull = [System.IO.Path]::GetFullPath($Parent).TrimEnd('\', '/')
+    } catch {
+        return $false
+    }
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    return $childFull.Equals($parentFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+           $childFull.StartsWith(($parentFull + $sep), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 # Honor TALOS_ROOT only when it actually looks like this repo. A leftover
 # User/System env var (common after a GitHub zip extract named talos-main)
 # used to win over the clone that contains this script.
@@ -57,11 +78,36 @@ if (Test-TalosRepoRoot $envTalosRoot) {
     $env:TALOS_ROOT = $DefaultTalosRoot
 }
 
-if (-not $env:CP_ROOT) { $env:CP_ROOT = Join-Path $env:TALOS_ROOT "talos-control-panel" }
+$defaultCpRoot = Join-Path $env:TALOS_ROOT "talos-control-panel"
+$envCpRoot = $env:CP_ROOT
+$remappedTalosRoot = $envTalosRoot -and ($env:TALOS_ROOT -ne $envTalosRoot)
+if ((Test-ControlPanelRoot $envCpRoot) -and -not ($remappedTalosRoot -and (Test-IsUnderPath $envCpRoot $envTalosRoot) -and (Test-ControlPanelRoot $defaultCpRoot))) {
+    $env:CP_ROOT = $envCpRoot
+} elseif (Test-ControlPanelRoot $defaultCpRoot) {
+    if ($envCpRoot) {
+        Write-Host "[warn] CP_ROOT=$envCpRoot is not a Control Panel tree (missing backend/ or frontend/), or it sits under a stale TALOS_ROOT."
+        Write-Host "[warn] Ignoring stale CP_ROOT and using $defaultCpRoot"
+    }
+    $env:CP_ROOT = $defaultCpRoot
+} elseif ($envCpRoot) {
+    $env:CP_ROOT = $envCpRoot
+} else {
+    $env:CP_ROOT = $defaultCpRoot
+}
+
 if (-not $env:CP_BACKEND_PORT) { $env:CP_BACKEND_PORT = "8420" }
 if (-not $env:CP_FRONTEND_PORT) { $env:CP_FRONTEND_PORT = "5173" }
 if (-not $env:TALOS_HOME) { $env:TALOS_HOME = Join-Path $env:USERPROFILE ".talos" }
-if (-not $env:TALOS_VENV) { $env:TALOS_VENV = Join-Path $env:TALOS_ROOT ".venv" }
+
+$defaultTalosVenv = Join-Path $env:TALOS_ROOT ".venv"
+$envTalosVenv = $env:TALOS_VENV
+if ($remappedTalosRoot -and $envTalosVenv -and (Test-IsUnderPath $envTalosVenv $envTalosRoot)) {
+    Write-Host "[warn] TALOS_VENV=$envTalosVenv is under stale TALOS_ROOT."
+    Write-Host "[warn] Ignoring stale TALOS_VENV and using $defaultTalosVenv"
+    $env:TALOS_VENV = $defaultTalosVenv
+} elseif (-not $env:TALOS_VENV) {
+    $env:TALOS_VENV = $defaultTalosVenv
+}
 # Slow Windows/VDI: CLI cold-start + large IV/attack enqueue need a long budget.
 if (-not $env:TALOS_CP_CLI_TIMEOUT) { $env:TALOS_CP_CLI_TIMEOUT = "600" }
 
@@ -345,10 +391,10 @@ function Invoke-Setup {
         throw "TALOS_ROOT does not look like the Talos repo: $TalosRoot (expected pyproject.toml). Unset TALOS_ROOT if a stale User/System env var is pointing at an old extract (often ...\talos-main), or set it to the clone that contains this script."
     }
     if (-not (Test-Path $CpBackendDir)) {
-        throw "Control panel backend not found: $CpBackendDir"
+        throw "Control panel backend not found: $CpBackendDir. Unset CP_ROOT if a stale User/System env var is pointing at an old extract (often ...\talos-main\talos-control-panel)."
     }
     if (-not (Test-Path $CpFrontendDir)) {
-        throw "Control panel frontend not found: $CpFrontendDir"
+        throw "Control panel frontend not found: $CpFrontendDir. Unset CP_ROOT if a stale User/System env var is pointing at an old extract."
     }
 
     foreach ($bin in @("python", "node", "npm")) {

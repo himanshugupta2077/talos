@@ -26,6 +26,11 @@ Missing `backend/` or `frontend/` under `CP_ROOT`.
 
 - Default is `$TALOS_ROOT/talos-control-panel`
 - Override `CP_ROOT` only if the tree was relocated
+- A leftover `CP_ROOT` (often `...\talos-main\talos-control-panel` next to a remapped `TALOS_ROOT`) is ignored when `$TALOS_ROOT/talos-control-panel` is valid. Unset it the same way as `TALOS_ROOT`:
+
+  PowerShell (this session): `Remove-Item Env:CP_ROOT`
+  PowerShell (User env): `[Environment]::SetEnvironmentVariable("CP_ROOT", $null, "User")`
+  bash: `unset CP_ROOT`
 
 ### `python3` / `python` / `node` / `npm` not found
 
