@@ -123,7 +123,15 @@ def _proxy_summary(values: dict[str, Any]) -> str:
     auth_on = bool(values.get("proxy.platform_auth.enabled", False))
     entries = values.get("proxy.platform_auth.entries") or []
     auth_n = len(entries) if isinstance(entries, list) else 0
-    auth = f"NTLM ×{auth_n}" if auth_on and auth_n else "no platform auth"
+    enabled_n = 0
+    if isinstance(entries, list):
+        enabled_n = sum(
+            1 for row in entries if isinstance(row, dict) and row.get("enabled", True)
+        )
+    if auth_on and auth_n:
+        auth = f"NTLM {enabled_n}/{auth_n}"
+    else:
+        auth = "no platform auth"
     return f"{mode} · {proto} · {auth}"
 
 

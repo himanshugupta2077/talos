@@ -66,7 +66,10 @@ def client_kwargs(
         "http2": False,
         "limits": limits,
     }
-    if settings.platform_auth_enabled and settings.platform_auth_entries:
+    if settings.platform_auth_enabled and any(
+        row.enabled and row.username and row.password
+        for row in settings.platform_auth_entries
+    ):
         kwargs["auth"] = HttpxPlatformAuth(
             settings.platform_auth_entries,
             enabled=True,

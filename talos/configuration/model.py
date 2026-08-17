@@ -49,7 +49,9 @@ class SourceInfo:
 class PlatformAuthEntry:
     """
     Purpose:
-        One Burp-style platform-authentication row for an origin host.
+        One named platform-authentication profile for an origin host.
+        Multiple profiles may share a host; only enabled rows participate
+        in matching (first enabled host match wins).
     Fields:
         host             — destination host this entry applies to (exact or *.suffix).
         auth_type        — ntlmv2 | ntlm | negotiate (credential family).
@@ -59,6 +61,9 @@ class PlatformAuthEntry:
         domain_hostname  — NTLM workstation / target hostname (Burp "Domain Hostname").
         spnego           — wrap tokens in SPNEGO (Burp "SPNEGO Encoding").
         negotiate        — use the Negotiate auth scheme (Burp "Negotiate Auth Scheme").
+        id               — stable slug used to edit / enable / disable / remove.
+        name             — operator label; defaults to host when empty.
+        enabled          — per-profile switch; ignored when the master switch is off.
     """
 
     host: str
@@ -69,6 +74,13 @@ class PlatformAuthEntry:
     domain_hostname: str = ""
     spnego: bool = False
     negotiate: bool = False
+    id: str = ""
+    name: str = ""
+    enabled: bool = True
+
+    def display_name(self) -> str:
+        """Operator-facing label."""
+        return self.name or self.host
 
     def to_public_dict(self) -> dict[str, Any]:
         """
@@ -77,6 +89,9 @@ class PlatformAuthEntry:
         Side effects: None.
         """
         return {
+            "id": self.id,
+            "name": self.display_name(),
+            "enabled": bool(self.enabled),
             "host": self.host,
             "auth_type": self.auth_type,
             "username": self.username,
@@ -95,7 +110,7 @@ class PlatformAuthSection:
         Effective origin platform-authentication settings.
     Fields:
         enabled — master switch; when false no handshake or Negotiate strip runs.
-        entries — host-scoped credential rows.
+        entries — named profiles (id, name, enabled, host, credentials).
     """
 
     enabled: bool = False

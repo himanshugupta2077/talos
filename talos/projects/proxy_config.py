@@ -27,7 +27,7 @@ Side effects:
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -237,7 +237,7 @@ class ProxyTransport:
         http2                   — False forces HTTP/1.1.
         keep_alive              — reuse origin connections.
         platform_auth_enabled   — master switch for NTLM handshake / strip.
-        platform_auth_entries   — host-scoped credential rows.
+        platform_auth_entries   — named profiles (disabled rows are stored but unused).
     """
 
     upstream_url: Optional[str]
@@ -308,48 +308,196 @@ def set_platform_auth_enabled(db_path: Path, enabled: bool) -> None:
 
 
 def replace_platform_auth_entries(
-    db_path: Path, entries: list[PlatformAuthEntry]
+    db_path: Path,
+    entries: list[PlatformAuthEntry],
+    *,
+    touch_master: bool = True,
 ) -> None:
     """
     Purpose:
-        Replace the full platform-auth entry list and enable the feature
-        when at least one row remains.
+        Replace the full platform-auth profile list. When ``touch_master``
+        is true, turn the master switch on if any profiles remain and off
+        when the list is empty.
     Side effects: Writes project.yaml.
     """
     serialized = [_entry_to_storage(entry) for entry in entries]
     _set_project_yaml(db_path, "proxy.platform_auth.entries", serialized)
-    _set_project_yaml(
-        db_path, "proxy.platform_auth.enabled", bool(serialized)
-    )
+    if touch_master:
+        _set_project_yaml(
+            db_path, "proxy.platform_auth.enabled", bool(serialized)
+        )
 
 
 def add_platform_auth_entry(db_path: Path, entry: PlatformAuthEntry) -> PlatformAuthEntry:
     """
     Purpose:
-        Insert or replace the row for entry.host (case-insensitive).
+        Insert a new profile. Same host as an existing row is allowed.
+        If ``entry.id`` already exists, that profile is replaced (upsert).
     Output:
-        The stored entry.
-    Side effects: Writes project.yaml.
+        The stored entry (id assigned when missing).
+    Side effects: Writes project.yaml; enables the master switch.
     """
+    from talos.configuration.manager import slugify_profile_id, uniquify_profile_id
+
     current = list(load_proxy_transport(db_path).platform_auth_entries)
-    host_key = entry.host.lower()
-    next_entries = [row for row in current if row.host.lower() != host_key]
-    next_entries.append(entry)
-    replace_platform_auth_entries(db_path, next_entries)
-    return entry
+    taken = {row.id for row in current if row.id}
+    if entry.id and entry.id in taken:
+        stored = replace(
+            entry,
+            name=entry.name or entry.host,
+            enabled=bool(entry.enabled),
+        )
+        next_entries = [stored if row.id == entry.id else row for row in current]
+        replace_platform_auth_entries(db_path, next_entries)
+        return stored
+    profile_id = uniquify_profile_id(
+        entry.id or slugify_profile_id(entry.name or entry.host),
+        taken,
+    )
+    stored = replace(
+        entry,
+        id=profile_id,
+        name=entry.name or entry.host,
+        enabled=True if entry.enabled is None else bool(entry.enabled),
+    )
+    replace_platform_auth_entries(db_path, current + [stored])
+    return stored
 
 
-def remove_platform_auth_entry(db_path: Path, host: str) -> bool:
+def get_platform_auth_entry(db_path: Path, key: str) -> Optional[PlatformAuthEntry]:
     """
     Purpose:
-        Remove the row whose host matches (case-insensitive).
+        Resolve a profile by id, or by host when that host is unique.
+    Output:
+        Matching entry, or None when missing / host is ambiguous.
+    Side effects: None.
+    """
+    needle = (key or "").strip()
+    if not needle:
+        return None
+    rows = list(load_proxy_transport(db_path).platform_auth_entries)
+    for row in rows:
+        if row.id == needle:
+            return row
+    host_key = needle.lower()
+    host_hits = [row for row in rows if row.host.lower() == host_key]
+    if len(host_hits) == 1:
+        return host_hits[0]
+    return None
+
+
+def update_platform_auth_entry(
+    db_path: Path,
+    key: str,
+    *,
+    name: Optional[str] = None,
+    host: Optional[str] = None,
+    auth_type: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    domain: Optional[str] = None,
+    domain_hostname: Optional[str] = None,
+    spnego: Optional[bool] = None,
+    negotiate: Optional[bool] = None,
+    enabled: Optional[bool] = None,
+) -> Optional[PlatformAuthEntry]:
+    """
+    Purpose:
+        Patch one profile by id (or unique host). Empty password keeps
+        the stored secret.
+    Output:
+        Updated entry, or None when the key does not resolve.
+    Side effects: Writes project.yaml when a row is found.
+    """
+    current = list(load_proxy_transport(db_path).platform_auth_entries)
+    existing = get_platform_auth_entry(db_path, key)
+    if existing is None:
+        return None
+    stored = replace(
+        existing,
+        name=existing.name if name is None else (name.strip() or existing.host),
+        host=existing.host if host is None else host.strip(),
+        auth_type=existing.auth_type if auth_type is None else auth_type,
+        username=existing.username if username is None else username.strip(),
+        password=existing.password if password in (None, "") else password,
+        domain=existing.domain if domain is None else domain.strip(),
+        domain_hostname=(
+            existing.domain_hostname
+            if domain_hostname is None
+            else domain_hostname.strip()
+        ),
+        spnego=existing.spnego if spnego is None else bool(spnego),
+        negotiate=existing.negotiate if negotiate is None else bool(negotiate),
+        enabled=existing.enabled if enabled is None else bool(enabled),
+    )
+    if not stored.host:
+        raise ValueError("platform-auth profile requires host")
+    next_entries = [stored if row.id == existing.id else row for row in current]
+    replace_platform_auth_entries(db_path, next_entries, touch_master=False)
+    return stored
+
+
+def set_platform_auth_entry_enabled(
+    db_path: Path, key: str, enabled: bool
+) -> Optional[PlatformAuthEntry]:
+    """
+    Purpose:
+        Enable or disable one profile without touching the master switch.
+    Output:
+        Updated entry, or None when the key does not resolve.
+    Side effects: Writes project.yaml when a row is found.
+    """
+    return update_platform_auth_entry(db_path, key, enabled=bool(enabled))
+
+
+def use_platform_auth_entry(db_path: Path, key: str) -> Optional[PlatformAuthEntry]:
+    """
+    Purpose:
+        Enable ``key`` and disable other profiles that share its host so
+        the operator can switch credentials for that destination.
+    Output:
+        The selected entry, or None when the key does not resolve.
+    Side effects: Writes project.yaml; turns the master switch on.
+    """
+    from talos.proxy.platform_auth import normalize_host
+
+    selected = get_platform_auth_entry(db_path, key)
+    if selected is None:
+        return None
+    host_key = normalize_host(selected.host)
+    next_entries: list[PlatformAuthEntry] = []
+    chosen: Optional[PlatformAuthEntry] = None
+    for row in load_proxy_transport(db_path).platform_auth_entries:
+        if row.id == selected.id:
+            stored = replace(row, enabled=True)
+            chosen = stored
+            next_entries.append(stored)
+            continue
+        if normalize_host(row.host) == host_key:
+            next_entries.append(replace(row, enabled=False))
+        else:
+            next_entries.append(row)
+    replace_platform_auth_entries(db_path, next_entries, touch_master=False)
+    set_platform_auth_enabled(db_path, True)
+    return chosen
+
+
+def remove_platform_auth_entry(db_path: Path, key: str) -> bool:
+    """
+    Purpose:
+        Remove the profile whose id matches, or whose host uniquely matches.
     Output:
         True when a row was removed.
     Side effects: Writes project.yaml when a row existed.
     """
-    host_key = (host or "").strip().lower()
+    needle = (key or "").strip()
+    if not needle:
+        return False
     current = list(load_proxy_transport(db_path).platform_auth_entries)
-    next_entries = [row for row in current if row.host.lower() != host_key]
+    existing = get_platform_auth_entry(db_path, needle)
+    if existing is None:
+        return False
+    next_entries = [row for row in current if row.id != existing.id]
     if len(next_entries) == len(current):
         return False
     replace_platform_auth_entries(db_path, next_entries)
@@ -358,6 +506,9 @@ def remove_platform_auth_entry(db_path: Path, host: str) -> bool:
 
 def _entry_to_storage(entry: PlatformAuthEntry) -> dict:
     return {
+        "id": entry.id,
+        "name": entry.name or entry.host,
+        "enabled": bool(entry.enabled),
         "host": entry.host,
         "auth_type": entry.auth_type,
         "username": entry.username,

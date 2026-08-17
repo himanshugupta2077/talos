@@ -50,6 +50,7 @@ from talos.projects.proxy_config import (
     InvalidUpstreamUrl,
     add_platform_auth_entry,
     clear_upstream_url,
+    get_platform_auth_entry,
     get_upstream_url,
     load_proxy_transport,
     remove_platform_auth_entry,
@@ -57,7 +58,10 @@ from talos.projects.proxy_config import (
     set_http2,
     set_keep_alive,
     set_platform_auth_enabled,
+    set_platform_auth_entry_enabled,
     set_upstream_url,
+    update_platform_auth_entry,
+    use_platform_auth_entry,
 )
 from talos.proxy.runtime import (
     ProxyAlreadyRunning,
@@ -125,14 +129,18 @@ def cmd_start(manager: ProjectManager, args: argparse.Namespace) -> None:
     transport = load_proxy_transport(project.db_path)
     print(f"  HTTP          : {'HTTP/2' if transport.http2 else 'HTTP/1.1'}")
     print(f"  Keep-alive    : {'on' if transport.keep_alive else 'off'}")
-    auth_count = (
-        len(transport.platform_auth_entries)
-        if transport.platform_auth_enabled
-        else 0
-    )
+    auth_on = [
+        row
+        for row in transport.platform_auth_entries
+        if row.enabled
+    ]
     print(
         f"  Platform auth : "
-        f"{'on (' + str(auth_count) + ' host(s))' if auth_count else 'off'}"
+        + (
+            f"on ({len(auth_on)}/{len(transport.platform_auth_entries)} profile(s))"
+            if transport.platform_auth_enabled and transport.platform_auth_entries
+            else "off"
+        )
     )
     print(f"  Foreground    : {bool(args.foreground)}")
 
@@ -393,22 +401,24 @@ def _print_proxy_config(project, args: argparse.Namespace) -> None:
         print("Proxy mode : Direct")
     print(f"  HTTP     : {'HTTP/2' if transport.http2 else 'HTTP/1.1'}")
     print(f"  Keep-alive: {'on' if transport.keep_alive else 'off'}")
+    enabled_n = sum(1 for row in transport.platform_auth_entries if row.enabled)
     print(
         "  Platform auth: "
         + (
-            f"on ({len(transport.platform_auth_entries)} host(s))"
+            f"on ({enabled_n}/{len(transport.platform_auth_entries)} profile(s))"
             if transport.platform_auth_enabled and transport.platform_auth_entries
             else "off"
         )
     )
     if transport.platform_auth_entries:
-        print("  Use 'talos proxy auth list' for credential rows.")
+        print("  Use 'talos proxy auth list' for profiles.")
 
 
 def cmd_auth(manager: ProjectManager, args: argparse.Namespace) -> None:
     """
     Purpose:
-        List / add / remove / enable platform-authentication rows.
+        List / add / edit / use / enable / disable / remove platform-auth
+        profiles.
     Side effects: Writes project.yaml; may auto-restart the proxy.
     """
     project = _require_project(manager)
@@ -419,20 +429,24 @@ def cmd_auth(manager: ProjectManager, args: argparse.Namespace) -> None:
     if action == "add":
         _auth_add(project, args)
         return
+    if action == "edit":
+        _auth_edit(project, args)
+        return
+    if action == "use":
+        _auth_use(project, args)
+        return
     if action == "remove":
         _auth_remove(project, args)
         return
     if action == "enable":
-        set_platform_auth_enabled(project.db_path, True)
-        _notify_auth(project.id, "platform auth enable")
-        print("Platform authentication enabled.")
+        _auth_set_enabled(project, args, True)
         return
     if action == "disable":
-        set_platform_auth_enabled(project.db_path, False)
-        _notify_auth(project.id, "platform auth disable")
-        print("Platform authentication disabled.")
+        _auth_set_enabled(project, args, False)
         return
-    cli_usage_error("Use talos proxy auth list|add|remove|enable|disable.")
+    cli_usage_error(
+        "Use talos proxy auth list|add|edit|use|remove|enable|disable."
+    )
 
 
 def _auth_list(project, args: argparse.Namespace) -> None:
@@ -449,17 +463,22 @@ def _auth_list(project, args: argparse.Namespace) -> None:
     print(
         "Platform authentication: "
         + ("enabled" if transport.platform_auth_enabled else "disabled")
+        + " (master)"
     )
     if not rows:
-        print("No host entries. Add one:")
+        print("No profiles. Add one:")
         print(
-            "  talos proxy auth add --host example.com --type ntlmv2 "
-            "--username USER --password PASS --domain-hostname example.com"
+            "  talos proxy auth add --name 'Charter UAT' --host example.com "
+            "--type ntlmv2 --username USER --password PASS "
+            "--domain-hostname example.com"
         )
         return
     print()
     for row in rows:
-        print(f"{row['host']}")
+        state = "on" if row["enabled"] else "off"
+        print(f"{row['name']}  [{state}]")
+        print(f"  id              : {row['id']}")
+        print(f"  host            : {row['host']}")
         print(f"  type            : {row['auth_type']}")
         print(f"  username        : {row['username'] or '(none)'}")
         print(f"  password        : {'set' if row['password_set'] else '(empty)'}")
@@ -473,6 +492,8 @@ def _auth_add(project, args: argparse.Namespace) -> None:
     try:
         entry = parse_platform_auth_entry(
             {
+                "id": getattr(args, "profile_id", None) or "",
+                "name": args.name or "",
                 "host": args.host,
                 "auth_type": args.type,
                 "username": args.username or "",
@@ -481,6 +502,7 @@ def _auth_add(project, args: argparse.Namespace) -> None:
                 "domain_hostname": args.domain_hostname or "",
                 "spnego": bool(args.spnego),
                 "negotiate": bool(args.negotiate),
+                "enabled": not bool(getattr(args, "disabled", False)),
             }
         )
     except ValueError as exc:
@@ -490,25 +512,133 @@ def _auth_add(project, args: argparse.Namespace) -> None:
         cli_warning(
             "No credentials stored — Talos will only strip Negotiate on this host."
         )
-    add_platform_auth_entry(project.db_path, entry)
-    _notify_auth(project.id, f"platform auth add {entry.host}")
-    print(f"Platform authentication saved for {entry.host}")
-    print(f"  type            : {entry.auth_type}")
-    print(f"  username        : {entry.username or '(none)'}")
-    print(f"  domain hostname : {entry.domain_hostname or '(empty)'}")
-    print(f"  SPNEGO encoding : {'on' if entry.spnego else 'off'}")
-    print(f"  Negotiate scheme: {'on' if entry.negotiate else 'off'}")
+    stored = add_platform_auth_entry(project.db_path, entry)
+    _notify_auth(project.id, f"platform auth add {stored.id}")
+    print(f"Platform auth profile saved: {stored.display_name()}")
+    print(f"  id              : {stored.id}")
+    print(f"  host            : {stored.host}")
+    print(f"  enabled         : {'on' if stored.enabled else 'off'}")
+    print(f"  type            : {stored.auth_type}")
+    print(f"  username        : {stored.username or '(none)'}")
+    print(f"  domain hostname : {stored.domain_hostname or '(empty)'}")
+    print(f"  SPNEGO encoding : {'on' if stored.spnego else 'off'}")
+    print(f"  Negotiate scheme: {'on' if stored.negotiate else 'off'}")
+
+
+def _auth_key(args: argparse.Namespace) -> str:
+    key = (getattr(args, "profile_id", None) or getattr(args, "host", None) or "").strip()
+    if not key:
+        cli_usage_error("Provide --id (or --host when the host is unique).")
+    return key
+
+
+def _auth_edit(project, args: argparse.Namespace) -> None:
+    key = _auth_key(args)
+    existing = get_platform_auth_entry(project.db_path, key)
+    if existing is None:
+        extra = ""
+        host = (getattr(args, "host", None) or "").strip()
+        if host and get_platform_auth_entry(project.db_path, host) is None:
+            hits = [
+                row
+                for row in load_proxy_transport(project.db_path).platform_auth_entries
+                if row.host.lower() == host.lower()
+            ]
+            if len(hits) > 1:
+                extra = " Multiple profiles share that host — use --id."
+        cli_error(f"No platform-auth profile for {key!r}.{extra}")
+        return
+    try:
+        stored = update_platform_auth_entry(
+            project.db_path,
+            existing.id,
+            name=args.name,
+            host=args.host if args.host and args.host != existing.host else None,
+            auth_type=args.type,
+            username=args.username,
+            password=args.password,
+            domain=args.domain,
+            domain_hostname=args.domain_hostname,
+            spnego=True if args.spnego else (False if args.no_spnego else None),
+            negotiate=(
+                True if args.negotiate else (False if args.no_negotiate else None)
+            ),
+        )
+    except ValueError as exc:
+        cli_usage_error(str(exc))
+        return
+    if stored is None:
+        cli_error(f"No platform-auth profile for {key!r}.")
+        return
+    _notify_auth(project.id, f"platform auth edit {stored.id}")
+    print(f"Updated platform auth profile: {stored.display_name()}")
+    print(f"  id              : {stored.id}")
+    print(f"  host            : {stored.host}")
+    print(f"  enabled         : {'on' if stored.enabled else 'off'}")
+    print(f"  username        : {stored.username or '(none)'}")
+    print(f"  password        : {'set' if stored.password else '(empty)'}")
+
+
+def _auth_use(project, args: argparse.Namespace) -> None:
+    key = _auth_key(args)
+    stored = use_platform_auth_entry(project.db_path, key)
+    if stored is None:
+        cli_error(f"No platform-auth profile for {key!r}.")
+        return
+    _notify_auth(project.id, f"platform auth use {stored.id}")
+    print(f"Using platform auth profile: {stored.display_name()} ({stored.id})")
+    print(f"  host            : {stored.host}")
+    print("  Other profiles for this host are disabled.")
+
+
+def _auth_set_enabled(project, args: argparse.Namespace, enabled: bool) -> None:
+    key = (getattr(args, "profile_id", None) or getattr(args, "host", None) or "").strip()
+    verb = "enable" if enabled else "disable"
+    if not key:
+        set_platform_auth_enabled(project.db_path, enabled)
+        _notify_auth(project.id, f"platform auth {verb}")
+        print(
+            "Platform authentication "
+            + ("enabled" if enabled else "disabled")
+            + " (master)."
+        )
+        return
+    stored = set_platform_auth_entry_enabled(project.db_path, key, enabled)
+    if stored is None:
+        cli_error(f"No platform-auth profile for {key!r}.")
+        return
+    _notify_auth(project.id, f"platform auth {verb} {stored.id}")
+    print(
+        f"Profile {stored.display_name()} ({stored.id}) "
+        + ("enabled." if enabled else "disabled.")
+    )
 
 
 def _auth_remove(project, args: argparse.Namespace) -> None:
-    host = (args.host or "").strip()
-    if not host:
-        cli_usage_error("--host is required.")
-    if not remove_platform_auth_entry(project.db_path, host):
-        cli_error(f"No platform-auth entry for host {host!r}.")
+    key = _auth_key(args)
+    existing = get_platform_auth_entry(project.db_path, key)
+    if existing is None:
+        host = (getattr(args, "host", None) or "").strip()
+        if host:
+            hits = [
+                row
+                for row in load_proxy_transport(project.db_path).platform_auth_entries
+                if row.host.lower() == host.lower()
+            ]
+            if len(hits) > 1:
+                ids = ", ".join(row.id for row in hits)
+                cli_error(
+                    f"Multiple profiles for host {host!r} ({ids}). "
+                    "Use --id to choose one."
+                )
+                return
+        cli_error(f"No platform-auth profile for {key!r}.")
         return
-    _notify_auth(project.id, f"platform auth remove {host}")
-    print(f"Removed platform authentication for {host}")
+    if not remove_platform_auth_entry(project.db_path, existing.id):
+        cli_error(f"No platform-auth profile for {key!r}.")
+        return
+    _notify_auth(project.id, f"platform auth remove {existing.id}")
+    print(f"Removed platform auth profile {existing.display_name()} ({existing.id})")
 
 
 def _notify_auth(project_id: str, reason: str) -> None:
@@ -709,14 +839,25 @@ def build_parser() -> argparse.ArgumentParser:
     # auth — Burp-style platform authentication
     p_auth = sub.add_parser(
         "auth",
-        help="Platform authentication (NTLM) toward origin hosts.",
+        help="Platform authentication profiles (NTLM) toward origin hosts.",
     )
     auth_sub = p_auth.add_subparsers(dest="auth_command", metavar="command")
-    p_auth_list = auth_sub.add_parser("list", help="List platform-auth entries.")
+    p_auth_list = auth_sub.add_parser("list", help="List platform-auth profiles.")
     add_format_argument(p_auth_list)
     p_auth_add = auth_sub.add_parser(
         "add",
-        help="Add or replace a host row (NTLMv2 by default).",
+        help="Add a named profile (same host as another profile is allowed).",
+    )
+    p_auth_add.add_argument(
+        "--id",
+        dest="profile_id",
+        default=None,
+        help="Optional stable id (default: slug of --name or --host).",
+    )
+    p_auth_add.add_argument(
+        "--name",
+        default="",
+        help="Operator label (default: destination host).",
     )
     p_auth_add.add_argument("--host", required=True, help="Destination host (exact or *.suffix).")
     p_auth_add.add_argument(
@@ -749,10 +890,94 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the Negotiate auth scheme (off by default).",
     )
-    p_auth_rm = auth_sub.add_parser("remove", help="Remove the row for a host.")
-    p_auth_rm.add_argument("--host", required=True, help="Destination host to remove.")
-    auth_sub.add_parser("enable", help="Turn platform authentication on.")
-    auth_sub.add_parser("disable", help="Turn platform authentication off.")
+    p_auth_add.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Save the profile but leave it disabled.",
+    )
+    p_auth_edit = auth_sub.add_parser(
+        "edit",
+        help="Update an existing profile by --id (or unique --host).",
+    )
+    p_auth_edit.add_argument(
+        "--id",
+        dest="profile_id",
+        default=None,
+        help="Profile id to update.",
+    )
+    p_auth_edit.add_argument("--name", default=None, help="New operator label.")
+    p_auth_edit.add_argument(
+        "--host",
+        default=None,
+        help="Lookup key when --id is omitted, or new host when --id is set.",
+    )
+    p_auth_edit.add_argument(
+        "--type",
+        dest="type",
+        default=None,
+        choices=["ntlmv2", "ntlm", "negotiate"],
+        help="Authentication type.",
+    )
+    p_auth_edit.add_argument("--username", default=None, help="Account username.")
+    p_auth_edit.add_argument(
+        "--password",
+        default=None,
+        help="Account password (omit to keep the stored secret).",
+    )
+    p_auth_edit.add_argument("--domain", default=None, help="Windows domain.")
+    p_auth_edit.add_argument(
+        "--domain-hostname",
+        default=None,
+        dest="domain_hostname",
+        help="NTLM workstation / target hostname.",
+    )
+    p_auth_edit.add_argument(
+        "--spnego",
+        action="store_true",
+        help="Enable SPNEGO encoding.",
+    )
+    p_auth_edit.add_argument(
+        "--no-spnego",
+        dest="no_spnego",
+        action="store_true",
+        help="Disable SPNEGO encoding.",
+    )
+    p_auth_edit.add_argument(
+        "--negotiate",
+        action="store_true",
+        help="Use the Negotiate auth scheme.",
+    )
+    p_auth_edit.add_argument(
+        "--no-negotiate",
+        dest="no_negotiate",
+        action="store_true",
+        help="Disable the Negotiate auth scheme.",
+    )
+    p_auth_use = auth_sub.add_parser(
+        "use",
+        help="Enable a profile and disable others for the same host.",
+    )
+    p_auth_use.add_argument("--id", dest="profile_id", default=None, help="Profile id.")
+    p_auth_use.add_argument(
+        "--host",
+        default=None,
+        help="Unique destination host (error if several profiles share it).",
+    )
+    p_auth_rm = auth_sub.add_parser("remove", help="Remove a profile by --id or unique --host.")
+    p_auth_rm.add_argument("--id", dest="profile_id", default=None, help="Profile id.")
+    p_auth_rm.add_argument("--host", default=None, help="Destination host (must be unique).")
+    p_auth_on = auth_sub.add_parser(
+        "enable",
+        help="Enable a profile (--id) or the master switch (no --id).",
+    )
+    p_auth_on.add_argument("--id", dest="profile_id", default=None, help="Profile id.")
+    p_auth_on.add_argument("--host", default=None, help="Unique destination host.")
+    p_auth_off = auth_sub.add_parser(
+        "disable",
+        help="Disable a profile (--id) or the master switch (no --id).",
+    )
+    p_auth_off.add_argument("--id", dest="profile_id", default=None, help="Profile id.")
+    p_auth_off.add_argument("--host", default=None, help="Unique destination host.")
 
     return parser
 

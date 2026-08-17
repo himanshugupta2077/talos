@@ -22,6 +22,9 @@ from talos.projects.proxy_config import (
     remove_platform_auth_entry,
     set_http2,
     set_keep_alive,
+    set_platform_auth_entry_enabled,
+    update_platform_auth_entry,
+    use_platform_auth_entry,
 )
 from talos.proxy.cli import run_proxy_cli
 from talos.proxy.launcher import build_mitmdump_command
@@ -138,6 +141,14 @@ class TestNegotiateStrip:
 
 
 class TestScheme:
+    def test_parse_assigns_profile_id_and_defaults(self) -> None:
+        entry = parse_platform_auth_entry(
+            {"host": "foresight-uat.chartercom.com", "username": "u"}
+        )
+        assert entry.id == "foresight-uat-chartercom-com"
+        assert entry.name == "foresight-uat.chartercom.com"
+        assert entry.enabled is True
+
     def test_default_is_ntlm(self) -> None:
         entry = parse_platform_auth_entry(
             {"host": "app.example", "auth_type": "ntlmv2", "username": "u"}
@@ -188,18 +199,95 @@ class TestTransportConfig:
         assert stored.negotiate is False
         assert match_platform_auth(t.platform_auth_entries, "foresight-uat.chartercom.com")
 
-    def test_replace_same_host(self, db_path: Path) -> None:
+    def test_multiple_profiles_same_host(self, db_path: Path) -> None:
         add_platform_auth_entry(
             db_path,
             PlatformAuthEntry(host="app.example", username="a", password="1"),
         )
         add_platform_auth_entry(
             db_path,
-            PlatformAuthEntry(host="APP.example", username="b", password="2"),
+            PlatformAuthEntry(
+                host="APP.example",
+                username="b",
+                password="2",
+                name="Alt creds",
+            ),
         )
         t = load_proxy_transport(db_path)
-        assert len(t.platform_auth_entries) == 1
-        assert t.platform_auth_entries[0].username == "b"
+        assert len(t.platform_auth_entries) == 2
+        assert {row.username for row in t.platform_auth_entries} == {"a", "b"}
+        assert t.platform_auth_entries[0].id != t.platform_auth_entries[1].id
+        matched = match_platform_auth(t.platform_auth_entries, "app.example")
+        assert matched is not None
+        assert matched.username == "a"
+
+    def test_disable_skips_match(self, db_path: Path) -> None:
+        first = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(host="app.example", username="a", password="1"),
+        )
+        second = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="app.example",
+                username="b",
+                password="2",
+                name="backup",
+            ),
+        )
+        set_platform_auth_entry_enabled(db_path, first.id, False)
+        t = load_proxy_transport(db_path)
+        matched = match_platform_auth(t.platform_auth_entries, "app.example")
+        assert matched is not None
+        assert matched.id == second.id
+        assert matched.username == "b"
+
+    def test_use_switches_same_host(self, db_path: Path) -> None:
+        first = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(host="app.example", username="a", password="1"),
+        )
+        second = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="app.example",
+                username="b",
+                password="2",
+                name="backup",
+            ),
+        )
+        used = use_platform_auth_entry(db_path, second.id)
+        assert used is not None
+        assert used.enabled is True
+        t = load_proxy_transport(db_path)
+        by_id = {row.id: row for row in t.platform_auth_entries}
+        assert by_id[first.id].enabled is False
+        assert by_id[second.id].enabled is True
+        matched = match_platform_auth(t.platform_auth_entries, "app.example")
+        assert matched is not None
+        assert matched.username == "b"
+
+    def test_edit_keeps_password(self, db_path: Path) -> None:
+        stored = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="app.example",
+                username="a",
+                password="secret",
+                name="UAT",
+            ),
+        )
+        updated = update_platform_auth_entry(
+            db_path,
+            stored.id,
+            username="b",
+            password="",
+            name="UAT alt",
+        )
+        assert updated is not None
+        assert updated.username == "b"
+        assert updated.password == "secret"
+        assert updated.name == "UAT alt"
 
     def test_remove(self, db_path: Path) -> None:
         add_platform_auth_entry(
@@ -208,6 +296,25 @@ class TestTransportConfig:
         )
         assert remove_platform_auth_entry(db_path, "app.example") is True
         assert load_proxy_transport(db_path).platform_auth_entries == ()
+
+    def test_remove_by_id_when_host_shared(self, db_path: Path) -> None:
+        first = add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(host="app.example", username="a", password="1"),
+        )
+        add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="app.example",
+                username="b",
+                password="2",
+                name="backup",
+            ),
+        )
+        assert remove_platform_auth_entry(db_path, first.id) is True
+        left = load_proxy_transport(db_path).platform_auth_entries
+        assert len(left) == 1
+        assert left[0].username == "b"
 
 
 class TestLauncherHttp1:
@@ -269,9 +376,66 @@ class TestProxyAuthCli:
         assert "P3257806" in listed
         assert "testpassword" not in listed
         assert "password_set" in listed
+        assert '"id"' in listed
+        assert '"enabled": true' in listed
         t = load_proxy_transport(project.db_path)
         assert t.http2 is True
         assert t.platform_auth_entries[0].password == "testpassword"
+        assert t.platform_auth_entries[0].id
+        assert t.platform_auth_entries[0].enabled is True
+
+    def test_add_edit_use_and_disable(
+        self,
+        manager_with_project: tuple[ProjectManager, MagicMock],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        manager, project = manager_with_project
+        run_proxy_cli(
+            manager,
+            [
+                "auth",
+                "add",
+                "--name",
+                "Charter UAT",
+                "--host",
+                "foresight-uat.chartercom.com",
+                "--username",
+                "user-a",
+                "--password",
+                "pw-a",
+            ],
+        )
+        run_proxy_cli(
+            manager,
+            [
+                "auth",
+                "add",
+                "--name",
+                "Charter backup",
+                "--host",
+                "foresight-uat.chartercom.com",
+                "--username",
+                "user-b",
+                "--password",
+                "pw-b",
+            ],
+        )
+        first, second = load_proxy_transport(project.db_path).platform_auth_entries
+        run_proxy_cli(manager, ["auth", "edit", "--id", first.id, "--username", "user-a2"])
+        edited = load_proxy_transport(project.db_path).platform_auth_entries
+        assert [row for row in edited if row.id == first.id][0].username == "user-a2"
+        assert [row for row in edited if row.id == first.id][0].password == "pw-a"
+        run_proxy_cli(manager, ["auth", "use", "--id", second.id])
+        switched = load_proxy_transport(project.db_path).platform_auth_entries
+        by_id = {row.id: row for row in switched}
+        assert by_id[first.id].enabled is False
+        assert by_id[second.id].enabled is True
+        run_proxy_cli(manager, ["auth", "disable", "--id", second.id])
+        assert all(
+            not row.enabled
+            for row in load_proxy_transport(project.db_path).platform_auth_entries
+        )
+        capsys.readouterr()
 
     def test_config_http1(
         self,

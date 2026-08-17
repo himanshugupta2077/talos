@@ -125,9 +125,11 @@ class ProxyConfigBody(BaseModel):
 
 class PlatformAuthBody(BaseModel):
     """
-    Add or replace one Burp-style platform-auth row.
+    Add one named platform-auth profile.
     """
 
+    id: str | None = None
+    name: str = ""
     host: str
     auth_type: str = "ntlmv2"
     username: str = ""
@@ -136,6 +138,32 @@ class PlatformAuthBody(BaseModel):
     domain_hostname: str = ""
     spnego: bool = False
     negotiate: bool = False
+    enabled: bool = True
+
+
+class PlatformAuthEditBody(BaseModel):
+    """
+    Patch an existing profile. Omitted password keeps the stored secret.
+    """
+
+    id: str | None = None
+    name: str | None = None
+    host: str | None = None
+    auth_type: str | None = None
+    username: str | None = None
+    password: str | None = None
+    domain: str | None = None
+    domain_hostname: str | None = None
+    spnego: bool | None = None
+    negotiate: bool | None = None
+    enabled: bool | None = None
+
+
+class PlatformAuthIdBody(BaseModel):
+    """Enable, disable, or use a profile. Empty id toggles the master switch."""
+
+    id: str | None = None
+    host: str | None = None
 
 
 @router.get("/status")
@@ -318,7 +346,7 @@ def proxy_auth_list():
 def proxy_auth_add(body: PlatformAuthBody):
     """
     Purpose:
-        Add or replace a platform-auth row through Talos CLI.
+        Add a platform-auth profile through Talos CLI.
     """
     args = [
         "proxy",
@@ -337,24 +365,118 @@ def proxy_auth_add(body: PlatformAuthBody):
         "--domain-hostname",
         body.domain_hostname or "",
     ]
+    if body.id:
+        args.extend(["--id", body.id])
+    if body.name:
+        args.extend(["--name", body.name])
     if body.spnego:
         args.append("--spnego")
     if body.negotiate:
         args.append("--negotiate")
+    if body.enabled is False:
+        args.append("--disabled")
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.post("/auth/edit")
+def proxy_auth_edit(body: PlatformAuthEditBody):
+    """
+    Purpose:
+        Update an existing profile (`talos proxy auth edit`).
+    """
+    if not (body.id or body.host):
+        raise HTTPException(status_code=400, detail="id or host is required.")
+    args = ["proxy", "auth", "edit"]
+    if body.id:
+        args.extend(["--id", body.id])
+    if body.name is not None:
+        args.extend(["--name", body.name])
+    if body.host:
+        args.extend(["--host", body.host])
+    if body.auth_type:
+        args.extend(["--type", body.auth_type])
+    if body.username is not None:
+        args.extend(["--username", body.username])
+    if body.password:
+        args.extend(["--password", body.password])
+    if body.domain is not None:
+        args.extend(["--domain", body.domain])
+    if body.domain_hostname is not None:
+        args.extend(["--domain-hostname", body.domain_hostname])
+    if body.spnego is True:
+        args.append("--spnego")
+    elif body.spnego is False:
+        args.append("--no-spnego")
+    if body.negotiate is True:
+        args.append("--negotiate")
+    elif body.negotiate is False:
+        args.append("--no-negotiate")
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.post("/auth/enable")
+def proxy_auth_enable(body: PlatformAuthIdBody):
+    """
+    Purpose:
+        Enable a profile, or the master switch when id/host are omitted.
+    """
+    args = ["proxy", "auth", "enable"]
+    if body.id:
+        args.extend(["--id", body.id])
+    elif body.host:
+        args.extend(["--host", body.host])
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.post("/auth/disable")
+def proxy_auth_disable(body: PlatformAuthIdBody):
+    """
+    Purpose:
+        Disable a profile, or the master switch when id/host are omitted.
+    """
+    args = ["proxy", "auth", "disable"]
+    if body.id:
+        args.extend(["--id", body.id])
+    elif body.host:
+        args.extend(["--host", body.host])
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.post("/auth/use")
+def proxy_auth_use(body: PlatformAuthIdBody):
+    """
+    Purpose:
+        Switch to a profile: enable it and disable others for the same host.
+    """
+    if not (body.id or body.host):
+        raise HTTPException(status_code=400, detail="id or host is required.")
+    args = ["proxy", "auth", "use"]
+    if body.id:
+        args.extend(["--id", body.id])
+    elif body.host:
+        args.extend(["--host", body.host])
     result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
     return _steps_response(result)
 
 
 @router.delete("/auth")
-def proxy_auth_remove(host: str):
+def proxy_auth_remove(id: str | None = None, host: str | None = None):
     """
     Purpose:
-        Remove the platform-auth row for ``host``.
+        Remove a profile by id, or by host when that host is unique.
     """
-    if not (host or "").strip():
-        raise HTTPException(status_code=400, detail="host is required.")
-    result = cli.run(
-        ["proxy", "auth", "remove", "--host", host.strip()],
-        timeout=_PROXY_LIFECYCLE_TIMEOUT_S,
-    )
+    profile_id = (id or "").strip()
+    host_key = (host or "").strip()
+    if not profile_id and not host_key:
+        raise HTTPException(status_code=400, detail="id or host is required.")
+    args = ["proxy", "auth", "remove"]
+    if profile_id:
+        args.extend(["--id", profile_id])
+    else:
+        args.extend(["--host", host_key])
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
     return _steps_response(result)

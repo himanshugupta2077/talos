@@ -845,11 +845,16 @@ talos proxy config --upstream http://127.0.0.1:8081
 talos proxy config --no-upstream
 talos proxy config --http1 --keep-alive
 
-# Platform authentication (NTLMv2 toward the origin)
-talos proxy auth add --host app.example.com --type ntlmv2 \
+# Platform authentication profiles (NTLMv2 toward the origin)
+talos proxy auth add --name "Charter UAT" --host app.example.com --type ntlmv2 \
   --username USER --password PASS --domain-hostname app.example.com
+talos proxy auth add --name "Charter backup" --host app.example.com \
+  --username USER2 --password PASS2
 talos proxy auth list
-talos proxy auth remove --host app.example.com
+talos proxy auth use --id charter-backup
+talos proxy auth disable --id charter-uat
+talos proxy auth edit --id charter-uat --username NEWUSER
+talos proxy auth remove --id charter-uat
 
 # Preferred layered form
 talos config set proxy.upstream.url http://127.0.0.1:8081

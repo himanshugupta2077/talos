@@ -40,7 +40,7 @@ unchecked). Talos now persists those same settings.
 |-------|------|
 | `talos proxy config --http1` | mitmdump `--set http2=false` |
 | `talos proxy config --keep-alive` | Reuse origin connections |
-| `talos proxy auth add` | Host-scoped NTLMv2 credentials |
+| `talos proxy auth add` | Named NTLMv2 profile (multiple per host) |
 | Addon + `create_async_client` | Handshake toward matching hosts; strip Negotiate |
 | Control Panel → Proxy | Origin connection + platform-auth form |
 

@@ -10,6 +10,9 @@ import { useProject } from "../state/ProjectContext";
 import { useStatus } from "../state/StatusContext";
 
 interface PlatformAuthEntry {
+  id: string;
+  name: string;
+  enabled: boolean;
   host: string;
   auth_type: string;
   username: string;
@@ -68,6 +71,9 @@ export default function Proxy() {
   const [http2, setHttp2] = useState(true);
   const [keepAlive, setKeepAlive] = useState(true);
   const [authEntries, setAuthEntries] = useState<PlatformAuthEntry[]>([]);
+  const [authMaster, setAuthMaster] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [authName, setAuthName] = useState("");
   const [authHost, setAuthHost] = useState("");
   const [authType, setAuthType] = useState("ntlmv2");
   const [authUser, setAuthUser] = useState("");
@@ -86,6 +92,7 @@ export default function Proxy() {
       if (typeof c.http2 === "boolean") setHttp2(c.http2);
       if (typeof c.keep_alive === "boolean") setKeepAlive(c.keep_alive);
       setAuthEntries(c.platform_auth?.entries || []);
+      setAuthMaster(Boolean(c.platform_auth?.enabled));
     } catch {
       setConfig(null);
     }
@@ -192,8 +199,9 @@ export default function Proxy() {
   const saveOrigin = useAction("Save origin connection", () =>
     api.post("/api/proxy/config", { http2, keep_alive: keepAlive })
   );
-  const addAuth = useAction("Add platform auth", () =>
+  const addAuth = useAction("Add platform auth profile", () =>
     api.post("/api/proxy/auth", {
+      name: authName.trim(),
       host: authHost.trim(),
       auth_type: authType,
       username: authUser,
@@ -204,9 +212,64 @@ export default function Proxy() {
       negotiate: authNegotiate,
     })
   );
-  const removeAuth = useAction("Remove platform auth", (host: string) =>
-    api.del("/api/proxy/auth", { host })
+  const editAuth = useAction("Edit platform auth profile", () =>
+    api.post("/api/proxy/auth/edit", {
+      id: editingId,
+      name: authName.trim(),
+      host: authHost.trim(),
+      auth_type: authType,
+      username: authUser,
+      password: authPass || undefined,
+      domain: authDomain,
+      domain_hostname: authDomainHost,
+      spnego: authSpnego,
+      negotiate: authNegotiate,
+    })
   );
+  const setAuthMasterOn = useAction("Enable platform auth", () =>
+    api.post("/api/proxy/auth/enable", {})
+  );
+  const setAuthMasterOff = useAction("Disable platform auth", () =>
+    api.post("/api/proxy/auth/disable", {})
+  );
+  const enableAuth = useAction("Enable auth profile", (id: string) =>
+    api.post("/api/proxy/auth/enable", { id })
+  );
+  const disableAuth = useAction("Disable auth profile", (id: string) =>
+    api.post("/api/proxy/auth/disable", { id })
+  );
+  const useAuth = useAction("Use auth profile", (id: string) =>
+    api.post("/api/proxy/auth/use", { id })
+  );
+  const removeAuth = useAction("Remove platform auth", (id: string) =>
+    api.del("/api/proxy/auth", { id })
+  );
+
+  const resetAuthForm = () => {
+    setEditingId(null);
+    setAuthName("");
+    setAuthHost("");
+    setAuthType("ntlmv2");
+    setAuthUser("");
+    setAuthPass("");
+    setAuthDomain("");
+    setAuthDomainHost("");
+    setAuthSpnego(false);
+    setAuthNegotiate(false);
+  };
+
+  const loadAuthForEdit = (row: PlatformAuthEntry) => {
+    setEditingId(row.id);
+    setAuthName(row.name || "");
+    setAuthHost(row.host);
+    setAuthType(row.auth_type || "ntlmv2");
+    setAuthUser(row.username || "");
+    setAuthPass("");
+    setAuthDomain(row.domain || "");
+    setAuthDomainHost(row.domain_hostname || "");
+    setAuthSpnego(Boolean(row.spnego));
+    setAuthNegotiate(Boolean(row.negotiate));
+  };
 
   useEffect(() => {
     poll();
@@ -597,16 +660,44 @@ export default function Proxy() {
         </div>
 
         <div className="panel p-4">
-          <div className="text-xs uppercase tracking-wide text-base-content/50 mb-3">
-            Platform authentication
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-base-content/50 mb-1">
+                Platform authentication
+              </div>
+              <p className="text-xs text-base-content/50">
+                Named NTLM profiles toward the origin. Enable the ones you want;
+                Use switches credentials for the same host. Leave SPNEGO and
+                Negotiate unchecked unless the server requires them.
+              </p>
+            </div>
+            <label className="label cursor-pointer justify-start gap-2 py-0">
+              <input
+                type="checkbox"
+                className="toggle toggle-sm toggle-success"
+                checked={authMaster}
+                disabled={setAuthMasterOn.running || setAuthMasterOff.running}
+                onChange={(e) =>
+                  afterConfig(() =>
+                    e.target.checked ? setAuthMasterOn.run() : setAuthMasterOff.run()
+                  )
+                }
+              />
+              <span className="label-text text-xs">
+                {authMaster ? "Master on" : "Master off"}
+              </span>
+            </label>
           </div>
-          <p className="text-xs text-base-content/50 mb-3">
-            Talos completes NTLM toward the origin on its own connection
-            (Burp Settings → Network → Connections → Platform authentication).
-            Leave SPNEGO and Negotiate unchecked unless the server requires them.
-            Kerberos tickets captured on another connection will not work.
-          </p>
           <div className="grid grid-cols-2 gap-2 mb-2">
+            <label className="form-control col-span-2">
+              <span className="label-text text-xs">Profile name</span>
+              <input
+                className="input input-sm input-bordered"
+                value={authName}
+                onChange={(e) => setAuthName(e.target.value)}
+                placeholder="Charter UAT"
+              />
+            </label>
             <label className="form-control col-span-2">
               <span className="label-text text-xs">Destination host</span>
               <input
@@ -643,6 +734,7 @@ export default function Proxy() {
                 className="input input-sm input-bordered mono"
                 value={authPass}
                 onChange={(e) => setAuthPass(e.target.value)}
+                placeholder={editingId ? "leave blank to keep" : ""}
               />
             </label>
             <label className="form-control">
@@ -682,56 +774,112 @@ export default function Proxy() {
             />
             <span className="label-text text-xs">Negotiate auth scheme</span>
           </label>
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={!authHost.trim() || addAuth.running}
-            onClick={async () => {
-              await afterConfig(() => addAuth.run());
-              setAuthPass("");
-            }}
-          >
-            {addAuth.running ? (
-              <span className="loading loading-spinner loading-xs" />
-            ) : (
-              "Save host"
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={!authHost.trim() || addAuth.running || editAuth.running}
+              onClick={async () => {
+                if (editingId) {
+                  await afterConfig(() => editAuth.run());
+                } else {
+                  await afterConfig(() => addAuth.run());
+                }
+                resetAuthForm();
+              }}
+            >
+              {addAuth.running || editAuth.running ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : editingId ? (
+                "Save profile"
+              ) : (
+                "Add profile"
+              )}
+            </button>
+            {editingId && (
+              <button className="btn btn-sm" onClick={resetAuthForm}>
+                Cancel
+              </button>
             )}
-          </button>
+          </div>
         </div>
       </div>
 
-      {authEntries.length > 0 && (
-        <div className="panel p-4 mb-4 overflow-x-auto">
-          <div className="text-xs uppercase tracking-wide text-base-content/50 mb-2">
-            Configured hosts
+      <div className="panel p-4 mb-4 overflow-x-auto">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs uppercase tracking-wide text-base-content/50">
+            Auth profiles
           </div>
+          <span className="text-xs text-base-content/40 mono">
+            {authEntries.filter((row) => row.enabled).length}/{authEntries.length} enabled
+          </span>
+        </div>
+        {authEntries.length === 0 ? (
+          <p className="text-xs text-base-content/40">
+            No profiles yet. Add one above — you can keep several for the same
+            host and switch with Use.
+          </p>
+        ) : (
           <table className="table table-sm">
             <thead>
               <tr>
+                <th>On</th>
+                <th>Name</th>
                 <th>Host</th>
                 <th>Type</th>
                 <th>User</th>
                 <th>Domain</th>
-                <th>Domain hostname</th>
-                <th>SPNEGO</th>
-                <th>Negotiate</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {authEntries.map((row) => (
-                <tr key={row.host}>
+                <tr
+                  key={row.id || row.host}
+                  className={editingId === row.id ? "bg-base-200/60" : ""}
+                >
+                  <td>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-xs toggle-success"
+                      checked={Boolean(row.enabled)}
+                      disabled={enableAuth.running || disableAuth.running}
+                      onChange={() =>
+                        afterConfig(() =>
+                          row.enabled
+                            ? disableAuth.run(row.id)
+                            : enableAuth.run(row.id)
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <div className="font-medium">{row.name || row.host}</div>
+                    <div className="mono text-[10px] text-base-content/40">
+                      {row.id}
+                    </div>
+                  </td>
                   <td className="mono">{row.host}</td>
                   <td className="mono">{row.auth_type}</td>
                   <td className="mono">{row.username || "—"}</td>
                   <td className="mono">{row.domain || "(empty)"}</td>
-                  <td className="mono">{row.domain_hostname || "—"}</td>
-                  <td>{row.spnego ? "on" : "off"}</td>
-                  <td>{row.negotiate ? "on" : "off"}</td>
-                  <td>
+                  <td className="text-right whitespace-nowrap">
+                    <button
+                      className="btn btn-xs"
+                      disabled={useAuth.running || !row.id}
+                      onClick={() => afterConfig(() => useAuth.run(row.id))}
+                    >
+                      Use
+                    </button>
+                    <button
+                      className="btn btn-xs btn-ghost"
+                      onClick={() => loadAuthForEdit(row)}
+                    >
+                      Edit
+                    </button>
                     <button
                       className="btn btn-xs btn-ghost text-error"
                       disabled={removeAuth.running}
-                      onClick={() => afterConfig(() => removeAuth.run(row.host))}
+                      onClick={() => afterConfig(() => removeAuth.run(row.id))}
                     >
                       Remove
                     </button>
@@ -740,8 +888,8 @@ export default function Proxy() {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="panel p-3">
         <div className="flex items-center justify-between mb-2">

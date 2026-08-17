@@ -83,9 +83,13 @@ Lifecycle ownership is **Talos core** (`ProxyRuntimeManager`). The Control Panel
 | POST | `/api/proxy/kill` | Free stuck port / orphans | body: `listen_host?`, `port?`, `force?` | `{ steps }` | `proxy kill [--port] [--force]` | — |
 | GET | `/api/proxy/config` | Effective proxy transport | — | `{ project_id, mode, upstream_url, http2, keep_alive, platform_auth }` | `proxy config --format json` | — |
 | POST | `/api/proxy/config` | Persist Direct/Upstream / HTTP/1.1 / keep-alive | body: `upstream_url?` or `direct?` plus `http2?` `keep_alive?` | `{ steps }` | `proxy config --upstream` / `--no-upstream` / `--http1` / `--keep-alive` | — |
-| GET | `/api/proxy/auth` | Platform-auth rows | — | `{ enabled, entries }` | `proxy auth list --format json` | — |
-| POST | `/api/proxy/auth` | Add/replace NTLM host | body: host, type, username, password, domain, domain_hostname, spnego, negotiate | `{ steps }` | `proxy auth add …` | — |
-| DELETE | `/api/proxy/auth` | Remove host row | query `host` | `{ steps }` | `proxy auth remove --host` | — |
+| GET | `/api/proxy/auth` | Platform-auth profiles | — | `{ enabled, entries }` | `proxy auth list --format json` | — |
+| POST | `/api/proxy/auth` | Add NTLM profile | body: name?, host, type, username, password, … | `{ steps }` | `proxy auth add …` | — |
+| POST | `/api/proxy/auth/edit` | Edit profile | body: id, fields… | `{ steps }` | `proxy auth edit --id` | — |
+| POST | `/api/proxy/auth/enable` | Enable profile or master | body: `id?` | `{ steps }` | `proxy auth enable [--id]` | — |
+| POST | `/api/proxy/auth/disable` | Disable profile or master | body: `id?` | `{ steps }` | `proxy auth disable [--id]` | — |
+| POST | `/api/proxy/auth/use` | Switch profile for its host | body: `id` | `{ steps }` | `proxy auth use --id` | — |
+| DELETE | `/api/proxy/auth` | Remove profile | query `id` or `host` | `{ steps }` | `proxy auth remove --id` | — |
 
 Defaults for listen host/port are owned by the Talos CLI when omitted (`127.0.0.1:8080`).
 

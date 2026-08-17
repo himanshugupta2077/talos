@@ -165,7 +165,8 @@ class TalosAddon:
         self._transport = load_proxy_transport(project.db_path)
         self._origin_client = None
         if self._transport.platform_auth_enabled and any(
-            row.username and row.password for row in self._transport.platform_auth_entries
+            row.enabled and row.username and row.password
+            for row in self._transport.platform_auth_entries
         ):
             self._origin_client = create_client(
                 project.db_path,

@@ -262,9 +262,10 @@ SETTING_SCHEMA: tuple[dict, ...] = (
         "type": "object_list",
         "default": [],
         "description": (
-            "Host-scoped credential rows (host, type, username, password, "
-            "domain, domain_hostname, spnego, negotiate). Manage via "
-            "`talos proxy auth` or the Control Panel Proxy page."
+            "Named platform-auth profiles (id, name, enabled, host, type, "
+            "username, password, domain, domain_hostname, spnego, negotiate). "
+            "Multiple profiles may share a host; only enabled rows match. "
+            "Manage via `talos proxy auth` or the Control Panel Proxy page."
         ),
     },
     {

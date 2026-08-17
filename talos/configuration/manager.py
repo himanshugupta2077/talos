@@ -25,6 +25,7 @@ Side effects:
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
@@ -722,6 +723,33 @@ def _as_bool(value: Any, default: bool) -> bool:
     return bool(value)
 
 
+_PROFILE_ID_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_profile_id(text: str) -> str:
+    """
+    Purpose:
+        Turn a name or host into a stable lowercase profile id.
+    Side effects: None.
+    """
+    cleaned = _PROFILE_ID_RE.sub("-", (text or "").strip().lower()).strip("-")
+    return (cleaned[:48] or "profile")
+
+
+def uniquify_profile_id(base: str, taken: set[str]) -> str:
+    """
+    Purpose:
+        Append -2, -3, … when ``base`` is already used.
+    Side effects: None.
+    """
+    candidate = base or "profile"
+    n = 2
+    while candidate in taken:
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
+
+
 def _parse_platform_auth(raw: Any) -> PlatformAuthSection:
     """
     Purpose:
@@ -734,11 +762,20 @@ def _parse_platform_auth(raw: Any) -> PlatformAuthSection:
     if not isinstance(entries_raw, list):
         entries_raw = []
     entries: list[PlatformAuthEntry] = []
+    taken: set[str] = set()
     for item in entries_raw:
         try:
-            entries.append(parse_platform_auth_entry(item))
+            entry = parse_platform_auth_entry(item)
         except ValueError as exc:
             logger.warning("Skipping invalid platform-auth entry: %s", exc)
+            continue
+        profile_id = uniquify_profile_id(entry.id or slugify_profile_id(entry.host), taken)
+        taken.add(profile_id)
+        if entry.id != profile_id:
+            from dataclasses import replace
+
+            entry = replace(entry, id=profile_id)
+        entries.append(entry)
     return PlatformAuthSection(
         enabled=_as_bool(raw.get("enabled"), False),
         entries=tuple(entries),
@@ -770,6 +807,10 @@ def parse_platform_auth_entry(raw: Any) -> PlatformAuthEntry:
     negotiate = raw.get("negotiate")
     if negotiate is None:
         negotiate = auth_type == "negotiate"
+    name = str(raw.get("name") or "").strip()
+    profile_id = str(raw.get("id") or "").strip()
+    if not profile_id:
+        profile_id = slugify_profile_id(name or host)
     return PlatformAuthEntry(
         host=host,
         auth_type=auth_type,
@@ -779,4 +820,7 @@ def parse_platform_auth_entry(raw: Any) -> PlatformAuthEntry:
         domain_hostname=str(raw.get("domain_hostname") or "").strip(),
         spnego=_as_bool(raw.get("spnego"), False),
         negotiate=_as_bool(negotiate, False),
+        id=profile_id,
+        name=name or host,
+        enabled=_as_bool(raw.get("enabled"), True),
     )

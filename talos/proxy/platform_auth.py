@@ -108,10 +108,13 @@ def match_platform_auth(
 ) -> Optional[PlatformAuthEntry]:
     """
     Purpose:
-        Return the first entry whose host pattern matches ``host``.
+        Return the first enabled entry whose host pattern matches ``host``.
+        Disabled profiles are stored but never selected.
     Side effects: None.
     """
     for entry in entries:
+        if not getattr(entry, "enabled", True):
+            continue
         if host_matches(entry.host, host):
             return entry
     return None
