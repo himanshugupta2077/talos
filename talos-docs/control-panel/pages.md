@@ -235,7 +235,7 @@ Operator workspace for the two-layer access map (client_allowed + server_expecte
 
 **Sections:**
 
-1. **Authentication Artifacts** — project-wide cookie/header **names**; add/remove/clear (`auth set/unset/clear`)
+1. **Authentication Artifacts** — project-wide cookie/header **names**; add/remove/clear (`auth set/unset/clear`). NTLM / IIS Persistent-Auth is **not** an artifact — use Proxy → platform authentication instead.
 2. **Role Authentication** — AUTO login-flow list, or MANUAL structured session editor (headers/cookies/expiry CRUD, Save & Apply; optional raw file)
 3. **Session Health** — AUTO: TTL + refresh-before; MANUAL: refresh-before only (lifetime is session expiry); expiry signals; suspicion + reset-health
 4. **Validation Flows** — control-flow list with per-row Validate + Remove; add flow UUID (not URL validation endpoints)

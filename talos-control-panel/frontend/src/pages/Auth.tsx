@@ -707,6 +707,12 @@ export default function Auth() {
             flow+extractor), <span className="mono">validate</span> (control flow baseline),{" "}
             <span className="mono">refresh</span> (re-acquire / re-apply credentials).
           </p>
+          <p>
+            <strong className="text-base-content/70">NTLM / IIS Persistent-Auth</strong> is
+            not a cookie or Authorization header. After the handshake, captures look
+            unauthenticated. Configure platform authentication on the Proxy page
+            instead — IV uses that session; Unauth and auth-test send without it.
+          </p>
         </ModuleHelp>
       </div>
 
@@ -767,6 +773,8 @@ export default function Auth() {
               Artifact names tell Talos which headers and cookies represent authentication.
               Values are acquired per role through AUTO or MANUAL — only{" "}
               <strong className="font-medium text-base-content/70">names</strong> are stored here.
+              Skip this section for NTLM / Windows Integrated Auth: there is no header
+              to name. Use Proxy → platform authentication, then run IV or Unauth.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
               <div className="panel p-3">

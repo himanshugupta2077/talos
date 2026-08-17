@@ -606,7 +606,11 @@ def ensure_healthy(
 ) -> bool:
     """
     Purpose:
-        Full session health gate — runs before each BAC job.
+        Full session health gate — runs before each BAC / IV job.
+
+        Platform NTLM-only (no HTTP artifacts): returns True immediately.
+        There is no cookie/header session to refresh; the handshake is
+        the session.
 
         AUTO provider path:
             Checks Layer 1 (TTL), optionally refreshes, then checks Layer 2
@@ -632,7 +636,13 @@ def ensure_healthy(
         MANUAL: reads from manual_session_config; may write role_auth_state.
         Both:   may trigger validate_session (outbound HTTP + DB writes).
     """
+    from talos.projects.auth_mechanism import resolve_auth_mechanism
     from talos.projects.auth_provider import get_provider, PROVIDER_MANUAL
+
+    # Connection-bound NTLM has no cookie/header session to refresh.
+    mechanism = resolve_auth_mechanism(db_path)
+    if mechanism.ntlm_only:
+        return True
 
     provider = get_provider(db_path, role_id)
 

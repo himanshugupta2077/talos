@@ -11,8 +11,10 @@ Purpose:
 Pipeline:
     1. Load the baseline flow.
     2. Check endpoint annotations.
-    3. Load configured authentication fields.
-    4. Remove all configured authentication.
+    3. Load configured authentication fields (HTTP artifacts and/or
+       platform NTLM).
+    4. Remove all configured HTTP authentication. Platform NTLM is
+       disabled on the outbound client (not a header to strip).
     5. Apply the selected Unauth technique.
     6. Apply the optional request mutation.
     7. Verify that no original configured credential survived.
@@ -78,6 +80,7 @@ import httpx
 import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
 from talos.projects.auth import get_auth_config
+from talos.projects.auth_mechanism import resolve_auth_mechanism
 from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 
@@ -187,14 +190,26 @@ async def execute_unauth_job(
                 "endpoint_annotated_dangerous",
             )
 
-    # Load auth config.
+    # Load auth config. Platform NTLM is a first-class session — captured
+    # IIS Persistent-Auth requests often have no Authorization header.
     auth_config = get_auth_config(db_path)
-    if not auth_config["cookies"] and not auth_config["headers"]:
+    mechanism = resolve_auth_mechanism(db_path)
+    if not mechanism.ready:
         return _fail(
             flow_id,
             technique_name,
             req_mut_name,
             "auth_config_empty",
+        )
+    if (
+        mechanism.ntlm_only
+        and technique_vdef.get("technique_action", "none") != "none"
+    ):
+        return _fail(
+            flow_id,
+            technique_name,
+            req_mut_name,
+            "unauth_technique_requires_http_artifacts",
         )
     # Mandatory invariant: every Unauth replay starts with all configured
     # authentication removed.
@@ -892,6 +907,7 @@ async def _send_and_store(
             timeout=_REPLAY_TIMEOUT,
             follow_redirects=False,
             verify=False,
+            platform_auth=False,
         ) as client:
             resp = await client.request(
                 method=replayed["method"],

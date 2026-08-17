@@ -411,8 +411,10 @@ talos access server set user  dashboard allow
 talos access server set admin admin-panel allow
 talos access server set user  admin-panel deny
 
-# 4. Auth artifact names (what to strip / inject)
+# 4. Auth — cookie/header names, *or* platform NTLM for IIS Persistent-Auth
 talos auth set --cookie sessionid --header Authorization
+# NTLM-only (no Authorization header on captures):
+# talos proxy auth add --host app.example.com --type ntlmv2 --username USER --password PASS
 
 # 5. Capture traffic with role context
 talos role set admin && talos module set dashboard
@@ -933,6 +935,12 @@ talos access signals
 
 Stores **names** of cookies/headers, not credential values.
 
+**NTLM / IIS Persistent-Auth is not an artifact.** After the origin
+handshake, captures have no `Authorization` header. Do not invent a
+cookie or header name. Configure platform NTLM (`talos proxy auth add`)
+— that *is* the session. IV sends with it; unauth / `auth test` send
+without it (expect `401` if Windows auth is required).
+
 ```bash
 talos auth set --cookie sessionid --header Authorization
 talos auth set --cookie sessionid --cookie csrf --header Authorization --header X-API-Key
@@ -941,6 +949,13 @@ talos auth show
 talos auth clear --force
 talos auth test <endpoint_id>
 talos auth test <endpoint_id> --right-now
+
+# NTLM-only project (no cookie/header names)
+talos proxy auth add --host app.example.com --type ntlmv2 \
+  --username USER --password PASS
+talos auth show
+talos input-validation run
+talos attack unauth run
 ```
 
 Default path enqueues a scheduler job; `--right-now` runs immediately.
@@ -1520,10 +1535,12 @@ Generates `unauth_attack` scheduler jobs for every testable endpoint × recipe c
 
 Pipeline for each job:
 
-1. Remove all configured authentication
+1. Remove all configured HTTP authentication (and disable platform NTLM on the outbound client)
 2. Apply unauth **technique**
 3. Apply optional **request mutation** from the recipe
 4. Replay and classify (`SECURE` | `BYPASS` | `UNKNOWN`)
+
+**NTLM / IIS Persistent-Auth:** captured requests have no `Authorization` header. Configure `talos proxy auth add` first. Unauth sends *without* that handshake (expect `401` if Windows auth is required). NTLM-only projects enqueue **baseline** (+ request mutations) only — `empty_auth` / `malformed_auth` need cookie or header names.
 
 Endpoint inclusion/exclusion is owned by **Endpoint Policy** (`talos endpoint exclude`). There is no `attack unauth exclude` command.
 

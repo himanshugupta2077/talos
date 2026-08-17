@@ -775,14 +775,19 @@ def _cmd_run(
         for err in auth_errors:
             print(f"  - {err}", file=sys.stderr)
         cli_error(
-            "\nEnsure every required role has:\n"
+            "\nHTTP-artifact roles need:\n"
             "  1. Auth artifacts:   talos auth set --cookie <name>\n"
             "  2. Provider:         talos auth-config set-provider <role> manual|auto\n"
             "  3. Session/flows:    talos auth-config set-session <role>  (manual)\n"
             "                       talos auth-config add-flow <role> <flow_id>  (auto)\n"
             "  4. Validation:       talos auth-config add-control-flow <role> <flow_id>\n"
             "  5. Validate:         talos auth-config validate <role>\n"
-            "  (<role> = role name or UUID; see talos role list)"
+            "  (<role> = role name or UUID; see talos role list)\n"
+            "\nNTLM / IIS Persistent-Auth (no Authorization header on captures):\n"
+            "  talos proxy auth add --host <host> --type ntlmv2 "
+            "--username USER --password PASS\n"
+            "  Then re-run. IV sends with that NTLM session. "
+            "Unauth / auth-test send without it."
         )
 
     if flow_endpoint_ids:

@@ -241,17 +241,51 @@ def cmd_auth_show(project: object, args: argparse.Namespace | None = None) -> No
     """
     db_path = project.db_path  # type: ignore[attr-defined]
     config = get_auth_config(db_path)
+    from talos.projects.auth_mechanism import resolve_auth_mechanism
+
+    mechanism = resolve_auth_mechanism(db_path)
+    ntlm_payload = [
+        {
+            "id": row.id,
+            "name": row.name,
+            "host": row.host,
+            "username": row.username,
+            "enabled": row.enabled,
+        }
+        for row in mechanism.platform_profiles
+    ]
 
     if wants_json(args):
         cli_json({
             "cookies": list(config.get("cookies") or []),
             "headers": list(config.get("headers") or []),
+            "platform_ntlm": {
+                "enabled": mechanism.has_platform_ntlm,
+                "profiles": ntlm_payload,
+            },
         })
         return
 
     if not config["cookies"] and not config["headers"]:
         print("Auth requirements: (empty)")
-        print("Use 'talos auth set --cookie <name>' or '--header <name>' to configure.")
+        if mechanism.has_platform_ntlm:
+            print("Platform NTLM (authenticated session for IV / replay):")
+            for row in mechanism.platform_profiles:
+                print(f"  host : {row.host}  user={row.username}  id={row.id}")
+            print(
+                "Captured IIS Persistent-Auth requests have no Authorization "
+                "header. Unauth / auth-test send without this NTLM session."
+            )
+        else:
+            print(
+                "Use 'talos auth set --cookie <name>' or '--header <name>' "
+                "for cookie/header apps."
+            )
+            print(
+                "For NTLM / IIS Persistent-Auth: "
+                "talos proxy auth add --host <host> --type ntlmv2 "
+                "--username USER --password PASS"
+            )
         return
 
     print("Required Auth Artifacts:")
@@ -259,6 +293,10 @@ def cmd_auth_show(project: object, args: argparse.Namespace | None = None) -> No
         print(f"  cookie : {name}")
     for name in config["headers"]:
         print(f"  header : {name}")
+    if mechanism.has_platform_ntlm:
+        print("Platform NTLM:")
+        for row in mechanism.platform_profiles:
+            print(f"  host : {row.host}  user={row.username}  id={row.id}")
 
 
 def cmd_auth_clear(project: object, args: argparse.Namespace) -> None:

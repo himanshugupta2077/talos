@@ -2,6 +2,37 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Auth — platform NTLM is the session (no header)
+
+**Shipped:** 2026-08-17
+
+IIS Windows Integrated Auth (`Persistent-Auth`) does **not** put an
+`Authorization` header on captured requests after the handshake. Talos
+also drops browser NTLM tokens so it can own the origin handshake.
+IV and unauth used to refuse the scan with “No auth artifact names
+configured” — inventing a cookie/header name was the wrong fix.
+
+- **IV** treats a credentialed `talos proxy auth` profile as the
+  authenticated session when no cookie/header names are set. Role
+  `set-session` / extractors are not required.
+- **Unauth** and **auth-test** send with `platform_auth=False` so the
+  origin handshake does not re-authenticate the “unauthenticated”
+  request. NTLM-only projects enqueue baseline (+ request mutations)
+  only — header-mutation techniques need HTTP artifacts.
+- `talos auth show` lists platform NTLM profiles. Pre-check errors
+  tell the operator to `talos proxy auth add` instead of inventing a
+  header name.
+
+```bash
+talos proxy auth add --host foresight-uat.chartercom.com --type ntlmv2 \
+  --username USER --password PASS
+talos auth show
+talos input-validation run
+talos attack unauth run
+```
+
+Tests: `tests/test_auth_mechanism_ntlm.py`.
+
 ## Scheduler — IST testing windows
 
 **Shipped:** 2026-08-17

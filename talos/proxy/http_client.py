@@ -11,6 +11,10 @@ Purpose:
         - keep-alive
         - platform authentication (NTLMv2)
 
+    Unauth and auth-test pass ``platform_auth=False`` so IIS Persistent-Auth
+    is not re-applied after HTTP artifacts are stripped. Authenticated
+    engines (IV, replay, BAC) leave the default (project setting).
+
     NTLM / Persistent-Auth is bound to the origin TCP socket. An intercepting
     upstream (Burp with platform auth off) owns that socket, so Type 1 and
     Type 3 land on different origin connections and the browser sees a 401
@@ -99,6 +103,7 @@ def client_kwargs(
     follow_redirects: bool = False,
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
+    platform_auth: Optional[bool] = None,
 ) -> dict[str, Any]:
     """
     Purpose:
@@ -109,15 +114,24 @@ def client_kwargs(
         follow_redirects — engines always disable redirects.
         verify           — TLS verify; False matches mitmdump --ssl-insecure.
         transport        — optional preloaded ProxyTransport.
+        platform_auth    — None: honor project setting (authenticated send).
+                           False: never attach NTLM (unauth / auth-test).
+                           True: attach NTLM when credentialed profiles exist.
     Output:
         Dict suitable for httpx.Client / httpx.AsyncClient.
     Side effects: May read layered config when transport is None.
     """
     settings = transport or load_proxy_transport(db_path)
-    auth_active = settings.platform_auth_enabled and any(
+    have_creds = any(
         row.enabled and row.username and row.password
         for row in settings.platform_auth_entries
     )
+    if platform_auth is False:
+        auth_active = False
+    elif platform_auth is True:
+        auth_active = have_creds
+    else:
+        auth_active = bool(settings.platform_auth_enabled and have_creds)
     # NTLM/Persistent-Auth needs a reused origin socket even if the operator
     # turned keep-alive off for the mitmproxy hop to the browser.
     if auth_active:
@@ -162,6 +176,7 @@ def create_async_client(
     follow_redirects: bool = False,
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
+    platform_auth: Optional[bool] = None,
 ) -> httpx.AsyncClient:
     """
     Purpose: Build an AsyncClient honoring project proxy transport.
@@ -174,6 +189,7 @@ def create_async_client(
             follow_redirects=follow_redirects,
             verify=verify,
             transport=transport,
+            platform_auth=platform_auth,
         )
     )
 
@@ -185,6 +201,7 @@ def create_client(
     follow_redirects: bool = False,
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
+    platform_auth: Optional[bool] = None,
 ) -> httpx.Client:
     """
     Purpose: Build a sync Client honoring project proxy transport.
@@ -197,5 +214,6 @@ def create_client(
             follow_redirects=follow_redirects,
             verify=verify,
             transport=transport,
+            platform_auth=platform_auth,
         )
     )

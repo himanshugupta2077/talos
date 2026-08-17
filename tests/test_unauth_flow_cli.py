@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from talos.projects.auth import set_auth_fields
 from talos.projects.db import init_project_db
 from talos.projects.unauth.cli import cmd_unauth_run
 from talos.projects.unauth.recipes import UNAUTH_RECIPES
@@ -93,6 +94,7 @@ def db_path(tmp_path: Path) -> Path:
                 ),
             )
         conn.commit()
+    set_auth_fields(path, cookies=["session"], headers=[])
     return path
 
 

@@ -7,7 +7,8 @@ Purpose:
 
     Type 1 = exact replay (talos.replay.engine).
     Type 2 = exact replay minus auth fields — detects endpoints that work
-             without authentication.
+             without authentication. Platform NTLM is disabled on the
+             outbound client (IIS Persistent-Auth is not a header).
 
     This is the first real attack capability in the system.
 
@@ -51,6 +52,7 @@ import httpx
 import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
 from talos.projects.auth import get_auth_config
+from talos.projects.auth_mechanism import resolve_auth_mechanism
 from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 
@@ -152,7 +154,8 @@ async def run_auth_bypass_test(
         )
 
     auth_config = get_auth_config(db_path)
-    if not auth_config["cookies"] and not auth_config["headers"]:
+    mechanism = resolve_auth_mechanism(db_path)
+    if not mechanism.ready:
         return AuthTestOutcome(
             original_flow_id=flow["id"],
             replayed_flow_id=None,
@@ -237,6 +240,7 @@ async def _execute_stripped_replay(
             timeout=_REPLAY_TIMEOUT,
             follow_redirects=False,
             verify=False,
+            platform_auth=False,
         ) as client:
             resp = await client.request(
                 method=flow["method"],

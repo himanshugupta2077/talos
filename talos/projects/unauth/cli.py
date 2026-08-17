@@ -11,6 +11,8 @@ Purpose:
         filter  — Manage the unauth-decision-filter.yaml file (init|show|validate).
 
     'talos attack unauth run' logic:
+        0. Require HTTP artifacts or a credentialed platform NTLM profile.
+           NTLM-only: print a note and keep baseline recipes only.
         1. Fetch all qualified, non-excluded endpoints via endpoint policy,
            or use operator `--flow UUID` (repeatable) and skip auto ranking.
         2. For each endpoint, use the configured baseline flow (or the
@@ -219,6 +221,36 @@ def cmd_unauth_run(manager: ProjectManager, args: argparse.Namespace) -> None:
                 "(talos endpoint list) and have 2xx proxy_capture flows."
             )
 
+    from talos.projects.auth_mechanism import (
+        missing_auth_error,
+        resolve_auth_mechanism,
+        uncovered_ntlm_hosts,
+    )
+
+    mechanism = resolve_auth_mechanism(db_path)
+    if not mechanism.ready:
+        hosts = sorted({str(ep.get("host") or "") for ep in testable if ep.get("host")})
+        cli_error(missing_auth_error(hosts))
+    if mechanism.ntlm_only:
+        uncovered = uncovered_ntlm_hosts(
+            mechanism,
+            {str(ep.get("host") or "") for ep in testable},
+        )
+        if uncovered:
+            cli_error(
+                "Platform NTLM is configured but no credentialed profile "
+                f"matches: {', '.join(uncovered)}. "
+                "Run 'talos proxy auth add --host <host> --type ntlmv2 "
+                "--username USER --password PASS'."
+            )
+        print(
+            "Platform NTLM: captured requests have no Authorization header.\n"
+            "Unauth will send without platform NTLM "
+            "(expect 401 if the origin requires Windows auth).\n"
+            "Header-mutation techniques are skipped; baseline (+ request "
+            "mutations) only."
+        )
+
     # Optionally restrict recipes to one Unauth technique.
     recipes = [
         recipe
@@ -228,8 +260,17 @@ def cmd_unauth_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             or recipe["technique"] == technique_filter
         )
     ]
+    if mechanism.ntlm_only:
+        recipes = [recipe for recipe in recipes if recipe["technique"] == "baseline"]
 
     if not recipes:
+        if mechanism.ntlm_only and technique_filter not in (None, "baseline"):
+            cli_error(
+                f"Technique {technique_filter!r} requires HTTP auth artifacts "
+                "(cookie/header names). This project is platform NTLM only. "
+                "Use 'talos attack unauth run' (baseline) or "
+                "'--technique baseline'."
+            )
         cli_error(f"No recipes match technique={technique_filter!r}.")
 
     total_enqueued = 0

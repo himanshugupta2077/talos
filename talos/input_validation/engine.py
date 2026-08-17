@@ -213,8 +213,13 @@ def verify_auth_for_iv_scan(
         Called by the CLI before scheduling any jobs.  Returns a list of error
         strings — one per failed role.  An empty list means all roles are ready.
 
-        Checks performed for each role:
-            1. Auth artifact names are configured (talos auth set).
+        Checks performed:
+            0. Platform NTLM-only (no HTTP artifacts): a credentialed
+               ``talos proxy auth`` profile must cover every scoped host.
+               Role cookie/session checks are skipped — NTLM is the session.
+            Otherwise, for each role:
+            1. Auth artifact names are configured (talos auth set),
+               or platform NTLM is configured (see 0).
             2. Authentication provider is set.
             3. MANUAL: session values exist and are not expired.
                AUTO:   at least one flow + extractor is configured.
@@ -235,11 +240,15 @@ def verify_auth_for_iv_scan(
         Does NOT modify role_auth_state.
     """
     from talos.projects.auth import (
-        get_auth_config,
         get_role_auth_state,
         get_session_health_config,
         list_auth_flow_configs,
         list_session_health_control_flows,
+    )
+    from talos.projects.auth_mechanism import (
+        missing_auth_error,
+        resolve_auth_mechanism,
+        uncovered_ntlm_hosts,
     )
     from talos.projects.auth_provider import (
         get_provider, get_manual_session_config, get_manual_session_expiry,
@@ -257,13 +266,25 @@ def verify_auth_for_iv_scan(
         # No flows captured yet — no roles to check.
         return []
 
-    # Check 1: global auth artifact names must be configured.
-    auth_cfg = get_auth_config(db_path)
-    if not auth_cfg["cookies"] and not auth_cfg["headers"]:
-        return [
-            "No auth artifact names configured. "
-            "Run 'talos auth set --cookie <name>' or '--header <name>' first."
-        ]
+    scoped_hosts = _collect_hosts_in_scope(
+        db_path, project_id, host, endpoint_id, param_name
+    )
+    mechanism = resolve_auth_mechanism(db_path)
+
+    if not mechanism.has_artifacts:
+        if mechanism.has_platform_ntlm:
+            uncovered = uncovered_ntlm_hosts(mechanism, scoped_hosts)
+            if uncovered:
+                shown = ", ".join(uncovered)
+                return [
+                    "Platform NTLM is configured but no credentialed profile "
+                    f"matches: {shown}. "
+                    "Run 'talos proxy auth add --host <host> --type ntlmv2 "
+                    "--username USER --password PASS'."
+                ]
+            # NTLM is the authenticated session — no cookie/header roles to check.
+            return []
+        return [missing_auth_error(list(scoped_hosts))]
 
     errors: list[str] = []
 
@@ -341,6 +362,57 @@ def _collect_role_ids_in_scope(
                 (project_id,),
             ).fetchall()
     return {row[0] for row in rows}
+
+
+def _collect_hosts_in_scope(
+    db_path: Path,
+    project_id: str,
+    host: str | None,
+    endpoint_id: str | None,
+    param_name: str | None,
+) -> set[str]:
+    """
+    Purpose:
+        Collect distinct endpoint origins (endpoints.host) for the same
+        scope as ``_collect_role_ids_in_scope``. Used to verify platform
+        NTLM profiles cover the hosts that would be scanned.
+    Output:
+        Set of host/origin strings.
+    Side effects: None (read-only).
+    """
+    if host:
+        return {host}
+    with sqlite3.connect(str(db_path)) as conn:
+        if endpoint_id:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT e.host
+                FROM endpoints e
+                WHERE e.id = ? AND e.host IS NOT NULL AND e.host != ''
+                """,
+                (endpoint_id,),
+            ).fetchall()
+        elif param_name:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT e.host
+                FROM endpoints e
+                JOIN parameters p ON p.endpoint_id = e.id
+                WHERE e.project_id = ? AND p.name = ?
+                  AND e.host IS NOT NULL AND e.host != ''
+                """,
+                (project_id, param_name),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT e.host
+                FROM endpoints e
+                WHERE e.project_id = ? AND e.host IS NOT NULL AND e.host != ''
+                """,
+                (project_id,),
+            ).fetchall()
+    return {row[0] for row in rows if row[0]}
 
 
 def _verify_single_role(
