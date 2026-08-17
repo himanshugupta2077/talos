@@ -61,7 +61,7 @@ Talos venv incomplete. Launcher checks `import httpx` and the `talos` console sc
 "$TALOS_ROOT/.venv/bin/python" -m pip install -e "$TALOS_ROOT"
 ```
 
-### Backend fails: No module named fastapi / uvicorn
+### Backend fails: No module named fastapi / uvicorn / httpx
 
 Control Panel backend venv incomplete:
 

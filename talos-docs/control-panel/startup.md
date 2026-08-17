@@ -115,7 +115,7 @@ Windows launcher requires `python`, `node`, `npm`. `curl` is optional; without i
 #### 4. Control Panel backend virtual environment
 
 - Path: `$CP_ROOT/backend/.venv`
-- Installs `requirements.txt` if `import fastapi, uvicorn` fails
+- Installs `requirements.txt` if `import fastapi, uvicorn, httpx` fails
 
 #### 5. Frontend dependencies
 
@@ -194,7 +194,7 @@ TALOS_ROOT/
 ├── .venv/                          # Talos: package + runtime deps (httpx, etc.)
 └── talos-control-panel/
     └── backend/
-        └── .venv/                  # Control Panel API only (fastapi, uvicorn, pydantic)
+        └── .venv/                  # Control Panel API (fastapi, uvicorn, pydantic, httpx)
 ```
 
 Why two?
@@ -209,7 +209,7 @@ Why two?
 | Layer | When installed | How |
 |-------|----------------|-----|
 | Talos package | Missing entry script or `httpx` | `pip install -e $TALOS_ROOT` |
-| Backend deps | Missing fastapi/uvicorn | `pip install -r backend/requirements.txt` |
+| Backend deps | Missing fastapi/uvicorn/httpx | `pip install -r backend/requirements.txt` |
 | Frontend deps | Missing `node_modules` | `npm install` |
 
 Re-running the launcher after a failed partial install generally re-checks the same readiness probes.

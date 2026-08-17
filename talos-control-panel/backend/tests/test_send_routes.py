@@ -538,6 +538,18 @@ def test_redo(client):
     assert r.json()["result"]["outcomes"][0]["execution_flow_id"] == new_id
 
 
+def test_send_engine_importable_without_talos_venv():
+    """POST /api/send/once imports the engine in this process (issue #4)."""
+    import httpx
+    from talos.send.engine import send_once, send_parallel, send_repeat, redo_send
+
+    assert httpx.Timeout is not None
+    assert callable(send_once)
+    assert callable(send_parallel)
+    assert callable(send_repeat)
+    assert callable(redo_send)
+
+
 def test_tabs_open_list_reuse_touch_close(client):
     """Persistent Repeater tab archive API (metadata only)."""
     tc, pid, flow_id, _db = client

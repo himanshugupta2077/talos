@@ -158,7 +158,7 @@ if [[ ! -x "$CP_PY" ]]; then
     python3 -m venv "$CP_BACKEND_VENV"
     "$CP_PY" -m pip install --upgrade pip
 fi
-if ! "$CP_PY" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+if ! "$CP_PY" -c "import fastapi, uvicorn, httpx" >/dev/null 2>&1; then
     echo "[setup] Installing control panel backend dependencies"
     "$CP_PY" -m pip install -r "$CP_BACKEND_DIR/requirements.txt"
 else

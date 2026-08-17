@@ -456,15 +456,15 @@ function Invoke-Setup {
         Invoke-Native -FilePath $CpPy -ArgumentList @("-m", "pip", "install", "--upgrade", "pip")
     }
 
-    if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn")) {
+    if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn, httpx")) {
         $req = Join-Path $CpBackendDir "requirements.txt"
         if (-not (Test-Path -LiteralPath $req)) {
             throw "backend requirements.txt not found: $req"
         }
         Write-Host "[setup] Installing control panel backend dependencies"
         Invoke-Native -FilePath $CpPy -ArgumentList @("-m", "pip", "install", "-r", $req)
-        if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn")) {
-            throw "backend install finished but 'import fastapi, uvicorn' still fails in $CpPy"
+        if (-not (Test-PythonImport -PythonExe $CpPy -Code "import fastapi, uvicorn, httpx")) {
+            throw "backend install finished but 'import fastapi, uvicorn, httpx' still fails in $CpPy"
         }
         Write-Host "[setup] Backend dependencies installed"
     } else {

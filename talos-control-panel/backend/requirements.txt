@@ -2,3 +2,5 @@ fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
 python-multipart>=0.0.9
+# Repeater Send runs talos.send.engine in-process (not via TALOS_PYTHON).
+httpx>=0.27

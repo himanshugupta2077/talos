@@ -13,7 +13,7 @@ How to set up, develop, and build the Control Panel. There is no separate packag
 | curl | Optional; browser auto-open on Windows/Unix poll |
 | Git monorepo checkout | Control Panel expects to live under Talos repo root |
 
-Talos runtime dependencies (e.g. `httpx`, mitmproxy stack as required by the Talos package) are installed into the **Talos** venv via editable install—not into the Control Panel backend venv.
+Talos runtime dependencies (mitmproxy stack as required by the Talos package) are installed into the **Talos** venv via editable install. The Control Panel backend venv also installs `httpx` because Repeater Send (`/api/send/once`) runs `talos.send.engine` in-process.
 
 ---
 
@@ -32,7 +32,7 @@ The launcher:
 1. Creates `$TALOS_ROOT/.venv` if needed
 2. `pip install -e $TALOS_ROOT` when Talos entry/deps missing
 3. Creates `talos-control-panel/backend/.venv` if needed
-4. `pip install -r backend/requirements.txt` when FastAPI stack missing
+4. `pip install -r backend/requirements.txt` when FastAPI stack or `httpx` missing
 5. `npm install` in frontend when `node_modules` missing
 6. Starts dev servers
 
