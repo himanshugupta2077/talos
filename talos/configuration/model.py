@@ -157,12 +157,19 @@ class CaptureConfigSection:
 class SchedulerConfigSection:
     """
     Purpose:
-        Effective scheduler rate-limit settings.
+        Effective scheduler rate-limit and testing-window settings.
+    Fields:
+        min_delay / max_delay / max_queue_size — job rate limits.
+        testing_windows_enabled — when True, the scheduler only sends HTTP
+            (and auto-enqueues IV/unauth) inside ``testing_windows``.
+        testing_windows — IST ``HH:MM-HH:MM`` ranges (UTC+05:30).
     """
 
     min_delay: float = 2.0
     max_delay: float = 6.0
     max_queue_size: int = 200
+    testing_windows_enabled: bool = False
+    testing_windows: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1455,9 +1455,16 @@ Copy a UUID from `list`, then use `show`, `export`, `replay flow`, or `auth-conf
 talos scheduler status
 talos scheduler config
 talos scheduler config --min-delay 3.0 --max-delay 8.0 --max-queue-size 100
+# IST testing windows — scheduler HTTP (incl. IV/unauth auto-run) only inside ranges
+talos scheduler config --window 09:00-18:00 --testing-windows on
+talos scheduler config --window 10:00-13:00 --window 14:00-18:00 --testing-windows on
+talos scheduler config --testing-windows off
+talos scheduler config --clear-windows
 # Layered equivalent (preferred for globals / inheritance):
 talos config set scheduler.min_delay 3
 talos config set scheduler.max_delay 8
+talos config set scheduler.testing_windows.enabled true
+talos config set scheduler.testing_windows.windows '["09:00-18:00"]'
 talos config scheduler show
 talos scheduler enqueue flow <flow_id>
 talos scheduler enqueue endpoint <endpoint_id>
@@ -1493,6 +1500,8 @@ talos scheduler resume
 when debugging large queues.
 
 `resume` does **not** preflight BAC or role sessions — session health is checked when a job runs. Paused Intruder sessions are **not** auto-resumed (`talos intruder session resume <id>`).
+
+**Testing windows (IST):** Off by default. When on, the scheduler process may be running but it will **not** send HTTP or auto-enqueue IV/unauth work outside the configured India Standard Time ranges (`HH:MM-HH:MM`, overnight wrap allowed). Jobs stay pending until the next open window. Capture and review still work at any hour. Times are always IST (UTC+05:30).
 
 The scheduler daemon starts with the proxy; there is no separate `scheduler start` command.
 

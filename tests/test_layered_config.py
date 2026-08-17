@@ -236,10 +236,31 @@ class TestSubsystemHelpers:
         assert cfg["min_delay"] == 4.0
         assert cfg["max_delay"] == 10.0
         assert cfg["max_queue_size"] == 50
+        assert cfg["testing_windows_enabled"] is False
+        assert cfg["testing_windows"] == []
         yaml_path = project_dir / "project.yaml"
         assert yaml_path.exists()
         data = yaml.safe_load(yaml_path.read_text())
         assert data["scheduler"]["min_delay"] == 4.0
+
+    def test_testing_windows_via_config_set(
+        self, project_dir: Path, monkeypatch: pytest.MonkeyPatch, data_dir: Path
+    ) -> None:
+        monkeypatch.setenv("TALOS_DATA_DIR", str(data_dir))
+        mgr = ConfigurationManager(data_dir)
+        mgr.set_value(
+            "scheduler.testing_windows.enabled",
+            True,
+            project_data_dir=project_dir,
+        )
+        mgr.set_value(
+            "scheduler.testing_windows.windows",
+            ["09:00-18:00"],
+            project_data_dir=project_dir,
+        )
+        cfg = get_scheduler_config(project_dir / "talos.db")
+        assert cfg["testing_windows_enabled"] is True
+        assert cfg["testing_windows"] == ["09:00-18:00"]
 
     def test_attack_helpers_roundtrip(self, project_dir: Path, monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:
         monkeypatch.setenv("TALOS_DATA_DIR", str(data_dir))
@@ -347,6 +368,8 @@ class TestConfigCli:
         sched = next(s for s in payload["sections"] if s["id"] == "scheduler")
         keys = {s["key"] for s in sched["settings"]}
         assert "scheduler.min_delay" in keys
+        assert "scheduler.testing_windows.enabled" in keys
+        assert "scheduler.testing_windows.windows" in payload["known_keys"]
 
     def test_section_resource(
         self, data_dir: Path, project_dir: Path

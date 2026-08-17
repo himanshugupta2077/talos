@@ -163,6 +163,16 @@ export default function MetricsStrip({
             </span>
             <span className="badge badge-sm badge-ghost uppercase">{src}</span>
           </div>
+          <div>
+            <span className="text-base-content/50 text-[10px] uppercase block">
+              Testing windows (IST)
+            </span>
+            <span className="mono text-xs">
+              {status?.testing_windows?.enabled
+                ? `${status.testing_windows.allows_execution ? "sending" : "holding"} · ${status.testing_windows.now_ist} IST`
+                : "off"}
+            </span>
+          </div>
         </div>
         <Link
           className="link link-primary text-xs shrink-0"

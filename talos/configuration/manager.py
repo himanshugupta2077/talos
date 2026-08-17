@@ -445,6 +445,11 @@ class ConfigurationManager:
         upstream = proxy_raw.get("upstream") or {}
         capture_raw = merged.get("capture") or {}
         sched_raw = merged.get("scheduler") or {}
+        if not isinstance(sched_raw, dict):
+            sched_raw = {}
+        tw_raw = sched_raw.get("testing_windows") or {}
+        if not isinstance(tw_raw, dict):
+            tw_raw = {}
         attack_raw = merged.get("attack") or {}
         http_raw = merged.get("http") or {}
 
@@ -550,6 +555,8 @@ class ConfigurationManager:
                 min_delay=float(sched_raw.get("min_delay", 2.0)),
                 max_delay=float(sched_raw.get("max_delay", 6.0)),
                 max_queue_size=int(sched_raw.get("max_queue_size", 200)),
+                testing_windows_enabled=_as_bool(tw_raw.get("enabled"), False),
+                testing_windows=_parse_testing_windows(tw_raw.get("windows")),
             ),
             attack=AttackConfigSection(
                 unauth_auto_run=bool(attack_raw.get("unauth_auto_run", False)),
@@ -721,6 +728,34 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in ("0", "false", "no", "off", ""):
             return False
     return bool(value)
+
+
+def _parse_testing_windows(raw: Any) -> tuple[str, ...]:
+    """
+    Purpose:
+        Canonicalize scheduler.testing_windows.windows; drop invalid entries
+        so a typo cannot crash the scheduler load path.
+    """
+    if raw is None or raw == "":
+        return ()
+    if isinstance(raw, str):
+        items: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        return ()
+    from talos.scheduler.testing_windows import WindowParseError, normalize_windows
+
+    valid: list[str] = []
+    for item in items:
+        try:
+            valid.extend(normalize_windows([item]))
+        except WindowParseError as exc:
+            logger.warning("Ignoring invalid testing window %r: %s", item, exc)
+    try:
+        return normalize_windows(valid)
+    except WindowParseError:
+        return ()
 
 
 _PROFILE_ID_RE = re.compile(r"[^a-z0-9]+")

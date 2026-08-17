@@ -160,6 +160,16 @@ export interface SchedulerStatus {
     min_delay?: number;
     max_delay?: number;
     max_queue_size?: number;
+    testing_windows_enabled?: boolean;
+    testing_windows?: string[];
+  } | null;
+  testing_windows?: {
+    enabled: boolean;
+    allows_execution: boolean;
+    timezone: string;
+    windows: string[];
+    now_ist: string;
+    detail: string;
   } | null;
   state: { state?: string; reason?: string | null } | null;
   process?: SchedulerProcessStatus | null;

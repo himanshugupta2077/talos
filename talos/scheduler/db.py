@@ -965,7 +965,8 @@ def get_scheduler_config(db_path: Path) -> dict:
         Falls back to built-in defaults when nothing is set.
     Input:   db_path — Path to the project's talos.db.
     Output:  Dict with keys: min_delay (float), max_delay (float),
-             max_queue_size (int).
+             max_queue_size (int), testing_windows_enabled (bool),
+             testing_windows (list[str] of IST HH:MM-HH:MM).
     Side effects: May migrate the project DB through the legacy bridge.
     """
     from talos.configuration.manager import ConfigurationManager
@@ -976,6 +977,8 @@ def get_scheduler_config(db_path: Path) -> dict:
             "min_delay": DEFAULT_MIN_DELAY,
             "max_delay": DEFAULT_MAX_DELAY,
             "max_queue_size": DEFAULT_MAX_QUEUE_SIZE,
+            "testing_windows_enabled": False,
+            "testing_windows": [],
         }
 
     mgr = ConfigurationManager(TalosConfig.from_env().data_dir)
@@ -984,6 +987,10 @@ def get_scheduler_config(db_path: Path) -> dict:
         "min_delay": effective.scheduler.min_delay,
         "max_delay": effective.scheduler.max_delay,
         "max_queue_size": effective.scheduler.max_queue_size,
+        "testing_windows_enabled": bool(
+            effective.scheduler.testing_windows_enabled
+        ),
+        "testing_windows": list(effective.scheduler.testing_windows),
     }
 
 
@@ -1029,6 +1036,37 @@ def set_scheduler_config(
         save_yaml_file(path, current)
     except Exception:
         pass
+
+
+def set_testing_windows_config(
+    db_path: Path,
+    *,
+    enabled: bool,
+    windows: list[str],
+) -> None:
+    """
+    Purpose:
+        Persist IST testing-window settings into project.yaml.
+        Not stored in the legacy scheduler_config SQLite row (list-shaped).
+    Input:
+        db_path  — Path to the project's talos.db.
+        enabled  — Master switch.
+        windows  — Canonical HH:MM-HH:MM strings (already validated).
+    Side effects:
+        Writes scheduler.testing_windows.* into project.yaml.
+    """
+    migrate_project_db(db_path)
+
+    from talos.configuration.io import load_yaml_file, project_config_path, save_yaml_file
+    from talos.configuration.merge import set_path
+    from talos.scheduler.testing_windows import normalize_windows
+
+    canon = list(normalize_windows(windows))
+    path = project_config_path(db_path.parent)
+    current = load_yaml_file(path) if path.exists() else {}
+    current = set_path(current, "scheduler.testing_windows.enabled", bool(enabled))
+    current = set_path(current, "scheduler.testing_windows.windows", canon)
+    save_yaml_file(path, current)
 
 
 # ------------------------------------------------------------------ #

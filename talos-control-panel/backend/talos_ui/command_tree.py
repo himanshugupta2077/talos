@@ -564,10 +564,13 @@ COMMAND_TREE: list[dict] = [
             cmd("scheduler.status", ["scheduler", "status"], "Show process runtime + queue metrics"),
             cmd("scheduler.start", ["scheduler", "start"], "Start the managed scheduler process"),
             cmd("scheduler.stop", ["scheduler", "stop"], "Stop the managed scheduler process"),
-            cmd("scheduler.config", ["scheduler", "config"], "View/set scheduler rate limits (compat; dual-writes layered config)", [
+            cmd("scheduler.config", ["scheduler", "config"], "View/set scheduler rate limits and IST testing windows", [
                 arg("min_delay", flag="--min-delay", kind="number"),
                 arg("max_delay", flag="--max-delay", kind="number"),
                 arg("max_queue_size", flag="--max-queue-size", kind="number"),
+                arg("testing_windows", flag="--testing-windows", kind="select", options=["on", "off"]),
+                arg("window", flag="--window", help="IST HH:MM-HH:MM (repeat flag for several windows)"),
+                arg("clear_windows", flag="--clear-windows", kind="boolean"),
             ]),
             cmd("scheduler.enqueue.flow", ["scheduler", "enqueue", "flow"], "Enqueue a flow replay job", [
                 arg("flow_id", required=True),

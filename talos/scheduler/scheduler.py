@@ -5,6 +5,11 @@ Purpose:
     ReplayScheduler — infrastructure daemon that drains the scheduler_jobs queue
     and sends replay requests at a controlled, randomised rate.
 
+    Testing windows (optional, IST):
+        When scheduler.testing_windows.enabled is on, the loop holds every
+        outbound job (and IV/unauth auto-enqueue) until current India Standard
+        Time is inside a configured window. Jobs stay pending.
+
     Lifecycle mirrors FlowWorker:
         start()  — spawns a daemon thread; returns immediately.
         stop()   — signals the loop to exit after the current job.
@@ -206,6 +211,7 @@ class ReplayScheduler:
     def __init__(self, project: Project) -> None:
         self._project = project
         self._stop_event = threading.Event()
+        self._tw_last_log: float = 0.0
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -264,6 +270,35 @@ class ReplayScheduler:
         self._thread.join()
         _log.info("ReplayScheduler stopped for project %s.", self._project.id)
 
+    def _hold_for_testing_window(self, db_path: Path) -> bool:
+        """
+        Purpose:
+            When IST testing windows are enabled and the current time is
+            outside every window, hold execution and auto-enqueue.
+        Output:
+            True when the loop must idle without sending HTTP.
+        Side effects:
+            Logs at most once per 60s while holding.
+        """
+        from talos.scheduler.testing_windows import evaluate
+
+        cfg = sched_db.get_scheduler_config(db_path)
+        state = evaluate(
+            bool(cfg.get("testing_windows_enabled", False)),
+            cfg.get("testing_windows") or [],
+        )
+        if state.allows_execution:
+            return False
+        now = time.monotonic()
+        if now - self._tw_last_log >= 60.0:
+            self._tw_last_log = now
+            _log.info(
+                "[scheduler] Holding jobs — IST %s. %s",
+                state.now_ist,
+                state.detail,
+            )
+        return True
+
     # ------------------------------------------------------------------ #
     # Main loop                                                            #
     # ------------------------------------------------------------------ #
@@ -274,15 +309,18 @@ class ReplayScheduler:
             Main scheduling loop.  Runs until _stop_event is set.
             On each iteration:
                 1. Check global scheduler state (paused / waiting_for_session).
-                2. Poll DB for the next pending job.
-                3. If empty — idle sleep and retry.
-                4. Check endpoint annotations (pre-execution safety layer).
-                5. Mark job running; execute it; mark terminal state.
-                6. Sleep a randomised delay loaded from scheduler_config.
+                2. If IST testing windows are on and we are outside them, hold
+                   (no execute, no auto-enqueue) and idle-sleep.
+                3. Poll DB for the next pending job.
+                4. If empty — idle sleep and retry (auto-enqueue on interval).
+                5. Check endpoint annotations (pre-execution safety layer).
+                6. Mark job running; execute it; mark terminal state.
+                7. Sleep a randomised delay loaded from scheduler_config.
 
             When the scheduler state is PAUSED or WAITING_FOR_SESSION, the loop
             sleeps the idle interval without consuming jobs.  This preserves the
             queue so execution resumes seamlessly once a session is refreshed.
+            The same hold applies outside an enabled IST testing window.
         Side effects:
             Calls replay engine; writes to DB; logs progress.
         """
@@ -301,6 +339,10 @@ class ReplayScheduler:
             # Check global scheduler state before polling for work.
             sched_state = sched_db.get_scheduler_state(db_path)
             if sched_state in (SCHED_STATE_PAUSED, SCHED_STATE_WAITING_FOR_SESSION):
+                time.sleep(_IDLE_POLL_INTERVAL)
+                continue
+
+            if self._hold_for_testing_window(db_path):
                 time.sleep(_IDLE_POLL_INTERVAL)
                 continue
 

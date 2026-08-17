@@ -6,6 +6,7 @@ Purpose:
     Entry points:
         talos scheduler status                              — show queue depth by status + metrics
         talos scheduler config [--min-delay N] [--max-delay N] [--max-queue-size N]
+                               [--testing-windows on|off] [--window HH:MM-HH:MM] ...
         talos scheduler enqueue flow <flow_id>              — queue a flow replay job
         talos scheduler enqueue endpoint <endpoint_id>      — queue an endpoint replay/auth job
         talos scheduler jobs list [--status] [--type] [--limit]
@@ -143,7 +144,9 @@ def run_scheduler_cli(
     # talos scheduler config
     p_config = sub.add_parser(
         "config",
-        help="Read or update scheduler config (min-delay, max-delay, max-queue-size).",
+        help=(
+            "Read or update scheduler config (rate limits + IST testing windows)."
+        ),
     )
     p_config.add_argument(
         "--min-delay",
@@ -162,6 +165,33 @@ def run_scheduler_cli(
         type=int,
         metavar="N",
         help="Maximum active (pending + running) jobs allowed.",
+    )
+    p_config.add_argument(
+        "--testing-windows",
+        dest="testing_windows",
+        choices=["on", "off"],
+        default=None,
+        help=(
+            "Turn IST testing windows on or off. When on, the scheduler only "
+            "sends HTTP (including IV/unauth auto-run) inside --window ranges."
+        ),
+    )
+    p_config.add_argument(
+        "--window",
+        dest="windows",
+        action="append",
+        default=None,
+        metavar="HH:MM-HH:MM",
+        help=(
+            "IST testing window (repeatable). Replaces the stored list when "
+            "any --window is passed. Overnight wrap allowed (22:00-06:00)."
+        ),
+    )
+    p_config.add_argument(
+        "--clear-windows",
+        dest="clear_windows",
+        action="store_true",
+        help="Remove all testing windows (also turns the feature off).",
     )
 
     # talos scheduler enqueue <target>
@@ -498,6 +528,7 @@ def cmd_status(project: object, args: argparse.Namespace | None = None) -> None:
             ],
             "metrics": metrics,
             "config": cfg,
+            "testing_windows": _testing_window_state(cfg).to_dict(),
         })
         return
 
@@ -544,6 +575,7 @@ def cmd_status(project: object, args: argparse.Namespace | None = None) -> None:
         f"  max-delay      : {cfg['max_delay']}s\n"
         f"  max-queue-size : {cfg['max_queue_size']}"
     )
+    print(_format_testing_windows_block(cfg))
     print(
         "\nTip: use 'talos scheduler jobs list' for full inventory, "
         "'jobs show <id>' for detail."
@@ -892,6 +924,30 @@ def cmd_process_stop() -> None:
     print(f"Scheduler stop complete (state={info.state.value}).")
 
 
+def _testing_window_state(cfg: dict):
+    from talos.scheduler.testing_windows import evaluate
+
+    return evaluate(
+        bool(cfg.get("testing_windows_enabled", False)),
+        cfg.get("testing_windows") or [],
+    )
+
+
+def _format_testing_windows_block(cfg: dict) -> str:
+    state = _testing_window_state(cfg)
+    windows = state.windows
+    window_line = ", ".join(windows) if windows else "(none)"
+    switch = "on" if state.enabled else "off"
+    return (
+        f"\nTesting windows (IST):\n"
+        f"  enabled        : {switch}\n"
+        f"  windows        : {window_line}\n"
+        f"  now            : {state.now_ist} IST\n"
+        f"  sending        : {'yes' if state.allows_execution else 'holding'}\n"
+        f"  detail         : {state.detail}"
+    )
+
+
 def cmd_config(project: object, args: argparse.Namespace) -> None:
     """
     Purpose:
@@ -900,11 +956,14 @@ def cmd_config(project: object, args: argparse.Namespace) -> None:
         With flags, update the specified fields and display the result.
     Input:
         project — Active Project instance.
-        args    — Parsed args: min_delay, max_delay, max_queue_size (all optional).
+        args    — Parsed args: min_delay, max_delay, max_queue_size,
+                  testing_windows, windows, clear_windows.
     Side effects:
-        May write to scheduler_config table; prints current config to stdout.
+        May write scheduler_config / project.yaml; prints current config.
         Exits 1 if the provided values are invalid.
     """
+    from talos.scheduler.testing_windows import WindowParseError, normalize_windows
+
     db_path = project.db_path  # type: ignore[attr-defined]
     cfg = sched_db.get_scheduler_config(db_path)
 
@@ -934,6 +993,46 @@ def cmd_config(project: object, args: argparse.Namespace) -> None:
             max_delay=max_d,
             max_queue_size=cfg["max_queue_size"],
         )
+
+    windows_updated = False
+    next_windows = list(cfg.get("testing_windows") or [])
+    next_enabled = bool(cfg.get("testing_windows_enabled", False))
+
+    if getattr(args, "clear_windows", False):
+        next_windows = []
+        next_enabled = False
+        windows_updated = True
+
+    raw_windows = getattr(args, "windows", None)
+    if raw_windows:
+        try:
+            next_windows = list(normalize_windows(raw_windows))
+        except WindowParseError as exc:
+            cli_usage_error(str(exc))
+        windows_updated = True
+
+    switch = getattr(args, "testing_windows", None)
+    if switch == "on":
+        next_enabled = True
+        windows_updated = True
+    elif switch == "off":
+        next_enabled = False
+        windows_updated = True
+
+    if next_enabled and not next_windows:
+        cli_usage_error(
+            "Testing windows cannot be on without at least one --window "
+            "(IST HH:MM-HH:MM, e.g. 09:00-18:00)."
+        )
+
+    if windows_updated:
+        sched_db.set_testing_windows_config(
+            db_path,
+            enabled=next_enabled,
+            windows=next_windows,
+        )
+
+    if updated or windows_updated:
         print("Scheduler config updated.")
 
     cfg = sched_db.get_scheduler_config(db_path)
@@ -942,6 +1041,7 @@ def cmd_config(project: object, args: argparse.Namespace) -> None:
         f"  max-delay      : {cfg['max_delay']}s\n"
         f"  max-queue-size : {cfg['max_queue_size']}"
     )
+    print(_format_testing_windows_block(cfg))
 
 
 def cmd_enqueue(

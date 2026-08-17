@@ -238,9 +238,27 @@ def status(project_id: str):
     cfg = db.query_one(db_path, "SELECT * FROM scheduler_config")
     state = db.query_one(db_path, "SELECT * FROM scheduler_state")
 
-    min_delay = (cfg or {}).get("min_delay", 2)
-    max_delay = (cfg or {}).get("max_delay", 6)
-    max_queue_size = (cfg or {}).get("max_queue_size", 200)
+    layered: dict = {}
+    tw_state: dict | None = None
+    try:
+        _ensure_talos_on_path()
+        from talos.scheduler.db import get_scheduler_config
+        from talos.scheduler.testing_windows import evaluate
+
+        layered = get_scheduler_config(db_path)
+        tw_state = evaluate(
+            bool(layered.get("testing_windows_enabled", False)),
+            layered.get("testing_windows") or [],
+        ).to_dict()
+    except Exception:  # noqa: BLE001
+        layered = {}
+        tw_state = None
+
+    min_delay = layered.get("min_delay", (cfg or {}).get("min_delay", 2))
+    max_delay = layered.get("max_delay", (cfg or {}).get("max_delay", 6))
+    max_queue_size = layered.get(
+        "max_queue_size", (cfg or {}).get("max_queue_size", 200)
+    )
     try:
         max_q = int(max_queue_size) if max_queue_size is not None else 200
     except (TypeError, ValueError):
@@ -261,12 +279,15 @@ def status(project_id: str):
         # Legacy keys (compat)
         "counts": counts,
         "config": {
-            "min_delay": min_delay if cfg else 2,
-            "max_delay": max_delay if cfg else 6,
+            "min_delay": min_delay if (cfg or layered) else 2,
+            "max_delay": max_delay if (cfg or layered) else 6,
             "max_queue_size": max_q,
-        }
-        if cfg
-        else {"min_delay": 2, "max_delay": 6, "max_queue_size": max_q},
+            "testing_windows_enabled": bool(
+                layered.get("testing_windows_enabled", False)
+            ),
+            "testing_windows": list(layered.get("testing_windows") or []),
+        },
+        "testing_windows": tw_state,
         "state": state,
         # Enriched
         "process": process,
@@ -518,6 +539,9 @@ class ConfigBody(BaseModel):
     min_delay: float | None = None
     max_delay: float | None = None
     max_queue_size: int | None = None
+    testing_windows: str | None = None
+    windows: list[str] | None = None
+    clear_windows: bool = False
 
 
 @router.post("/config")
@@ -529,6 +553,18 @@ def set_config(project_id: str, body: ConfigBody):
         args += ["--max-delay", str(body.max_delay)]
     if body.max_queue_size is not None:
         args += ["--max-queue-size", str(body.max_queue_size)]
+    if body.testing_windows is not None:
+        switch = str(body.testing_windows).strip().lower()
+        if switch not in ("on", "off"):
+            raise HTTPException(
+                status_code=400,
+                detail="testing_windows must be 'on' or 'off'",
+            )
+        args += ["--testing-windows", switch]
+    if body.clear_windows:
+        args.append("--clear-windows")
+    for window in body.windows or []:
+        args += ["--window", str(window)]
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
 

@@ -2,6 +2,30 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Scheduler — IST testing windows
+
+**Shipped:** 2026-08-17
+
+The scheduler can be limited to authorized testing hours in **India
+Standard Time** (UTC+05:30). Capture and review still work all day;
+outbound scheduler HTTP — including IV and unauth **auto-run** — only
+fires inside the windows.
+
+```bash
+talos scheduler config --window 09:00-18:00 --testing-windows on
+talos scheduler config --testing-windows off
+talos scheduler config --clear-windows
+```
+
+- Off by default.
+- Multiple windows per day; overnight wrap (`22:00-06:00`) is allowed.
+- Jobs stay pending outside the window; the process can keep running.
+- `talos scheduler status` shows whether it is sending or holding.
+- Layered keys: `scheduler.testing_windows.enabled` and
+  `scheduler.testing_windows.windows`.
+
+Tests: `tests/test_testing_windows.py`.
+
 ## Proxy — platform auth works with Burp as upstream
 
 **Shipped:** 2026-08-17

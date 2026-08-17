@@ -55,6 +55,10 @@ BUILTIN_DEFAULTS: dict = {
         "min_delay": 2.0,
         "max_delay": 6.0,
         "max_queue_size": 200,
+        "testing_windows": {
+            "enabled": False,
+            "windows": [],
+        },
     },
     "attack": {
         "unauth_auto_run": False,
@@ -126,6 +130,8 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "scheduler.min_delay",
     "scheduler.max_delay",
     "scheduler.max_queue_size",
+    "scheduler.testing_windows.enabled",
+    "scheduler.testing_windows.windows",
     "attack.unauth_auto_run",
     "http.enabled",
     "http.rules",
@@ -165,7 +171,7 @@ SECTION_META: dict[str, dict] = {
     },
     "scheduler": {
         "label": "Scheduler",
-        "description": "Job rate limits and queue capacity.",
+        "description": "Job rate limits, queue capacity, and IST testing windows.",
     },
     "attack": {
         "label": "Attack",
@@ -322,6 +328,28 @@ SETTING_SCHEMA: tuple[dict, ...] = (
         "default": 200,
         "minimum": 1,
         "description": "Maximum number of pending scheduler jobs.",
+    },
+    {
+        "key": "scheduler.testing_windows.enabled",
+        "section": "scheduler",
+        "label": "Testing windows",
+        "type": "bool",
+        "default": False,
+        "description": (
+            "When on, the scheduler only sends HTTP (including IV/unauth "
+            "auto-run) inside the configured IST windows."
+        ),
+    },
+    {
+        "key": "scheduler.testing_windows.windows",
+        "section": "scheduler",
+        "label": "Testing window ranges",
+        "type": "string_list",
+        "default": [],
+        "description": (
+            "IST (UTC+05:30) ranges as HH:MM-HH:MM. Overnight wrap is allowed "
+            "(e.g. 22:00-06:00). JSON list in `talos config set`."
+        ),
     },
     {
         "key": "attack.unauth_auto_run",
