@@ -69,6 +69,7 @@ from talos.proxy.http_client import create_client
 from talos.proxy.platform_auth import (
     collect_www_authenticate,
     filter_request_headers,
+    filter_response_headers,
     match_platform_auth,
     strip_negotiate_challenges,
 )
@@ -324,18 +325,20 @@ class TalosAddon:
                 exc,
             )
             return
-        header_pairs = []
-        multi = getattr(resp.headers, "multi_items", None)
-        items = list(multi()) if callable(multi) else list(resp.headers.items())
-        for key, value in items:
-            if str(key).lower() in {"transfer-encoding", "content-length"}:
-                continue
-            header_pairs.append((str(key), str(value)))
-        flow.response = http.Response.make(
-            resp.status_code,
-            resp.content,
-            header_pairs,
-        )
+        header_pairs = filter_response_headers(resp.headers)
+        try:
+            flow.response = http.Response.make(
+                resp.status_code,
+                resp.content or b"",
+                header_pairs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Platform auth response rebuild failed host=%s: %s",
+                entry.host,
+                exc,
+            )
+            return
         logger.debug(
             "Platform auth completed host=%s status=%s",
             entry.host,

@@ -52,6 +52,25 @@ _SKIP_REQUEST_HEADERS = frozenset(
     }
 )
 
+# Hop-by-hop / reconstructed headers we never copy onto the mitmproxy
+# client response. content-encoding is dropped because httpx .content is
+# already decoded; mitmproxy recomputes content-length from that body.
+_SKIP_RESPONSE_HEADERS = frozenset(
+    {
+        "content-length",
+        "transfer-encoding",
+        "content-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "upgrade",
+    }
+)
+
 
 def normalize_host(host: str) -> str:
     """
@@ -200,6 +219,37 @@ def filter_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
             continue
         out[str(key)] = str(value)
     return out
+
+
+def header_field_bytes(value: object) -> bytes:
+    """
+    Purpose:
+        Encode a header name or value for mitmproxy Headers.
+        mitmproxy rejects str pairs with ``Header fields must be bytes.``
+    Side effects: None.
+    """
+    if isinstance(value, bytes):
+        return value
+    return str(value).encode("utf-8", errors="surrogateescape")
+
+
+def filter_response_headers(headers: Mapping[str, str]) -> list[tuple[bytes, bytes]]:
+    """
+    Purpose:
+        Copy origin response headers into ``(bytes, bytes)`` pairs for
+        ``mitmproxy.http.Response.make``. Preserves repeated keys
+        (Set-Cookie, WWW-Authenticate). Skips hop-by-hop and headers
+        that no longer match httpx's decoded body.
+    Side effects: None.
+    """
+    pairs: list[tuple[bytes, bytes]] = []
+    multi = getattr(headers, "multi_items", None)
+    items = list(multi()) if callable(multi) else list(headers.items())
+    for key, value in items:
+        if str(key).lower() in _SKIP_RESPONSE_HEADERS:
+            continue
+        pairs.append((header_field_bytes(key), header_field_bytes(value)))
+    return pairs
 
 
 class HttpxPlatformAuth(httpx.Auth):

@@ -29,6 +29,7 @@ from talos.proxy.ntlm import NTLM_SIGNATURE, NtlmContext, _md4, ntlm_message_typ
 from talos.proxy.platform_auth import (
     HttpxPlatformAuth,
     authorization_scheme,
+    filter_response_headers,
     host_matches,
     match_platform_auth,
     strip_negotiate_challenges,
@@ -281,6 +282,43 @@ class TestProxyAuthCli:
         run_proxy_cli(manager, ["config", "--http1"])
         assert "HTTP/1.1" in capsys.readouterr().out
         assert load_proxy_transport(project.db_path).http2 is False
+
+
+class TestResponseHeaderPairs:
+    def test_string_pairs_raise_like_vdi(self) -> None:
+        from mitmproxy import http
+
+        with pytest.raises(TypeError, match="Header fields must be bytes"):
+            http.Response.make(401, b"x", [("WWW-Authenticate", "NTLM")])
+
+    def test_bytes_pairs_accepted_by_mitmproxy(self) -> None:
+        from mitmproxy import http
+
+        headers = httpx.Headers(
+            [
+                ("WWW-Authenticate", "NTLM"),
+                ("WWW-Authenticate", "Negotiate"),
+                ("Content-Type", "text/html"),
+                ("Content-Length", "12"),
+                ("Transfer-Encoding", "chunked"),
+                ("Content-Encoding", "gzip"),
+                ("Set-Cookie", "a=1"),
+                ("Set-Cookie", "b=2"),
+            ]
+        )
+        pairs = filter_response_headers(headers)
+        assert all(isinstance(k, bytes) and isinstance(v, bytes) for k, v in pairs)
+        lowered = [k.lower() for k, _ in pairs]
+        assert b"content-length" not in lowered
+        assert b"transfer-encoding" not in lowered
+        assert b"content-encoding" not in lowered
+        resp = http.Response.make(200, b"<html>ok</html>", pairs)
+        assert resp.status_code == 200
+        assert resp.content == b"<html>ok</html>"
+        assert resp.headers.get_all("Set-Cookie") == ["a=1", "b=2"]
+        assert resp.headers.get_all("WWW-Authenticate") == ["NTLM", "Negotiate"]
+        assert resp.headers["Content-Type"] == "text/html"
+        assert "content-encoding" not in [k.lower() for k in resp.headers.keys()]
 
 
 class TestHttpxNtlmAuth:
