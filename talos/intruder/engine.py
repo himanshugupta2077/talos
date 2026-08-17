@@ -70,7 +70,7 @@ from talos.intruder.strategies import build_strategy
 from talos.intruder.template import baseline_from_config, render_attempt, variables_from_config
 from talos.intruder.timing import TimingController
 from talos.projects.proxy_config import get_upstream_url
-from talos.proxy.http_client import client_kwargs
+from talos.proxy.http_client import client_kwargs, encode_outbound_headers
 from talos.scheduler.db import (
     SCHED_STATE_PAUSED,
     SCHED_STATE_WAITING_FOR_SESSION,
@@ -582,7 +582,7 @@ async def run_session_segment(
                     resp = await client.request(
                         method=spec.method,
                         url=spec.url,
-                        headers=send_headers,
+                        headers=encode_outbound_headers(send_headers),
                         content=spec.body,
                     )
                     status_code = resp.status_code

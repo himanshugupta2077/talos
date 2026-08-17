@@ -1738,12 +1738,16 @@ class ReplayScheduler:
             return
 
 # Persist probe result — only identity fields; HTTP data lives in flows.
-        # Client-side "Illegal header value" is not an application rejection:
-        # mark skipped with a stable transport reason (defense in depth).
+        # Client-side "Illegal header value" / ASCII-codec encode is not an
+        # application rejection: mark skipped (defense in depth).
         failure = outcome.failure_reason or ""
         transport_illegal = (
             not outcome.success
-            and "Illegal header value" in failure
+            and (
+                "Illegal header value" in failure
+                or "ascii' codec can't encode" in failure
+                or "may not include unicode characters" in failure
+            )
         )
         if outcome.success:
             probe_status = iv_db.STATUS_COMPLETED

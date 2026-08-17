@@ -387,6 +387,9 @@ talos
     │       transport_skip_for_payload / transport_skip_for_headers) so probes
     │       that h11/httpx would reject as Illegal header value are skipped
     │       (transport_invalid_header|cookie) instead of failed
+    │     encode_outbound_headers (latin-1 / UTF-8 bytes) so IV unicode (é)
+    │       and captured non-ASCII cookies reach the wire instead of
+    │       unexpected_error ascii codec
     │     Location-aware multiprobe/char/norm/validation payloads (no NUL/CTL
     │       in header/cookie; header norm:trim uses internal space pad)
     │     prepare_iv_probe uses surface.inject_value for all locations

@@ -51,7 +51,7 @@ from talos.burp.headers import maybe_apply_burp_headers
 from talos.burp.outbound import _request_path
 from talos.projects.annotations import get_annotations
 from talos.projects.proxy_config import get_upstream_url
-from talos.proxy.http_client import create_async_client
+from talos.proxy.http_client import create_async_client, encode_outbound_headers
 from talos.replay.diff import DiffResult, compute_diff
 
 # Single shared timeout for all replay requests.
@@ -371,7 +371,7 @@ async def _execute_replay(
             resp = await client.request(
                 method=flow["method"],
                 url=flow["url"],
-                headers=headers,
+                headers=encode_outbound_headers(headers),
                 content=body,   # raw bytes — no encoding or transformation
             )
 

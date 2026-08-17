@@ -53,7 +53,7 @@ import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
 from talos.projects.auth import get_auth_config
 from talos.projects.auth_mechanism import resolve_auth_mechanism
-from talos.proxy.http_client import create_async_client
+from talos.proxy.http_client import create_async_client, encode_outbound_headers
 from talos.replay.diff import DiffResult, compute_diff
 
 import logging
@@ -245,7 +245,7 @@ async def _execute_stripped_replay(
             resp = await client.request(
                 method=flow["method"],
                 url=flow["url"],
-                headers=stripped_headers,
+                headers=encode_outbound_headers(stripped_headers),
                 content=body,
             )
 

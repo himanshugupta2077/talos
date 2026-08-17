@@ -68,7 +68,7 @@ from talos.projects.manager import ProjectManager, NoActiveProject, ProjectNotFo
 from talos.projects.model import Project, ScopeConstraints
 from talos.projects.outscope import load_prefix_set
 from talos.projects.proxy_config import load_proxy_transport
-from talos.proxy.http_client import create_client
+from talos.proxy.http_client import create_client, encode_outbound_headers
 from talos.proxy.platform_auth import (
     client_facing_response_headers,
     collect_www_authenticate,
@@ -325,7 +325,9 @@ class TalosAddon:
             resp = self._origin_client.request(
                 str(flow.request.method or "GET"),
                 url,
-                headers=filter_request_headers(flow.request.headers),
+                headers=encode_outbound_headers(
+                    filter_request_headers(flow.request.headers)
+                ),
                 content=flow.request.raw_content or b"",
             )
         except Exception as exc:  # noqa: BLE001

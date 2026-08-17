@@ -45,7 +45,7 @@ from talos.cors.payloads import (
     target_origin_key,
 )
 from talos.projects.annotations import get_annotations
-from talos.proxy.http_client import create_async_client
+from talos.proxy.http_client import create_async_client, encode_outbound_headers
 
 _log = logging.getLogger(__name__)
 _REPLAY_TIMEOUT = httpx.Timeout(30.0)
@@ -340,7 +340,7 @@ async def execute_cors_job(
             resp = await client.request(
                 method=method,
                 url=replayed["url"],
-                headers=(
+                headers=encode_outbound_headers(
                     list(send_headers.items())
                     if isinstance(send_headers, dict)
                     else send_headers

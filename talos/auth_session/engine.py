@@ -84,7 +84,7 @@ from talos.auth_session.decision_filter import (
 )
 from talos.auth_session.types import get_analyzer
 from talos.auth_session.verdict import score_verdict
-from talos.proxy.http_client import create_async_client
+from talos.proxy.http_client import create_async_client, encode_outbound_headers
 from talos.replay.diff import DiffResult, compute_diff
 
 _log = logging.getLogger(__name__)
@@ -665,7 +665,7 @@ async def _send_and_store(
             resp = await client.request(
                 method=replayed["method"],
                 url=replayed["url"],
-                headers=send_headers,
+                headers=encode_outbound_headers(send_headers),
                 content=body,
             )
 

@@ -48,7 +48,7 @@ import httpx
 
 import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
-from talos.proxy.http_client import create_async_client
+from talos.proxy.http_client import create_async_client, encode_outbound_headers
 from talos.replay.diff import DiffResult, compute_diff
 from talos.send import draft as draft_mod
 from talos.send import db as send_db
@@ -401,7 +401,7 @@ async def send_once(
             resp = await client.request(
                 method=draft["method"],
                 url=draft["url"],
-                headers=send_headers,
+                headers=encode_outbound_headers(send_headers),
                 content=body_out,
             )
 

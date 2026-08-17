@@ -11,6 +11,9 @@ Purpose:
         - keep-alive
         - platform authentication (NTLMv2)
 
+    ``encode_outbound_headers`` prepares captured / mutated header maps so
+    httpx can send Latin-1 and UTF-8 field values (IV unicode probes).
+
     Unauth and auth-test pass ``platform_auth=False`` so IIS Persistent-Auth
     is not re-applied after HTTP artifacts are stripped. Authenticated
     engines (IV, replay, BAC) leave the default (project setting).
@@ -29,6 +32,7 @@ Side effects: None — constructs clients only.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence as AbcSequence
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
@@ -40,6 +44,96 @@ from talos.proxy.platform_auth import HttpxPlatformAuth, normalize_host
 
 TimeoutLike = Union[httpx.Timeout, float, int]
 DirectTransport = Union[httpx.HTTPTransport, httpx.AsyncHTTPTransport]
+HeaderValue = Union[str, bytes, list[Any], tuple[Any, ...]]
+OutboundHeaders = Union[Mapping[Any, Any], Sequence[tuple[Any, Any]], None]
+
+
+def _header_text_is_ascii(text: str) -> bool:
+    """True when every code point is in the US-ASCII range. Side effects: None."""
+    return all(ord(ch) < 128 for ch in text)
+
+
+def _encode_header_text(text: str) -> bytes:
+    """
+    Purpose:
+        Encode a header name or value for httpx/h11.
+
+        httpx.Headers defaults to ASCII and raises UnicodeEncodeError
+        (``'ascii' codec can't encode character '\\xe9'...``) on Latin-1
+        such as the IV unicode probe ``é``. Historical HTTP field values
+        are ISO-8859-1; characters outside that set (e.g. ``中``) go as
+        UTF-8 octets (RFC 7230 obs-text).
+    Side effects: None.
+    """
+    try:
+        return text.encode("latin-1")
+    except UnicodeEncodeError:
+        return text.encode("utf-8")
+
+
+def _encode_header_value(value: Any) -> HeaderValue:
+    """Encode one header value (or list of values) for httpx. Side effects: None."""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (list, tuple)):
+        encoded = [_encode_header_value(item) for item in value]
+        return type(value)(encoded)  # type: ignore[return-value]
+    text = value if isinstance(value, str) else str(value if value is not None else "")
+    if _header_text_is_ascii(text):
+        return text
+    return _encode_header_text(text)
+
+
+def _header_item_needs_bytes(key: Any, value: Any) -> bool:
+    """True when name or value has non-ASCII text. Side effects: None."""
+    if isinstance(key, str) and not _header_text_is_ascii(key):
+        return True
+    if isinstance(value, str) and not _header_text_is_ascii(value):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_header_item_needs_bytes("", item) for item in value)
+    return False
+
+
+def encode_outbound_headers(headers: OutboundHeaders) -> Any:
+    """
+    Purpose:
+        Return headers that httpx can send. ASCII-only maps are returned
+        unchanged so stored string headers and existing tests stay intact.
+
+        Non-ASCII values (IV ``é``, captured Latin-1 cookies, CJK) are
+        encoded as bytes so httpx does not fail with unexpected_error
+        ``ascii codec can't encode``.
+    Input:
+        headers — mapping or sequence of (name, value) pairs.
+    Output:
+        Same shape as input; values that need it are ``bytes``.
+    Side effects: None.
+    """
+    if headers is None:
+        return {}
+    if isinstance(headers, Mapping):
+        if not any(_header_item_needs_bytes(k, v) for k, v in headers.items()):
+            return headers
+        out: dict[Any, Any] = {}
+        for key, value in headers.items():
+            name = key
+            if isinstance(key, str) and not _header_text_is_ascii(key):
+                name = _encode_header_text(key)
+            out[name] = _encode_header_value(value)
+        return out
+    if isinstance(headers, AbcSequence) and not isinstance(headers, (str, bytes)):
+        pairs = list(headers)
+        if not any(_header_item_needs_bytes(k, v) for k, v in pairs):
+            return headers
+        encoded_pairs: list[tuple[Any, Any]] = []
+        for key, value in pairs:
+            name = key
+            if isinstance(key, str) and not _header_text_is_ascii(key):
+                name = _encode_header_text(key)
+            encoded_pairs.append((name, _encode_header_value(value)))
+        return encoded_pairs
+    return headers
 
 
 def _direct_http_transport(

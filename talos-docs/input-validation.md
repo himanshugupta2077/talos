@@ -327,7 +327,8 @@ talos config set parameter_intel.cross_flow.enabled true --project
 | Normalization (`norm:trim`) | Query/body use leading+trailing spaces; header/cookie use an internal double-space pad (transport-legal) |
 | Validation / semantic | Header/cookie omit `null_byte`, SP-only `whitespace`, and `crlf` |
 | Scheduler pre/post inject | `transport_skip_for_payload` / `transport_skip_for_headers` → probe **skipped** with `transport_invalid_header` or `transport_invalid_cookie` |
-| Defense in depth | If replay still returns `Illegal header value`, status is **skipped** (not failed) |
+| Defense in depth | If replay still returns `Illegal header value` or an ASCII-codec encode error, status is **skipped** (not failed) |
+| Non-ASCII header/cookie values | Sent as Latin-1 (or UTF-8 octets) — IV unicode (`é`) is a real probe, not a client crash |
 
 Query, body, and path keep the full payload alphabet (path percent-encodes). Dedicated transport-parser / header-smuggling probes (raw sockets) are out of scope for default IV.
 

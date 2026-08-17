@@ -2,6 +2,26 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## IV — send unicode header values (`#6`)
+
+**Shipped:** 2026-08-17
+
+IV jobs failed with:
+
+`unexpected_error: 'ascii' codec can't encode character '\xe9' in position 0: ordinal not in range(128)`
+
+httpx encodes header values as ASCII by default. The IV unicode probe
+(`é`) and any captured Latin-1 header/cookie therefore never left the
+client.
+
+Outbound engines now encode non-ASCII header values as ISO-8859-1 when
+possible, else UTF-8, before `httpx` sees them. ASCII headers are
+unchanged. Remaining encode failures on IV jobs are skipped as
+`transport_invalid_header` / `transport_invalid_cookie` instead of
+`unexpected_error`.
+
+Tests: `tests/test_http_client.py`.
+
 ## CORS / engines — async NTLM transport (`#5`)
 
 **Shipped:** 2026-08-17
