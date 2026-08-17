@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import site
 import sys
 import time
 import uuid
@@ -43,10 +44,63 @@ MAX_PROFILE_N = 50
 # ------------------------------------------------------------------ #
 
 
+def _talos_venv_site_packages() -> list[str]:
+    """
+    site-packages of the Talos venv (TALOS_PYTHON).
+
+    Repeater Send imports talos.send.engine in-process. httpx lives in that
+    venv, not in the Control Panel backend venv, unless the operator
+    reinstalled backend requirements after 4dfe8c0.
+
+    Do not Path.resolve() the interpreter — ``.venv/bin/python`` is usually a
+    symlink to the system Python, and resolve() would walk to /usr/lib.
+    """
+    py = Path(config.TALOS_PYTHON).expanduser()
+    if not py.exists():
+        return []
+    venv = py.absolute().parent.parent
+    if not (venv / "pyvenv.cfg").is_file():
+        return []
+    if sys.platform == "win32":
+        candidate = venv / "Lib" / "site-packages"
+        return [str(candidate)] if candidate.is_dir() else []
+    return [
+        str(path)
+        for path in sorted(venv.glob("lib/python*/site-packages"))
+        if path.is_dir()
+    ]
+
+
 def _ensure_talos_on_path() -> None:
     root = str(config.TALOS_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
+    for path in _talos_venv_site_packages():
+        if path not in sys.path:
+            site.addsitedir(path)
+
+
+def _import_send_engine():
+    """
+    Load send_once / send_repeat / send_parallel / redo_send.
+
+    Uses TALOS_ROOT for the talos package and the Talos venv for httpx so
+    POST /api/send/once works without httpx in backend/.venv.
+    """
+    _ensure_talos_on_path()
+    try:
+        from talos.send.engine import redo_send, send_once, send_parallel, send_repeat
+    except ModuleNotFoundError as exc:
+        missing = exc.name or "dependency"
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Repeater Send cannot import {missing}. "
+                f"Expected Talos runtime deps from {config.TALOS_PYTHON}. "
+                "Re-run scripts/run-control-panel.ps1 (or the Unix launcher)."
+            ),
+        ) from exc
+    return send_once, send_parallel, send_repeat, redo_send
 
 
 def _db_path(project_id: str) -> Path:
@@ -666,8 +720,7 @@ async def send_once_route(project_id: str, body: SendOnceBody):
     Send once / repeat / parallel via in-process engine.
     CP UI always supplies edit.raw_base64 (or edit.raw).
     """
-    _ensure_talos_on_path()
-    from talos.send.engine import send_once, send_parallel, send_repeat
+    send_once, send_parallel, send_repeat, _ = _import_send_engine()
 
     # Reject structured-only edit (v1 closed).
     has_raw = bool(body.edit.raw_base64) or body.edit.raw is not None
@@ -802,8 +855,7 @@ async def send_once_route(project_id: str, body: SendOnceBody):
 
 @router.post("/redo/{flow_id}")
 async def redo_route(project_id: str, flow_id: str, body: Optional[NoteBody] = None):
-    _ensure_talos_on_path()
-    from talos.send.engine import redo_send
+    _, _, _, redo_send = _import_send_engine()
 
     db_path = _db_path(project_id)
     note = body.note if body else None

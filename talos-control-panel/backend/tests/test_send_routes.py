@@ -550,6 +550,74 @@ def test_send_engine_importable_without_talos_venv():
     assert callable(redo_send)
 
 
+def test_talos_venv_site_packages_unix_layout(tmp_path, monkeypatch):
+    """Repeater Send must see httpx from the Talos venv, not backend/.venv."""
+    from talos_ui.routers import send as send_router
+
+    venv = tmp_path / ".venv"
+    py = venv / "bin" / "python"
+    site_pkg = venv / "lib" / "python3.12" / "site-packages"
+    site_pkg.mkdir(parents=True)
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    monkeypatch.setattr(send_router.config, "TALOS_PYTHON", str(py))
+    monkeypatch.setattr(send_router.sys, "platform", "linux")
+    found = send_router._talos_venv_site_packages()
+    assert str(site_pkg) in found
+
+
+def test_talos_venv_site_packages_windows_layout(tmp_path, monkeypatch):
+    from talos_ui.routers import send as send_router
+
+    venv = tmp_path / ".venv"
+    py = venv / "Scripts" / "python.exe"
+    site_pkg = venv / "Lib" / "site-packages"
+    site_pkg.mkdir(parents=True)
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = C:\\Python\n", encoding="utf-8")
+    monkeypatch.setattr(send_router.config, "TALOS_PYTHON", str(py))
+    monkeypatch.setattr(send_router.sys, "platform", "win32")
+    found = send_router._talos_venv_site_packages()
+    assert found == [str(site_pkg)]
+
+
+def test_talos_venv_site_packages_ignores_python_symlink(tmp_path, monkeypatch):
+    """``.venv/bin/python`` is a symlink; must not walk it to /usr/lib."""
+    from talos_ui.routers import send as send_router
+
+    system_py = tmp_path / "usr" / "bin" / "python3"
+    system_py.parent.mkdir(parents=True)
+    system_py.write_text("", encoding="utf-8")
+    (tmp_path / "usr" / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
+
+    venv = tmp_path / ".venv"
+    bindir = venv / "bin"
+    bindir.mkdir(parents=True)
+    py = bindir / "python"
+    py.symlink_to(system_py)
+    site_pkg = venv / "lib" / "python3.14" / "site-packages"
+    site_pkg.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+
+    monkeypatch.setattr(send_router.config, "TALOS_PYTHON", str(py))
+    monkeypatch.setattr(send_router.sys, "platform", "linux")
+    found = send_router._talos_venv_site_packages()
+    assert found == [str(site_pkg)]
+    assert not any(p.startswith(str(tmp_path / "usr")) for p in found)
+
+
+def test_import_send_engine_uses_talos_site_packages():
+    from talos_ui.routers import send as send_router
+
+    send_once, send_parallel, send_repeat, redo_send = send_router._import_send_engine()
+    assert callable(send_once)
+    assert callable(send_parallel)
+    assert callable(send_repeat)
+    assert callable(redo_send)
+
+
 def test_tabs_open_list_reuse_touch_close(client):
     """Persistent Repeater tab archive API (metadata only)."""
     tc, pid, flow_id, _db = client

@@ -12,7 +12,7 @@ The CLI is the single source of truth for mutations. Reads may go through SQLite
 
 ### Exceptions
 
-**Repeater (`/api/send/*` mutations):** may call `talos.send.engine` / `talos.send.db` **in-process** (async `await` of engine coroutines). Must not open ad-hoc SQL. Must return synthetic `steps` for CommandLog. Reads remain free to import Python as elsewhere.
+**Repeater (`/api/send/*` mutations):** may call `talos.send.engine` / `talos.send.db` **in-process** (async `await` of engine coroutines). The backend process adds the Talos venv `site-packages` so `httpx` is available without a second install. Must not open ad-hoc SQL. Must return synthetic `steps` for CommandLog. Reads remain free to import Python as elsewhere.
 
 Why: full raw bodies in argv/temp files are brittle; multi-send can run many minutes beyond default `CLI_TIMEOUT`; the engine already exposes clean `SendOutcome` dataclasses.
 
