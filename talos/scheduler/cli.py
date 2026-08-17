@@ -14,7 +14,7 @@ Purpose:
         talos scheduler prune --status <done|failed|…>      — delete terminal history
         talos scheduler clear                               — remove all pending jobs
         talos scheduler pause                               — pause execution (all pending → paused)
-        talos scheduler resume                              — validate sessions and resume execution
+        talos scheduler resume                              — resume execution (paused jobs → pending)
 
     Process lifecycle (standalone daemon, independent of the proxy)::
 
@@ -39,7 +39,7 @@ Side effects:
     - clear: deletes pending rows from scheduler_jobs.
     - status: read-only display.
     - pause: sets scheduler state to PAUSED and marks all pending jobs paused.
-    - resume: validates sessions, resumes paused jobs, sets state to RUNNING.
+    - resume: resumes paused jobs, sets state to RUNNING, warns on paused Intruder.
 """
 from talos.cli_output import (
     add_force_argument,
@@ -56,7 +56,6 @@ from talos.cli_output import (
 
 import argparse
 import json
-import sys
 import uuid
 
 from talos.projects.manager import ProjectManager
@@ -317,8 +316,8 @@ def run_scheduler_cli(
     sub.add_parser(
         "resume",
         help=(
-            "Validate active sessions and resume execution.  Paused jobs are "
-            "returned to 'pending' and the scheduler loop restarts."
+            "Resume execution.  Paused jobs are returned to 'pending' and the "
+            "scheduler loop restarts.  Session health is checked when a job runs."
         ),
     )
 
@@ -800,143 +799,59 @@ def cmd_pause(project: object) -> None:
     print("  talos scheduler resume")
 
 
-def _roles_requiring_session_validation(db_path, project_id: str) -> set:
+def _warn_paused_intruder_sessions(db_path, project_id: str) -> None:
     """
     Purpose:
-        Determine which roles actually need a valid MANUAL session before the
-        scheduler can safely resume.  Only BAC job types consult
-        session_health/MANUAL-provider gating during execution (see
-        ReplayScheduler._execute_bac_job) — replay, auth-bypass, input-
-        validation, and unauth-attack jobs never require role authentication
-        to run.  In particular, unauth attacks are explicitly unauthenticated
-        by design, so a pending/paused unauth_attack job must never block
-        (or be blocked by) session validation for any role.
+        After a global scheduler resume, remind the tester that paused
+        Intruder sessions are not auto-resumed (use
+        ``talos intruder session resume <id>``).
     Input:
         db_path    — Path to the project's talos.db.
         project_id — Active project identifier.
-    Output:
-        Set of role_id strings referenced by any PENDING or PAUSED BAC job's
-        meta.attacker_role_id.
-    Side effects: None (read-only).
+    Side effects:
+        Prints a warning to stdout when any Intruder session is paused.
     """
-    from talos.scheduler.job import BAC_JOB_TYPES
+    from talos.intruder import db as intruder_db
 
-    required: set = set()
-    for status in (STATUS_PENDING, STATUS_PAUSED):
-        for job in sched_db.list_jobs_by_status(db_path, project_id, status, limit=10_000):
-            if job.job_type not in BAC_JOB_TYPES:
-                continue
-            if not job.meta:
-                continue
-            try:
-                meta = json.loads(job.meta)
-            except (ValueError, TypeError):
-                continue
-            role_id = meta.get("attacker_role_id")
-            if role_id:
-                required.add(role_id)
-    return required
+    paused_ids = intruder_db.list_paused_session_ids(db_path, project_id)
+    if not paused_ids:
+        return
+    print("\nPaused Intruder sessions were not resumed:")
+    for sid in paused_ids:
+        print(f"  {sid}")
+    print("Run 'talos intruder session resume <id>' for each session.")
 
 
 def cmd_resume(project: object) -> None:
     """
     Purpose:
-        Validate active sessions and resume scheduler execution.
-        Paused jobs are returned to 'pending' state; the scheduler loop
-        restarts from the next DB poll cycle.
+        Resume scheduler execution.  Paused jobs return to 'pending'; the
+        scheduler loop restarts from the next DB poll cycle.
 
-        Only roles actually referenced by a pending/paused BAC job are
-        validated — BAC is the only attack type whose execution consults
-        session_health/MANUAL-provider gating.  Unauthenticated-execution
-        (unauth) jobs and any other queued job types never require a role
-        session, so they can never block (or be blocked by) resume.
+        Session health is enforced when a job actually runs (BAC/IV call
+        ``ensure_healthy``).  Resume does not scan pending/paused BAC jobs
+        or block on MANUAL sessions — an expired session pauses the
+        scheduler at execution time instead.
 
-        For each role that needs validation and uses the MANUAL provider,
-        the stored session is checked.  If any required session is expired
-        or absent, resume is rejected with a clear error message directing
-        the tester to 'talos auth-config set-session'.
+        Paused Intruder sessions are not auto-resumed; a warning lists them.
     Input:   project — Active Project instance.
     Side effects:
-        Validates sessions; resumes paused jobs; sets state to RUNNING.
-        Prints validation results to stdout.
-        Exits 1 if any required session is invalid.
+        Resumes paused jobs; sets state to RUNNING; may print an Intruder warning.
     """
-    import sqlite3 as _sqlite3
-    from talos.projects.auth_provider import (
-        get_provider, get_session_display_state,
-        PROVIDER_MANUAL, SESSION_READY, SESSION_EXPIRING,
-    )
-
     db_path = project.db_path  # type: ignore[attr-defined]
     project_id = project.id    # type: ignore[attr-defined]
-
-    required_role_ids = _roles_requiring_session_validation(db_path, project_id)
-
-    print("Validating sessions...\n")
-
-    if not required_role_ids:
-        print("  No pending/paused BAC jobs reference a role — nothing to validate.")
-        print("  (Unauthenticated-execution and other job types never require a role session.)")
-        resumed = sched_db.resume_paused_jobs(db_path)
-        sched_db.set_scheduler_state(db_path, SCHED_STATE_RUNNING, reason=None)
-        print(f"\nScheduler resumed.")
-        print(f"  Jobs returned to pending : {resumed}")
-        print(
-            "The scheduler process executes jobs when running "
-            "(`talos scheduler start` / `talos scheduler status`)."
-        )
-        _warn_paused_intruder_sessions(db_path, project_id)
-        return
-
-    # Only load role names for the roles that actually need validation.
-    with _sqlite3.connect(str(db_path)) as conn:
-        conn.row_factory = _sqlite3.Row
-        placeholders = ",".join("?" for _ in required_role_ids)
-        roles = conn.execute(
-            f"SELECT r.id, r.name FROM roles r WHERE r.id IN ({placeholders})",
-            tuple(required_role_ids),
-        ).fetchall()
-
-    invalid_roles: list[str] = []
-
-    for role_row in roles:
-        role_id = role_row["id"]
-        role_name = role_row["name"]
-        provider = get_provider(db_path, role_id)
-
-        if provider != PROVIDER_MANUAL:
-            continue
-
-        state = get_session_display_state(db_path, role_id)
-        print(f"  {role_name} ({role_id[:8]})")
-        print(f"    Provider : MANUAL")
-        print(f"    Session  : {state}")
-
-        if state not in (SESSION_READY, SESSION_EXPIRING):
-            invalid_roles.append(f"{role_name} ({role_id[:8]})")
-
-    if invalid_roles:
-        print("\nResume blocked — the following roles have invalid sessions:")
-        for label in invalid_roles:
-            print(f"  - {label}")
-        print(
-            "\nRun 'talos auth-config set-session <role>' to provide "
-            "new credentials, then try again."
-        )
-        sys.exit(1)
 
     resumed = sched_db.resume_paused_jobs(db_path)
     sched_db.set_scheduler_state(db_path, SCHED_STATE_RUNNING, reason=None)
 
-    print(f"\nScheduler resumed.")
+    print("Scheduler resumed.")
     print(f"  Jobs returned to pending : {resumed}")
     print(
         "The scheduler process executes jobs when running "
         "(`talos scheduler start` / `talos scheduler status`)."
     )
-
-
     _warn_paused_intruder_sessions(db_path, project_id)
+
 
 def cmd_process_start(project: object) -> None:
     """

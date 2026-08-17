@@ -29,6 +29,7 @@ from talos.scheduler.cli import (
     cmd_jobs_list,
     cmd_jobs_show,
     cmd_prune,
+    cmd_resume,
 )
 from talos.scheduler.job import (
     BAC_SESSION_SWAP,
@@ -473,3 +474,85 @@ class TestCliDispatch:
         with redirect_stdout(buf):
             run_scheduler_cli(manager, ["cancel", jid])
         assert "Cancelled." in buf.getvalue()
+
+
+class TestCmdResume:
+    def test_resume_returns_paused_jobs_to_pending(
+        self, project: SimpleNamespace, db_path: Path
+    ) -> None:
+        jid = _enqueue(db_path, status=STATUS_PAUSED)
+        sched_db.set_scheduler_state(db_path, sched_db.SCHED_STATE_PAUSED)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_resume(project)
+        out = buf.getvalue()
+        assert "Scheduler resumed." in out
+        assert "Jobs returned to pending : 1" in out
+        assert "Validating sessions" not in out
+        assert "BAC" not in out
+        job = sched_db.get_job(db_path, "test-project", jid)
+        assert job is not None
+        assert job.status == STATUS_PENDING
+        assert sched_db.get_scheduler_state(db_path) == sched_db.SCHED_STATE_RUNNING
+
+    def test_resume_does_not_scan_bac_jobs(
+        self, project: SimpleNamespace, db_path: Path
+    ) -> None:
+        # A paused BAC job with a role must not trigger a session preflight
+        # or block resume (session health is checked at execution time).
+        _enqueue(
+            db_path,
+            job_type=BAC_SESSION_SWAP,
+            status=STATUS_PAUSED,
+            flow_id=str(uuid.uuid4()),
+            meta=json.dumps({"attacker_role_id": "missing-role"}),
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_resume(project)
+        out = buf.getvalue()
+        assert "Scheduler resumed." in out
+        assert "Validating sessions" not in out
+        assert "Resume blocked" not in out
+        assert sched_db.get_scheduler_state(db_path) == sched_db.SCHED_STATE_RUNNING
+
+    def test_resume_warns_about_paused_intruder_sessions(
+        self, project: SimpleNamespace, db_path: Path
+    ) -> None:
+        from talos.intruder import db as intruder_db
+
+        sess = intruder_db.create_session(
+            db_path, "test-project", name="enum", status="paused"
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_resume(project)
+        out = buf.getvalue()
+        assert "Scheduler resumed." in out
+        assert "Paused Intruder sessions were not resumed:" in out
+        assert sess["id"] in out
+        assert "talos intruder session resume" in out
+
+    def test_resume_silent_when_no_paused_intruder(
+        self, project: SimpleNamespace, db_path: Path
+    ) -> None:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_resume(project)
+        out = buf.getvalue()
+        assert "Scheduler resumed." in out
+        assert "Intruder" not in out
+
+    def test_run_scheduler_cli_resume(
+        self, project: SimpleNamespace, db_path: Path
+    ) -> None:
+        from talos.scheduler.cli import run_scheduler_cli
+
+        _enqueue(db_path, status=STATUS_PAUSED)
+        manager = MagicMock()
+        manager.active.return_value = project
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_scheduler_cli(manager, ["resume"])
+        assert "Scheduler resumed." in buf.getvalue()
+        assert sched_db.get_scheduler_state(db_path) == sched_db.SCHED_STATE_RUNNING

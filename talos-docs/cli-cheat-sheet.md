@@ -1492,7 +1492,7 @@ talos scheduler resume
 (`replay`, `bac`, `iv`). Prefer `jobs list` / `cancel` / `prune` over `clear`
 when debugging large queues.
 
-`resume` validates MANUAL sessions only for roles referenced by pending/paused **BAC** jobs. Unauthenticated Execution, replay, Authentication Bypass tests, and Input Validation jobs do not block resume for missing role sessions.
+`resume` does **not** preflight BAC or role sessions — session health is checked when a job runs. Paused Intruder sessions are **not** auto-resumed (`talos intruder session resume <id>`).
 
 The scheduler daemon starts with the proxy; there is no separate `scheduler start` command.
 
