@@ -96,6 +96,68 @@ export const DEFAULT_HISTORY_FILTERS: JobFilterState = {
   search: "",
 };
 
+export function isTerminalStatus(status: string): boolean {
+  return (TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+/** Live-queue statuses (Jobs tab), including synthetic active / all. */
+export function isLiveQueueStatus(status: string): boolean {
+  return (
+    status === "active" ||
+    status === "" ||
+    (ACTIVE_STATUSES as readonly string[]).includes(
+      status as (typeof ACTIVE_STATUSES)[number]
+    )
+  );
+}
+
+/**
+ * Next tab + filters from a filter patch and/or an explicit tab click.
+ * Status chips/dropdowns pick the matching tab; tab clicks default status
+ * when the current one belongs to the other tab.
+ */
+export function nextSchedulerView(
+  current: { tab: SchedulerTab; filters: JobFilterState },
+  filterPatch: Partial<JobFilterState> = {},
+  tabOverride?: SchedulerTab
+): { tab: SchedulerTab; filters: JobFilterState } {
+  const filters = { ...current.filters, ...filterPatch };
+  let tab = tabOverride ?? current.tab;
+
+  if (tabOverride !== undefined && filterPatch.status === undefined) {
+    if (tabOverride === "history" && !isTerminalStatus(filters.status)) {
+      filters.status = DEFAULT_HISTORY_FILTERS.status;
+    } else if (tabOverride === "jobs" && isTerminalStatus(filters.status)) {
+      filters.status = DEFAULT_JOBS_FILTERS.status;
+    }
+  }
+
+  if (filterPatch.status !== undefined && tabOverride === undefined) {
+    if (isTerminalStatus(filterPatch.status)) {
+      tab = "history";
+    } else if (isLiveQueueStatus(filterPatch.status)) {
+      tab = "jobs";
+    }
+  }
+
+  return { tab, filters };
+}
+
+/** Write tab / status / type into the URL; keep other params (e.g. job). */
+export function writeSchedulerSearchParams(
+  current: URLSearchParams,
+  tab: SchedulerTab,
+  filters: Pick<JobFilterState, "status" | "jobType">
+): URLSearchParams {
+  const next = new URLSearchParams(current);
+  next.set("tab", tab);
+  if (filters.status) next.set("status", filters.status);
+  else next.delete("status");
+  if (filters.jobType) next.set("type", filters.jobType);
+  else next.delete("type");
+  return next;
+}
+
 /** Map job_type → family for chips/colors. */
 export function jobFamily(jobType: string | null | undefined): string {
   if (!jobType) return "other";

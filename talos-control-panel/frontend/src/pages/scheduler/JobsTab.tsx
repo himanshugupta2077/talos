@@ -7,6 +7,7 @@ import { formatIST } from "../../lib/time";
 import type { SchedulerJob } from "../../types";
 import {
   FAMILY_OPTIONS,
+  JOB_STATUSES,
   LIMIT_OPTIONS,
   familyBadgeClass,
   filterJobsClient,
@@ -319,7 +320,7 @@ export default function JobsTab({
         >
           <option value="">status: all</option>
           <option value="active">active</option>
-          {(filterOptions.statuses || []).map((s) => (
+          {JOB_STATUSES.map((s) => (
             <option key={s} value={s}>
               {s}
             </option>

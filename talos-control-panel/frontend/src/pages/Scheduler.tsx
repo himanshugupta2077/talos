@@ -23,6 +23,8 @@ import {
   DEFAULT_HISTORY_FILTERS,
   DEFAULT_JOBS_FILTERS,
   isProcessLive,
+  nextSchedulerView,
+  writeSchedulerSearchParams,
   type JobFilterState,
   type JobsListResponse,
   type SchedulerFiltersApi,
@@ -77,36 +79,24 @@ export default function Scheduler() {
   } | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const deepLinkHandled = useRef<string | null>(null);
+  const viewRef = useRef({ tab, filters: jobFilters });
+  viewRef.current = { tab, filters: jobFilters };
 
-  const setTab = (t: SchedulerTab) => {
-    const next = new URLSearchParams(searchParams);
-    next.set("tab", t);
-    if (t === "history" && !next.get("status")) {
-      setJobFilters((f) => ({ ...f, status: "failed" }));
-    } else if (t === "jobs" && searchParams.get("tab") === "history") {
-      setJobFilters((f) => ({
-        ...f,
-        status: f.status === "failed" ? "active" : f.status,
-      }));
-    }
-    setSearchParams(next, { replace: true });
+  const applyView = (
+    filterPatch: Partial<JobFilterState> = {},
+    tabOverride?: SchedulerTab
+  ) => {
+    const next = nextSchedulerView(viewRef.current, filterPatch, tabOverride);
+    viewRef.current = next;
+    setJobFilters(next.filters);
+    setSearchParams(
+      writeSchedulerSearchParams(searchParams, next.tab, next.filters),
+      { replace: true }
+    );
   };
 
-  const patchFilters = (patch: Partial<JobFilterState>) => {
-    setJobFilters((f) => ({ ...f, ...patch }));
-    if (patch.status !== undefined) {
-      const next = new URLSearchParams(searchParams);
-      if (patch.status) next.set("status", patch.status);
-      else next.delete("status");
-      setSearchParams(next, { replace: true });
-    }
-    if (patch.jobType !== undefined) {
-      const next = new URLSearchParams(searchParams);
-      if (patch.jobType) next.set("type", patch.jobType);
-      else next.delete("type");
-      setSearchParams(next, { replace: true });
-    }
-  };
+  const setTab = (t: SchedulerTab) => applyView({}, t);
+  const patchFilters = (patch: Partial<JobFilterState>) => applyView(patch);
 
   const load = useCallback(async () => {
     if (!selected) return;
@@ -179,14 +169,11 @@ export default function Scheduler() {
     loadRateConfig();
   }, [selected, loadRateConfig]);
 
+  // Load on project / filter change only — no interval. Auto-refresh
+  // closed filter dropdowns and flashed the table every few seconds.
   useEffect(() => {
     if (!selected) return;
     void load();
-    const id = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      void load();
-    }, 4000);
-    return () => clearInterval(id);
   }, [selected, load]);
 
   useEffect(() => {
@@ -381,21 +368,7 @@ export default function Scheduler() {
         selectedStatus={jobFilters.status}
         selectedJobType={jobFilters.jobType}
         onTypeChip={(t) => patchFilters({ jobType: t })}
-        onStatusChip={(s) => {
-          patchFilters({ status: s });
-          if (["failed", "done", "skipped", "cancelled"].includes(s)) {
-            setTab("history");
-          } else if (
-            tab === "history" &&
-            (s === "active" ||
-              s === "pending" ||
-              s === "running" ||
-              s === "paused" ||
-              s === "")
-          ) {
-            setTab("jobs");
-          }
-        }}
+        onStatusChip={(s) => patchFilters({ status: s })}
         rateConfig={rateConfig}
       />
 
