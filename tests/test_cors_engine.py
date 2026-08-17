@@ -103,7 +103,7 @@ def _patch_httpx(headers: dict, status: int = 200):
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.request.return_value = _mock_response(headers, status)
-    return patch("talos.cors.engine.httpx.AsyncClient", return_value=client)
+    return patch("talos.cors.engine.create_async_client", return_value=client)
 
 
 def test_select_prefers_post_with_origin(db_path: Path) -> None:

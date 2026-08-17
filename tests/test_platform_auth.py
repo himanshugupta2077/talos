@@ -4,6 +4,7 @@ Tests for origin HTTP/1.1, keep-alive, and NTLMv2 platform authentication.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 from pathlib import Path
@@ -572,6 +573,33 @@ class TestNtlmBypassesUpstream:
         assert "all://foresight-uat.chartercom.com" in kwargs["mounts"]
         ntlm_pool = kwargs["mounts"]["all://foresight-uat.chartercom.com"]._pool
         assert type(ntlm_pool).__name__ != "HTTPProxy"
+        assert isinstance(
+            kwargs["mounts"]["all://foresight-uat.chartercom.com"],
+            httpx.HTTPTransport,
+        )
+
+    def test_async_client_mounts_async_transport(self, db_path: Path) -> None:
+        from talos.projects.proxy_config import set_upstream_url
+        from talos.proxy.http_client import create_async_client
+
+        set_upstream_url(db_path, "http://127.0.0.1:8081")
+        add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="foresight-uat.chartercom.com",
+                username="P3257806",
+                password="testpassword",
+            ),
+        )
+        kwargs = client_kwargs(db_path, timeout=5.0, async_client=True)
+        mount = kwargs["mounts"]["all://foresight-uat.chartercom.com"]
+        assert isinstance(mount, httpx.AsyncHTTPTransport)
+
+        async def _enter() -> None:
+            async with create_async_client(db_path, timeout=5.0) as client:
+                assert client is not None
+
+        asyncio.run(_enter())
 
     def test_client_kwargs_no_auth_has_no_direct_mounts(
         self, db_path: Path

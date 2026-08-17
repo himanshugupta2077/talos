@@ -2,6 +2,18 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## CORS / engines — async NTLM transport (`#5`)
+
+**Shipped:** 2026-08-17
+
+CORS (and every other `AsyncClient` engine) failed on NTLM projects
+with an upstream proxy:
+
+`unexpected_error: 'HTTPTransport' object has no attribute '__aenter__'`
+
+Direct-to-origin NTLM mounts were sync `HTTPTransport`. Async clients
+now mount `AsyncHTTPTransport`. Sync proxy `create_client` is unchanged.
+
 ## IV — skip session refresh when the project uses NTLM
 
 **Shipped:** 2026-08-17

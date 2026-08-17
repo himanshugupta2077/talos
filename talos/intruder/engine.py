@@ -439,6 +439,7 @@ async def run_session_segment(
             timeout=timeout,
             follow_redirects=False,
             verify=False,
+            async_client=True,
         )
         http_kwargs["limits"] = limits
         async with httpx.AsyncClient(**http_kwargs) as client:

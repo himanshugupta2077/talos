@@ -39,20 +39,28 @@ from talos.projects.proxy_config import ProxyTransport, load_proxy_transport
 from talos.proxy.platform_auth import HttpxPlatformAuth, normalize_host
 
 TimeoutLike = Union[httpx.Timeout, float, int]
+DirectTransport = Union[httpx.HTTPTransport, httpx.AsyncHTTPTransport]
 
 
-def _direct_http_transport(*, verify: bool, limits: httpx.Limits) -> httpx.HTTPTransport:
+def _direct_http_transport(
+    *,
+    verify: bool,
+    limits: httpx.Limits,
+    async_client: bool = False,
+) -> DirectTransport:
     """
     Purpose:
         HTTP/1.1 transport that never uses a proxy or HTTP_PROXY env.
     Input:
-        verify — TLS verify flag (False matches mitmdump --ssl-insecure).
-        limits — connection pool limits (keep-alive on for NTLM).
+        verify       — TLS verify flag (False matches mitmdump --ssl-insecure).
+        limits       — connection pool limits (keep-alive on for NTLM).
+        async_client — True builds AsyncHTTPTransport (AsyncClient mounts).
     Output:
-        httpx.HTTPTransport speaking directly to the origin.
+        Sync or async transport speaking directly to the origin.
     Side effects: None.
     """
-    return httpx.HTTPTransport(
+    cls = httpx.AsyncHTTPTransport if async_client else httpx.HTTPTransport
+    return cls(
         verify=verify,
         trust_env=False,
         http1=True,
@@ -67,21 +75,25 @@ def platform_auth_direct_mounts(
     *,
     verify: bool,
     limits: httpx.Limits,
-) -> dict[str, httpx.HTTPTransport]:
+    async_client: bool = False,
+) -> dict[str, DirectTransport]:
     """
     Purpose:
         httpx mount map so NTLM hosts skip an intercepting upstream.
     Input:
-        entries — configured platform-auth profiles.
-        verify  — TLS verify for the direct transport.
-        limits  — pool limits (keep-alive required for Persistent-Auth).
+        entries      — configured platform-auth profiles.
+        verify       — TLS verify for the direct transport.
+        limits       — pool limits (keep-alive required for Persistent-Auth).
+        async_client — True mounts AsyncHTTPTransport for AsyncClient.
     Output:
         ``{"all://host": transport, ...}``. Wildcard ``*.example`` also
         mounts the apex ``example`` (same rule as host_matches).
     Side effects: None.
     """
-    transport = _direct_http_transport(verify=verify, limits=limits)
-    mounts: dict[str, httpx.HTTPTransport] = {}
+    transport = _direct_http_transport(
+        verify=verify, limits=limits, async_client=async_client
+    )
+    mounts: dict[str, DirectTransport] = {}
     for row in entries:
         if not getattr(row, "enabled", True):
             continue
@@ -104,6 +116,7 @@ def client_kwargs(
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
     platform_auth: Optional[bool] = None,
+    async_client: bool = False,
 ) -> dict[str, Any]:
     """
     Purpose:
@@ -117,6 +130,8 @@ def client_kwargs(
         platform_auth    — None: honor project setting (authenticated send).
                            False: never attach NTLM (unauth / auth-test).
                            True: attach NTLM when credentialed profiles exist.
+        async_client     — True mounts AsyncHTTPTransport (required by
+                           AsyncClient; sync HTTPTransport has no __aenter__).
     Output:
         Dict suitable for httpx.Client / httpx.AsyncClient.
     Side effects: May read layered config when transport is None.
@@ -163,6 +178,7 @@ def client_kwargs(
                 settings.platform_auth_entries,
                 verify=verify,
                 limits=limits,
+                async_client=async_client,
             )
             if mounts:
                 kwargs["mounts"] = mounts
@@ -190,6 +206,7 @@ def create_async_client(
             verify=verify,
             transport=transport,
             platform_auth=platform_auth,
+            async_client=True,
         )
     )
 
