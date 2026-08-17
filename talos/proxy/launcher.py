@@ -17,6 +17,10 @@ Purpose:
     (project config + optional CLI overrides) and pass the result through.
     No host, port, URL, or credentials are hardcoded here.
 
+    Origin protocol flags (HTTP/2, keep-alive) also live here so CLI and
+    the runtime manager cannot drift. HTTP/2 off is required for IIS
+    Windows Integrated Auth through a MITM.
+
 Dependencies: pathlib, typing
 Data flow:
     talos.proxy.cli.cmd_start → resolve_upstream_url → build_mitmdump_command(...)
@@ -33,6 +37,8 @@ def build_mitmdump_command(
     port: int,
     addon_path: Path,
     upstream_url: Optional[str] = None,
+    http2: bool = True,
+    keep_alive: bool = True,
 ) -> list[str]:
     """
     Purpose:
@@ -48,6 +54,9 @@ def build_mitmdump_command(
                        (mitmdump connects straight to the target server).
                        Callers must supply the already-resolved value from
                        proxy_config — never invent a default host/port here.
+        http2        — when False, pass --set http2=false (force HTTP/1.1).
+        keep_alive   — when True, eager origin connections; when False the
+                       addon also sends Connection: close.
     Output:
         List of argv strings suitable for subprocess.run / os.execvp /
         asyncio.create_subprocess_exec.
@@ -68,6 +77,10 @@ def build_mitmdump_command(
         ]
 
     cmd += [
+        "--set",
+        f"http2={'true' if http2 else 'false'}",
+        "--set",
+        f"connection_strategy={'eager' if keep_alive else 'lazy'}",
         # Skip upstream TLS verification — required for pentest interception.
         # mitmproxy's certifi bundle cannot verify all certificate chains
         # (common with Cloudflare and some CDNs on Windows). This is intentional

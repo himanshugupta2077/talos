@@ -543,6 +543,7 @@ def cmd_set(manager: ProjectManager, args: argparse.Namespace) -> None:
     cli_success(f"Set {args.key} ({scope_label})")
     print(f"  file : {path}")
     print(f"  value: {_format_value(parse_cli_value(args.value))}")
+    _notify_proxy_if_needed(project, args.key)
 
 
 def cmd_unset(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -574,6 +575,7 @@ def cmd_unset(manager: ProjectManager, args: argparse.Namespace) -> None:
         return
     cli_success(f"Unset {args.key} ({scope_label}) — now inherited")
     print(f"  file: {path}")
+    _notify_proxy_if_needed(project, args.key)
 
 
 def cmd_edit(manager: ProjectManager, args: argparse.Namespace) -> None:
@@ -785,6 +787,30 @@ def _looks_like_str_map(value: dict) -> bool:
     if not value:
         return True
     return all(not isinstance(v, (dict, list)) for v in value.values())
+
+
+def _notify_proxy_if_needed(project: Any, key: str) -> None:
+    """
+    Purpose:
+        Restart the managed proxy when a proxy-transport key changes.
+    Side effects: May call notify_proxy_config_changed.
+    """
+    if project is None:
+        return
+    prefixes = (
+        "proxy.http2",
+        "proxy.keep_alive",
+        "proxy.platform_auth",
+        "proxy.upstream",
+    )
+    if not any(key == p or key.startswith(p + ".") for p in prefixes):
+        return
+    try:
+        from talos.proxy.runtime.events import notify_proxy_config_changed
+
+        notify_proxy_config_changed(project.id, f"config set {key}")
+    except Exception:
+        return
 
 
 def _format_value(value: Any) -> str:

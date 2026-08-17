@@ -485,4 +485,4 @@ class TestNoHardcodedUpstreamInSource:
                 assert 'f"upstream:{upstream_url}"' in text
             else:
                 assert "127.0.0.1:8081" not in text
-                assert "get_upstream_url" in text
+                assert "create_async_client" in text

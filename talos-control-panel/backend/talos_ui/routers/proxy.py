@@ -112,12 +112,30 @@ class ProxyKillBody(BaseModel):
 
 class ProxyConfigBody(BaseModel):
     """
-    Persist proxy mode via Talos CLI.
-    Provide upstream_url to set Upstream mode, or direct=True for Direct mode.
+    Persist proxy transport via Talos CLI.
+    Upstream: provide upstream_url, or direct=True for Direct mode.
+    Origin: http2=false forces HTTP/1.1; keep_alive controls connection reuse.
     """
 
     upstream_url: str | None = None
     direct: bool = False
+    http2: bool | None = None
+    keep_alive: bool | None = None
+
+
+class PlatformAuthBody(BaseModel):
+    """
+    Add or replace one Burp-style platform-auth row.
+    """
+
+    host: str
+    auth_type: str = "ntlmv2"
+    username: str = ""
+    password: str = ""
+    domain: str = ""
+    domain_hostname: str = ""
+    spnego: bool = False
+    negotiate: bool = False
 
 
 @router.get("/status")
@@ -241,22 +259,102 @@ def proxy_config_get():
 def proxy_config_set(body: ProxyConfigBody):
     """
     Purpose:
-        Persist Direct vs Upstream mode through Talos CLI. Core may auto-restart.
+        Persist Direct vs Upstream mode and origin HTTP settings through
+        Talos CLI. Core may auto-restart.
     """
     if body.direct and body.upstream_url:
         raise HTTPException(
             status_code=400,
             detail="Provide either direct=true or upstream_url, not both.",
         )
-    if not body.direct and not body.upstream_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide upstream_url or direct=true.",
-        )
     args = ["proxy", "config"]
+    touched = False
     if body.direct:
         args.append("--no-upstream")
-    else:
-        args.extend(["--upstream", body.upstream_url or ""])
+        touched = True
+    elif body.upstream_url:
+        args.extend(["--upstream", body.upstream_url])
+        touched = True
+    if body.http2 is False:
+        args.append("--http1")
+        touched = True
+    elif body.http2 is True:
+        args.append("--http2")
+        touched = True
+    if body.keep_alive is True:
+        args.append("--keep-alive")
+        touched = True
+    elif body.keep_alive is False:
+        args.append("--no-keep-alive")
+        touched = True
+    if not touched:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide upstream_url, direct, http2, or keep_alive.",
+        )
     result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.get("/auth")
+def proxy_auth_list():
+    """
+    Purpose:
+        List platform-auth rows (`talos proxy auth list --format json`).
+    """
+    result = cli.run(["proxy", "auth", "list", "--format", "json"], timeout=15)
+    if not result.ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(result.stderr or result.stdout or "proxy auth list failed").strip(),
+        )
+    parsed = _parse_status_stdout(result.stdout)
+    if not parsed:
+        raise HTTPException(status_code=500, detail="proxy auth list returned non-JSON output")
+    return parsed
+
+
+@router.post("/auth")
+def proxy_auth_add(body: PlatformAuthBody):
+    """
+    Purpose:
+        Add or replace a platform-auth row through Talos CLI.
+    """
+    args = [
+        "proxy",
+        "auth",
+        "add",
+        "--host",
+        body.host,
+        "--type",
+        body.auth_type or "ntlmv2",
+        "--username",
+        body.username or "",
+        "--password",
+        body.password or "",
+        "--domain",
+        body.domain or "",
+        "--domain-hostname",
+        body.domain_hostname or "",
+    ]
+    if body.spnego:
+        args.append("--spnego")
+    if body.negotiate:
+        args.append("--negotiate")
+    result = cli.run(args, timeout=_PROXY_LIFECYCLE_TIMEOUT_S)
+    return _steps_response(result)
+
+
+@router.delete("/auth")
+def proxy_auth_remove(host: str):
+    """
+    Purpose:
+        Remove the platform-auth row for ``host``.
+    """
+    if not (host or "").strip():
+        raise HTTPException(status_code=400, detail="host is required.")
+    result = cli.run(
+        ["proxy", "auth", "remove", "--host", host.strip()],
+        timeout=_PROXY_LIFECYCLE_TIMEOUT_S,
+    )
     return _steps_response(result)

@@ -9,10 +9,27 @@ import { useAction } from "../hooks/useAction";
 import { useProject } from "../state/ProjectContext";
 import { useStatus } from "../state/StatusContext";
 
+interface PlatformAuthEntry {
+  host: string;
+  auth_type: string;
+  username: string;
+  password_set?: boolean;
+  domain: string;
+  domain_hostname: string;
+  spnego: boolean;
+  negotiate: boolean;
+}
+
 interface ProxyConfig {
   project_id?: string;
   mode: "direct" | "upstream" | string;
   upstream_url: string | null;
+  http2?: boolean;
+  keep_alive?: boolean;
+  platform_auth?: {
+    enabled: boolean;
+    entries: PlatformAuthEntry[];
+  };
 }
 
 interface LayeredProxy {
@@ -48,6 +65,17 @@ export default function Proxy() {
   const [layered, setLayered] = useState<LayeredProxy | null>(null);
   const [httpRules, setHttpRules] = useState<HttpRulesSummary | null>(null);
   const [copied, setCopied] = useState(false);
+  const [http2, setHttp2] = useState(true);
+  const [keepAlive, setKeepAlive] = useState(true);
+  const [authEntries, setAuthEntries] = useState<PlatformAuthEntry[]>([]);
+  const [authHost, setAuthHost] = useState("");
+  const [authType, setAuthType] = useState("ntlmv2");
+  const [authUser, setAuthUser] = useState("");
+  const [authPass, setAuthPass] = useState("");
+  const [authDomain, setAuthDomain] = useState("");
+  const [authDomainHost, setAuthDomainHost] = useState("");
+  const [authSpnego, setAuthSpnego] = useState(false);
+  const [authNegotiate, setAuthNegotiate] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const loadConfig = useCallback(async () => {
@@ -55,6 +83,9 @@ export default function Proxy() {
       const c = await api.get<ProxyConfig>("/api/proxy/config");
       setConfig(c);
       setUpstreamInput(c.upstream_url || "");
+      if (typeof c.http2 === "boolean") setHttp2(c.http2);
+      if (typeof c.keep_alive === "boolean") setKeepAlive(c.keep_alive);
+      setAuthEntries(c.platform_auth?.entries || []);
     } catch {
       setConfig(null);
     }
@@ -157,6 +188,24 @@ export default function Proxy() {
   );
   const setDirect = useAction("Set direct mode", () =>
     api.post("/api/proxy/config", { direct: true })
+  );
+  const saveOrigin = useAction("Save origin connection", () =>
+    api.post("/api/proxy/config", { http2, keep_alive: keepAlive })
+  );
+  const addAuth = useAction("Add platform auth", () =>
+    api.post("/api/proxy/auth", {
+      host: authHost.trim(),
+      auth_type: authType,
+      username: authUser,
+      password: authPass,
+      domain: authDomain,
+      domain_hostname: authDomainHost,
+      spnego: authSpnego,
+      negotiate: authNegotiate,
+    })
+  );
+  const removeAuth = useAction("Remove platform auth", (host: string) =>
+    api.del("/api/proxy/auth", { host })
   );
 
   useEffect(() => {
@@ -498,6 +547,201 @@ export default function Proxy() {
           </div>
         </div>
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <div className="panel p-4">
+          <div className="text-xs uppercase tracking-wide text-base-content/50 mb-3">
+            Origin connection
+          </div>
+          <p className="text-xs text-base-content/50 mb-3">
+            IIS Windows Integrated Auth (Negotiate / NTLM + Persistent-Auth)
+            fails over HTTP/2 and when the MITM opens a new socket per request.
+            Force HTTP/1.1 and keep-alive — same as Burp{" "}
+            <span className="mono">Default to HTTP/2</span> unchecked.
+          </p>
+          <label className="label cursor-pointer justify-start gap-3 py-1">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm"
+              checked={!http2}
+              onChange={(e) => setHttp2(!e.target.checked)}
+            />
+            <span className="label-text text-sm">Force HTTP/1.1 (disable HTTP/2)</span>
+          </label>
+          <label className="label cursor-pointer justify-start gap-3 py-1 mb-3">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm"
+              checked={keepAlive}
+              onChange={(e) => setKeepAlive(e.target.checked)}
+            />
+            <span className="label-text text-sm">Keep-alive to origin</span>
+          </label>
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={saveOrigin.running}
+            onClick={() => afterConfig(() => saveOrigin.run())}
+          >
+            {saveOrigin.running ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              "Save origin settings"
+            )}
+          </button>
+          <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-sm mt-3">
+            <dt className="text-base-content/50">Effective</dt>
+            <dd className="mono">
+              {http2 ? "HTTP/2" : "HTTP/1.1"} · keep-alive {keepAlive ? "on" : "off"}
+            </dd>
+          </dl>
+        </div>
+
+        <div className="panel p-4">
+          <div className="text-xs uppercase tracking-wide text-base-content/50 mb-3">
+            Platform authentication
+          </div>
+          <p className="text-xs text-base-content/50 mb-3">
+            Talos completes NTLM toward the origin on its own connection
+            (Burp Settings → Network → Connections → Platform authentication).
+            Leave SPNEGO and Negotiate unchecked unless the server requires them.
+            Kerberos tickets captured on another connection will not work.
+          </p>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <label className="form-control col-span-2">
+              <span className="label-text text-xs">Destination host</span>
+              <input
+                className="input input-sm input-bordered mono"
+                value={authHost}
+                onChange={(e) => setAuthHost(e.target.value)}
+                placeholder="foresight-uat.chartercom.com"
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text text-xs">Type</span>
+              <select
+                className="select select-sm select-bordered"
+                value={authType}
+                onChange={(e) => setAuthType(e.target.value)}
+              >
+                <option value="ntlmv2">NTLMv2</option>
+                <option value="ntlm">NTLM</option>
+                <option value="negotiate">Negotiate</option>
+              </select>
+            </label>
+            <label className="form-control">
+              <span className="label-text text-xs">Username</span>
+              <input
+                className="input input-sm input-bordered mono"
+                value={authUser}
+                onChange={(e) => setAuthUser(e.target.value)}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text text-xs">Password</span>
+              <input
+                type="password"
+                className="input input-sm input-bordered mono"
+                value={authPass}
+                onChange={(e) => setAuthPass(e.target.value)}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text text-xs">Domain</span>
+              <input
+                className="input input-sm input-bordered mono"
+                value={authDomain}
+                onChange={(e) => setAuthDomain(e.target.value)}
+                placeholder="(empty)"
+              />
+            </label>
+            <label className="form-control col-span-2">
+              <span className="label-text text-xs">Domain hostname</span>
+              <input
+                className="input input-sm input-bordered mono"
+                value={authDomainHost}
+                onChange={(e) => setAuthDomainHost(e.target.value)}
+                placeholder="same as destination host"
+              />
+            </label>
+          </div>
+          <label className="label cursor-pointer justify-start gap-3 py-0">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm"
+              checked={authSpnego}
+              onChange={(e) => setAuthSpnego(e.target.checked)}
+            />
+            <span className="label-text text-xs">SPNEGO encoding</span>
+          </label>
+          <label className="label cursor-pointer justify-start gap-3 py-0 mb-3">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm"
+              checked={authNegotiate}
+              onChange={(e) => setAuthNegotiate(e.target.checked)}
+            />
+            <span className="label-text text-xs">Negotiate auth scheme</span>
+          </label>
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={!authHost.trim() || addAuth.running}
+            onClick={async () => {
+              await afterConfig(() => addAuth.run());
+              setAuthPass("");
+            }}
+          >
+            {addAuth.running ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              "Save host"
+            )}
+          </button>
+        </div>
+      </div>
+
+      {authEntries.length > 0 && (
+        <div className="panel p-4 mb-4 overflow-x-auto">
+          <div className="text-xs uppercase tracking-wide text-base-content/50 mb-2">
+            Configured hosts
+          </div>
+          <table className="table table-sm">
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Type</th>
+                <th>User</th>
+                <th>Domain</th>
+                <th>Domain hostname</th>
+                <th>SPNEGO</th>
+                <th>Negotiate</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {authEntries.map((row) => (
+                <tr key={row.host}>
+                  <td className="mono">{row.host}</td>
+                  <td className="mono">{row.auth_type}</td>
+                  <td className="mono">{row.username || "—"}</td>
+                  <td className="mono">{row.domain || "(empty)"}</td>
+                  <td className="mono">{row.domain_hostname || "—"}</td>
+                  <td>{row.spnego ? "on" : "off"}</td>
+                  <td>{row.negotiate ? "on" : "off"}</td>
+                  <td>
+                    <button
+                      className="btn btn-xs btn-ghost text-error"
+                      disabled={removeAuth.running}
+                      onClick={() => afterConfig(() => removeAuth.run(row.host))}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="panel p-3">
         <div className="flex items-center justify-between mb-2">

@@ -70,6 +70,7 @@ from talos.intruder.strategies import build_strategy
 from talos.intruder.template import baseline_from_config, render_attempt, variables_from_config
 from talos.intruder.timing import TimingController
 from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import client_kwargs
 from talos.scheduler.db import (
     SCHED_STATE_PAUSED,
     SCHED_STATE_WAITING_FOR_SESSION,
@@ -269,7 +270,6 @@ async def run_session_segment(
     session_status = STATUS_RUNNING
     outcome_reason = "completed"
 
-    proxy_url = get_upstream_url(db_path)
     timeout = httpx.Timeout(timeout_s)
     limits = httpx.Limits(
         max_connections=max(4, timing.max_concurrency * 2),
@@ -434,12 +434,14 @@ async def run_session_segment(
             return None
 
     try:
-        async with httpx.AsyncClient(
+        http_kwargs = client_kwargs(
+            db_path,
             timeout=timeout,
             follow_redirects=False,
-            proxy=proxy_url,
-            limits=limits,
-        ) as client:
+            verify=False,
+        )
+        http_kwargs["limits"] = limits
+        async with httpx.AsyncClient(**http_kwargs) as client:
             while True:
                 # Cooperative checks
                 control = await _read_control()

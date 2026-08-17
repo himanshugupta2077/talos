@@ -2,6 +2,36 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Proxy — HTTP/1.1 + platform authentication (NTLMv2)
+
+**Shipped:** 2026-08-17
+
+IIS Windows Integrated Auth (`401` + `WWW-Authenticate: Negotiate` then
+`NTLM`, plus `Persistent-Auth`) fails through a MITM unless the hop to
+origin is HTTP/1.1, reuses the authenticated connection, and completes
+NTLM itself. Burp works with HTTP/2 off and platform authentication =
+NTLMv2 (empty domain, Domain Hostname = dest host, SPNEGO and Negotiate
+unchecked). Talos now persists those same settings.
+
+| Piece | Role |
+|-------|------|
+| `talos proxy config --http1` | mitmdump `--set http2=false` |
+| `talos proxy config --keep-alive` | Reuse origin connections |
+| `talos proxy auth add` | Host-scoped NTLMv2 credentials |
+| Addon + `create_async_client` | Handshake toward matching hosts; strip Negotiate |
+| Control Panel → Proxy | Origin connection + platform-auth form |
+
+Kerberos `Authorization: Negotiate` blobs are never replayed.
+
+```bash
+talos proxy config --http1 --keep-alive
+talos proxy auth add --host app.example.com --type ntlmv2 \
+  --username USER --password PASS --domain-hostname app.example.com
+talos proxy restart
+```
+
+Tests: `tests/test_platform_auth.py`.
+
 ## Burp extension: Repeater terminator + Findings tree
 
 **Shipped:** 2026-08-14

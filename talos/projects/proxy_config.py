@@ -2,39 +2,37 @@
 Module: talos.projects.proxy_config
 
 Purpose:
-    Read/write helpers and shared resolution for the proxy_config table in
-    the per-project DB. Controls whether Talos uses Direct mode (no upstream
-    proxy — mitmdump and outbound httpx clients connect straight to the
-    target) or Upstream Proxy mode (forwards traffic to another proxy such
-    as Burp Suite, OWASP ZAP, or a corporate proxy).
+    Read/write helpers and shared resolution for per-project proxy transport:
 
-    Only one setting is stored: upstream_url. NULL/empty means Direct mode.
+        - Direct vs Upstream Proxy (legacy proxy_config.upstream_url + YAML)
+        - HTTP/2 vs forced HTTP/1.1
+        - Origin keep-alive
+        - Platform authentication (NTLMv2) rows
 
-    All consumers (proxy launcher, replay/BAC/unauth engines) must obtain
-    the upstream URL only via this module — never hardcode host, port, URL,
-    or credentials. CLI one-shot overrides are applied through
-    resolve_upstream_url so every component shares the same resolution
-    rules.
+    All consumers (proxy launcher, replay/BAC/unauth engines, addon) must
+    obtain transport settings only via this module — never hardcode host,
+    port, URL, or credentials.
 
-Dependencies: sqlite3, pathlib, urllib.parse
+Dependencies: sqlite3, pathlib, urllib.parse, dataclasses
               talos.projects.db (migrate_project_db)
+              talos.configuration
 Data flow:
-    talos.proxy.cli → resolve_upstream_url / set_upstream_url /
-        clear_upstream_url → proxy_config table
-    talos.proxy.launcher.build_mitmdump_command consumes the resolved URL
-        to decide whether to add --mode upstream:<url>
-    replay / BAC / unauth engines → get_upstream_url → httpx proxy=
+    talos.proxy.cli → resolve_upstream_url / set_* / platform-auth CRUD
+    talos.proxy.launcher.build_mitmdump_command consumes http2 + upstream
+    replay / BAC / unauth → load_proxy_transport → httpx
 Side effects:
-    set_upstream_url / clear_upstream_url write the proxy_config table.
+    Writers update project.yaml (and dual-write upstream to SQLite).
 """
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from talos.configuration.model import PlatformAuthEntry
 from talos.projects.db import migrate_project_db
 
 
@@ -222,3 +220,169 @@ def _write_project_upstream_yaml(
     except Exception:
         # Best-effort: SQLite remains authoritative for this write path.
         pass
+
+
+# ------------------------------------------------------------------ #
+# Origin transport (HTTP/1.1, keep-alive, platform auth)               #
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class ProxyTransport:
+    """
+    Purpose:
+        Snapshot of origin-connection settings for one project.
+    Fields:
+        upstream_url            — httpx/mitmdump upstream, or None for Direct.
+        http2                   — False forces HTTP/1.1.
+        keep_alive              — reuse origin connections.
+        platform_auth_enabled   — master switch for NTLM handshake / strip.
+        platform_auth_entries   — host-scoped credential rows.
+    """
+
+    upstream_url: Optional[str]
+    http2: bool
+    keep_alive: bool
+    platform_auth_enabled: bool
+    platform_auth_entries: tuple[PlatformAuthEntry, ...]
+
+
+def load_proxy_transport(db_path: Path) -> ProxyTransport:
+    """
+    Purpose:
+        Load the effective origin-transport settings for a project DB.
+    Input:
+        db_path — absolute Path to the project's talos.db.
+    Output:
+        ProxyTransport (defaults when the project has no overrides).
+    Side effects: May migrate the project DB via the layered config loader.
+    """
+    from talos.configuration.manager import ConfigurationManager
+    from talos.config import TalosConfig
+
+    if not db_path.exists() and not (db_path.parent / "project.yaml").exists():
+        return ProxyTransport(
+            upstream_url=None,
+            http2=True,
+            keep_alive=True,
+            platform_auth_enabled=False,
+            platform_auth_entries=(),
+        )
+    mgr = ConfigurationManager(TalosConfig.from_env().data_dir)
+    effective = mgr.load(project_data_dir=db_path.parent)
+    auth = effective.proxy.platform_auth
+    return ProxyTransport(
+        upstream_url=effective.upstream_url(),
+        http2=bool(effective.proxy.http2),
+        keep_alive=bool(effective.proxy.keep_alive),
+        platform_auth_enabled=bool(auth.enabled),
+        platform_auth_entries=tuple(auth.entries),
+    )
+
+
+def set_http2(db_path: Path, enabled: bool) -> None:
+    """
+    Purpose:
+        Persist proxy.http2 (False = force HTTP/1.1).
+    Side effects: Writes project.yaml.
+    """
+    _set_project_yaml(db_path, "proxy.http2", bool(enabled))
+
+
+def set_keep_alive(db_path: Path, enabled: bool) -> None:
+    """
+    Purpose:
+        Persist proxy.keep_alive.
+    Side effects: Writes project.yaml.
+    """
+    _set_project_yaml(db_path, "proxy.keep_alive", bool(enabled))
+
+
+def set_platform_auth_enabled(db_path: Path, enabled: bool) -> None:
+    """
+    Purpose:
+        Persist proxy.platform_auth.enabled.
+    Side effects: Writes project.yaml.
+    """
+    _set_project_yaml(db_path, "proxy.platform_auth.enabled", bool(enabled))
+
+
+def replace_platform_auth_entries(
+    db_path: Path, entries: list[PlatformAuthEntry]
+) -> None:
+    """
+    Purpose:
+        Replace the full platform-auth entry list and enable the feature
+        when at least one row remains.
+    Side effects: Writes project.yaml.
+    """
+    serialized = [_entry_to_storage(entry) for entry in entries]
+    _set_project_yaml(db_path, "proxy.platform_auth.entries", serialized)
+    _set_project_yaml(
+        db_path, "proxy.platform_auth.enabled", bool(serialized)
+    )
+
+
+def add_platform_auth_entry(db_path: Path, entry: PlatformAuthEntry) -> PlatformAuthEntry:
+    """
+    Purpose:
+        Insert or replace the row for entry.host (case-insensitive).
+    Output:
+        The stored entry.
+    Side effects: Writes project.yaml.
+    """
+    current = list(load_proxy_transport(db_path).platform_auth_entries)
+    host_key = entry.host.lower()
+    next_entries = [row for row in current if row.host.lower() != host_key]
+    next_entries.append(entry)
+    replace_platform_auth_entries(db_path, next_entries)
+    return entry
+
+
+def remove_platform_auth_entry(db_path: Path, host: str) -> bool:
+    """
+    Purpose:
+        Remove the row whose host matches (case-insensitive).
+    Output:
+        True when a row was removed.
+    Side effects: Writes project.yaml when a row existed.
+    """
+    host_key = (host or "").strip().lower()
+    current = list(load_proxy_transport(db_path).platform_auth_entries)
+    next_entries = [row for row in current if row.host.lower() != host_key]
+    if len(next_entries) == len(current):
+        return False
+    replace_platform_auth_entries(db_path, next_entries)
+    return True
+
+
+def _entry_to_storage(entry: PlatformAuthEntry) -> dict:
+    return {
+        "host": entry.host,
+        "auth_type": entry.auth_type,
+        "username": entry.username,
+        "password": entry.password,
+        "domain": entry.domain,
+        "domain_hostname": entry.domain_hostname,
+        "spnego": bool(entry.spnego),
+        "negotiate": bool(entry.negotiate),
+    }
+
+
+def _set_project_yaml(db_path: Path, path: str, value: object) -> None:
+    """
+    Purpose:
+        Write one dotted key to project.yaml via ConfigurationManager.
+    Side effects: Creates/updates project.yaml.
+    """
+    from talos.configuration.manager import ConfigurationManager
+    from talos.config import TalosConfig
+
+    mgr = ConfigurationManager(TalosConfig.from_env().data_dir)
+    mgr.set_value(
+        path,
+        value,
+        global_scope=False,
+        project_data_dir=db_path.parent,
+        project_db_path=db_path if db_path.exists() else None,
+    )

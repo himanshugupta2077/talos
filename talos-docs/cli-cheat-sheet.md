@@ -821,7 +821,9 @@ Modes:
 - **Direct** (default) — no upstream; mitmdump and outbound engines (replay / BAC / unauth) connect to the target
 - **Upstream Proxy** — forward through Burp / ZAP / a corporate proxy
 
-Upstream host, port, URL, and credentials are **never hardcoded**. They come from layered config (`talos config set proxy.upstream.url` / `talos proxy config`) or one-shot CLI overrides on `start`. Replay and attack engines use the same setting via `get_upstream_url` (layered). Config changes apply on the next `talos proxy start` (or immediately for one-shot flags).
+Upstream host, port, URL, and credentials are **never hardcoded**. They come from layered config (`talos config set proxy.upstream.url` / `talos proxy config`) or one-shot CLI overrides on `start`. Replay and attack engines use the same setting via `create_async_client` (layered transport: upstream, HTTP/1.1, NTLM). Config changes apply on the next `talos proxy start` (or immediately for one-shot flags).
+
+IIS Windows Integrated Auth (`401` Negotiate/NTLM + `Persistent-Auth`) needs **HTTP/1.1**, **keep-alive**, and **platform NTLM** on the hop that talks to the origin — same as Burp Settings → Network → Connections → Platform authentication, plus unchecking “Default to HTTP/2”.
 
 ```bash
 # Start (reads layered project config; default Direct)
@@ -841,9 +843,17 @@ talos proxy kill --port 8080
 talos proxy config
 talos proxy config --upstream http://127.0.0.1:8081
 talos proxy config --no-upstream
+talos proxy config --http1 --keep-alive
+
+# Platform authentication (NTLMv2 toward the origin)
+talos proxy auth add --host app.example.com --type ntlmv2 \
+  --username USER --password PASS --domain-hostname app.example.com
+talos proxy auth list
+talos proxy auth remove --host app.example.com
 
 # Preferred layered form
 talos config set proxy.upstream.url http://127.0.0.1:8081
+talos config set proxy.http2 false
 talos config proxy show
 ```
 

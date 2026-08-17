@@ -48,7 +48,7 @@ import httpx
 
 import talos.replay.db as replay_db
 from talos.projects.annotations import get_annotations
-from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 from talos.send import draft as draft_mod
 from talos.send import db as send_db
@@ -392,11 +392,11 @@ async def send_once(
     failure_reason: Optional[str] = None
 
     try:
-        async with httpx.AsyncClient(
-            verify=False,
-            proxy=get_upstream_url(db_path),
-            follow_redirects=False,
+        async with create_async_client(
+            db_path,
             timeout=_SEND_TIMEOUT,
+            follow_redirects=False,
+            verify=False,
         ) as client:
             resp = await client.request(
                 method=draft["method"],

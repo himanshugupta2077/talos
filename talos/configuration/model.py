@@ -46,6 +46,63 @@ class SourceInfo:
 
 
 @dataclass(frozen=True)
+class PlatformAuthEntry:
+    """
+    Purpose:
+        One Burp-style platform-authentication row for an origin host.
+    Fields:
+        host             — destination host this entry applies to (exact or *.suffix).
+        auth_type        — ntlmv2 | ntlm | negotiate (credential family).
+        username         — account name (no domain prefix required).
+        password         — account password; empty means strip-only (no handshake).
+        domain           — Windows domain; empty is valid for local / IIS NTLM.
+        domain_hostname  — NTLM workstation / target hostname (Burp "Domain Hostname").
+        spnego           — wrap tokens in SPNEGO (Burp "SPNEGO Encoding").
+        negotiate        — use the Negotiate auth scheme (Burp "Negotiate Auth Scheme").
+    """
+
+    host: str
+    auth_type: str = "ntlmv2"
+    username: str = ""
+    password: str = ""
+    domain: str = ""
+    domain_hostname: str = ""
+    spnego: bool = False
+    negotiate: bool = False
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """
+        Purpose:
+            Serialize for CLI/JSON without echoing the password.
+        Side effects: None.
+        """
+        return {
+            "host": self.host,
+            "auth_type": self.auth_type,
+            "username": self.username,
+            "password_set": bool(self.password),
+            "domain": self.domain,
+            "domain_hostname": self.domain_hostname,
+            "spnego": self.spnego,
+            "negotiate": self.negotiate,
+        }
+
+
+@dataclass(frozen=True)
+class PlatformAuthSection:
+    """
+    Purpose:
+        Effective origin platform-authentication settings.
+    Fields:
+        enabled — master switch; when false no handshake or Negotiate strip runs.
+        entries — host-scoped credential rows.
+    """
+
+    enabled: bool = False
+    entries: tuple[PlatformAuthEntry, ...] = ()
+
+
+@dataclass(frozen=True)
 class ProxyConfigSection:
     """
     Purpose:
@@ -53,10 +110,16 @@ class ProxyConfigSection:
     Fields:
         upstream_enabled — whether Upstream Proxy mode is active.
         upstream_url     — validated URL when enabled; None in Direct mode.
+        http2            — when false, mitmdump and outbound clients force HTTP/1.1.
+        keep_alive       — reuse origin connections (required for IIS Persistent-Auth).
+        platform_auth    — NTLM/Negotiate handshake Talos performs toward the origin.
     """
 
     upstream_enabled: bool = False
     upstream_url: Optional[str] = None
+    http2: bool = True
+    keep_alive: bool = True
+    platform_auth: PlatformAuthSection = field(default_factory=PlatformAuthSection)
 
 
 @dataclass(frozen=True)

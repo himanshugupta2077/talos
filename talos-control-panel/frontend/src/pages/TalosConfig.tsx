@@ -82,7 +82,10 @@ const SECTION_FILTERS = [
 ];
 
 /** Complex keys managed on dedicated workspaces (not generic leaf table). */
-const COMPLEX_SETTING_KEYS = new Set(["http.rules"]);
+const COMPLEX_SETTING_KEYS = new Set([
+  "http.rules",
+  "proxy.platform_auth.entries",
+]);
 
 const SOURCE_BADGE: Record<string, string> = {
   default: "badge-ghost",

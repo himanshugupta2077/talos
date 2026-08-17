@@ -12,7 +12,9 @@ Strict rules enforced here (no exceptions):
     - No session detection.
     - No endpoint clustering.
     - No attack logic.
-    - No blocking operations inside the proxy thread.
+    - No blocking operations inside the proxy thread, except the optional
+      platform-auth origin handshake (NTLM) which must stay on one
+      persistent HTTP/1.1 connection for IIS Persistent-Auth.
 
 Extraction specifics:
     - project_id is NOT included in the flow payload; attached at worker layer.
@@ -62,6 +64,14 @@ from talos.projects.db import migrate_project_db, seed_default_context
 from talos.projects.manager import ProjectManager, NoActiveProject, ProjectNotFound
 from talos.projects.model import Project, ScopeConstraints
 from talos.projects.outscope import load_prefix_set
+from talos.projects.proxy_config import load_proxy_transport
+from talos.proxy.http_client import create_client
+from talos.proxy.platform_auth import (
+    collect_www_authenticate,
+    filter_request_headers,
+    match_platform_auth,
+    strip_negotiate_challenges,
+)
 from talos.error_intel.db import get_config as get_error_intel_config
 from talos.error_intel.queue import ErrorIntelQueue
 from talos.error_intel.worker import ErrorIntelWorker
@@ -149,6 +159,18 @@ class TalosAddon:
         self._http_engine: HTTPManipulationEngine = HTTPManipulationEngine.from_http_section(
             effective.http
         )
+        # Origin transport: HTTP/1.1 + keep-alive + platform NTLM.
+        # Snapshot at startup; config changes apply on the next proxy restart.
+        self._transport = load_proxy_transport(project.db_path)
+        self._origin_client = None
+        if self._transport.platform_auth_enabled and any(
+            row.username and row.password for row in self._transport.platform_auth_entries
+        ):
+            self._origin_client = create_client(
+                project.db_path,
+                timeout=30.0,
+                transport=self._transport,
+            )
 
         # Load out-of-scope prefixes once at startup.  Changes made via CLI
         # during a live session take effect on next proxy restart.
@@ -232,7 +254,8 @@ class TalosAddon:
         logger.info(
             "Proxy addon loaded. project=%s scope_entries=%d "
             "out_of_scope_prefixes=%d store_bodies=%s max_body=%d drop_headers=%d "
-            "http_engine=%s http_rules=%d passive_queue_max=%d error_queue_max=%d",
+            "http_engine=%s http_rules=%d passive_queue_max=%d error_queue_max=%d "
+            "http2=%s keep_alive=%s platform_auth=%s",
             project.id,
             len(self._scope),
             len(self._out_of_scope),
@@ -243,7 +266,109 @@ class TalosAddon:
             len(self._http_engine.rules),
             queue_max,
             error_queue_max,
+            "on" if self._transport.http2 else "off",
+            "on" if self._transport.keep_alive else "off",
+            len(self._transport.platform_auth_entries)
+            if self._transport.platform_auth_enabled
+            else 0,
         )
+
+    def _matching_auth_entry(self, flow: http.HTTPFlow):
+        """
+        Purpose:
+            Resolve the platform-auth row for this origin host, if enabled.
+        Side effects: None.
+        """
+        if not self._transport.platform_auth_enabled:
+            return None
+        host = ""
+        try:
+            host = flow.request.pretty_host or ""
+        except Exception:
+            host = getattr(flow.request, "host", "") or ""
+        return match_platform_auth(self._transport.platform_auth_entries, host)
+
+    def _maybe_platform_auth(self, flow: http.HTTPFlow) -> None:
+        """
+        Purpose:
+            For matching hosts with credentials, complete NTLM on a
+            persistent HTTP/1.1 client and short-circuit mitmproxy's origin
+            hop. Persistent-Auth then sticks on that client connection.
+        Side effects:
+            May set flow.response. Failures leave the flow for mitmproxy.
+        """
+        if self._origin_client is None:
+            return
+        if str(flow.request.method or "").upper() == "CONNECT":
+            return
+        entry = self._matching_auth_entry(flow)
+        if entry is None or not entry.username or not entry.password:
+            return
+        try:
+            url = flow.request.pretty_url
+        except Exception:
+            url = getattr(flow.request, "url", "") or ""
+        if not url:
+            return
+        try:
+            resp = self._origin_client.request(
+                str(flow.request.method or "GET"),
+                url,
+                headers=filter_request_headers(flow.request.headers),
+                content=flow.request.raw_content or b"",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Platform auth origin request failed host=%s: %s",
+                entry.host,
+                exc,
+            )
+            return
+        header_pairs = []
+        multi = getattr(resp.headers, "multi_items", None)
+        items = list(multi()) if callable(multi) else list(resp.headers.items())
+        for key, value in items:
+            if str(key).lower() in {"transfer-encoding", "content-length"}:
+                continue
+            header_pairs.append((str(key), str(value)))
+        flow.response = http.Response.make(
+            resp.status_code,
+            resp.content,
+            header_pairs,
+        )
+        logger.debug(
+            "Platform auth completed host=%s status=%s",
+            entry.host,
+            resp.status_code,
+        )
+
+    def _maybe_strip_negotiate(self, flow: http.HTTPFlow) -> None:
+        """
+        Purpose:
+            Drop WWW-Authenticate: Negotiate so the client falls back to
+            NTLM on this HTTP/1.1 connection. Kerberos through MITM fails.
+        Side effects: May rewrite response WWW-Authenticate values.
+        """
+        response = flow.response
+        if response is None or response.status_code != 401:
+            return
+        entry = self._matching_auth_entry(flow)
+        if entry is None or entry.negotiate:
+            return
+        values = collect_www_authenticate(response.headers)
+        kept = strip_negotiate_challenges(values)
+        if kept == list(values):
+            return
+        try:
+            del response.headers["WWW-Authenticate"]
+        except KeyError:
+            pass
+        for value in kept:
+            add = getattr(response.headers, "add", None)
+            if callable(add):
+                add("WWW-Authenticate", value)
+            else:
+                response.headers["WWW-Authenticate"] = value
 
     def done(self) -> None:
         """
@@ -256,6 +381,9 @@ class TalosAddon:
             - Stops ErrorIntelWorker (error intel queue drain).
         """
         self._worker.stop()
+        if self._origin_client is not None:
+            self._origin_client.close()
+            self._origin_client = None
         try:
             self._passive_worker.stop()
         except Exception:
@@ -279,7 +407,10 @@ class TalosAddon:
             "role_id": self._role_id,
             "module_id": self._module_id,
         }
+        if not self._transport.keep_alive:
+            flow.request.headers["Connection"] = "close"
         self._http_engine.apply_request_flow(flow, context=context)
+        self._maybe_platform_auth(flow)
 
     def response(self, flow: http.HTTPFlow) -> None:
         """
@@ -300,6 +431,7 @@ class TalosAddon:
             "role_id": self._role_id,
             "module_id": self._module_id,
         }
+        self._maybe_strip_negotiate(flow)
         self._http_engine.apply_response_flow(flow, context=context)
 
         # Shared Basic Scope evaluator: out-of-scope overrides in-scope;

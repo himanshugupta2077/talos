@@ -705,11 +705,16 @@ class ProxyRuntimeManager:
             logger.error("Proxy start refused: %s", state.last_error)
             raise ProxyStartError(state.last_error)
 
+        from talos.projects.proxy_config import load_proxy_transport
+
+        transport = load_proxy_transport(project.db_path)
         argv = build_mitmdump_command(
             listen_host=listen_host,
             port=port,
             addon_path=_ADDON_PATH,
             upstream_url=upstream_url,
+            http2=transport.http2,
+            keep_alive=transport.keep_alive,
         )
         env = os.environ.copy()
         env["TALOS_PROJECT"] = project.id

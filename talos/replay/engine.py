@@ -51,6 +51,7 @@ from talos.burp.headers import maybe_apply_burp_headers
 from talos.burp.outbound import _request_path
 from talos.projects.annotations import get_annotations
 from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 
 # Single shared timeout for all replay requests.
@@ -361,11 +362,11 @@ async def _execute_replay(
         )
 
     try:
-        async with httpx.AsyncClient(
-            verify=False,
-            proxy=upstream_url,
-            follow_redirects=False,
+        async with create_async_client(
+            db_path,
             timeout=_REPLAY_TIMEOUT,
+            follow_redirects=False,
+            verify=False,
         ) as client:
             resp = await client.request(
                 method=flow["method"],

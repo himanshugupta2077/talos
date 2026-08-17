@@ -159,6 +159,23 @@ COMMAND_TREE: list[dict] = [
                 arg("force", flag="--force", kind="boolean", help="Kill any process on the port, not only mitmdump"),
             ]),
             cmd("proxy.status", ["proxy", "status"], "Show proxy runtime status"),
+            cmd("proxy.config", ["proxy", "config"], "Show or update proxy transport", [
+                arg("upstream", flag="--upstream", help="Upstream proxy URL"),
+                arg("http1", flag="--http1", kind="boolean", help="Force HTTP/1.1"),
+                arg("keep_alive", flag="--keep-alive", kind="boolean"),
+            ]),
+            cmd("proxy.auth.list", ["proxy", "auth", "list"], "List platform-auth hosts"),
+            cmd("proxy.auth.add", ["proxy", "auth", "add"], "Add NTLM platform-auth host", [
+                arg("host", flag="--host", required=True),
+                arg("type", flag="--type", kind="select", options=["ntlmv2", "ntlm", "negotiate"], default="ntlmv2"),
+                arg("username", flag="--username"),
+                arg("password", flag="--password"),
+                arg("domain", flag="--domain"),
+                arg("domain_hostname", flag="--domain-hostname"),
+            ]),
+            cmd("proxy.auth.remove", ["proxy", "auth", "remove"], "Remove platform-auth host", [
+                arg("host", flag="--host", required=True),
+            ]),
         ],
     },
     {

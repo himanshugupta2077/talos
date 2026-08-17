@@ -54,7 +54,7 @@ import httpx
 import talos.replay.db as replay_db
 from talos.projects.auth import get_auth_config, get_role_auth_state
 from talos.projects.policy import get_effective_policy
-from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 
 _log = logging.getLogger(__name__)
@@ -846,11 +846,11 @@ async def _send_and_store(
 
     try:
         # Upstream is project-configured only (proxy_config); None → direct.
-        async with httpx.AsyncClient(
-            verify=False,
-            proxy=get_upstream_url(db_path),
-            follow_redirects=False,
+        async with create_async_client(
+            db_path,
             timeout=_REPLAY_TIMEOUT,
+            follow_redirects=False,
+            verify=False,
         ) as client:
             resp = await client.request(
                 method=replayed["method"],

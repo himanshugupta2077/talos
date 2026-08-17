@@ -45,7 +45,7 @@ from talos.cors.payloads import (
     target_origin_key,
 )
 from talos.projects.annotations import get_annotations
-from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import create_async_client
 
 _log = logging.getLogger(__name__)
 _REPLAY_TIMEOUT = httpx.Timeout(30.0)
@@ -331,11 +331,11 @@ async def execute_cors_job(
 
     failure_reason: Optional[str] = None
     try:
-        async with httpx.AsyncClient(
-            verify=False,
-            proxy=get_upstream_url(db_path),
-            follow_redirects=False,
+        async with create_async_client(
+            db_path,
             timeout=_REPLAY_TIMEOUT,
+            follow_redirects=False,
+            verify=False,
         ) as client:
             resp = await client.request(
                 method=method,

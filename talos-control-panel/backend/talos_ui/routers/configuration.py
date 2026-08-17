@@ -113,20 +113,30 @@ def _source_counts(sources: dict[str, str]) -> dict[str, int]:
     return counts
 
 
+def _proxy_summary(values: dict[str, Any]) -> str:
+    """Compact Overview card for proxy transport."""
+    up_enabled = values.get("proxy.upstream.enabled", False)
+    up_url = values.get("proxy.upstream.url")
+    mode = f"Upstream · {up_url}" if up_enabled and up_url else "Direct"
+    http2 = values.get("proxy.http2", True)
+    proto = "HTTP/2" if http2 else "HTTP/1.1"
+    auth_on = bool(values.get("proxy.platform_auth.enabled", False))
+    entries = values.get("proxy.platform_auth.entries") or []
+    auth_n = len(entries) if isinstance(entries, list) else 0
+    auth = f"NTLM ×{auth_n}" if auth_on and auth_n else "no platform auth"
+    return f"{mode} · {proto} · {auth}"
+
+
 def _section_summaries(values: dict[str, Any], sources: dict[str, str]) -> list[dict]:
     """Human-readable cards for Overview tab."""
     cards: list[dict] = []
 
     # Proxy
-    up_enabled = values.get("proxy.upstream.enabled", False)
-    up_url = values.get("proxy.upstream.url")
     cards.append(
         {
             "section": "proxy",
             "label": "Proxy",
-            "summary": (
-                f"Upstream · {up_url}" if up_enabled and up_url else "Direct"
-            ),
+            "summary": _proxy_summary(values),
             "source": _dominant_source(sources, "proxy"),
         }
     )

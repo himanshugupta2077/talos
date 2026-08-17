@@ -84,7 +84,7 @@ from talos.auth_session.decision_filter import (
 )
 from talos.auth_session.types import get_analyzer
 from talos.auth_session.verdict import score_verdict
-from talos.projects.proxy_config import get_upstream_url
+from talos.proxy.http_client import create_async_client
 from talos.replay.diff import DiffResult, compute_diff
 
 _log = logging.getLogger(__name__)
@@ -656,11 +656,11 @@ async def _send_and_store(
     failure_reason: Optional[str] = None
 
     try:
-        async with httpx.AsyncClient(
-            verify=False,
-            proxy=get_upstream_url(db_path),
-            follow_redirects=False,
+        async with create_async_client(
+            db_path,
             timeout=_REPLAY_TIMEOUT,
+            follow_redirects=False,
+            verify=False,
         ) as client:
             resp = await client.request(
                 method=replayed["method"],

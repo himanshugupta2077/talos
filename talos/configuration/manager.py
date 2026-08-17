@@ -60,6 +60,8 @@ from talos.configuration.model import (
     EffectiveConfig,
     HttpConfigSection,
     ParameterIntelConfigSection,
+    PlatformAuthEntry,
+    PlatformAuthSection,
     ProxyConfigSection,
     SchedulerConfigSection,
     UrlSinkConfigSection,
@@ -534,6 +536,9 @@ class ConfigurationManager:
             proxy=ProxyConfigSection(
                 upstream_enabled=enabled,
                 upstream_url=url,
+                http2=_as_bool(proxy_raw.get("http2"), True),
+                keep_alive=_as_bool(proxy_raw.get("keep_alive"), True),
+                platform_auth=_parse_platform_auth(proxy_raw.get("platform_auth")),
             ),
             capture=CaptureConfigSection(
                 store_bodies=bool(capture_raw.get("store_bodies", True)),
@@ -696,3 +701,82 @@ def load_effective_config(
 def section_names() -> tuple[str, ...]:
     """Return first-class config section names."""
     return CONFIG_SECTIONS
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    """
+    Purpose:
+        Coerce YAML/CLI values to bool without treating "false" as True.
+    Side effects: None.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "on"):
+            return True
+        if lowered in ("0", "false", "no", "off", ""):
+            return False
+    return bool(value)
+
+
+def _parse_platform_auth(raw: Any) -> PlatformAuthSection:
+    """
+    Purpose:
+        Build PlatformAuthSection from a merged YAML mapping.
+    Side effects: None. Invalid rows are skipped with a warning.
+    """
+    if not isinstance(raw, dict):
+        return PlatformAuthSection()
+    entries_raw = raw.get("entries") or []
+    if not isinstance(entries_raw, list):
+        entries_raw = []
+    entries: list[PlatformAuthEntry] = []
+    for item in entries_raw:
+        try:
+            entries.append(parse_platform_auth_entry(item))
+        except ValueError as exc:
+            logger.warning("Skipping invalid platform-auth entry: %s", exc)
+    return PlatformAuthSection(
+        enabled=_as_bool(raw.get("enabled"), False),
+        entries=tuple(entries),
+    )
+
+
+def parse_platform_auth_entry(raw: Any) -> PlatformAuthEntry:
+    """
+    Purpose:
+        Validate one platform-auth mapping into a PlatformAuthEntry.
+    Input:
+        raw — dict from YAML / CLI / Control Panel.
+    Output:
+        Immutable PlatformAuthEntry.
+    Side effects: None.
+    Raises:
+        ValueError when host is missing or auth_type is unknown.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("platform-auth entry must be a mapping")
+    host = str(raw.get("host") or "").strip()
+    if not host:
+        raise ValueError("platform-auth entry requires host")
+    auth_type = str(raw.get("auth_type") or raw.get("type") or "ntlmv2").strip().lower()
+    if auth_type not in ("ntlmv2", "ntlm", "negotiate"):
+        raise ValueError(
+            f"platform-auth type must be ntlmv2, ntlm, or negotiate (got {auth_type!r})"
+        )
+    negotiate = raw.get("negotiate")
+    if negotiate is None:
+        negotiate = auth_type == "negotiate"
+    return PlatformAuthEntry(
+        host=host,
+        auth_type=auth_type,
+        username=str(raw.get("username") or "").strip(),
+        password=str(raw.get("password") or ""),
+        domain=str(raw.get("domain") or "").strip(),
+        domain_hostname=str(raw.get("domain_hostname") or "").strip(),
+        spnego=_as_bool(raw.get("spnego"), False),
+        negotiate=_as_bool(negotiate, False),
+    )

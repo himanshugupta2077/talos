@@ -39,6 +39,12 @@ BUILTIN_DEFAULTS: dict = {
             "enabled": False,
             "url": None,
         },
+        "http2": True,
+        "keep_alive": True,
+        "platform_auth": {
+            "enabled": False,
+            "entries": [],
+        },
     },
     "capture": {
         "store_bodies": True,
@@ -110,6 +116,10 @@ CONFIG_SECTIONS: tuple[str, ...] = (
 KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "proxy.upstream.enabled",
     "proxy.upstream.url",
+    "proxy.http2",
+    "proxy.keep_alive",
+    "proxy.platform_auth.enabled",
+    "proxy.platform_auth.entries",
     "capture.store_bodies",
     "capture.max_body_size",
     "capture.drop_headers",
@@ -144,7 +154,10 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
 SECTION_META: dict[str, dict] = {
     "proxy": {
         "label": "Proxy",
-        "description": "Upstream proxy mode for mitmdump and outbound engines.",
+        "description": (
+            "Upstream proxy mode, HTTP/1.1 / keep-alive toward the origin, "
+            "and platform authentication (NTLM) for mitmdump and outbound engines."
+        ),
     },
     "capture": {
         "label": "Capture",
@@ -206,6 +219,53 @@ SETTING_SCHEMA: tuple[dict, ...] = (
         "type": "nullable_string",
         "default": None,
         "description": "Upstream proxy URL (e.g. http://127.0.0.1:8081). Null means Direct mode.",
+    },
+    {
+        "key": "proxy.http2",
+        "section": "proxy",
+        "label": "HTTP/2",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "When false, Talos forces HTTP/1.1 on the origin hop (mitmdump "
+            "--set http2=false and httpx http2=False). Required for IIS "
+            "Windows Integrated Auth through a MITM."
+        ),
+    },
+    {
+        "key": "proxy.keep_alive",
+        "section": "proxy",
+        "label": "Keep-alive",
+        "type": "bool",
+        "default": True,
+        "description": (
+            "Reuse origin TCP connections. Leave on for IIS Persistent-Auth "
+            "and the NTLM three-leg handshake."
+        ),
+    },
+    {
+        "key": "proxy.platform_auth.enabled",
+        "section": "proxy",
+        "label": "Platform authentication",
+        "type": "bool",
+        "default": False,
+        "description": (
+            "When true, Talos completes NTLM (or Negotiate) toward matching "
+            "origin hosts using configured credentials — same role as Burp "
+            "Platform authentication."
+        ),
+    },
+    {
+        "key": "proxy.platform_auth.entries",
+        "section": "proxy",
+        "label": "Platform authentication entries",
+        "type": "object_list",
+        "default": [],
+        "description": (
+            "Host-scoped credential rows (host, type, username, password, "
+            "domain, domain_hostname, spnego, negotiate). Manage via "
+            "`talos proxy auth` or the Control Panel Proxy page."
+        ),
     },
     {
         "key": "capture.store_bodies",
