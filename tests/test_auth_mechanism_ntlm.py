@@ -4,8 +4,8 @@ Platform NTLM as a first-class auth mechanism for IV / unauth / auth-test.
 Covers:
     - resolve_auth_mechanism (artifacts vs credentialed NTLM)
     - hostname matching against canonical endpoint origins
-    - IV pre-check: NTLM-only ready; missing both; uncovered host
-    - session health skip when NTLM-only
+    - IV pre-check: NTLM ready (including leftover cookie names); missing both; uncovered host
+    - session health skip when platform NTLM is configured
     - httpx client_kwargs(platform_auth=False) drops NTLM
     - unauth CLI: fail without a mechanism; NTLM-only enqueues baseline only
     - auth show mentions platform NTLM
@@ -206,10 +206,22 @@ class TestIvPrecheck:
         assert errors
         assert any("No login flows" in e or "No manual session" in e for e in errors)
 
+    def test_ntlm_plus_leftover_artifacts_skips_session(self, db_path: Path) -> None:
+        _seed_flow(db_path)
+        set_auth_fields(db_path, cookies=["ASP.NET_SessionId"], headers=[])
+        _add_ntlm(db_path)
+        assert verify_auth_for_iv_scan(db_path, PROJECT_ID) == []
+
 
 class TestSessionHealth:
     def test_ntlm_only_ensure_healthy(self, db_path: Path) -> None:
         role_id = _seed_flow(db_path)
+        _add_ntlm(db_path)
+        assert ensure_healthy(db_path, role_id, PROJECT_ID) is True
+
+    def test_ntlm_plus_leftover_artifacts_skips_refresh(self, db_path: Path) -> None:
+        role_id = _seed_flow(db_path)
+        set_auth_fields(db_path, cookies=["ASP.NET_SessionId"], headers=[])
         _add_ntlm(db_path)
         assert ensure_healthy(db_path, role_id, PROJECT_ID) is True
 

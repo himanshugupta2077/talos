@@ -17,7 +17,9 @@ Purpose:
            browser NTLM tokens so it can own the handshake.
 
     Engines must not require invented cookie/header names when platform
-    NTLM is the session. Unauth / auth-test must send *without* NTLM
+    NTLM is the session. Leftover cookie/header names do not re-enable
+    session refresh — NTLM cannot be renewed by extractors. Unauth /
+    auth-test must send *without* NTLM
     (``create_async_client(..., platform_auth=False)``); IV / replay keep
     the default client so the handshake still runs.
 

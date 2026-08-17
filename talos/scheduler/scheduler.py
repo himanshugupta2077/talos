@@ -1546,8 +1546,19 @@ class ReplayScheduler:
             return
 
         # Session health check for the role that owns this flow.
+        # Platform NTLM is the session — do not refresh or require cookie
+        # / header role state (leftover talos auth set names fail extractors).
+        from talos.projects.auth_mechanism import (
+            platform_ntlm_covers_host,
+            resolve_auth_mechanism,
+        )
+        _mechanism = resolve_auth_mechanism(db_path)
+        ntlm_session = _mechanism.has_platform_ntlm and (
+            not host or platform_ntlm_covers_host(_mechanism, host)
+        )
+
         role_id: str = flow.get("role_id", "")
-        if role_id:
+        if role_id and not ntlm_session:
             try:
                 healthy = ensure_healthy(db_path, role_id, project_id)
                 if not healthy:
@@ -1578,7 +1589,9 @@ class ReplayScheduler:
             _auth_cfg = _get_auth_config(db_path)
             if _auth_cfg["cookies"] or _auth_cfg["headers"]:
                 _state_info = _get_role_auth_state(db_path, role_id)
-                if not _state_info["state"]:
+                if _state_info["state"]:
+                    flow = _apply_auth_to_iv_flow(flow, _auth_cfg, _state_info["state"])
+                elif not ntlm_session:
                     # Auth is configured but no active session exists.
                     # Fail the job instead of replaying with stale captured credentials.
                     iv_db.upsert_probe_result(
@@ -1593,7 +1606,6 @@ class ReplayScheduler:
                         role_id[:8], job.job_id[:8],
                     )
                     return
-                flow = _apply_auth_to_iv_flow(flow, _auth_cfg, _state_info["state"])
 
 # Transport gate: do not send payloads the HTTP client rejects before
         # the request reaches the application (Illegal header value).

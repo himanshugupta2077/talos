@@ -124,7 +124,7 @@ Stored in `input_validation_config` (per project). Defaults:
 
 Synthesis and candidate listing are planner-driven. The Control Panel does not require a separate Synthesize action.
 
-Auth is verified before scheduling (`verify_auth_for_iv_scan`). Cookie/header apps need a healthy per-role session. **NTLM / IIS Persistent-Auth** has no header to name — a credentialed `talos proxy auth` profile covering the scan hosts *is* the session (role `set-session` is not required).
+Auth is verified before scheduling (`verify_auth_for_iv_scan`). Cookie/header apps need a healthy per-role session. **NTLM / IIS Persistent-Auth** has no header to name — a credentialed `talos proxy auth` profile covering the scan hosts *is* the session (role `set-session` / session refresh is not required, even if leftover cookie or header names are configured).
 
 Only **qualified** endpoints are probed (`endpoint_policy.qualified = 1` — at least one 2xx proxy capture).
 

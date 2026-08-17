@@ -2,6 +2,24 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## IV — skip session refresh when the project uses NTLM
+
+**Shipped:** 2026-08-17
+
+IIS Persistent-Auth cannot renew a cookie/header session. IV was still
+running session-health refresh and validation whenever leftover
+`talos auth set` cookie or header names existed next to platform NTLM.
+Those checks fail (no extractor, no control flow, handshake-bound
+session) and the probe is marked `session_health_refresh_failed`.
+
+- IV pre-check skips role session refresh/validation when a
+  credentialed `talos proxy auth` profile covers the scan hosts.
+- Scheduler IV jobs skip `ensure_healthy` and do not require
+  `role_auth_state` for that NTLM session.
+- Leftover cookie/header names no longer block the scan.
+
+Cookie-only projects are unchanged.
+
 ## Auth — platform NTLM is the session (no header)
 
 **Shipped:** 2026-08-17

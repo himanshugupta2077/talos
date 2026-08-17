@@ -608,9 +608,9 @@ def ensure_healthy(
     Purpose:
         Full session health gate — runs before each BAC / IV job.
 
-        Platform NTLM-only (no HTTP artifacts): returns True immediately.
-        There is no cookie/header session to refresh; the handshake is
-        the session.
+        Platform NTLM (credentialed proxy-auth profile): returns True
+        immediately. The handshake is the session. Leftover cookie/header
+        names do not trigger refresh — extractors cannot renew NTLM.
 
         AUTO provider path:
             Checks Layer 1 (TTL), optionally refreshes, then checks Layer 2
@@ -640,8 +640,10 @@ def ensure_healthy(
     from talos.projects.auth_provider import get_provider, PROVIDER_MANUAL
 
     # Connection-bound NTLM has no cookie/header session to refresh.
+    # Skip even when leftover artifacts are configured — those names
+    # are not the session and refresh/validation would fail the job.
     mechanism = resolve_auth_mechanism(db_path)
-    if mechanism.ntlm_only:
+    if mechanism.has_platform_ntlm:
         return True
 
     provider = get_provider(db_path, role_id)

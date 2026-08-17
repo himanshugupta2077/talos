@@ -214,12 +214,12 @@ def verify_auth_for_iv_scan(
         strings — one per failed role.  An empty list means all roles are ready.
 
         Checks performed:
-            0. Platform NTLM-only (no HTTP artifacts): a credentialed
-               ``talos proxy auth`` profile must cover every scoped host.
-               Role cookie/session checks are skipped — NTLM is the session.
+            0. Platform NTLM (credentialed ``talos proxy auth`` profile
+               covering every scoped host): skip role cookie/session
+               refresh and validation. NTLM is the session even when
+               leftover cookie/header names are configured.
             Otherwise, for each role:
-            1. Auth artifact names are configured (talos auth set),
-               or platform NTLM is configured (see 0).
+            1. Auth artifact names are configured (talos auth set).
             2. Authentication provider is set.
             3. MANUAL: session values exist and are not expired.
                AUTO:   at least one flow + extractor is configured.
@@ -271,19 +271,21 @@ def verify_auth_for_iv_scan(
     )
     mechanism = resolve_auth_mechanism(db_path)
 
+    if mechanism.has_platform_ntlm:
+        uncovered = uncovered_ntlm_hosts(mechanism, scoped_hosts)
+        if uncovered:
+            shown = ", ".join(uncovered)
+            return [
+                "Platform NTLM is configured but no credentialed profile "
+                f"matches: {shown}. "
+                "Run 'talos proxy auth add --host <host> --type ntlmv2 "
+                "--username USER --password PASS'."
+            ]
+        # NTLM is the session. Do not require (or refresh) cookie/header
+        # role state — leftover talos auth set names still fail extractors
+        # and validation flows on IIS Persistent-Auth.
+        return []
     if not mechanism.has_artifacts:
-        if mechanism.has_platform_ntlm:
-            uncovered = uncovered_ntlm_hosts(mechanism, scoped_hosts)
-            if uncovered:
-                shown = ", ".join(uncovered)
-                return [
-                    "Platform NTLM is configured but no credentialed profile "
-                    f"matches: {shown}. "
-                    "Run 'talos proxy auth add --host <host> --type ntlmv2 "
-                    "--username USER --password PASS'."
-                ]
-            # NTLM is the authenticated session — no cookie/header roles to check.
-            return []
         return [missing_auth_error(list(scoped_hosts))]
 
     errors: list[str] = []
