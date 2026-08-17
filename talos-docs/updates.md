@@ -2,6 +2,28 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Proxy — platform auth works with Burp as upstream
+
+**Shipped:** 2026-08-17
+
+NTLM / Persistent-Auth is bound to the origin TCP socket. With Burp as
+the Talos upstream and Burp platform authentication **off**, Type 1 and
+Type 3 were landing on different origin connections. The browser then
+saw `401` + `WWW-Authenticate` forever.
+
+- Platform-auth hosts now mount a **direct** httpx transport. Other
+  hosts still use the configured upstream (`--mode upstream` / replay).
+- Incoming `Authorization` (browser Type 1) is dropped so Talos owns
+  the handshake.
+- A failed 401 no longer forwards `WWW-Authenticate` to the browser.
+- Control Panel → Proxy keeps `http://127.0.0.1:8081` filled so
+  **Set upstream** / **Use direct** is a one-click toggle.
+
+Leave Burp platform authentication disabled; leave HTTP/2 off on both
+sides. Restart the Talos proxy after pulling this change.
+
+Tests: `tests/test_platform_auth.py`.
+
 ## Input Validation — auto-run + unified scan
 
 **Shipped:** 2026-08-17

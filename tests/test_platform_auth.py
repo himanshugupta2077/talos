@@ -29,9 +29,12 @@ from talos.projects.proxy_config import (
 from talos.proxy.cli import run_proxy_cli
 from talos.proxy.launcher import build_mitmdump_command
 from talos.proxy.ntlm import NTLM_SIGNATURE, NtlmContext, _md4, ntlm_message_type, ntowfv2
+from talos.proxy.http_client import client_kwargs, platform_auth_direct_mounts
 from talos.proxy.platform_auth import (
     HttpxPlatformAuth,
     authorization_scheme,
+    client_facing_response_headers,
+    filter_request_headers,
     filter_response_headers,
     host_matches,
     match_platform_auth,
@@ -485,7 +488,158 @@ class TestResponseHeaderPairs:
         assert "content-encoding" not in [k.lower() for k in resp.headers.keys()]
 
 
+class TestOriginHeaderFilter:
+    def test_strips_authorization(self) -> None:
+        headers = {
+            "Authorization": "NTLM TlRMTVNTUA==",
+            "Cookie": "sid=1",
+            "Accept": "text/html",
+        }
+        out = filter_request_headers(headers)
+        assert "Authorization" not in out
+        assert out["Cookie"] == "sid=1"
+        assert out["Accept"] == "text/html"
+
+    def test_401_drops_www_authenticate(self) -> None:
+        headers = httpx.Headers(
+            [
+                ("WWW-Authenticate", "NTLM"),
+                ("WWW-Authenticate", "Negotiate"),
+                ("Content-Type", "text/html"),
+                ("Set-Cookie", "a=1"),
+            ]
+        )
+        pairs = client_facing_response_headers(headers, status_code=401)
+        lowered = [k.lower() for k, _ in pairs]
+        assert b"www-authenticate" not in lowered
+        assert b"content-type" in lowered
+        assert b"set-cookie" in lowered
+
+    def test_200_keeps_other_headers(self) -> None:
+        headers = httpx.Headers([("Content-Type", "text/html")])
+        pairs = client_facing_response_headers(headers, status_code=200)
+        assert pairs == [(b"content-type", b"text/html")]
+
+
+class TestNtlmBypassesUpstream:
+    def test_mounts_concrete_and_wildcard(self) -> None:
+        entries = (
+            PlatformAuthEntry(
+                host="app.example",
+                username="u",
+                password="p",
+            ),
+            PlatformAuthEntry(
+                host="*.chartercom.com",
+                username="u",
+                password="p",
+            ),
+            PlatformAuthEntry(
+                host="disabled.example",
+                username="u",
+                password="p",
+                enabled=False,
+            ),
+        )
+        mounts = platform_auth_direct_mounts(
+            entries, verify=False, limits=httpx.Limits()
+        )
+        assert "all://app.example" in mounts
+        assert "all://*.chartercom.com" in mounts
+        assert "all://chartercom.com" in mounts
+        assert "all://disabled.example" not in mounts
+        pool = mounts["all://app.example"]._pool
+        assert type(pool).__name__ != "HTTPProxy"
+
+    def test_client_kwargs_keeps_upstream_for_other_hosts(
+        self, db_path: Path
+    ) -> None:
+        from talos.projects.proxy_config import set_upstream_url
+
+        set_upstream_url(db_path, "http://127.0.0.1:8081")
+        add_platform_auth_entry(
+            db_path,
+            PlatformAuthEntry(
+                host="foresight-uat.chartercom.com",
+                username="P3257806",
+                password="testpassword",
+            ),
+        )
+        kwargs = client_kwargs(db_path, timeout=5.0)
+        assert kwargs["proxy"] == "http://127.0.0.1:8081"
+        assert kwargs["trust_env"] is False
+        assert "mounts" in kwargs
+        assert "all://foresight-uat.chartercom.com" in kwargs["mounts"]
+        ntlm_pool = kwargs["mounts"]["all://foresight-uat.chartercom.com"]._pool
+        assert type(ntlm_pool).__name__ != "HTTPProxy"
+
+    def test_client_kwargs_no_auth_has_no_direct_mounts(
+        self, db_path: Path
+    ) -> None:
+        from talos.projects.proxy_config import set_upstream_url
+
+        set_upstream_url(db_path, "http://127.0.0.1:8081")
+        kwargs = client_kwargs(db_path, timeout=5.0)
+        assert kwargs["proxy"] == "http://127.0.0.1:8081"
+        assert "mounts" not in kwargs
+        assert "auth" not in kwargs
+
+
 class TestHttpxNtlmAuth:
+    def test_strips_incoming_authorization(self) -> None:
+        entry = PlatformAuthEntry(
+            host="app.example",
+            auth_type="ntlmv2",
+            username="P3257806",
+            password="testpassword",
+            domain="",
+            domain_hostname="app.example",
+        )
+        challenge = (
+            NTLM_SIGNATURE
+            + struct.pack("<I", 2)
+            + struct.pack("<HHI", 0, 0, 48)
+            + struct.pack("<I", 0x00088201)
+            + bytes.fromhex("0123456789abcdef")
+            + b"\x00" * 8
+            + struct.pack("<HHI", 4, 4, 48)
+            + b"\x00\x00\x00\x00"
+        )
+        type2_b64 = base64.b64encode(challenge).decode("ascii")
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            auth = request.headers.get("authorization", "")
+            seen.append(auth)
+            if not auth:
+                return httpx.Response(
+                    401, headers={"WWW-Authenticate": "NTLM"}, request=request
+                )
+            if auth.startswith("NTLM ") and ntlm_message_type(
+                base64.b64decode(auth.split(None, 1)[1])
+            ) == 1:
+                return httpx.Response(
+                    401,
+                    headers={"WWW-Authenticate": f"NTLM {type2_b64}"},
+                    request=request,
+                )
+            return httpx.Response(200, text="ok", request=request)
+
+        transport = httpx.MockTransport(handler)
+        client = httpx.Client(
+            transport=transport,
+            auth=HttpxPlatformAuth([entry]),
+        )
+        resp = client.get(
+            "https://app.example/api",
+            headers={"Authorization": "NTLM stale-browser-token"},
+        )
+        assert resp.status_code == 200
+        assert seen[0] == ""
+        assert seen[1].startswith("NTLM ")
+        assert seen[2].startswith("NTLM ")
+
+
     def test_sends_ntlm_not_negotiate(self) -> None:
         entry = PlatformAuthEntry(
             host="app.example",

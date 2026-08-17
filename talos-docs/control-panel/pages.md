@@ -137,7 +137,7 @@ After create, frontend re-lists, finds by name, opens, and sets selection. After
 | **CLI** | `proxy start|stop|restart|kill|status|config` via `cli.run` (core owns mitmdump); effective mode/source from `talos config` |
 | **DB** | None in CP for config; layered YAML + legacy dual-write owned by Talos core |
 | **Components** | `useAction`, runtime panel, config panel with **source badge**, link to Talos Configuration, live log tail; header also has hover lifecycle menu |
-| **Workflow** | Set host/port → Start; Restart/Stop; Kill; contextual Direct/Upstream editor; full inheritance lives under **Talos Configuration → Proxy** |
+| **Workflow** | Set host/port → Start; Restart/Stop; Kill; contextual Direct/Upstream editor (URL defaults to `http://127.0.0.1:8081` so toggle does not require retyping); full inheritance lives under **Talos Configuration → Proxy**. Platform-auth hosts connect directly to the origin; other hosts use the upstream. |
 
 Warns if selected project is not Talos-active. Header and page show transitional states when core auto-restarts. Header proxy pill hover offers start/stop/restart/kill/force-kill.
 

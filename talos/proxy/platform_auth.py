@@ -17,6 +17,7 @@ Data flow:
     EffectiveConfig.proxy.platform_auth → match_platform_auth
         → HttpxPlatformAuth (replay / BAC / unauth / addon)
     401 WWW-Authenticate → strip_negotiate_challenges
+    Failed handshake 401 → client_facing_response_headers drops WWW-Authenticate
 Side effects: Sends extra 401 handshake requests on matching hosts.
 """
 
@@ -49,6 +50,9 @@ _SKIP_REQUEST_HEADERS = frozenset(
         "trailer",
         "upgrade",
         "expect",
+        # Browser / captured NTLM tokens are connection-bound. Replaying them
+        # toward a new origin socket breaks the handshake we run ourselves.
+        "authorization",
     }
 )
 
@@ -255,6 +259,29 @@ def filter_response_headers(headers: Mapping[str, str]) -> list[tuple[bytes, byt
     return pairs
 
 
+def client_facing_response_headers(
+    headers: Mapping[str, str],
+    *,
+    status_code: int,
+) -> list[tuple[bytes, bytes]]:
+    """
+    Purpose:
+        Headers for the synthesized browser response after Talos completed
+        (or attempted) platform auth. A leftover 401 + WWW-Authenticate
+        makes the browser prompt forever through a MITM.
+    Input:
+        headers     — origin/httpx response headers.
+        status_code — origin status after the NTLM hop.
+    Output:
+        ``(bytes, bytes)`` pairs; WWW-Authenticate removed on 401.
+    Side effects: None.
+    """
+    pairs = filter_response_headers(headers)
+    if status_code != 401:
+        return pairs
+    return [(key, value) for key, value in pairs if key.lower() != b"www-authenticate"]
+
+
 class HttpxPlatformAuth(httpx.Auth):
     """
     Purpose:
@@ -299,6 +326,9 @@ def _ntlm_auth_flow(request: httpx.Request, entry: PlatformAuthEntry):
         domain=entry.domain,
         workstation=workstation,
     )
+    # Drop a browser/captured Type 1 so the first yield is unauthenticated
+    # and we own Type 1 / Type 3 on this socket.
+    request.headers.pop("Authorization", None)
 
     response = yield request
     if response.status_code != 401:

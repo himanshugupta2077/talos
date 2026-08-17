@@ -55,6 +55,9 @@ const emptyStatus: ProxyRuntimeStatus = {
   transitional: false,
 };
 
+/** Default Burp listen URL so Set upstream / Use direct is a one-click toggle. */
+const DEFAULT_UPSTREAM_URL = "http://127.0.0.1:8081";
+
 export default function Proxy() {
   const { selected } = useProject();
   const { refreshStatus } = useStatus();
@@ -63,7 +66,7 @@ export default function Proxy() {
   const [logPath, setLogPath] = useState<string | null>(null);
   const [listenHost, setListenHost] = useState("127.0.0.1");
   const [port, setPort] = useState(8080);
-  const [upstreamInput, setUpstreamInput] = useState("");
+  const [upstreamInput, setUpstreamInput] = useState(DEFAULT_UPSTREAM_URL);
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [layered, setLayered] = useState<LayeredProxy | null>(null);
   const [httpRules, setHttpRules] = useState<HttpRulesSummary | null>(null);
@@ -88,7 +91,7 @@ export default function Proxy() {
     try {
       const c = await api.get<ProxyConfig>("/api/proxy/config");
       setConfig(c);
-      setUpstreamInput(c.upstream_url || "");
+      setUpstreamInput(c.upstream_url || DEFAULT_UPSTREAM_URL);
       if (typeof c.http2 === "boolean") setHttp2(c.http2);
       if (typeof c.keep_alive === "boolean") setKeepAlive(c.keep_alive);
       setAuthEntries(c.platform_auth?.entries || []);
@@ -545,8 +548,11 @@ export default function Proxy() {
           </div>
           <p className="text-xs text-base-content/50 mb-3">
             Layered effective proxy mode (<span className="mono">proxy.upstream.*</span>).
-            Contextual editor below dual-writes via Talos CLI. Changes may trigger an automatic
-            restart when the proxy is running.
+            URL defaults to Burp at <span className="mono">{DEFAULT_UPSTREAM_URL}</span> so
+            you can toggle Set upstream / Use direct without retyping. Changes may trigger
+            an automatic restart when the proxy is running. Platform-auth hosts still
+            connect directly to the origin (NTLM cannot traverse an intercepting
+            upstream); every other host uses this proxy.
           </p>
           <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-sm mb-3">
             <dt className="text-base-content/50">Mode</dt>
@@ -580,7 +586,7 @@ export default function Proxy() {
               className="input input-sm input-bordered mono"
               value={upstreamInput}
               onChange={(e) => setUpstreamInput(e.target.value)}
-              placeholder="http://127.0.0.1:8081"
+              placeholder={DEFAULT_UPSTREAM_URL}
               disabled={setUpstream.running || setDirect.running}
             />
           </label>
@@ -667,8 +673,10 @@ export default function Proxy() {
               </div>
               <p className="text-xs text-base-content/50">
                 Named NTLM profiles toward the origin. Enable the ones you want;
-                Use switches credentials for the same host. Leave SPNEGO and
-                Negotiate unchecked unless the server requires them.
+                Use switches credentials for the same host. Those hosts connect
+                directly (not through Burp) so the handshake stays on one
+                socket. Leave SPNEGO and Negotiate unchecked unless the
+                server requires them. Leave Burp platform authentication off.
               </p>
             </div>
             <label className="label cursor-pointer justify-start gap-2 py-0">

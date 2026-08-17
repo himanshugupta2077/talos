@@ -47,6 +47,12 @@ Browser ──► Talos proxy :8080  (capture, MITM)
 Replay / scheduler jobs (IV probes) use the same project upstream URL as
 the proxy. They do **not** loop back through Talos :8080.
 
+**Platform authentication (NTLM):** matching hosts connect **directly to
+the origin**, not through Burp. NTLM/Persistent-Auth is bound to the
+origin TCP socket; Burp with platform authentication disabled cannot
+preserve that binding. Leave Burp platform authentication off. Every
+other host still uses the upstream.
+
 ## Config section (`burp`)
 
 Layered configuration (CLI-022). Defaults are on.

@@ -823,7 +823,7 @@ Modes:
 
 Upstream host, port, URL, and credentials are **never hardcoded**. They come from layered config (`talos config set proxy.upstream.url` / `talos proxy config`) or one-shot CLI overrides on `start`. Replay and attack engines use the same setting via `create_async_client` (layered transport: upstream, HTTP/1.1, NTLM). Config changes apply on the next `talos proxy start` (or immediately for one-shot flags).
 
-IIS Windows Integrated Auth (`401` Negotiate/NTLM + `Persistent-Auth`) needs **HTTP/1.1**, **keep-alive**, and **platform NTLM** on the hop that talks to the origin — same as Burp Settings → Network → Connections → Platform authentication, plus unchecking “Default to HTTP/2”.
+IIS Windows Integrated Auth (`401` Negotiate/NTLM + `Persistent-Auth`) needs **HTTP/1.1**, **keep-alive**, and **platform NTLM** on the hop that talks to the origin — same as Burp Settings → Network → Connections → Platform authentication, plus unchecking “Default to HTTP/2”. When Talos platform auth is on, matching hosts connect **directly to the origin** even if an upstream (Burp) is configured; leave Burp platform authentication off. Every other host still uses the upstream.
 
 ```bash
 # Start (reads layered project config; default Direct)

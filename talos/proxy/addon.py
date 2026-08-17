@@ -14,7 +14,10 @@ Strict rules enforced here (no exceptions):
     - No attack logic.
     - No blocking operations inside the proxy thread, except the optional
       platform-auth origin handshake (NTLM) which must stay on one
-      persistent HTTP/1.1 connection for IIS Persistent-Auth.
+      persistent HTTP/1.1 connection for IIS Persistent-Auth. That hop
+      always talks to the origin directly — an intercepting upstream
+      (Burp with platform auth off) cannot preserve NTLM connection
+      binding. Other hosts still use mitmdump ``--mode upstream``.
 
 Extraction specifics:
     - project_id is NOT included in the flow payload; attached at worker layer.
@@ -67,9 +70,9 @@ from talos.projects.outscope import load_prefix_set
 from talos.projects.proxy_config import load_proxy_transport
 from talos.proxy.http_client import create_client
 from talos.proxy.platform_auth import (
+    client_facing_response_headers,
     collect_www_authenticate,
     filter_request_headers,
-    filter_response_headers,
     match_platform_auth,
     strip_negotiate_challenges,
 )
@@ -257,7 +260,7 @@ class TalosAddon:
             "Proxy addon loaded. project=%s scope_entries=%d "
             "out_of_scope_prefixes=%d store_bodies=%s max_body=%d drop_headers=%d "
             "http_engine=%s http_rules=%d passive_queue_max=%d error_queue_max=%d "
-            "http2=%s keep_alive=%s platform_auth=%s",
+            "http2=%s keep_alive=%s platform_auth=%s ntlm_origin=%s",
             project.id,
             len(self._scope),
             len(self._out_of_scope),
@@ -273,6 +276,9 @@ class TalosAddon:
             len(self._transport.platform_auth_entries)
             if self._transport.platform_auth_enabled
             else 0,
+            "direct"
+            if self._origin_client is not None
+            else "n/a",
         )
 
     def _matching_auth_entry(self, flow: http.HTTPFlow):
@@ -294,8 +300,11 @@ class TalosAddon:
         """
         Purpose:
             For matching hosts with credentials, complete NTLM on a
-            persistent HTTP/1.1 client and short-circuit mitmproxy's origin
-            hop. Persistent-Auth then sticks on that client connection.
+            persistent HTTP/1.1 client (direct to origin, even when
+            mitmdump uses an upstream) and short-circuit mitmproxy's
+            origin hop. Persistent-Auth then sticks on that client
+            connection. A leftover 401 does not forward WWW-Authenticate
+            so the browser cannot start a prompt loop.
         Side effects:
             May set flow.response. Failures leave the flow for mitmproxy.
         """
@@ -326,7 +335,9 @@ class TalosAddon:
                 exc,
             )
             return
-        header_pairs = filter_response_headers(resp.headers)
+        header_pairs = client_facing_response_headers(
+            resp.headers, status_code=resp.status_code
+        )
         try:
             flow.response = http.Response.make(
                 resp.status_code,
