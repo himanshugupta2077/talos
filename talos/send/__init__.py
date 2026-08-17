@@ -23,18 +23,17 @@ Public surface:
     engine.send_once / send_repeat / send_parallel / redo_send,
     draft helpers, raw_http parse/serialize, request_diff, CLI entry,
     send.db tab archive helpers.
+
+Import hygiene:
+    Submodules such as ``talos.send.db`` are pure SQLite helpers and must
+    remain importable without httpx / network stack. Engine symbols are
+    exposed lazily so Control Panel Send-to-Repeater (tab archive) does
+    not pull engine dependencies at import time.
 """
 
-from talos.send.engine import (
-    MAX_PARALLEL_CONCURRENCY,
-    MAX_PROFILE_N,
-    MultiSendOutcome,
-    SendOutcome,
-    redo_send,
-    send_once,
-    send_parallel,
-    send_repeat,
-)
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 __all__ = [
     "SendOutcome",
@@ -46,3 +45,23 @@ __all__ = [
     "MAX_PROFILE_N",
     "MAX_PARALLEL_CONCURRENCY",
 ]
+
+if TYPE_CHECKING:
+    from talos.send.engine import (
+        MAX_PARALLEL_CONCURRENCY,
+        MAX_PROFILE_N,
+        MultiSendOutcome,
+        SendOutcome,
+        redo_send,
+        send_once,
+        send_parallel,
+        send_repeat,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        from talos.send import engine as _engine
+
+        return getattr(_engine, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
