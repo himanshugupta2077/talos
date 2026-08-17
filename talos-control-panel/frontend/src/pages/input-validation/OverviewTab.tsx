@@ -36,8 +36,13 @@ export default function OverviewTab({
   const completed = status?.completed ?? 0;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
+  const autoRunOn = Boolean(Number(config?.auto_run ?? 0)) || Boolean(status?.auto_run);
+
   const enable = useAction("Enable IV engine", () =>
     api.post("/api/input-validation/config", { enable: true }, { project_id: projectId }),
+  );
+  const enableAutoRun = useAction("Enable IV auto-run", () =>
+    api.post("/api/input-validation/config", { auto_run: true }, { project_id: projectId }),
   );
   const run = useAction("Run IV", () =>
     api.post(
@@ -45,9 +50,6 @@ export default function OverviewTab({
       { ignore_cache: false },
       { project_id: projectId },
     ),
-  );
-  const synthesize = useAction("Synthesize profiles", () =>
-    api.post("/api/input-validation/synthesize", {}, { project_id: projectId }),
   );
 
   return (
@@ -58,8 +60,11 @@ export default function OverviewTab({
         <span className={`badge ${config?.enabled ? "badge-success" : "badge-ghost"}`}>
           {config?.enabled ? "enabled" : "disabled"}
         </span>
+        <span className={`badge ${autoRunOn ? "badge-success" : "badge-ghost"}`}>
+          auto-run {autoRunOn ? "on" : "off"}
+        </span>
         <span className="badge badge-outline">
-          coverage: {status?.budget_tier || config?.probe_strategy || "exhaustive"}
+          scan: {status?.budget_tier || config?.probe_strategy || "deep"}
         </span>
         <span className="badge badge-ghost">
           {completed}/{total || "—"} params done ({pct}%)
@@ -144,36 +149,47 @@ export default function OverviewTab({
         <div className="panel p-4 mb-4 text-sm">
           <div className="font-medium mb-1">No probes yet</div>
           <p className="text-base-content/60 mb-2">
-            Run the full IV probe set for every in-scope parameter (one unique flow per probe).
+            Run the unified scan once, or turn on auto-run so unique parameters
+            are characterized as traffic arrives. Candidates appear automatically
+            after analysis.
           </p>
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={run.running}
-            onClick={async () => {
-              await run.run();
-              onRefresh();
-            }}
-          >
-            Run
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={run.running}
+              onClick={async () => {
+                await run.run();
+                onRefresh();
+              }}
+            >
+              Run
+            </button>
+            {!autoRunOn && (
+              <button
+                className="btn btn-sm"
+                disabled={enableAutoRun.running}
+                onClick={async () => {
+                  await enableAutoRun.run();
+                  onRefresh();
+                }}
+              >
+                Enable auto-run
+              </button>
+            )}
+          </div>
         </div>
       )}
 
       {config?.enabled && !emptyState.no_probes && emptyState.no_profiles && (
         <div className="panel p-4 mb-4 text-sm">
-          <div className="font-medium mb-1">Evidence ready — synthesize intelligence</div>
+          <div className="font-medium mb-1">Probes in progress</div>
           <p className="text-base-content/60 mb-2">
-            Offline synthesis builds profiles from probes (zero new HTTP).
+            Profiles and candidates are built automatically when the planner
+            finishes each parameter. Wait for the scheduler or resume unfinished
+            work.
           </p>
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={synthesize.running}
-            onClick={async () => {
-              await synthesize.run();
-              onRefresh();
-            }}
-          >
-            Synthesize
+          <button className="btn btn-sm" onClick={() => onGoTab("run")}>
+            Open Run
           </button>
         </div>
       )}
@@ -182,9 +198,6 @@ export default function OverviewTab({
         <div className="flex flex-wrap gap-2 mb-3">
           <button className="btn btn-xs btn-primary" disabled={run.running} onClick={async () => { await run.run(); onRefresh(); }}>
             Run
-          </button>
-          <button className="btn btn-xs" disabled={synthesize.running} onClick={async () => { await synthesize.run(); onRefresh(); }}>
-            Synthesize
           </button>
           <button className="btn btn-xs" onClick={() => onGoTab("candidates")}>
             Open candidates
@@ -254,7 +267,7 @@ export default function OverviewTab({
                 <tr>
                   <td colSpan={5} className="text-center text-base-content/40 py-6">
                     {emptyState.no_candidates_ge_60
-                      ? "No candidates with score ≥ 60 yet. Run + synthesize, or lower filters on the Candidates tab."
+                      ? "No candidates with score ≥ 60 yet. Run or enable auto-run, then wait for analysis — or lower filters on the Candidates tab."
                       : "No prioritization targets yet."}
                   </td>
                 </tr>

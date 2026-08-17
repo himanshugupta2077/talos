@@ -95,7 +95,7 @@ export default function MultiLevelTab({ projectId }: { projectId: string }) {
               {endpoints.length === 0 && (
                 <tr>
                   <td colSpan={7} className="text-center text-base-content/40 py-4">
-                    No endpoint profiles. Synthesize after probing parameters on endpoints.
+                    No endpoint profiles. Run or enable auto-run; rollups appear after analysis.
                   </td>
                 </tr>
               )}

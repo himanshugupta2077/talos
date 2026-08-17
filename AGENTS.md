@@ -17,6 +17,17 @@ When working in this repo, implement security-testing features (proxy, BAC, unau
 - Suggest-first control model: model never self-authorizes; `PolicyValidator` + sealed `ExecutionPlan` + Executor only.
 - Handlers call existing Python APIs only (no freeform shell / subprocess under `talos/ai/`).
 
+## Finish work on `main` only
+
+When a Talos task is complete (feature, fix, or docs that belong in the product):
+
+1. Work in the Talos git checkout that tracks `origin` (`himanshugupta2077/talos`).
+2. Commit the finished change on **`main`**.
+3. **Push to `origin/main` automatically.** Do not open another branch, PR branch, or worktree-only commit and stop.
+4. Never push Talos product work to a non-`main` branch unless the user explicitly names a different branch in that turn.
+
+This applies to Control Panel, engines (IV, BAC, unauth, intruder, …), CLI, and docs in this repo.
+
 ## Design authority
 
 - AI subsystem design: `docs/design-talos-ai-layer.md`

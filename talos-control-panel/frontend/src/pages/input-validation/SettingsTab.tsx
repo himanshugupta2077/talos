@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAction } from "../../hooks/useAction";
 import { api } from "../../api/client";
 import { Section } from "../../components/Common";
-import { BUDGETS, PHASES, IvConfig, inputClass, selectClass } from "./shared";
+import { OPERATOR_SCAN, PHASES, IvConfig, inputClass } from "./shared";
 
 const PHASE_KEYS: { phase: string; field: keyof IvConfig }[] = [
   { phase: "baseline", field: "analyses_baseline" },
@@ -26,15 +26,15 @@ export default function SettingsTab({
   onRefresh: () => void;
 }) {
   const [workers, setWorkers] = useState("2");
-  const [budget, setBudget] = useState("exhaustive");
   const [maxReq, setMaxReq] = useState("0");
   const [excludeHost, setExcludeHost] = useState("");
   const [excludeEndpoint, setExcludeEndpoint] = useState("");
 
+  const autoRunOn = Boolean(Number(config?.auto_run ?? 0));
+
   useEffect(() => {
     if (!config) return;
     setWorkers(String(config.workers ?? 2));
-    setBudget(config.probe_strategy || "exhaustive");
     setMaxReq(String(config.max_requests_per_param ?? 0));
   }, [config]);
 
@@ -51,11 +51,17 @@ export default function SettingsTab({
       { project_id: projectId },
     ),
   );
-  const applyBudget = useAction("Set budget", () =>
+  const setAutoRun = useAction("Set IV auto-run", (value: boolean) =>
+    api.post(
+      "/api/input-validation/config",
+      { auto_run: value },
+      { project_id: projectId },
+    ),
+  );
+  const applyCap = useAction("Set max requests", () =>
     api.post(
       "/api/input-validation/config",
       {
-        probe_strategy: budget,
         max_requests_per_param: Number(maxReq) || 0,
       },
       { project_id: projectId },
@@ -109,6 +115,9 @@ export default function SettingsTab({
           <span className={`badge ${config?.enabled ? "badge-success" : "badge-ghost"}`}>
             {config?.enabled ? "enabled" : "disabled"}
           </span>
+          <span className={`badge ${autoRunOn ? "badge-success" : "badge-ghost"}`}>
+            auto-run {autoRunOn ? "on" : "off"}
+          </span>
           {!config?.enabled ? (
             <button
               className="btn btn-xs btn-primary"
@@ -152,29 +161,48 @@ export default function SettingsTab({
         </div>
       </Section>
 
-      <Section title="Optional request limiter">
+      <Section title="Auto-run">
         <p className="text-xs text-base-content/50 mb-2">
-          Run uses the full probe set (exhaustive) by default. Only lower this
-          if you need fewer HTTP requests per parameter.
+          Scheduler characterizes unique untested parameters as traffic arrives
+          using the unified {OPERATOR_SCAN} scan. Duplicate captures of the same
+          request are tested once. Profiles and candidates appear automatically.
+        </p>
+        {autoRunOn ? (
+          <button
+            className="btn btn-xs"
+            disabled={setAutoRun.running}
+            onClick={async () => {
+              await setAutoRun.run(false);
+              onRefresh();
+            }}
+          >
+            Disable auto-run
+          </button>
+        ) : (
+          <button
+            className="btn btn-xs btn-primary"
+            disabled={setAutoRun.running}
+            onClick={async () => {
+              await setAutoRun.run(true);
+              onRefresh();
+            }}
+          >
+            Enable auto-run
+          </button>
+        )}
+      </Section>
+
+      <Section title="Scan">
+        <p className="text-xs text-base-content/50 mb-2">
+          Operator run and auto-run use a single unified scan ({OPERATOR_SCAN}):
+          standard characterization plus adaptive deep follow-ups. This is not
+          an exhaustive brute-force matrix. Optional hard cap only if you need
+          fewer HTTP requests per parameter (0 = tier default).
         </p>
         <div className="flex flex-wrap gap-3 items-end">
           <div>
-            <div className="text-xs text-base-content/50 mb-1">Coverage</div>
-            <select
-              className={selectClass}
-              value={budget}
-              onChange={(e) => setBudget(e.target.value)}
-            >
-              {BUDGETS.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
             <div className="text-xs text-base-content/50 mb-1">
-              Max requests / param (0 = tier default)
+              Max requests / param (0 = default)
             </div>
             <input
               className={`${inputClass} w-24`}
@@ -185,11 +213,11 @@ export default function SettingsTab({
           <button
             className="btn btn-xs btn-primary"
             onClick={async () => {
-              await applyBudget.run();
+              await applyCap.run();
               onRefresh();
             }}
           >
-            Apply limiter
+            Apply cap
           </button>
         </div>
       </Section>

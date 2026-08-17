@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 55
+SCHEMA_VERSION = 56
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -126,10 +126,12 @@ CREATE TABLE IF NOT EXISTS parameters (
 -- analyses_*: per-phase toggles (1=enabled, 0=disabled)              --
 -- excluded_hosts: JSON list of host strings                           --
 -- excluded_endpoints: JSON list of endpoint UUIDs                    --
+-- auto_run: 0=off, 1=scheduler auto-enqueues unique untested params   --
 -- ------------------------------------------------------------------ --
 CREATE TABLE IF NOT EXISTS input_validation_config (
     id                         TEXT    PRIMARY KEY DEFAULT 'default',
     enabled                    INTEGER NOT NULL DEFAULT 0,
+    auto_run                   INTEGER NOT NULL DEFAULT 0,
     workers                    INTEGER NOT NULL DEFAULT 2,
     analyses_baseline          INTEGER NOT NULL DEFAULT 1,
     analyses_multiprobe        INTEGER NOT NULL DEFAULT 1,
@@ -140,7 +142,7 @@ CREATE TABLE IF NOT EXISTS input_validation_config (
     analyses_transformations   INTEGER NOT NULL DEFAULT 1,
     analyses_reflection        INTEGER NOT NULL DEFAULT 1,
     analyses_validation        INTEGER NOT NULL DEFAULT 1,
-    probe_strategy             TEXT    NOT NULL DEFAULT 'standard',
+    probe_strategy             TEXT    NOT NULL DEFAULT 'deep',
     max_requests_per_param     INTEGER NOT NULL DEFAULT 0,
     include_auth_artifacts     INTEGER NOT NULL DEFAULT 0,
     excluded_hosts             TEXT    NOT NULL DEFAULT '[]',
@@ -2705,6 +2707,7 @@ def migrate_project_db(db_path: Path) -> None:
         v53 → v54: auth_session_bindings, auth_session_candidates,
                    auth_session_results (Authentication & Session Testing engine).
         v54 → v55: cors_results — CORS misconfiguration (unique flow per probe).
+        v55 → v56: input_validation_config.auto_run — IV scheduler auto-run.
     """
     if not db_path.exists():
         return
@@ -4074,6 +4077,22 @@ def migrate_project_db(db_path: Path) -> None:
             # CORS misconfiguration: unique replay flow per Origin technique.
             conn.executescript(_CORS_SCHEMA_V55_DDL)
             conn.execute("UPDATE schema_version SET version = 55")
+            conn.commit()
+
+        if current < 56:
+            # IV auto-run: scheduler enqueues unique untested parameters.
+            existing_iv = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(input_validation_config)"
+                ).fetchall()
+            }
+            if existing_iv and "auto_run" not in existing_iv:
+                conn.execute(
+                    "ALTER TABLE input_validation_config "
+                    "ADD COLUMN auto_run INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute("UPDATE schema_version SET version = 56")
             conn.commit()
 
 

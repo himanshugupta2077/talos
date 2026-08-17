@@ -117,7 +117,7 @@ class TestPhaseIgnoreCacheFlag:
 
 
 class TestRunIgnoreCacheFlag:
-    def test_run_without_budget_upgrades_standard_to_exhaustive(
+    def test_run_without_budget_upgrades_legacy_to_deep(
         self, manager_enabled: MagicMock, db_path: Path
     ) -> None:
         save_config(db_path, IVConfig(enabled=True, probe_strategy="standard"))
@@ -132,8 +132,8 @@ class TestRunIgnoreCacheFlag:
             ),
         ):
             text = _run_iv(manager_enabled, ["run"])
-        assert load_config(db_path).probe_strategy == "exhaustive"
-        assert "exhaustive" in text
+        assert load_config(db_path).probe_strategy == "deep"
+        assert "deep" in text
 
     def test_run_ignore_cache(
         self, manager_enabled: MagicMock

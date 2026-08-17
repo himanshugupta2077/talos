@@ -311,6 +311,7 @@ class ReplayScheduler:
                 if _idle_ticks >= _AUTO_ENQUEUE_INTERVAL:
                     _idle_ticks = 0
                     self._maybe_auto_enqueue_unauth()
+                    self._maybe_auto_enqueue_iv()
                 time.sleep(_IDLE_POLL_INTERVAL)
                 continue
 
@@ -379,6 +380,34 @@ class ReplayScheduler:
                 _log.info("[scheduler] Auto-enqueued %d unauth job(s).", enqueued)
         except Exception as exc:  # noqa: BLE001
             _log.warning("[scheduler] Auto-enqueue unauth error: %s", exc)
+
+    def _maybe_auto_enqueue_iv(self) -> None:
+        """
+        Purpose:
+            When IV auto-run is enabled, enqueue the unified operator scan
+            for unique untested parameters (one plan per host|location|name;
+            unique endpoints already collapse duplicate captures).
+            Called on the same idle tick as unauth auto-run.
+        Side effects:
+            May insert scheduler_jobs and persist probe_strategy=deep.
+        """
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        try:
+            from talos.input_validation.config import get_iv_auto_run, load_config
+            from talos.input_validation.engine import auto_enqueue_pending_params
+
+            if not get_iv_auto_run(db_path):
+                return
+            cfg = load_config(db_path)
+            if not cfg.enabled:
+                return
+            enqueued = auto_enqueue_pending_params(db_path, project_id)
+            if enqueued:
+                _log.info("[scheduler] Auto-enqueued %d IV job(s).", enqueued)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[scheduler] Auto-enqueue IV error: %s", exc)
 
     # ------------------------------------------------------------------ #
     # Safety pre-check                                                     #

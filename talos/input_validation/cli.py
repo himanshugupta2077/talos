@@ -10,8 +10,8 @@ Purpose:
     export JSON+Markdown with version fields, synthesize, show profile.
 
     Main execution commands:
-        talos input-validation run               — full probe set (exhaustive)
-        talos input-validation run --budget TIER — optional limiter (quick|standard|deep)
+        talos input-validation run               — unified scan (deep)
+        talos input-validation run --budget TIER — optional limiter (quick|standard|exhaustive)
         talos input-validation run --host H      — single host
         talos input-validation run --endpoint ID — single endpoint
         talos input-validation run --flow UUID   — parameters on those flows' endpoints
@@ -29,8 +29,9 @@ Purpose:
         talos input-validation reflection
         talos input-validation validation
 
-    Probe volume: run defaults to exhaustive (full matrix). Optional limiter:
-    --budget / --probe-strategy quick|standard|deep. Optional hard cap:
+    Probe volume: run and auto-run use the unified deep scan (standard
+    characterization + adaptive deep follow-ups). Optional limiter:
+    --budget / --probe-strategy quick|standard|exhaustive. Optional hard cap:
     config --max-requests-per-param N.
 
     Surfaces (Module 9): path, query, body (JSON/form/multipart/XML/GraphQL),
@@ -52,8 +53,9 @@ Purpose:
         talos input-validation config            — show current config
         talos input-validation config --enable
         talos input-validation config --disable
+        talos input-validation config --auto-run on|off
         talos input-validation config --workers N
-        talos input-validation config --probe-strategy exhaustive
+        talos input-validation config --probe-strategy deep
         talos input-validation config --budget quick      # optional limiter
         talos input-validation config --include-auth-artifacts
         talos input-validation config --analysis-on  <phase>
@@ -85,7 +87,8 @@ Purpose:
         talos input-validation reflections           — raw cross-flow / stored reflection links
         talos input-validation export parameter|host — Markdown or JSON export
         talos input-validation export csv            — per-probe CSV
-        talos input-validation synthesize            — offline profiles from existing probes
+        talos input-validation synthesize            — recovery: offline profiles
+                                                       (planner already synthesizes)
 
 Dependencies: argparse, sys
               talos.projects.manager, talos.input_validation.config,
@@ -119,7 +122,8 @@ import sys
 
 from talos.projects.manager import ProjectManager
 from talos.input_validation.config import (
-    IVConfig, IVAnalysesConfig, load_config, save_config, format_config
+    OPERATOR_SCAN_TIER,
+    apply_operator_scan, load_config, save_config, format_config,
 )
 from talos.input_validation import db as iv_db
 from talos.input_validation import engine as iv_engine
@@ -211,9 +215,10 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         metavar="TIER",
         choices=("quick", "standard", "deep", "exhaustive"),
         help=(
-            "Optional limiter. Default run uses exhaustive (full probe set, "
-            "including type-family and url_sink canaries). "
-            "Pass quick|standard|deep only if you want fewer HTTP requests. "
+            "Optional limiter. Default run uses the unified deep scan "
+            "(standard + adaptive deep follow-ups, including type-family "
+            "and url_sink canaries — not exhaustive brute force). "
+            "Pass quick|standard|exhaustive only if you need a different volume. "
             "Persists as probe_strategy."
         ),
     )
@@ -251,6 +256,15 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
     p_config.add_argument("--enable", action="store_true", help="Enable the engine.")
     p_config.add_argument("--disable", action="store_true", help="Disable the engine.")
     p_config.add_argument(
+        "--auto-run",
+        choices=("on", "off"),
+        dest="auto_run",
+        help=(
+            "Scheduler auto-run: enqueue the unified IV scan for unique "
+            "untested parameters (on also enables the engine)."
+        ),
+    )
+    p_config.add_argument(
         "--workers",
         type=int,
         metavar="N",
@@ -274,8 +288,8 @@ def run_input_validation_cli(manager: ProjectManager, argv: list[str]) -> None:
         choices=("quick", "standard", "deep", "exhaustive"),
         help=(
             "Planner budget tier (Module 5): quick|standard|deep|exhaustive. "
-            "--budget is an alias. standard uses multiprobe-first adaptive "
-            "planning; exhaustive approximates the legacy full matrix."
+            "--budget is an alias. Operator default is deep (unified scan). "
+            "exhaustive is a legacy full-matrix limiter, not the default."
         ),
     )
     p_config.add_argument(
@@ -691,18 +705,20 @@ def _cmd_run(
             "Enable it with: talos input-validation config --enable"
         )
 
-    # Full probe set by default. Older projects stored "standard" as the
-    # implicit default and would silently clip probes — upgrade those.
-    # Explicit quick/deep/exhaustive from Settings or --budget are honored.
+    # Unified operator scan by default. Older projects stored "standard"
+    # (clipping) or "exhaustive" (brute-force matrix) as implicit defaults —
+    # upgrade those. Explicit --budget is honored as a one-shot limiter.
     budget = getattr(args, "budget", None)
     if budget:
         config.probe_strategy = str(budget).lower()
         save_config(db_path, config)
         print(f"Budget tier set to '{config.probe_strategy}'.")
-    elif (config.probe_strategy or "standard").lower() == "standard":
-        config.probe_strategy = "exhaustive"
+    elif apply_operator_scan(config):
         save_config(db_path, config)
-        print("Budget tier set to 'exhaustive' (full IV probe set).")
+        print(
+            f"Budget tier set to '{OPERATOR_SCAN_TIER}' "
+            "(unified IV scan: standard + adaptive deep)."
+        )
 
     # Phase shortcuts accept --ignore-cache (primary) or deprecated --force
     # alias (both dest=ignore_cache). run uses --ignore-cache only. clear-cache
@@ -846,6 +862,15 @@ def _cmd_config(manager: ProjectManager, args: argparse.Namespace) -> None:
         changed = True
     if args.disable:
         config.enabled = False
+        changed = True
+    auto_run = getattr(args, "auto_run", None)
+    if auto_run is not None:
+        if auto_run == "on":
+            config.auto_run = True
+            config.enabled = True
+            apply_operator_scan(config)
+        else:
+            config.auto_run = False
         changed = True
     if getattr(args, "include_auth_artifacts", False) and getattr(
         args, "skip_auth_artifacts", False

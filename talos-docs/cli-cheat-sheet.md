@@ -332,7 +332,7 @@ talos [--project ID] [-h|--help]
 ├─ input-validation
 │  ├─ run [--budget TIER] [--host H | --endpoint ID | --parameter NAME]
 │  │      [--ignore-cache] [--include-auth-artifacts]
-│  ├─ config [--probe-strategy|--budget TIER] [--max-requests-per-param N] …
+│  ├─ config [--auto-run on|off] [--probe-strategy|--budget TIER] …
 │  ├─ status [--format json]   # budget, requests_used, confidence, plan
 │  ├─ resume
 │  ├─ synthesize [--host|--param-uuid] [--dry-run]
@@ -1844,8 +1844,10 @@ Module 3 builds versioned intelligence profiles from existing
 talos input-validation config --enable
 talos input-validation config --enable --workers 4
 talos input-validation config --disable
+talos input-validation config --auto-run on               # scheduler: unique untested params
+talos input-validation config --auto-run off
 talos input-validation config --analysis-off reflection
-talos input-validation config --probe-strategy standard   # quick|standard|deep|exhaustive (planner budget)
+talos input-validation config --probe-strategy deep       # operator scan; --budget is a limiter
 talos input-validation config --max-requests-per-param 12  # optional hard HTTP cap (0 = tier default)
 talos input-validation config --include-auth-artifacts     # Module 9: probe session cookies / Authorization
 talos input-validation config --skip-auth-artifacts        # default: skip auth artifacts
@@ -1858,7 +1860,8 @@ talos input-validation config
 #   (benign talos-canary.invalid canaries → observed.url_sink; no Findings yet)
 #   Kill-switch: talos config set url_sink.iv_probes.enabled false --project
 #   Inventory-only rows (location=response, virtual jwt.*) are never scheduled.
-# Operator path (Module 12): endpoint params → run (full probe set) → show → candidates
+# Operator path: enable / auto-run → run (unified deep scan) → show → candidates
+# Synthesis is automatic after probes; `synthesize` is a recovery command only.
 talos endpoint params <endpoint_id> --network-resource
 talos input-validation run
 talos input-validation run --host api.example.com
@@ -2080,8 +2083,9 @@ parsing probe tables. XSS candidates from stored links require an existing
 
 ```bash
 talos input-validation config --enable
-talos input-validation run                     # full probe set (exhaustive)
-# … wait for scheduler …
+talos input-validation config --auto-run on    # optional: unique params as traffic arrives
+talos input-validation run                     # unified deep scan
+# … wait for scheduler (profiles + candidates appear automatically) …
 talos input-validation status                  # requests_used, confidence buckets, plan
 talos input-validation show <parameter_uuid>   # profile + candidates (no SQL)
 talos input-validation candidates --min-score 60
@@ -2091,8 +2095,9 @@ talos input-validation candidates --min-score 60
 16 hex chars (not the legacy weak `__TL__` list). Identifier weak list runs
 only under deep/exhaustive.
 
-**Coverage:** default `exhaustive` (~256 req/param max, full matrix). Optional
-limiters: `quick` ~8 · `standard` ~18 · `deep` ~40 (`--budget TIER`).
+**Coverage:** default unified scan is `deep` (~40 req/param, standard + adaptive
+deep follow-ups). Optional CLI limiters: `quick` ~8 · `standard` ~18 ·
+`exhaustive` ~256 (`--budget TIER`). Run and auto-run do not use exhaustive.
 
 **Old IV cache / pre-revamp projects**
 

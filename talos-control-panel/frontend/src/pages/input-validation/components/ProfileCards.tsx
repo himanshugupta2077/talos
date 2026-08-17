@@ -45,7 +45,7 @@ export default function ProfileCards({ profile }: { profile: any }) {
   if (!profile) {
     return (
       <div className="text-sm text-base-content/50">
-        No intelligence profile yet. Run probes, then Synthesize.
+        No intelligence profile yet. Run or enable auto-run — the planner synthesizes automatically.
       </div>
     );
   }
@@ -235,8 +235,8 @@ export default function ProfileCards({ profile }: { profile: any }) {
             </>
           ) : (
             <span className="text-base-content/40">
-              No active URL-sink characterization yet. Run IV (types + url_sink probes) then
-              Synthesize.
+              No active URL-sink characterization yet. Run or enable auto-run
+              (types + url_sink probes).
             </span>
           )}
         </Card>

@@ -201,7 +201,7 @@ export default function ParametersTab({ projectId }: { projectId: string }) {
             {profiles.length === 0 && (
               <tr>
                 <td colSpan={12} className="text-center text-base-content/40 py-6">
-                  No profiles yet. Run IV then Synthesize.
+                  No profiles yet. Run or enable auto-run — profiles appear after analysis.
                 </td>
               </tr>
             )}

@@ -2,6 +2,29 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Input Validation — auto-run + unified scan
+
+**Shipped:** 2026-08-17
+
+IV now has scheduler **auto-run** (same idea as unauth auto-run) and a
+single operator scan instead of picking simple / deep / exhaustive.
+
+- **Auto-run:** `talos input-validation config --auto-run on` (also
+  enables the engine). Control Panel Run and Settings expose a toggle.
+  The scheduler starts the unified scan for unique untested parameters
+  as traffic arrives.
+- **Uniqueness:** one unique endpoint (method + origin + normalized
+  path) and one parameter plan (`sha256(host|location|name)`). Five
+  identical browser captures are tested once.
+- **Unified scan:** operator Run and auto-run always use `deep`
+  (standard characterization + adaptive deep follow-ups, ~40 req/param).
+  Not the exhaustive 256-request matrix. `--budget` remains a CLI-only
+  limiter.
+- **Synthesis:** the planner builds profiles and candidates
+  automatically. Control Panel no longer requires a Synthesize button.
+
+Tests: `tests/test_iv_auto_run.py`.
+
 ## Proxy — HTTP/1.1 + platform authentication (NTLMv2)
 
 **Shipped:** 2026-08-17

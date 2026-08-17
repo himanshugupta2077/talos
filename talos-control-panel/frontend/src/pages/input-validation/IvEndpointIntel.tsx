@@ -59,7 +59,7 @@ export default function IvEndpointIntel() {
           <pre className="text-xs whitespace-pre-wrap mono">{lines.join("\n")}</pre>
         ) : (
           <p className="text-xs text-base-content/50">
-            No endpoint profile yet. Synthesize after probing parameters on this endpoint.
+            No endpoint profile yet. Run or enable auto-run; the rollup appears after analysis.
           </p>
         )}
         {profile && (

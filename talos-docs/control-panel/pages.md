@@ -579,7 +579,7 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 | `?tab=candidates` | Attack prioritization board (filters, drill-down) |
 | `?tab=parameters` | Parameter intelligence inventory |
 | `?tab=multi-level` | Endpoint + host profile lists (M10) |
-| `?tab=run` | Scope, run/resume/synthesize/clear (clear + ignore-cache reset probes/profiles), phase shortcuts |
+| `?tab=run` | Auto-run toggle, scope, run/resume/clear (clear + ignore-cache reset probes/profiles), phase shortcuts. Synthesis is automatic. |
 | `?tab=settings` | Enable, workers, budget, max req, phases, auth artifacts, excludes |
 | `/testing/input-validation/params/:paramUuid` | Parameter dossier (capabilities, candidates, observed cards, tested, probes→flows) |
 | `/testing/input-validation/endpoints/:endpointId` | Endpoint intelligence dossier |
@@ -590,7 +590,7 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 |--------|--------|
 | **Purpose** | Operator UX for characterization intelligence — not an exploit runner |
 | **Backend** | `/api/input-validation/*` status, overview, profiles, candidates, endpoints, hosts, show, export JSON, config/run CLI wrappers |
-| **CLI** | Full `talos input-validation *` parity for config/run/synthesize/candidates/reflections/show/export/exclude |
+| **CLI** | Full `talos input-validation *` parity for config (`--auto-run`)/run/candidates/reflections/show/export/exclude; `synthesize` remains a recovery command |
 | **DB** | `input_validation_config`, `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`, `iv_probe_results`, caches; cross-flow via `value_index` / `cross_flow_reflections` when `parameter_intel.cross_flow.enabled` |
 | **Components** | `ModuleShell`, tabs (Endpoints-style), `CapabilityBadges` (reflection + URL sink family), `CandidateScore`, `ProfileCards` (dual reflection modes + passive URL features + active url_sink cards), `ProbeEvidenceTable`, `ScopeBar`, `components/url-sink/*` chips |
 | **Workflow** | Enable → Run standard → wait (auto-refresh) → Synthesize → Candidates → open parameter dossier → evidence flows |

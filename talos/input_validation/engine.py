@@ -37,8 +37,18 @@ Purpose:
         endpoint  — all parameters for a specific endpoint
         parameter — all endpoints where a parameter appears
 
-    Budget tiers (probe_strategy): quick | standard | deep | exhaustive
-    with optional max_requests_per_param hard cap.
+    Operator scan: default run and auto-run use the unified ``deep`` tier
+    (standard characterization + adaptive deep follow-ups). quick /
+    standard / exhaustive remain CLI ``--budget`` limiters only.
+
+    Auto-run:
+        When ``input_validation_config.auto_run`` is on (and the engine is
+        enabled), the scheduler periodically calls
+        ``auto_enqueue_pending_params()``. Unique endpoints
+        (method + origin + normalized path) and unique parameters
+        (host|location|name) are scanned once — five identical browser
+        captures still produce one endpoint and one parameter plan.
+        Synthesis and candidate listing run automatically after probes.
 
     Parameter UUID:
         Deterministic: sha256(f"{host}|{location}|{param_name}")[:32].
@@ -73,7 +83,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from talos.input_validation.config import IVConfig, load_config
+from talos.input_validation.config import (
+    IVConfig,
+    apply_operator_scan,
+    load_config,
+    save_config,
+)
 from talos.input_validation import db as iv_db
 from talos.input_validation.length_search import (
     next_length_targets,
@@ -132,6 +147,10 @@ from talos.scheduler.job import (
 )
 
 _log = logging.getLogger("talos.input_validation.engine")
+
+# Max unique parameters to start per scheduler idle tick (auto-run).
+# The planner still expands each param adaptively; this only limits fan-out.
+AUTO_ENQUEUE_BATCH = 16
 
 # Map planner action tokens → scheduler job types.
 _ACTION_TO_JOB_TYPE: dict[str, str] = {
@@ -679,6 +698,178 @@ def schedule_parameter(
     return _enqueue_param_jobs(
         db_path, project_id, params, config, phase_filter, ignore_cache
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-run — unique untested parameters
+# ---------------------------------------------------------------------------
+
+
+def get_untested_iv_params(
+    db_path: Path,
+    project_id: str,
+    *,
+    limit: int = AUTO_ENQUEUE_BATCH,
+    config: IVConfig | None = None,
+) -> list[dict]:
+    """
+    Purpose:
+        List unique untested IV parameters for auto-run.
+
+        Uniqueness:
+            - Endpoint: method + canonical origin + normalized path
+              (five identical browser captures collapse to one endpoint).
+            - Parameter: sha256(host|location|name) — one plan per identity
+              even when the same name appears on several endpoints.
+
+        A parameter is untested when it has no synthesized profile and no
+        pending/running IV job. Inventory-only, excluded, logout, and
+        dangerous endpoints are omitted. Auth artifacts follow config.
+
+    Input:
+        db_path    — Project database.
+        project_id — Project UUID.
+        limit      — Max rows to return (scheduler batch).
+        config     — Optional preloaded IVConfig.
+    Output:
+        List of dicts: host, location, name, endpoint_id, param_uuid.
+    Side effects: None (read-only).
+    """
+    if config is None:
+        config = load_config(db_path)
+    excluded_hosts = set(config.excluded_hosts)
+    excluded_endpoints = set(config.excluded_endpoints)
+    include_auth = bool(config.include_auth_artifacts)
+
+    rows = _list_unique_auto_run_params(db_path, project_id)
+    out: list[dict] = []
+    seen_uuids: set[str] = set()
+    for row in rows:
+        host = str(row.get("host") or "")
+        location = str(row.get("location") or "")
+        name = str(row.get("name") or "")
+        endpoint_id = str(row.get("endpoint_id") or "")
+        if not host or not name:
+            continue
+        if host in excluded_hosts:
+            continue
+        if endpoint_id and endpoint_id in excluded_endpoints:
+            continue
+        skip = should_skip_param(
+            location=location,
+            name=name,
+            include_auth_artifacts=include_auth,
+        )
+        if skip.skip:
+            continue
+        param_uuid = make_param_uuid(host, location, name)
+        if param_uuid in seen_uuids:
+            continue
+        seen_uuids.add(param_uuid)
+        if _param_already_planned(db_path, param_uuid):
+            continue
+        out.append(
+            {
+                "host": host,
+                "location": location,
+                "name": name,
+                "endpoint_id": endpoint_id,
+                "param_uuid": param_uuid,
+            }
+        )
+        if limit > 0 and len(out) >= limit:
+            break
+    return out
+
+
+def auto_enqueue_pending_params(
+    db_path: Path,
+    project_id: str,
+    *,
+    limit: int = AUTO_ENQUEUE_BATCH,
+) -> int:
+    """
+    Purpose:
+        Scheduler hook for IV auto-run. Enqueues the next planner wave for
+        unique untested parameters using the unified operator scan (deep).
+        Synthesis is planner-driven (no separate synthesize job).
+    Input:
+        db_path    — Project database.
+        project_id — Project UUID.
+        limit      — Max unique parameters to start this tick.
+    Output:
+        Number of scheduler jobs inserted.
+    Side effects:
+        May persist probe_strategy=deep; inserts scheduler_jobs.
+    """
+    config = load_config(db_path)
+    if not config.enabled or not config.auto_run:
+        return 0
+    if apply_operator_scan(config):
+        save_config(db_path, config)
+
+    targets = get_untested_iv_params(
+        db_path, project_id, limit=limit, config=config
+    )
+    if not targets:
+        return 0
+
+    total = 0
+    for target in targets:
+        total += plan_and_enqueue_for_param(
+            db_path,
+            project_id,
+            host=target["host"],
+            location=target["location"],
+            name=target["name"],
+            endpoint_id=target.get("endpoint_id") or "",
+            config=config,
+            ignore_cache=False,
+        )
+    return total
+
+
+def _list_unique_auto_run_params(db_path: Path, project_id: str) -> list[dict]:
+    """
+    Purpose:
+        One representative (host, location, name, endpoint_id) per unique
+        parameter identity on qualified, in-policy endpoints.
+    Side effects: Read-only.
+    """
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT e.host, p.location, p.name, MIN(e.id) AS endpoint_id
+            FROM parameters p
+            JOIN endpoints e ON e.id = p.endpoint_id
+            JOIN endpoint_policy ep ON ep.endpoint_id = e.id
+            WHERE e.project_id = ?
+              AND ep.qualified = 1
+              AND ep.excluded = 0
+              AND IFNULL(ep.logout, 0) = 0
+              AND IFNULL(ep.dangerous, 0) = 0
+            GROUP BY e.host, p.location, p.name
+            ORDER BY e.host, p.location, p.name
+            """,
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _param_already_planned(db_path: Path, param_uuid: str) -> bool:
+    """
+    Purpose:
+        True when this parameter already has a synthesized profile or an
+        in-flight IV job — auto-run must not start a second plan.
+    Side effects: Read-only.
+    """
+    if _pending_actions_for_param(db_path, param_uuid):
+        return True
+    profile = iv_db.get_param_profile(db_path, param_uuid)
+    if not profile:
+        return False
+    return bool(signals_from_profile(profile).get("synthesize_done"))
 
 
 # ---------------------------------------------------------------------------

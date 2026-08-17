@@ -1640,7 +1640,7 @@ def get_iv_status(db_path: Path) -> dict:
     from talos.input_validation.planner import resolve_max_requests
 
     config = load_config(db_path)
-    budget_tier = (config.probe_strategy or "standard").lower()
+    budget_tier = (config.probe_strategy or "deep").lower()
     max_requests = resolve_max_requests(
         budget_tier, config.max_requests_per_param or None
     )
@@ -1746,6 +1746,8 @@ def get_iv_status(db_path: Path) -> dict:
         "running": running,
         "queued": queued,
         "failed": by_status.get(STATUS_FAILED, 0),
+        "enabled": bool(config.enabled),
+        "auto_run": bool(config.auto_run),
         "budget_tier": budget_tier,
         "max_requests_per_param": max_requests,
         "max_requests_override": int(config.max_requests_per_param or 0),

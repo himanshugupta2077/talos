@@ -305,7 +305,7 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
               {candidates.length === 0 && (
                 <tr>
                   <td colSpan={7} className="text-center text-base-content/40 py-6">
-                    No candidates. Run IV, synthesize, or lower min score.
+                    No candidates. Run or enable auto-run, wait for analysis, or lower min score.
                   </td>
                 </tr>
               )}

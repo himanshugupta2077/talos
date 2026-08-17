@@ -412,7 +412,7 @@ Valid techniques: `session-swap`, `method-fuzz`, `content-type`, `url-fuzz`, `he
 | Method | URL | Purpose | Request | Response | CLI | DB |
 |--------|-----|---------|---------|----------|-----|-----|
 | GET | `/config` | IV config + phase list | `project_id` | `{ config, phases }` | — | `input_validation_config` |
-| POST | `/config` | Enable/disable/workers/budget/phases/auth | body flags | steps | `input-validation config` | — |
+| POST | `/config` | Enable/disable/auto-run/workers/phases/auth | body flags | steps | `input-validation config` | — |
 | GET | `/status` | Budget, jobs, confidence, profile counts | `project_id` | full status + legacy caches | — | iv_* + jobs |
 | GET | `/overview` | Overview bundle | `top_n?` | status + top candidates + empty_state | — | same |
 | POST | `/run` | Schedule planner jobs | scope + budget + ignore_cache | steps | `run` | — |

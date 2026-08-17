@@ -19,7 +19,9 @@ export const IV_TABS: { id: IvTab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
+/** Legacy CLI limiter names — operator UI uses the unified deep scan only. */
 export const BUDGETS = ["quick", "standard", "deep", "exhaustive"] as const;
+export const OPERATOR_SCAN = "deep";
 
 /** CLI-toggleable / phase-shortcut names (must match talos input-validation). */
 export const PHASES = [
@@ -65,6 +67,7 @@ export const inputClass = "input input-xs input-bordered";
 
 export interface IvConfig {
   enabled: number;
+  auto_run?: number;
   workers: number;
   analyses_baseline?: number;
   analyses_multiprobe?: number;
@@ -168,6 +171,8 @@ export interface IvStatus {
   queued?: number;
   failed?: number;
   skipped?: number;
+  enabled?: boolean;
+  auto_run?: boolean;
   budget_tier?: string;
   max_requests_per_param?: number;
   max_requests_override?: number;

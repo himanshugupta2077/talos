@@ -300,6 +300,7 @@ def get_overview(project_id: str, top_n: int = Query(10, ge=1, le=50)):
 class IvConfigBody(BaseModel):
     enable: bool | None = None
     disable: bool | None = None
+    auto_run: bool | None = None
     workers: int | None = None
     analysis_off: str | None = None
     analysis_on: str | None = None
@@ -317,6 +318,10 @@ def set_config(project_id: str, body: IvConfigBody):
         args.append("--enable")
     if body.disable:
         args.append("--disable")
+    if body.auto_run is True:
+        args += ["--auto-run", "on"]
+    elif body.auto_run is False:
+        args += ["--auto-run", "off"]
     if body.workers is not None:
         args += ["--workers", str(body.workers)]
     if body.analysis_off:

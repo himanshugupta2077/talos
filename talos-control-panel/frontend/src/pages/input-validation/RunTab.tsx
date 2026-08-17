@@ -4,15 +4,17 @@ import { useAction } from "../../hooks/useAction";
 import { api } from "../../api/client";
 import { ConfirmButton, Section } from "../../components/Common";
 import ScopeBar, { ScopeType, scopeBody } from "./components/ScopeBar";
-import { PHASES } from "./shared";
-import type { IvStatus } from "./shared";
+import { OPERATOR_SCAN, PHASES } from "./shared";
+import type { IvConfig, IvStatus } from "./shared";
 
 export default function RunTab({
   projectId,
+  config,
   status,
   onRefresh,
 }: {
   projectId: string;
+  config: IvConfig | null;
   status: IvStatus | null;
   onRefresh: () => void;
 }) {
@@ -21,6 +23,8 @@ export default function RunTab({
   const [ignoreCache, setIgnoreCache] = useState(false);
   const [includeAuth, setIncludeAuth] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+
+  const autoRunOn = Boolean(Number(config?.auto_run ?? 0)) || Boolean(status?.auto_run);
 
   const body = () => ({
     ...scopeBody(scopeType, scopeValue),
@@ -36,12 +40,10 @@ export default function RunTab({
       project_id: projectId,
     }),
   );
-  const synthesize = useAction("Synthesize", () =>
+  const setAutoRun = useAction("Set IV auto-run", (value: boolean) =>
     api.post(
-      "/api/input-validation/synthesize",
-      {
-        host: scopeType === "host" ? scopeValue : undefined,
-      },
+      "/api/input-validation/config",
+      { auto_run: value },
       { project_id: projectId },
     ),
   );
@@ -81,6 +83,57 @@ export default function RunTab({
         </div>
       )}
 
+      <Section title="Auto-run">
+        <div className="panel p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="max-w-xl">
+              <div className="flex items-center gap-2 mb-1">
+                <span
+                  className={`badge badge-sm ${autoRunOn ? "badge-success" : "badge-ghost"}`}
+                >
+                  {autoRunOn ? "Enabled" : "Disabled"}
+                </span>
+                <span className="badge badge-outline badge-sm">
+                  scan: {OPERATOR_SCAN}
+                </span>
+              </div>
+              <p className="text-xs text-base-content/60 leading-relaxed">
+                When enabled, the scheduler characterizes every unique in-scope
+                parameter as traffic arrives. Duplicate browser captures of the
+                same request collapse to one unique endpoint and one parameter
+                plan. Profiles and candidates are produced automatically after
+                probes — no separate synthesize step.
+              </p>
+            </div>
+            <div className="shrink-0">
+              {autoRunOn ? (
+                <button
+                  className="btn btn-sm"
+                  disabled={setAutoRun.running}
+                  onClick={async () => {
+                    await setAutoRun.run(false);
+                    onRefresh();
+                  }}
+                >
+                  Disable auto-run
+                </button>
+              ) : (
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={setAutoRun.running}
+                  onClick={async () => {
+                    await setAutoRun.run(true);
+                    onRefresh();
+                  }}
+                >
+                  Enable auto-run
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </Section>
+
       <Section title="Scope">
         <ScopeBar
           projectId={projectId}
@@ -93,11 +146,12 @@ export default function RunTab({
 
       <Section title="Run">
         <p className="text-xs text-base-content/50 mb-3">
-          Runs the full IV probe set for every in-scope parameter (one unique
-          flow per probe). No budget picker — every type-family, URL-sink,
-          character, and validation probe is scheduled. ignore-cache and
-          Clear cache wipe probe results and profiles for this scope so the
-          planner starts at baseline again.
+          Runs the unified IV scan (standard characterization plus adaptive
+          deep follow-ups) for every unique in-scope parameter. Not an
+          exhaustive brute-force matrix. ignore-cache and Clear cache wipe
+          probe results and profiles for this scope so the planner starts at
+          baseline again. Candidates appear on the Candidates tab after
+          analysis finishes.
         </p>
         <div className="flex flex-wrap gap-3 items-center mb-3">
           <label className="label cursor-pointer gap-2 py-0">
@@ -141,16 +195,6 @@ export default function RunTab({
           >
             Resume
           </button>
-          <button
-            className="btn btn-sm"
-            disabled={synthesize.running}
-            onClick={async () => {
-              await synthesize.run();
-              onRefresh();
-            }}
-          >
-            Synthesize
-          </button>
           <ConfirmButton
             className="btn btn-sm btn-ghost"
             confirmText="Reset IV probes, profiles, and cache for this scope? Next Run starts at baseline."
@@ -177,8 +221,8 @@ export default function RunTab({
         {advanced && (
           <div>
             <p className="text-xs text-base-content/50 mb-2">
-              Prefer adaptive planner via Run. Phase shortcuts enqueue one phase only
-              (bypass full plan).
+              Prefer adaptive planner via Run or auto-run. Phase shortcuts
+              enqueue one phase only (bypass full plan).
             </p>
             <div className="flex flex-wrap gap-2">
               {PHASES.map((p) => (

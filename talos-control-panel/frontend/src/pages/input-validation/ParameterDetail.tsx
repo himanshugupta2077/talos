@@ -99,13 +99,6 @@ export default function ParameterDetail() {
     profile?.inventory_only === true ||
     isInventoryOnlySurface(profile?.location, name);
 
-  const synthesize = useAction("Synthesize parameter", () =>
-    api.post(
-      "/api/input-validation/synthesize",
-      { param_uuid: paramUuid },
-      { project_id: selected!.id },
-    ),
-  );
   // Run scopes by parameter *name* (CLI --parameter), never param_uuid as name.
   const runScoped = useAction("Run IV for parameter", () =>
     api.post(
@@ -205,16 +198,6 @@ export default function ParameterDetail() {
               Run scoped
             </button>
           </span>
-          <button
-            className="btn btn-xs"
-            disabled={synthesize.running}
-            onClick={async () => {
-              await synthesize.run();
-              load();
-            }}
-          >
-            Synthesize
-          </button>
           <button className="btn btn-xs btn-primary" onClick={download}>
             Download JSON
           </button>
@@ -236,8 +219,8 @@ export default function ParameterDetail() {
           <p>
             <strong>Run scoped</strong> uses the parameter <em>name</em> (CLI{" "}
             <span className="mono">--parameter</span>), matching all hosts/locations
-            with that name — not the UUID alone. <strong>Synthesize</strong> is
-            offline and correctly uses this param UUID.
+            with that name — not the UUID alone. Profiles and candidates are
+            synthesized automatically when the planner finishes.
           </p>
           <p>
             Passive URL features and active URL-sink canary cards are prioritization
@@ -254,7 +237,6 @@ export default function ParameterDetail() {
             Inventory-only surface (<span className="mono">location=response</span> or{" "}
             <span className="mono">jwt.*</span> name). Characterization may exist
             from capture, but this is not a normal injectable input — Run is disabled.
-            Synthesize remains available if probes already exist.
           </span>
         </div>
       )}

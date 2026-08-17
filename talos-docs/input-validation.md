@@ -19,7 +19,7 @@ It answers questions such as:
 - What length bounds and type constraints apply?
 - How does the parser handle duplicates, nulls, arrays?
 
-IV intentionally avoids exploit-shaped payloads on the default `standard` budget. Edge characterization (e.g. CRLF-style strings) appears only on `deep` / `exhaustive`.
+IV intentionally avoids exploit-shaped payloads on the `standard` limiter. Edge characterization (e.g. CRLF-style strings) is included on the unified operator scan (`deep`). Exhaustive remains a CLI-only full-matrix limiter.
 
 **Candidates are prioritization hints, not confirmed findings.** Attack modules must still verify. IV never creates findings and never runs exploit chains.
 
@@ -100,8 +100,9 @@ Stored in `input_validation_config` (per project). Defaults:
 | Setting | Default | Notes |
 |---------|---------|--------|
 | `enabled` | `false` | Must enable before `run` |
-| `probe_strategy` / coverage | `exhaustive` | Full probe set. `quick` \| `standard` \| `deep` are optional limiters (`--budget`). |
-| `max_requests_per_param` | `0` | `0` → planner tier default (`exhaustive` ≈ 256) |
+| `auto_run` | `false` | Scheduler auto-enqueues unique untested parameters |
+| `probe_strategy` / coverage | `deep` | **Unified operator scan.** `quick` \| `standard` \| `exhaustive` are CLI `--budget` limiters only. |
+| `max_requests_per_param` | `0` | `0` → planner tier default (`deep` ≈ 40) |
 | `include_auth_artifacts` | `false` | Skip session cookies / `Authorization` unless opted in |
 | Analysis toggles | all on | baseline, multiprobe, identifier, characters, length, types, transformations, reflection, validation |
 
@@ -109,12 +110,19 @@ Stored in `input_validation_config` (per project). Defaults:
 
 | Tier | Approx. max requests | Behaviour |
 |------|----------------------|-----------|
-| `quick` | ~8 | Aggressive early stop (opt-in limiter) |
-| `standard` | ~18 | Multiprobe-first; class reps; pruned types (opt-in limiter) |
-| `deep` | ~40 | Drill-down, more length, edge validation (opt-in limiter) |
-| `exhaustive` | ~256 | **Default.** Full type-family, URL-sink, character, and validation matrix |
+| `quick` | ~8 | Aggressive early stop (CLI limiter) |
+| `standard` | ~18 | Multiprobe-first; class reps; pruned types (CLI limiter) |
+| `deep` | ~40 | **Operator default.** Standard characterization + adaptive deep follow-ups |
+| `exhaustive` | ~256 | Legacy full matrix (CLI limiter only — not used by Run or auto-run) |
 
-`talos input-validation run` with no `--budget` uses exhaustive. Older projects that still have `standard` saved are upgraded on run so probes are not silently clipped.
+`talos input-validation run` with no `--budget` uses the unified `deep` scan. Older projects that still have `standard` or `exhaustive` saved are upgraded on run/auto-run.
+
+**Auto-run:** `talos input-validation config --auto-run on` (also enables the engine). The scheduler periodically starts the unified scan for unique untested parameters. Uniqueness:
+
+- Endpoint: HTTP method + canonical origin + normalized path (five identical browser captures collapse to one endpoint).
+- Parameter: `sha256(host|location|name)[:32]` — one plan even if the same name appears on several endpoints.
+
+Synthesis and candidate listing are planner-driven. The Control Panel does not require a separate Synthesize action.
 
 Auth is verified before scheduling (`verify_auth_for_iv_scan`): every role used by the scan must have a healthy session/config.
 

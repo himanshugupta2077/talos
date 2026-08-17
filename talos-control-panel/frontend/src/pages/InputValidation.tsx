@@ -92,7 +92,10 @@ export default function InputValidation() {
   useEffect(() => {
     if (!selected) return;
     const hasJobs =
-      (status?.running ?? 0) + (status?.queued ?? 0) > 0 || emptyState.has_jobs;
+      (status?.running ?? 0) + (status?.queued ?? 0) > 0 ||
+      emptyState.has_jobs ||
+      Boolean(Number(config?.auto_run ?? 0)) ||
+      Boolean(status?.auto_run);
     if (!hasJobs) return;
     if (typeof document !== "undefined" && document.hidden) return;
     const id = window.setInterval(() => {
@@ -100,7 +103,15 @@ export default function InputValidation() {
       load();
     }, 5000);
     return () => window.clearInterval(id);
-  }, [selected, status?.running, status?.queued, emptyState.has_jobs, load]);
+  }, [
+    selected,
+    status?.running,
+    status?.queued,
+    status?.auto_run,
+    config?.auto_run,
+    emptyState.has_jobs,
+    load,
+  ]);
 
   if (!selected) return <NoProjectNotice />;
 
@@ -126,14 +137,15 @@ export default function InputValidation() {
             <strong>Multi-level</strong> shows endpoint and host inheritance (Module 10).
           </p>
           <p>
-            <strong>Run</strong> schedules the full IV probe set (
+            <strong>Run</strong> starts the unified scan or enables auto-run so
+            new unique parameters are characterized as traffic arrives (
             <span className="mono">talos input-validation run</span>
             ). <strong>Settings</strong> covers enable, phases, auth artifacts,
             exclusions.
           </p>
           <p>
-            Happy path: Enable → Run → wait for scheduler → Synthesize → review
-            Candidates → open parameter dossiers.
+            Happy path: Enable (or Auto-run) → wait for scheduler → review
+            Candidates → open parameter dossiers. Synthesis is automatic.
           </p>
         </>
       }
@@ -169,6 +181,7 @@ export default function InputValidation() {
       {tab === "run" && (
         <RunTab
           projectId={selected.id}
+          config={config}
           status={status}
           onRefresh={load}
         />

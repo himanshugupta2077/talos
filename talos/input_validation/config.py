@@ -8,11 +8,13 @@ Purpose:
 
     Defaults:
         enabled                : False  — tester must explicitly enable
+        auto_run               : False  — scheduler does not auto-enqueue
         workers                : 2
         analyses               : all phases enabled (including multiprobe)
-        probe_strategy         : exhaustive — full probe set (type-family,
-                                 URL sink, chars, validation). Smaller tiers
-                                 remain opt-in limiters via --budget.
+        probe_strategy         : deep — unified operator scan (standard
+                                 characterization + adaptive deep follow-ups).
+                                 quick/standard/exhaustive remain CLI-only
+                                 limiters via --budget.
         max_requests_per_param : 0 — use planner tier default (Module 5)
         include_auth_artifacts : False — skip session cookies / Authorization
                                  unless operator opts in (Module 9)
@@ -36,7 +38,13 @@ PROBE_STRATEGIES: tuple[str, ...] = (
     "deep",
     "exhaustive",
 )
-DEFAULT_PROBE_STRATEGY = "exhaustive"
+# Unified operator-facing scan. Combines standard characterization with
+# adaptive deep follow-ups. Not the exhaustive brute-force matrix.
+DEFAULT_PROBE_STRATEGY = "deep"
+OPERATOR_SCAN_TIER = DEFAULT_PROBE_STRATEGY
+# Older implicit defaults that must be upgraded to the unified scan on run
+# and auto-run (unless the operator passed an explicit --budget limiter).
+LEGACY_IMPLICIT_TIERS: frozenset[str] = frozenset({"standard", "exhaustive"})
 
 
 @dataclass
@@ -64,10 +72,14 @@ class IVConfig:
 
     Fields:
         enabled                — Whether IV runs at all. Default False.
+        auto_run               — When True (and enabled), the scheduler
+                                 auto-enqueues the unified scan for unique
+                                 untested parameters. Default False.
         workers                — Concurrent analysis workers. Default 2.
         analyses               — Per-phase toggles.
-        probe_strategy         — quick|standard|deep|exhaustive (planner
-                                 budget). Default exhaustive = full probe set.
+        probe_strategy         — Planner budget. Operator run/auto-run use
+                                 deep (standard + deep, adaptive). Other
+                                 tiers are CLI --budget limiters only.
         max_requests_per_param — Hard HTTP cap per parameter; 0 = tier default
                                  (Module 5 planner).
         include_auth_artifacts — When False (default), session cookies and
@@ -79,6 +91,7 @@ class IVConfig:
     """
 
     enabled: bool = False
+    auto_run: bool = False
     workers: int = 2
     analyses: IVAnalysesConfig = field(default_factory=IVAnalysesConfig)
     probe_strategy: str = DEFAULT_PROBE_STRATEGY
@@ -159,6 +172,7 @@ def load_config(db_path: Path) -> IVConfig:
     )
     return IVConfig(
         enabled=bool(row["enabled"]),
+        auto_run=_row_bool(row, "auto_run", False),
         workers=int(row["workers"]),
         analyses=analyses,
         probe_strategy=strategy,
@@ -196,7 +210,7 @@ def save_config(db_path: Path, config: IVConfig) -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO input_validation_config (
-                id, enabled, workers,
+                id, enabled, auto_run, workers,
                 analyses_baseline, analyses_multiprobe, analyses_identifier,
                 analyses_characters,
                 analyses_length, analyses_types, analyses_transformations,
@@ -205,7 +219,7 @@ def save_config(db_path: Path, config: IVConfig) -> None:
                 include_auth_artifacts,
                 excluded_hosts, excluded_endpoints
             ) VALUES (
-                'default', ?, ?,
+                'default', ?, ?, ?,
                 ?, ?, ?,
                 ?,
                 ?, ?, ?,
@@ -217,6 +231,7 @@ def save_config(db_path: Path, config: IVConfig) -> None:
             """,
             (
                 1 if config.enabled else 0,
+                1 if config.auto_run else 0,
                 config.workers,
                 1 if a.baseline else 0,
                 1 if a.multiprobe else 0,
@@ -284,8 +299,10 @@ def format_config(config: IVConfig) -> str:
     return (
         f"Input Validation Configuration\n"
         f"  Status         : {'Enabled' if config.enabled else 'Disabled'}\n"
+        f"  Auto Run       : {'Enabled' if config.auto_run else 'Disabled'}\n"
         f"  Workers        : {config.workers}\n"
-        f"  Probe strategy : {config.probe_strategy}\n"
+        f"  Probe strategy : {config.probe_strategy} "
+        f"(operator scan = {OPERATOR_SCAN_TIER})\n"
         f"  Max req/param  : {max_req_display}\n"
         f"  Auth artifacts : {auth_art}\n"
         f"\n"
@@ -310,3 +327,57 @@ def format_config(config: IVConfig) -> str:
         f"    path, query, body (JSON/form/multipart/XML/GraphQL),\n"
         f"    header, cookie — first-class inject + profiles\n"
     )
+
+
+def apply_operator_scan(config: IVConfig) -> bool:
+    """
+    Purpose:
+        Force the unified operator scan (deep). Used by default run and
+        auto-run so leftover standard/exhaustive settings cannot silently
+        clip or brute-force probes.
+    Input:   config — IVConfig mutated in place.
+    Output:  True when probe_strategy changed.
+    Side effects: Mutates config.probe_strategy.
+    """
+    current = (config.probe_strategy or "").strip().lower()
+    if current == OPERATOR_SCAN_TIER:
+        return False
+    config.probe_strategy = OPERATOR_SCAN_TIER
+    return True
+
+
+def get_iv_auto_run(db_path: Path) -> bool:
+    """
+    Purpose:
+        Read the IV auto-run flag. False when unset or the project DB is
+        missing.
+    Input:   db_path — Path to the project's talos.db.
+    Output:  True when auto_run is enabled.
+    Side effects: None (read-only).
+    """
+    if not db_path.exists():
+        return False
+    return bool(load_config(db_path).auto_run)
+
+
+def set_iv_auto_run(db_path: Path, enabled: bool, *, enable_engine: bool = True) -> IVConfig:
+    """
+    Purpose:
+        Persist auto_run. Turning it on also enables the IV engine so the
+        scheduler can enqueue work. Turning it off leaves enabled as-is.
+    Input:
+        db_path       — Path to the project's talos.db.
+        enabled       — True to enable auto-run.
+        enable_engine — When True (default) and enabled is True, set
+                        config.enabled as well.
+    Output:  The saved IVConfig.
+    Side effects: Writes input_validation_config.
+    """
+    config = load_config(db_path)
+    config.auto_run = bool(enabled)
+    if enabled and enable_engine:
+        config.enabled = True
+    if enabled:
+        apply_operator_scan(config)
+    save_config(db_path, config)
+    return config
