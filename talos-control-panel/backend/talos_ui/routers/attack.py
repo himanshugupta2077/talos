@@ -1377,3 +1377,174 @@ def run_sqli(project_id: str, body: SqliRunBody):
         args.append("--no-high-priority")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# HTTP request smuggling                                               #
+# ------------------------------------------------------------------ #
+
+SMUGGLE_TECHNIQUE_FALLBACK = [
+    "cl_te",
+    "te_cl",
+    "te_space",
+    "te_tab",
+    "te_xchunked",
+    "te_dual",
+    "cl_cl",
+]
+
+
+def _load_smuggle_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.smuggle.models import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in SMUGGLE_TECHNIQUE_FALLBACK
+        ]
+
+
+def _smuggle_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'smuggle_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/smuggle/techniques")
+def smuggle_techniques():
+    """Smuggle technique catalogue (matches CLI --technique)."""
+    meta = _load_smuggle_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/smuggle/results")
+def smuggle_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.smuggle.db import list_smuggle_results
+
+        rows = list_smuggle_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/smuggle/summary")
+def smuggle_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.smuggle.db import count_smuggle_verdicts
+
+        counts = count_smuggle_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/smuggle/overview")
+def smuggle_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the Smuggle workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.smuggle.db import count_smuggle_verdicts, list_smuggle_results
+
+        counts = count_smuggle_verdicts(db_path)
+        recent = list_smuggle_results(db_path, verdict="SMUGGLE", limit=top_n)
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _smuggle_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_smuggle_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class SmuggleRunBody(BaseModel):
+    """Mirrors talos attack smuggle run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    right_now: bool = False
+
+
+@router.post("/smuggle/run")
+def run_smuggle(project_id: str, body: SmuggleRunBody):
+    known = {t["name"] for t in _load_smuggle_technique_meta()} or set(
+        SMUGGLE_TECHNIQUE_FALLBACK
+    )
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "Smuggle run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "smuggle", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    if body.technique:
+        tech = body.technique.strip()
+        if tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown smuggle technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.right_now:
+        args.append("--right-now")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

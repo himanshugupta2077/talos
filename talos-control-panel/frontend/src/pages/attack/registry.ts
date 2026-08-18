@@ -28,7 +28,8 @@ export type AttackKpiSource =
   | "intruder"
   | "url_sinks"
   | "cors"
-  | "sqli";
+  | "sqli"
+  | "smuggle";
 
 export interface AttackModuleDef {
   id: string;
@@ -249,6 +250,28 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "payload",
     ],
     kpi: "sqli",
+  },
+  {
+    id: "smuggle",
+    class: "active",
+    name: "HTTP Request Smuggling",
+    description:
+      "Give a captured flow UUID. Raw CL/TE probes on a keep-alive connection (NTLM handshake first when configured). One unique replay per technique; shows in the Talos Burp extension.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/smuggle`,
+    keywords: [
+      "smuggle",
+      "smuggling",
+      "desync",
+      "content-length",
+      "transfer-encoding",
+      "cl.te",
+      "te.cl",
+      "http request smuggling",
+      "ntlm",
+    ],
+    kpi: "smuggle",
   },
   {
     id: "intruder",

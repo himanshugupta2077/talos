@@ -2,6 +2,34 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## HTTP Request Smuggling
+
+**Shipped:** 2026-08-18
+
+New active attack module (`talos attack smuggle` / Control Panel `/testing/smuggle`).
+
+Give one or more captured flow UUIDs. Talos sends raw HTTP/1.1 CL.TE / TE.CL /
+obfuscated-TE / dual-CL probes on a keep-alive connection to the origin
+(httpx is not used — it would normalize framing). On NTLM / platform-auth
+hosts the engine completes the handshake on that same socket first.
+
+Each technique is one `smuggle_attack` scheduler job and one unique replay
+flow. The raw probe is snapshotted into the Talos Burp extension under
+**HTTP Request Smuggling**. A finding is created only on a confirmed desync
+(poisoned follow-up, canary echo, or extra queued response). Timeout-only
+is not a finding.
+
+```bash
+talos attack smuggle techniques
+talos attack smuggle run --flow <uuid>
+talos attack smuggle run --flow <uuid> --technique cl_te
+talos attack smuggle results list
+```
+
+Schema **v60**: `smuggle_results`. Tests: `tests/test_smuggle_*.py`.
+
+---
+
 ## SQLi — high-priority queue jump
 
 **Shipped:** 2026-08-18

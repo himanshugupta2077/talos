@@ -102,6 +102,7 @@ from talos.scheduler.job import (
     UNAUTH_JOB_TYPES,
     CORS_JOB_TYPES,
     SQLI_JOB_TYPES,
+    SMUGGLE_JOB_TYPES,
     IV_JOB_TYPES,
     INTRUDER_JOB_TYPES,
     INTRUDER_SESSION,
@@ -561,6 +562,9 @@ class ReplayScheduler:
 
             elif job.job_type in SQLI_JOB_TYPES:
                 self._execute_sqli_job(job)
+
+            elif job.job_type in SMUGGLE_JOB_TYPES:
+                self._execute_smuggle_job(job)
 
             elif job.job_type in IV_JOB_TYPES:
                 self._execute_iv_job(job)
@@ -1465,6 +1469,124 @@ class ReplayScheduler:
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("[findings] SQLi finding creation error (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # HTTP request smuggling job execution                                 #
+    # ------------------------------------------------------------------ #
+
+    def _execute_smuggle_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute a SMUGGLE_ATTACK job: unique replay flow with raw CL/TE.
+        Input:   job — ReplayJob with smuggle_attack type and technique meta.
+        Side effects:
+            Outbound raw HTTP; new flow + smuggle_results; Burp snapshot;
+            finding on SMUGGLE.
+        """
+        import json as _json
+        from talos.smuggle.engine import execute_smuggle_job
+        from talos.smuggle.models import SmuggleOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "smuggle_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "smuggle_meta_parse_error")
+                return
+
+        try:
+            outcome: SmuggleOutcome = execute_smuggle_job(
+                flow_id=flow_id,
+                meta=meta,
+                db_path=db_path,
+                project_id=project_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in smuggle job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_smuggle_outcome(job, outcome)
+
+    def _settle_smuggle_outcome(self, job: ReplayJob, outcome: "SmuggleOutcome") -> None:
+        """
+        Purpose:
+            Map SmuggleOutcome to job terminal state; create finding on SMUGGLE.
+        """
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "smuggle_job_missing_flow_id",
+            "smuggle_payload_missing",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  smuggle=%s  technique=%s",
+            job.job_id[:8],
+            outcome.verdict,
+            outcome.technique,
+        )
+
+        if outcome.verdict == "SMUGGLE":
+            self._maybe_create_finding_smuggle(job, outcome)
+
+    def _maybe_create_finding_smuggle(
+        self, job: ReplayJob, outcome: "SmuggleOutcome"
+    ) -> None:
+        """
+        Purpose:
+            Create a PRIMARY/LINKED smuggle finding on a confirmed desync.
+        """
+        from talos.smuggle.findings_bridge import maybe_create_smuggle_finding
+
+        try:
+            maybe_create_smuggle_finding(
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                outcome=outcome,
+                job_id=job.job_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[findings] smuggle finding creation error (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------ #
     # Finding creation hooks                                               #

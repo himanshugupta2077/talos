@@ -111,6 +111,15 @@ SQLI_ATTACK = "sqli_attack"
 SQLI_JOB_TYPES: tuple[str, ...] = (SQLI_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# HTTP request smuggling job type                                      #
+# ------------------------------------------------------------------ #
+
+SMUGGLE_ATTACK = "smuggle_attack"
+"""HTTP request smuggling: one CL/TE technique per job, one unique replay flow."""
+
+SMUGGLE_JOB_TYPES: tuple[str, ...] = (SMUGGLE_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # Input Validation job type constants                                  #
 # ------------------------------------------------------------------ #
 
@@ -177,6 +186,7 @@ JOB_TYPES: tuple[str, ...] = (
     + AUTH_SESSION_JOB_TYPES
     + CORS_JOB_TYPES
     + SQLI_JOB_TYPES
+    + SMUGGLE_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
 )

@@ -11,6 +11,7 @@ export const ATTACK_DISPLAY: Record<string, string> = {
   iv: "Input Validation",
   cors: "CORS Misconfiguration",
   sqli: "SQL Injection",
+  smuggle: "HTTP Request Smuggling",
   intruder: "Intruder",
   replay: "Replay",
 };
@@ -22,6 +23,7 @@ export const ATTACK_MODULE_SHORT: Record<string, string> = {
   unauth: "Unauth",
   cors: "CORS misconfig",
   sqli: "SQLi",
+  smuggle: "Smuggle",
   auth_session: "Auth-session",
   auth_test: "Auth test",
   intruder: "Intruder",

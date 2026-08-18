@@ -1125,6 +1125,34 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.smuggle",
+        "label": "Attack — HTTP Request Smuggling",
+        "commands": [
+            cmd("attack.smuggle.techniques", ["attack", "smuggle", "techniques"], "List CL/TE smuggling techniques"),
+            cmd("attack.smuggle.run", ["attack", "smuggle", "run"], "Enqueue smuggle probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to probe"),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    kind="select",
+                    options=[
+                        "cl_te",
+                        "te_cl",
+                        "te_space",
+                        "te_tab",
+                        "te_xchunked",
+                        "te_dual",
+                        "cl_cl",
+                    ],
+                    help="Restrict to one technique (default: all)",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+            ]),
+            cmd("attack.smuggle.results.list", ["attack", "smuggle", "results", "list"], "List smuggle probe results"),
+            cmd("attack.smuggle.status", ["attack", "smuggle", "status"], "Smuggle verdict and job tallies"),
+        ],
+    },
+    {
         "group": "input-validation",
         "label": "Input Validation Engine",
         "commands": [

@@ -387,6 +387,33 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // HTTP request smuggling (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/smuggle/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.SMUGGLE ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          smuggle: {
+            chips: [
+              {
+                label: "desync",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Intruder (active high-volume)
     api
       .get<{
@@ -411,6 +438,33 @@ export default function AttackHub() {
                 value: interesting,
                 tone: interesting > 0 ? "danger" : "muted",
               },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
+    // HTTP request smuggling (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/smuggle/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.SMUGGLE ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          smuggle: {
+            chips: [
+              {
+                label: "desync",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
             ],
           },
         }));

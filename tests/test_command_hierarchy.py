@@ -89,6 +89,15 @@ def test_talos_helper_documents_sqli_attack() -> None:
     assert "sqli status" in text
 
 
+def test_talos_helper_documents_smuggle_attack() -> None:
+    """Root help must advertise talos attack smuggle commands."""
+    text = _root_help_text()
+    assert "smuggle techniques" in text
+    assert "smuggle run" in text
+    assert "smuggle results list|show" in text
+    assert "smuggle status" in text
+
+
 def test_talos_helper_documents_layered_config() -> None:
     """Root help must advertise CLI-022 talos config commands."""
     text = _root_help_text()

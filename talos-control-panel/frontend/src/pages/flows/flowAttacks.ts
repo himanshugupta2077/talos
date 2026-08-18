@@ -68,6 +68,21 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       ),
   },
   {
+    id: "smuggle",
+    name: "HTTP Request Smuggling",
+    shortLabel: "Smuggle",
+    description:
+      "Raw CL/TE desync probes on these flows. NTLM handshake first when platform auth is on.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/smuggle`,
+    cliHint: "talos attack smuggle run --flow",
+    jobsPerFlow: 7,
+    run: (projectId, flowIds) =>
+      api.post("/api/attack/smuggle/run", { flows: flowIds }, { project_id: projectId }),
+  },
+  {
     id: "unauth",
     name: "Unauthenticated Execution",
     shortLabel: "Unauth",

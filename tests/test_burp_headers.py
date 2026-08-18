@@ -52,6 +52,7 @@ from talos.burp.trace import (
     ENGINE_AUTH_SESSION,
     ENGINE_BAC,
     ENGINE_CORS,
+    ENGINE_SMUGGLE,
     ENGINE_INPUT_VALIDATION,
     ENGINE_INTRUDER,
     ENGINE_UNAUTH,
@@ -322,6 +323,7 @@ def test_attach_other_engines() -> None:
         (ENGINE_BAC, "BAC", {"technique": "bac_session_swap", "variant": "v1"}),
         (ENGINE_AUTH_SESSION, "Auth-Session Testing", {"technique": "jwt", "variant": "alg_none"}),
         (ENGINE_CORS, "CORS Misconfiguration", {"technique": "reflected", "origin": "https://evil.test"}),
+        (ENGINE_SMUGGLE, "HTTP Request Smuggling", {"technique": "cl_te", "variant": "cl_te"}),
         (ENGINE_INTRUDER, "Intruder", {"attempt": "12", "variant": "user=admin"}),
     )
     for token, label, extras in cases:

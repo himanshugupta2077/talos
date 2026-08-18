@@ -102,6 +102,7 @@ def build_cluster_key(
         bac          → BAC:<endpoint_id>:<attacker_role_id>:<target_role_id>
         auth_session → AUTH_SESSION:<auth_type>  (one PRIMARY per JWT type)
         cors         → CORS:<scheme://netloc>  (one PRIMARY per target origin)
+        smuggle      → SMUGGLE:<scheme://netloc>  (one PRIMARY per target origin)
         other        → <MODULE>:<endpoint_id>
 
     Passive secret findings do **not** use this helper.  They supply
@@ -117,7 +118,7 @@ def build_cluster_key(
         attacker_role_id — BAC only.
         target_role_id   — BAC only.
         auth_type        — auth_session only (jwt, …); defaults to 'jwt'.
-        host             — cors only: target origin key (scheme://netloc).
+        host             — cors / smuggle: target origin key (scheme://netloc).
     Output:
         cluster_key string, or None when clustering is not possible.
     """
@@ -128,6 +129,14 @@ def build_cluster_key(
             return f"CORS:{origin}"
         if endpoint_id:
             return f"CORS:{endpoint_id}"
+        return None
+
+    if module == "smuggle":
+        origin = (host or "").strip().lower()
+        if origin:
+            return f"SMUGGLE:{origin}"
+        if endpoint_id:
+            return f"SMUGGLE:{endpoint_id}"
         return None
 
     if module == "auth_session":

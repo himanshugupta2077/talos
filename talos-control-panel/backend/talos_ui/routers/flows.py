@@ -85,6 +85,7 @@ _KNOWN_ATTACK_MODULES = (
     "unauth",
     "cors",
     "sqli",
+    "smuggle",
     "auth_session",
     "auth_test",
     "intruder",
@@ -98,6 +99,8 @@ _ATTACK_MODULE_ALIASES = {
     "cors_misconfiguration": "cors",
     "sqli_attack": "sqli",
     "sql_injection": "sqli",
+    "smuggle_attack": "smuggle",
+    "http_request_smuggling": "smuggle",
     "auth-session": "auth_session",
     "unauth_attack": "unauth",
 }

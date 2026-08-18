@@ -113,6 +113,9 @@ EVIDENCE_TYPE_CORS_RESULT             = "cors_result"
 EVIDENCE_TYPE_SQLI_RESULT             = "sqli_result"
 """SQL injection probe result row reference."""
 
+EVIDENCE_TYPE_SMUGGLE_RESULT          = "smuggle_result"
+"""HTTP request smuggling probe result row reference."""
+
 EVIDENCE_TYPE_MODULE                  = "module"
 """The application module (feature area) the target endpoint belongs to."""
 
@@ -154,6 +157,7 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
     "auth_session": frozenset({"WEAK_VALIDATION"}),
     "cors":         frozenset({"CORS_MISCONFIG"}),
     "sqli":         frozenset({"SQLI"}),
+    "smuggle":      frozenset({"SMUGGLE"}),
 }
 
 # ------------------------------------------------------------------ #
@@ -167,6 +171,7 @@ ATTACK_DISPLAY: dict[str, str] = {
     "auth_session":   "Authentication & Session Testing",
     "cors":           "CORS Misconfiguration",
     "sqli":           "SQL Injection",
+    "smuggle":        "HTTP Request Smuggling",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
     "ai_draft":       "AI Draft (promoted)",

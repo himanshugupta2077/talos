@@ -115,6 +115,7 @@ talos
 │            prune / clear / pause / resume
 ├─ mutation  add / list / edit / enable / disable / delete
 ├─ attack    unauth (run, config, filter) / bac (8 modules + filter)
+│            / cors / sqli / smuggle
 ├─ passive   status / config show|set / rules list /
 │            documents list|show / detections list|show /
 │            rescan --all|--document|--flow
@@ -622,6 +623,8 @@ Attack modules produce verdicts and evidence. The Findings subsystem owns everyt
 | Unauthenticated Execution | `SECURE` / `UNKNOWN` | No | — |
 | CORS (`cors`, from `talos attack cors`) | `CORS_MISCONFIG` | YES — status `TRIAGING`; cluster `CORS:<origin>` | CORS Misconfiguration |
 | CORS | `SECURE` / `UNKNOWN` | No (`ACAO:*` / ACAC-only are not findings) | — |
+| HTTP Request Smuggling (`smuggle`, from `talos attack smuggle`) | `SMUGGLE` | YES — status `TRIAGING`; cluster `SMUGGLE:<origin>` | HTTP Request Smuggling |
+| HTTP Request Smuggling | `SECURE` / `UNKNOWN` | No (timeout-only is not a finding) | — |
 
 `talos.findings.model.VERDICT_TRIGGERS` and `ATTACK_DISPLAY` are keyed by
 attack module (`bac` / `auth_test` / `unauth`) — every module that creates
@@ -2298,6 +2301,8 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 | `auth_session_candidates` | Auth-session: pending/approved/… mutation candidates (v54) |
 | `auth_session_results` | Auth-session: one verdict row per mutated replay flow (v54) |
 | `cors_results` | CORS: one verdict row per unique Origin-probe replay flow (v55) |
+| `sqli_results` | SQLi: one verdict row per unique payload replay flow (v59) |
+| `smuggle_results` | Smuggle: one verdict row per unique CL/TE replay flow (v60) |
 | `proxy_config` | Direct vs upstream URL |
 | `input_validation_config` | IV enablement and phase toggles |
 | `iv_param_cache` | Parameter-level IV phase cache (resume) |
@@ -2329,6 +2334,8 @@ From `talos.scheduler.job`:
 | Unauthenticated Execution | `unauth_attack` |
 | Auth-session (Phase 4) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed + WEAK_VALIDATION findings) |
 | CORS | `cors_attack` (one unique replay flow per Origin technique) |
+| SQLi | `sqli_attack` (one unique replay flow per entry point × payload) |
+| HTTP Request Smuggling | `smuggle_attack` (one unique replay flow per CL/TE technique) |
 | Input Validation | `iv_baseline`, `iv_multiprobe`, `iv_identifier`, `iv_characters`, `iv_length`, `iv_types`, `iv_transformations`, `iv_reflection`, `iv_validation`, `iv_parser` |
 
 Statuses: `pending`, `running`, `done`, `failed`, `skipped`, `paused`, `cancelled`.
@@ -2379,6 +2386,8 @@ Notable milestones:
 | v53 | URL Sink Discovery Phase 1: `parameters.url_features` (passive value + name classification) |
 | v54 | Auth-session engine: `auth_session_bindings`, `auth_session_candidates`, `auth_session_results` |
 | v55 | CORS engine: `cors_results` (one unique replay flow per Origin technique) |
+| v59 | SQLi engine: `sqli_results` |
+| v60 | HTTP request smuggling: `smuggle_results` |
 
 ---
 
@@ -2505,6 +2514,7 @@ Compatibility wrappers: `talos proxy config`, `talos scheduler config`,
 - [x] Out-of-scope domain list — per-project block list that overrides the scope allow-list; enforced at proxy capture and worker persist; CLI via `talos project outscope` (`talos.projects.outscope`, `talos.projects.outscope_cli`)
 - [x] HTTP Manipulation Engine — single declarative rule engine for request **and** response modification; replaces former `capture.header_rules` + `request_mutations` / `talos mutation`; rules in layered `http.rules` (global + project concatenated, priority-sorted); match conditions (host/path/method/status/headers/endpoint/context); actions (headers, cookies, query, URL/method, body, status, delay/drop/abort); master switch `http.enabled`; CLI `talos config http` (list/show/create/delete/enable/disable/set-priority/set-match/add-action/export/import/…); proxy `request()` + `response()` hooks (`talos.configuration.http_engine`, `talos.configuration.http_rules`, `talos.configuration.http_cli`)
 - [x] CORS misconfiguration — `talos attack cors run` enqueues `cors_attack` jobs (one unique replay flow per Origin technique); in-scope 200 OK POST/PATCH/PUT then GET; findings only on attacker-origin reflection (`CORS:<origin>` PRIMARY + LINKED techniques); Control Panel `/testing/cors`
+- [x] HTTP request smuggling — `talos attack smuggle run --flow` enqueues `smuggle_attack` jobs (raw HTTP/1.1 CL/TE probes, NTLM handshake on the same connection when platform auth is configured); unique replay + Burp snapshot per technique; findings only on confirmed desync (`SMUGGLE:<origin>`); Control Panel `/testing/smuggle`
 - [x] Unauthenticated Execution — `talos attack unauth run` enqueues `unauth_attack` jobs (technique + optional request mutation recipes in `UNAUTH_RECIPES`); results in `unauth_results`; verdicts SECURE/BYPASS/UNKNOWN; BYPASS creates findings; decision filter via `talos attack unauth filter`; offline **filter apply** re-evaluates stored results and auto-rejects TRIAGING findings that flip BYPASS→SECURE (`talos attack unauth filter apply [--dry-run] [--force]`, `talos.projects.unauth.reclassify`); exclusions via Endpoint Policy (`talos endpoint exclude`). Distinct from Authentication Bypass (`talos auth test` → `auth_test` / `auth_test_results`). Auto-run via `talos attack unauth config [show] [--auto-run on|off]` (default off) makes the scheduler enqueue classic `auth_test` jobs for untested qualified endpoints (`talos.projects.unauth`, `talos.projects.attack_config`)
 - [x] Auth-session foundation (Phase 1) — package `talos.auth_session` (naming: not `Project.auth_session_path` / `auth_sessions/` files); schema v54 tables; stdlib JWT codec/mutators; suite catalog with algorithm degradation (no `*_to_none`); `AuthTypeAnalyzer` + JWT registry (`docs/design-auth-session-testing-engine.md`)
 - [x] Auth-session bindings & candidates (Phase 2) — `talos attack auth-session bind|unbind|show-bindings|generate|candidates|approve|reject|suite list`; insert-if-absent generate; operator approve lifecycle

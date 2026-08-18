@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1574,6 +1574,39 @@ CREATE INDEX IF NOT EXISTS idx_sqli_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_sqli_results_original
     ON sqli_results (original_flow_id, verdict);
+
+-- ------------------------------------------------------------------ --
+-- smuggle_results: one unique replay flow per CL/TE probe (v60)       --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS smuggle_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    canary_path        TEXT,
+    ntlm_used          INTEGER NOT NULL DEFAULT 0,
+    probe_status       INTEGER,
+    followup_status    INTEGER,
+    baseline_status    INTEGER,
+    probe_elapsed_ms   INTEGER,
+    followup_elapsed_ms INTEGER,
+    timeout_hit        INTEGER NOT NULL DEFAULT 0,
+    desync_signal      TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_smuggle_results_verdict
+    ON smuggle_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_smuggle_results_host
+    ON smuggle_results (host, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -1706,6 +1739,39 @@ CREATE INDEX IF NOT EXISTS idx_sqli_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_sqli_results_original
     ON sqli_results (original_flow_id, verdict);
+"""
+
+# Shared CREATE statements for HTTP request smuggling (schema v60).
+_SMUGGLE_SCHEMA_V60_DDL = """
+CREATE TABLE IF NOT EXISTS smuggle_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    canary_path        TEXT,
+    ntlm_used          INTEGER NOT NULL DEFAULT 0,
+    probe_status       INTEGER,
+    followup_status    INTEGER,
+    baseline_status    INTEGER,
+    probe_elapsed_ms   INTEGER,
+    followup_elapsed_ms INTEGER,
+    timeout_hit        INTEGER NOT NULL DEFAULT 0,
+    desync_signal      TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_smuggle_results_verdict
+    ON smuggle_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_smuggle_results_host
+    ON smuggle_results (host, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -4201,6 +4267,12 @@ def migrate_project_db(db_path: Path) -> None:
             # SQL injection: unique replay flow per (entry point × payload).
             conn.executescript(_SQLI_SCHEMA_V59_DDL)
             conn.execute("UPDATE schema_version SET version = 59")
+            conn.commit()
+
+        if current < 60:
+            # HTTP request smuggling: unique replay flow per CL/TE technique.
+            conn.executescript(_SMUGGLE_SCHEMA_V60_DDL)
+            conn.execute("UPDATE schema_version SET version = 60")
             conn.commit()
 
 

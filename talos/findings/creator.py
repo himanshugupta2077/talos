@@ -72,6 +72,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_CORS_RESULT,
     EVIDENCE_TYPE_SQLI_RESULT,
+    EVIDENCE_TYPE_SMUGGLE_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
     TIMELINE_ACTOR_SYSTEM,
@@ -180,6 +181,7 @@ def create_finding_from_verdict(
             auth_session → AUTH_SESSION:<auth_type>
             cors         → CORS:<scheme://netloc>
             sqli         → SQLI:<endpoint_id>
+            smuggle      → SMUGGLE:<scheme://netloc>
 
         The first finding in a cluster becomes PRIMARY; later findings in
         the same cluster become LINKED to that PRIMARY.  Every successful
@@ -204,7 +206,7 @@ def create_finding_from_verdict(
                           When omitted, uses default "{ATTACK_DISPLAY} — {verdict}
                           ({variant})" builder.
         auth_type       — auth_session only (jwt, …) for cluster key.
-        host            — cors only: target origin key for CORS:<origin> cluster.
+        host            — cors / smuggle: target origin key for cluster.
         result_evidence_data — optional extra keys merged into the attack-result
                           evidence JSON (e.g. risk_hint, mutation_summary for
                           auth_session). No severity column on findings.
@@ -591,6 +593,19 @@ def _attach_evidence(
                 "SQL injection probe"
                 + (f" — {variant}" if variant else ""),
                 sqli_data,
+            )
+
+    elif attack_module == "smuggle":
+        if replayed_flow_id_for_result:
+            smuggle_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                smuggle_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_SMUGGLE_RESULT, replayed_flow_id_for_result,
+                "HTTP request smuggling probe"
+                + (f" — {variant}" if variant else ""),
+                smuggle_data,
             )
 
 

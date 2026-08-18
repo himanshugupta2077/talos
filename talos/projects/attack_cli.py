@@ -8,6 +8,7 @@ Purpose:
                      talos attack auth-session <subcommand>
                      talos attack cors <subcommand>
                      talos attack sqli <subcommand>
+                     talos attack smuggle <subcommand>
 
     Unauth commands (talos attack unauth):
       run     — Generate UNAUTH_ATTACK jobs for all testable endpoints using
@@ -43,6 +44,11 @@ Purpose:
       techniques | run --flow | results list|show | status
       One sqli_attack job per (flow, entry point, payload);
       each job stores a unique replay flow.
+
+    Smuggle commands (talos attack smuggle):
+      techniques | run --flow | results list|show | status
+      One smuggle_attack job per (flow, CL/TE technique);
+      raw HTTP/1.1 to the origin (NTLM handshake when configured).
 
     Shared BAC flags (all modules):
       --role NAME|UUID     restrict to one attacker role
@@ -92,7 +98,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "auth-session (token validation mutations), "
             "bac (broken access control), "
             "cors (CORS misconfiguration), "
-            "sqli (SQL injection)."
+            "sqli (SQL injection), "
+            "smuggle (HTTP request smuggling)."
         ),
     )
     sub = parser.add_subparsers(dest="attack_type", metavar="<attack>")
@@ -117,6 +124,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- sqli ---- #
     from talos.sqli.cli import build_sqli_parser
     build_sqli_parser(sub)
+
+    # ---- smuggle ---- #
+    from talos.smuggle.cli import build_smuggle_parser
+    build_smuggle_parser(sub)
 
     return parser
 
@@ -157,3 +168,7 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type == "sqli":
         from talos.sqli.cli import run_sqli_cli
         run_sqli_cli(manager, args)
+
+    elif args.attack_type == "smuggle":
+        from talos.smuggle.cli import run_smuggle_cli
+        run_smuggle_cli(manager, args)

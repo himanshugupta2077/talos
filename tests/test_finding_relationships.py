@@ -103,6 +103,17 @@ def test_build_cluster_key_cors_uses_host():
     assert findings_db.build_cluster_key("cors", None) is None
 
 
+def test_build_cluster_key_smuggle_uses_host():
+    assert (
+        findings_db.build_cluster_key(
+            "smuggle", "ep-1", host="https://app.example.com"
+        )
+        == "SMUGGLE:https://app.example.com"
+    )
+    assert findings_db.build_cluster_key("smuggle", "ep-1") == "SMUGGLE:ep-1"
+    assert findings_db.build_cluster_key("smuggle", None) is None
+
+
 # ------------------------------------------------------------------ #
 # PRIMARY / LINKED creation                                            #
 # ------------------------------------------------------------------ #

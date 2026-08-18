@@ -1705,6 +1705,34 @@ Flows table multi-select (SQL Injection).
 
 ---
 
+## Attack — HTTP request smuggling (`smuggle`)
+
+Active module. Operator picks one or more captured flows (`--flow UUID`,
+required). Each technique is a raw HTTP/1.1 CL/TE probe on a keep-alive
+connection to the origin. When platform auth matches the host, Talos
+completes the NTLM handshake on that same socket first.
+
+`talos attack smuggle run --flow <uuid>` enqueues one `smuggle_attack`
+scheduler job per technique. Each job writes a **unique replay flow** and
+a Burp snapshot row. A finding is created only on a **confirmed desync**
+(follow-up 400/404/405 vs baseline, canary echo, or extra queued response).
+
+```bash
+talos attack smuggle techniques
+talos attack smuggle run --flow <uuid>
+talos attack smuggle run --flow <uuid> --technique cl_te
+talos attack smuggle run --flow <uuid1> --flow <uuid2>
+talos attack smuggle run --flow <uuid> --right-now
+talos attack smuggle results list
+talos attack smuggle results show <replay_flow_id>
+talos attack smuggle status
+```
+
+Control Panel: `/testing/smuggle` (Overview / Run / Results). Also run from
+the Flows table multi-select (HTTP Request Smuggling).
+
+---
+
 ## Attack — Authentication & Session Testing (`auth-session`)
 
 **Status (v1 complete — Phases 1–5):** bind → generate → approve → **run**

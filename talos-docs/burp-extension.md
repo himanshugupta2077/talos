@@ -121,6 +121,8 @@ Wired engines and `X-Talos-Engine` tokens:
 | BAC | `bac` |
 | Auth-Session Testing | `auth-session` |
 | CORS Misconfiguration | `cors` |
+| SQL Injection | `sqli` |
+| HTTP Request Smuggling | `smuggle` |
 | Intruder | `intruder` |
 | Secret Detection | `passive` |
 | Error Intelligence | `error-intel` |
