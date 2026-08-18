@@ -1112,6 +1112,13 @@ COMMAND_TREE: list[dict] = [
                     help="Restrict to one payload family",
                 ),
                 arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run SQLi ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
             ]),
             cmd("attack.sqli.results.list", ["attack", "sqli", "results", "list"], "List SQLi probe results"),
             cmd("attack.sqli.status", ["attack", "sqli", "status"], "SQLi verdict and job tallies"),

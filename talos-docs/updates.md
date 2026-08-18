@@ -2,6 +2,18 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## SQLi — high-priority queue jump
+
+**Shipped:** 2026-08-18
+
+`talos attack sqli run` defaults to scheduler priority **200** (`--high-priority`)
+so SQLi jobs run before other pending work (manual jobs are 100, auto are 10).
+Use `--no-high-priority` to enqueue at normal manual priority. Control Panel
+Run tab has the same checkbox (on by default); the Flows attack bar also
+enqueues SQLi as high priority.
+
+---
+
 ## SQLi — scan any flow for SQL injection
 
 **Shipped:** 2026-08-18

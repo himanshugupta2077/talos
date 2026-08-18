@@ -1676,10 +1676,13 @@ array index**, and **form field**, then appends a small catalogue of error,
 UNION, boolean, and time payloads.
 
 `talos attack sqli run --flow <uuid>` enqueues one `sqli_attack` scheduler job
-per (entry point × payload). Each job writes a **unique replay flow**. A
-finding is created only when the probe shows a **new** DBMS error versus the
-captured baseline, a UNION column-count leak, or a time delay. A pre-existing
-conversion error on the baseline is not itself a finding.
+per (entry point × payload). Each job writes a **unique replay flow**. Jobs
+default to **high priority (200)** so they run before other pending work
+(CORS / BAC / IV / replay at manual 100). Pass `--no-high-priority` to use
+normal manual priority. A finding is created only when the probe shows a
+**new** DBMS error versus the captured baseline, a UNION column-count leak,
+or a time delay. A pre-existing conversion error on the baseline is not
+itself a finding.
 
 ```bash
 talos attack sqli techniques
@@ -1688,6 +1691,10 @@ talos attack sqli run --flow <uuid> --family error
 talos attack sqli run --flow <uuid> --technique quote_single
 talos attack sqli run --flow <uuid1> --flow <uuid2>
 talos attack sqli run --flow <uuid> --right-now
+# Default: --high-priority (200) so SQLi runs before other pending jobs.
+# Opt out: --no-high-priority (normal manual 100).
+talos attack sqli run --flow <uuid> --high-priority
+talos attack sqli run --flow <uuid> --no-high-priority
 talos attack sqli results list
 talos attack sqli results show <replay_flow_id>
 talos attack sqli status

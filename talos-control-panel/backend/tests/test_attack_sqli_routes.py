@@ -69,6 +69,7 @@ def test_sqli_run_with_flows(client):
             "flow-a",
             "--flow",
             "flow-b",
+            "--high-priority",
         ]
 
 
@@ -96,6 +97,26 @@ def test_sqli_run_with_family_and_technique(client):
             "quote_single",
             "--family",
             "error",
+            "--high-priority",
+        ]
+
+
+def test_sqli_run_no_high_priority(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/sqli/run",
+            params={"project_id": "demo"},
+            json={"flows": ["flow-a"], "high_priority": False},
+        )
+        assert res.status_code == 200
+        assert run_scoped.call_args[0][1] == [
+            "attack",
+            "sqli",
+            "run",
+            "--flow",
+            "flow-a",
+            "--no-high-priority",
         ]
 
 

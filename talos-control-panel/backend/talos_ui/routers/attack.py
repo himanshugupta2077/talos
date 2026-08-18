@@ -1333,6 +1333,7 @@ class SqliRunBody(BaseModel):
     technique: str | None = None
     family: str | None = None
     right_now: bool = False
+    high_priority: bool = True
 
 
 @router.post("/sqli/run")
@@ -1370,5 +1371,9 @@ def run_sqli(project_id: str, body: SqliRunBody):
         args += ["--family", fam]
     if body.right_now:
         args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}

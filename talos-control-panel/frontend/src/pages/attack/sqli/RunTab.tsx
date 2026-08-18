@@ -34,6 +34,7 @@ export default function RunTab({
   const [flowText, setFlowText] = useState("");
   const [family, setFamily] = useState("");
   const [technique, setTechnique] = useState("");
+  const [highPriority, setHighPriority] = useState(true);
   const [lastStdout, setLastStdout] = useState<string | null>(null);
 
   const flowIds = useMemo(() => parseFlowIds(flowText), [flowText]);
@@ -53,6 +54,7 @@ export default function RunTab({
         flows: flowIds,
         technique: technique || undefined,
         family: family || undefined,
+        high_priority: highPriority,
       },
       { project_id: projectId }
     )
@@ -63,8 +65,9 @@ export default function RunTab({
     for (const id of flowIds) parts.push(`--flow ${id}`);
     if (technique) parts.push(`--technique ${technique}`);
     else if (family) parts.push(`--family ${family}`);
+    parts.push(highPriority ? "--high-priority" : "--no-high-priority");
     return parts.join(" ");
-  }, [flowIds, technique, family]);
+  }, [flowIds, technique, family, highPriority]);
 
   const doRun = async () => {
     try {
@@ -174,6 +177,18 @@ export default function RunTab({
           <div className="text-xs mono text-base-content/50 bg-base-200/50 rounded px-2 py-1.5 w-fit max-w-full break-all">
             {cliPreview}
           </div>
+          <label className="label cursor-pointer justify-start gap-2 py-0">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-xs checkbox-primary"
+              checked={highPriority}
+              onChange={(e) => setHighPriority(e.target.checked)}
+              disabled={run.running}
+            />
+            <span className="label-text text-xs">
+              High priority — run these SQLi jobs before other pending work
+            </span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             {estimate > 50 ? (
               <ConfirmButton

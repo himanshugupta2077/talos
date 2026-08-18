@@ -213,6 +213,9 @@ STATUS_CANCELLED = "cancelled"
 # Priority levels                                                      #
 # ------------------------------------------------------------------ #
 
+PRIORITY_HIGH = 200
+"""Operator jump-the-queue. Runs before PRIORITY_MANUAL (100) pending jobs."""
+
 PRIORITY_MANUAL = 100
 """Manual jobs enqueued directly by the user via CLI. Processed first."""
 
@@ -248,7 +251,8 @@ class ReplayJob:
         flow_id          — UUID of the target flow; None for replay_endpoint/auth_test jobs.
         job_type         — REPLAY_FLOW | REPLAY_ENDPOINT | AUTH_TEST.
         priority         — Execution order. Higher runs first.
-                           PRIORITY_MANUAL (100) > PRIORITY_AUTO (10).
+                           PRIORITY_HIGH (200) > PRIORITY_MANUAL (100)
+                           > PRIORITY_AUTO (10).
         created_at       — UTC ISO-8601 string captured at enqueue time.
         db_path          — Absolute Path to the project's talos.db.
         project_id       — Project identifier; stamped on stored replay flows.

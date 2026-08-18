@@ -13,7 +13,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from talos.projects.db import init_project_db
-from talos.scheduler.job import SQLI_ATTACK
+from talos.scheduler.db import enqueue_job, get_next_pending
+from talos.scheduler.job import CORS_ATTACK, PRIORITY_HIGH, PRIORITY_MANUAL, SQLI_ATTACK
 from talos.sqli.cli import cmd_run, cmd_techniques
 
 PROJECT_ID = "proj-sqli-cli"
@@ -105,6 +106,7 @@ def test_run_requires_flow(db_path: Path) -> None:
         family=None,
         flows=None,
         right_now=False,
+        high_priority=True,
         output_format="json",
     )
     with pytest.raises(SystemExit):
@@ -117,6 +119,7 @@ def test_run_enqueues_one_job_per_point(db_path: Path) -> None:
         family=None,
         flows=[FLOW],
         right_now=False,
+        high_priority=True,
         output_format="json",
     )
     buf = io.StringIO()
@@ -126,13 +129,16 @@ def test_run_enqueues_one_job_per_point(db_path: Path) -> None:
     assert payload["mode"] == "enqueue"
     assert payload["entry_points"] == 4
     assert payload["jobs_enqueued"] == 4
+    assert payload["priority"] == PRIORITY_HIGH
+    assert payload["high_priority"] is True
     with sqlite3.connect(str(db_path)) as conn:
         rows = conn.execute(
-            "SELECT job_type, flow_id, meta FROM scheduler_jobs ORDER BY created_at"
+            "SELECT job_type, flow_id, meta, priority FROM scheduler_jobs ORDER BY created_at"
         ).fetchall()
     assert len(rows) == 4
     assert {r[0] for r in rows} == {SQLI_ATTACK}
     assert {r[1] for r in rows} == {FLOW}
+    assert {r[3] for r in rows} == {PRIORITY_HIGH}
     params = {json.loads(r[2])["param_name"] for r in rows}
     assert params == {"[0]", "[1]", "[2]", "[3]"}
     meta0 = json.loads(rows[0][2])
@@ -146,6 +152,7 @@ def test_run_unknown_flow_exits(db_path: Path) -> None:
         family=None,
         flows=["missing-flow"],
         right_now=False,
+        high_priority=True,
         output_format="json",
     )
     with pytest.raises(SystemExit):
@@ -158,6 +165,7 @@ def test_run_dedups_pending(db_path: Path) -> None:
         family=None,
         flows=[FLOW],
         right_now=False,
+        high_priority=True,
         output_format="json",
     )
     manager = _manager(db_path)
@@ -170,3 +178,53 @@ def test_run_dedups_pending(db_path: Path) -> None:
             (SQLI_ATTACK,),
         ).fetchone()[0]
     assert n == 4
+
+
+def test_run_no_high_priority_uses_manual(db_path: Path) -> None:
+    args = SimpleNamespace(
+        technique="quote_single",
+        family=None,
+        flows=[FLOW],
+        right_now=False,
+        high_priority=False,
+        output_format="json",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_run(_manager(db_path), args)
+    payload = json.loads(buf.getvalue())
+    assert payload["priority"] == PRIORITY_MANUAL
+    assert payload["high_priority"] is False
+    with sqlite3.connect(str(db_path)) as conn:
+        prios = {
+            row[0]
+            for row in conn.execute("SELECT priority FROM scheduler_jobs")
+        }
+    assert prios == {PRIORITY_MANUAL}
+
+
+def test_high_priority_sqli_runs_before_older_manual_jobs(db_path: Path) -> None:
+    enqueue_job(
+        db_path=db_path,
+        job_id="old-cors",
+        job_type=CORS_ATTACK,
+        project_id=PROJECT_ID,
+        flow_id=FLOW,
+        priority=PRIORITY_MANUAL,
+        meta="{}",
+    )
+    args = SimpleNamespace(
+        technique="quote_single",
+        family=None,
+        flows=[FLOW],
+        right_now=False,
+        high_priority=True,
+        output_format="json",
+    )
+    with redirect_stdout(io.StringIO()):
+        cmd_run(_manager(db_path), args)
+    nxt = get_next_pending(db_path, PROJECT_ID)
+    assert nxt is not None
+    assert nxt.job_type == SQLI_ATTACK
+    assert nxt.priority == PRIORITY_HIGH
+    assert nxt.job_id != "old-cors"

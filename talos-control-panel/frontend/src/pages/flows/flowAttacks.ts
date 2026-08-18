@@ -58,10 +58,14 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
     risk: "high",
     status: "available",
     workspacePath: `${TESTING_BASE}/sqli`,
-    cliHint: "talos attack sqli run --flow",
+    cliHint: "talos attack sqli run --flow --high-priority",
     jobsPerFlow: 18,
     run: (projectId, flowIds) =>
-      api.post("/api/attack/sqli/run", { flows: flowIds }, { project_id: projectId }),
+      api.post(
+        "/api/attack/sqli/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
   },
   {
     id: "unauth",

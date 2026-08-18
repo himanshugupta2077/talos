@@ -40,7 +40,7 @@ from talos.cli_output import (
 )
 from talos.projects.manager import ProjectManager
 from talos.scheduler import db as sched_db
-from talos.scheduler.job import PRIORITY_MANUAL, SQLI_ATTACK
+from talos.scheduler.job import PRIORITY_HIGH, PRIORITY_MANUAL, SQLI_ATTACK
 from talos.sqli.candidates import (
     SqliCandidate,
     normalize_flow_ids,
@@ -179,6 +179,8 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         )
 
     right_now = bool(getattr(args, "right_now", False))
+    high_priority = bool(getattr(args, "high_priority", True))
+    priority = PRIORITY_HIGH if high_priority else PRIORITY_MANUAL
     as_json = wants_json(args)
 
     planned: list[tuple[SqliCandidate, InjectionPoint, object]] = []
@@ -216,7 +218,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             project_id=project_id,
             endpoint_id=cand.endpoint_id,
             flow_id=cand.flow_id,
-            priority=PRIORITY_MANUAL,
+            priority=priority,
             meta=json.dumps(meta),
         )
         enqueued += 1
@@ -226,6 +228,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
                 "flow_id": cand.flow_id,
                 "param_name": point.name,
                 "technique": payload.technique,
+                "priority": priority,
             }
         )
 
@@ -239,6 +242,8 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
                 "payloads": len(payloads),
                 "jobs_enqueued": enqueued,
                 "jobs_skipped_dup": skipped,
+                "priority": priority,
+                "high_priority": high_priority,
                 "jobs": jobs,
             }
         )
@@ -249,6 +254,10 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(f"  Entry points       : {sum(len(c.points) for c in usable)}")
     print(f"  Payloads each      : {len(payloads)}")
     print(f"  Jobs enqueued      : {enqueued}")
+    print(
+        f"  Priority           : "
+        f"{'high (' + str(PRIORITY_HIGH) + ') — ahead of other pending jobs' if high_priority else 'manual (' + str(PRIORITY_MANUAL) + ')'}"
+    )
     if skipped:
         print(f"  Jobs skipped (dup) : {skipped}")
     if empty_points:
@@ -479,7 +488,8 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
             "  talos attack sqli run --flow <uuid>\n"
             "  talos attack sqli run --flow <uuid> --family error\n"
             "  talos attack sqli run --flow <uuid> --technique quote_single\n"
-            "  talos attack sqli run --flow <uuid> --right-now"
+            "  talos attack sqli run --flow <uuid> --right-now\n"
+            "  talos attack sqli run --flow <uuid> --no-high-priority"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -508,6 +518,17 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
         dest="right_now",
         action="store_true",
         help="Execute immediately (still writes unique replay flows).",
+    )
+    run_p.add_argument(
+        "--high-priority",
+        dest="high_priority",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            f"Enqueue at priority {PRIORITY_HIGH} so SQLi runs before other "
+            f"pending jobs (default). --no-high-priority uses normal "
+            f"manual priority {PRIORITY_MANUAL}."
+        ),
     )
     add_format_argument(run_p)
 
