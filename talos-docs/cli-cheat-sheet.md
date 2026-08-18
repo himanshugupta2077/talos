@@ -528,6 +528,8 @@ talos input-validation status
 # 11. Access analysis
 talos access coverage
 talos access signals
+talos access privilege-diff
+talos access privilege-diff --attacker user
 ```
 
 ### Authentication lifecycle (MANUAL provider)
@@ -882,14 +884,17 @@ never calls `os.WNOHANG`. If an old build crashed start with
 ## Role / Module
 
 ```bash
-talos role create admin
-# → Role created: admin  (id: <uuid>)
+talos role create admin --privilege 0
+# → Role created: admin  (id: <uuid>, privilege: 0)
+talos role create user --privilege 1
+talos role privilege user 1      # 0 = highest; same number = peer accounts
 talos role list
-# UUID                                  Name     Active
-# ------------------------------------  -------  ------
-# <uuid>                                admin    *
-# <uuid>                                global
-talos role show admin            # name or UUID; status, modules, auth, flows
+# UUID                                  Name     Privilege  Active
+# ------------------------------------  -------  ---------  ------
+# <uuid>                                admin    0          *
+# <uuid>                                global   0
+# <uuid>                                user     1
+talos role show admin            # name or UUID; status, privilege, modules, auth, flows
 talos role set admin
 talos role unset
 talos role rename admin administrator   # UUID unchanged; fix typos
@@ -934,6 +939,8 @@ talos access delete admin orders --force
 talos access show
 talos access coverage
 talos access signals
+talos access privilege-diff
+talos access privilege-diff --attacker user
 ```
 
 ---
@@ -1829,6 +1836,9 @@ talos attack bac session-swap --role unpriv
 talos attack bac session-swap
 talos attack bac session-swap --role customer
 talos attack bac session-swap --role customer --auto-generate
+talos attack bac candidates
+talos attack bac candidates --source privilege_diff --role user
+talos attack bac session-swap --source privilege_diff --role user
 talos attack bac session-swap --module payments
 talos attack bac session-swap --module <module_uuid>
 talos attack bac session-swap --endpoint <endpoint_uuid>

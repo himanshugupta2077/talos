@@ -2,6 +2,39 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Roles — privilege ranks and automatic BAC diffs
+
+**Shipped:** 2026-08-18
+
+Each role has a privilege rank. **0 is highest**. The same number on two
+roles means peer accounts (different people, same access). A higher number
+is a weaker identity.
+
+Two BAC candidate sources now run together:
+
+1. **Manual access map** — mark a module ALLOW for one role and DENY for
+   another, then run BAC as the denied role (cookie session or bound NTLM
+   profile).
+2. **Privilege-diff (automatic)** — capture the app as each role. Endpoints
+   that returned 2xx under a higher-privilege role and never under a lower
+   one become candidates, replayed as the lower role. Works for NTLM and
+   cookie/header projects. The built-in `global` role is not paired.
+
+```
+talos role create alpha --privilege 0
+talos role create beta --privilege 1
+talos role set alpha          # map the app
+talos role set beta           # map the app again
+talos access privilege-diff
+talos attack bac candidates --source privilege_diff --role beta
+talos attack bac session-swap --role beta
+```
+
+Control Panel: privilege on Roles & Modules; Access → Privilege diff;
+BAC overview counts both sources.
+
+Schema: `roles.privilege` (v58). Tests: `tests/test_privilege_bac.py`.
+
 ## BAC — NTLM / platform-auth identity (separate from cookies)
 
 **Shipped:** 2026-08-18

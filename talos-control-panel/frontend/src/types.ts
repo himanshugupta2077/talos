@@ -62,6 +62,7 @@ export interface Role {
   id: string;
   name: string;
   is_active: number;
+  privilege?: number;
 }
 
 export interface Module {
@@ -144,6 +145,38 @@ export interface AccessPairSignal {
   client_allowed: string | null;
   server_expected?: string | null;
   flow_count?: number;
+}
+
+export interface PrivilegeGapEndpoint {
+  endpoint_id: string;
+  method: string;
+  host: string;
+  path: string;
+  module_id: string;
+  module_name: string;
+  flow_ids: string[];
+}
+
+export interface PrivilegeGap {
+  target_role_id: string;
+  target_role_name: string;
+  target_privilege: number;
+  attacker_role_id: string;
+  attacker_role_name: string;
+  attacker_privilege: number;
+  endpoint_count: number;
+  endpoints: PrivilegeGapEndpoint[];
+}
+
+export interface PrivilegeDiffResponse {
+  gaps: PrivilegeGap[];
+  count: number;
+  roles: Array<{
+    id: string;
+    name: string;
+    is_active: boolean;
+    privilege: number;
+  }>;
 }
 
 export interface AccessSignals {

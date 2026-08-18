@@ -82,6 +82,7 @@ export interface BacOverview {
     attacker_roles: string[];
     target_roles: string[];
     modules: string[];
+    by_source?: Record<string, number>;
   };
   total_variants: number;
   estimated_jobs_all: number;

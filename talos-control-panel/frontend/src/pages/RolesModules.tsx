@@ -28,6 +28,9 @@ export default function RolesModules() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [modules, setModules] = useState<Module[]>([]);
   const [roleName, setRoleName] = useState("");
+  const [rolePrivilege, setRolePrivilege] = useState("0");
+  const [editingPrivilege, setEditingPrivilege] = useState<string | null>(null);
+  const [privilegeValue, setPrivilegeValue] = useState("0");
   const [moduleName, setModuleName] = useState("");
   const [moduleDesc, setModuleDesc] = useState("");
   const [renamingRole, setRenamingRole] = useState<string | null>(null);
@@ -56,7 +59,11 @@ export default function RolesModules() {
   }, [selected]);
 
   const createRole = useAction("Create role", () =>
-    api.post("/api/roles", { name: roleName }, { project_id: selected!.id })
+    api.post(
+      "/api/roles",
+      { name: roleName, privilege: Number(rolePrivilege) || 0 },
+      { project_id: selected!.id }
+    )
   );
   const setRole = useAction("Use role for capture", (name: string) =>
     api.post("/api/roles/set", { name }, { project_id: selected!.id })
@@ -73,6 +80,15 @@ export default function RolesModules() {
   );
   const deleteRole = useAction("Delete role", (name: string) =>
     api.post("/api/roles/delete", { name }, { project_id: selected!.id })
+  );
+  const setPrivilege = useAction(
+    "Set role privilege",
+    (name: string, privilege: number) =>
+      api.post(
+        "/api/roles/privilege",
+        { name, privilege },
+        { project_id: selected!.id }
+      )
   );
 
   const createModule = useAction("Create module", () =>
@@ -111,6 +127,7 @@ export default function RolesModules() {
     unsetRole.running ||
     renameRole.running ||
     deleteRole.running ||
+    setPrivilege.running ||
     createModule.running ||
     setModule.running ||
     unsetModule.running ||
@@ -133,7 +150,10 @@ export default function RolesModules() {
           testing (e.g. admin, user).{" "}
           <strong className="text-base-content/70">Modules</strong> are what is
           being tested (e.g. orders, billing). Together they label traffic and
-          drive the access matrix used by BAC-style checks.
+          drive the access matrix used by BAC-style checks. Privilege{" "}
+          <span className="mono">0</span> is highest; the same number on two
+          roles means peer accounts. A higher number is weaker and is the
+          attacker for automatic privilege-diff BAC.
         </p>
         <p>
           <strong className="text-base-content/70">Use for capture</strong> runs{" "}
@@ -204,18 +224,33 @@ export default function RolesModules() {
               onChange={(e) => setRoleName(e.target.value)}
               disabled={busy}
             />
+            <input
+              className="input input-sm input-bordered w-20"
+              type="number"
+              min={0}
+              step={1}
+              title="Privilege (0 = highest)"
+              value={rolePrivilege}
+              onChange={(e) => setRolePrivilege(e.target.value)}
+              disabled={busy}
+            />
             <button
               className="btn btn-sm btn-primary"
               disabled={!roleName.trim() || createRole.running}
               onClick={async () => {
                 await createRole.run();
                 setRoleName("");
+                setRolePrivilege("0");
                 await reload();
               }}
             >
               Create
             </button>
           </div>
+          <p className="text-[11px] text-base-content/45 -mt-2 mb-3">
+            Privilege number: 0 is highest. Same number = same access, different
+            account.
+          </p>
           <div className="divide-y divide-base-300 rounded border border-base-300">
             {roles.length === 0 && (
               <div className="p-4 text-sm text-base-content/50">No roles yet.</div>
@@ -241,6 +276,12 @@ export default function RolesModules() {
                         {isGlobal && (
                           <span className="badge badge-ghost badge-xs">built-in</span>
                         )}
+                        <span
+                          className="badge badge-ghost badge-xs"
+                          title="0 = highest privilege"
+                        >
+                          priv {r.privilege ?? 0}
+                        </span>
                       </div>
                       <div className="mt-0.5">
                         <UuidChip value={r.id} />
@@ -281,9 +322,23 @@ export default function RolesModules() {
                               setRenamingRole(isRenaming ? null : r.name);
                               setRenameValue(r.name);
                               setRenamingModule(null);
+                              setEditingPrivilege(null);
                             }}
                           >
                             Rename
+                          </button>
+                          <button
+                            className="btn btn-xs btn-ghost"
+                            disabled={busy}
+                            onClick={() => {
+                              const next =
+                                editingPrivilege === r.name ? null : r.name;
+                              setEditingPrivilege(next);
+                              setPrivilegeValue(String(r.privilege ?? 0));
+                              setRenamingRole(null);
+                            }}
+                          >
+                            Privilege
                           </button>
                           <ConfirmButton
                             className="btn btn-xs btn-ghost text-error"
@@ -291,6 +346,7 @@ export default function RolesModules() {
                             onConfirm={async () => {
                               await deleteRole.run(r.name);
                               setRenamingRole(null);
+                              setEditingPrivilege(null);
                               await reload();
                             }}
                           >
@@ -298,8 +354,59 @@ export default function RolesModules() {
                           </ConfirmButton>
                         </>
                       )}
+                      {isGlobal && (
+                        <button
+                          className="btn btn-xs btn-ghost"
+                          disabled={busy}
+                          onClick={() => {
+                            const next =
+                              editingPrivilege === r.name ? null : r.name;
+                            setEditingPrivilege(next);
+                            setPrivilegeValue(String(r.privilege ?? 0));
+                            setRenamingRole(null);
+                          }}
+                        >
+                          Privilege
+                        </button>
+                      )}
                     </div>
                   </div>
+                  {editingPrivilege === r.name && (
+                    <div className="flex gap-2 items-center">
+                      <input
+                        className="input input-xs input-bordered w-24"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={privilegeValue}
+                        onChange={(e) => setPrivilegeValue(e.target.value)}
+                        title="0 = highest"
+                        autoFocus
+                      />
+                      <span className="text-[11px] text-base-content/50">
+                        0 = highest
+                      </span>
+                      <button
+                        className="btn btn-xs btn-primary"
+                        disabled={busy || privilegeValue === ""}
+                        onClick={async () => {
+                          const n = Number(privilegeValue);
+                          if (!Number.isInteger(n) || n < 0) return;
+                          await setPrivilege.run(r.name, n);
+                          setEditingPrivilege(null);
+                          await reload();
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="btn btn-xs btn-ghost"
+                        onClick={() => setEditingPrivilege(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {isRenaming && (
                     <div className="flex gap-2 items-center">
                       <input

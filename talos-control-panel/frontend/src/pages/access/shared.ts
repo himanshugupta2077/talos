@@ -5,7 +5,7 @@
 
 import type { AccessCell, AccessCoverageRow, AccessValue } from "../../types";
 
-export type AccessTab = "matrix" | "coverage" | "signals";
+export type AccessTab = "matrix" | "coverage" | "signals" | "privilege";
 
 export type LayerView = "both" | "client" | "server";
 

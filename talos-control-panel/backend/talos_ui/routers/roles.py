@@ -2,7 +2,7 @@
 Roles API — list from project DB; all mutations via Talos CLI.
 
 CLI surface (project-scoped):
-  role create | set | unset | rename | delete
+  role create | set | unset | rename | delete | privilege
 """
 
 from fastapi import APIRouter
@@ -23,23 +23,31 @@ def list_roles(project_id: str):
     """
     record = db.get_project_record(project_id)
     db_path = config.project_db_path(project_id, record)
-    rows = db.query_all(db_path, "SELECT id, name, is_active FROM roles ORDER BY name")
+    rows = db.query_all(
+        db_path,
+        "SELECT id, name, is_active, COALESCE(privilege, 0) AS privilege "
+        "FROM roles ORDER BY privilege ASC, name ASC",
+    )
     return {"roles": rows}
 
 
 class CreateRoleBody(BaseModel):
     name: str
+    privilege: int = 0
 
 
 @router.post("")
 def create_role(project_id: str, body: CreateRoleBody):
     """
-    Purpose: Create a role (talos role create).
-    Input: project_id, body.name.
+    Purpose: Create a role (talos role create [--privilege N]).
+    Input: project_id, body.name, optional body.privilege (0 = highest).
     Output: { steps } from CLI.
     Side effects: CLI mutates project DB.
     """
-    results = cli.run_scoped(project_id, ["role", "create", body.name])
+    argv = ["role", "create", body.name]
+    if body.privilege:
+        argv.extend(["--privilege", str(int(body.privilege))])
+    results = cli.run_scoped(project_id, argv)
     return {"steps": [r.to_dict() for r in results]}
 
 
@@ -105,5 +113,25 @@ def delete_role(project_id: str, body: DeleteRoleBody):
     """
     results = cli.run_scoped(
         project_id, ["role", "delete", body.name, "--force"]
+    )
+    return {"steps": [r.to_dict() for r in results]}
+
+
+class PrivilegeBody(BaseModel):
+    name: str
+    privilege: int
+
+
+@router.post("/privilege")
+def set_privilege(project_id: str, body: PrivilegeBody):
+    """
+    Purpose: Set a role's privilege rank (talos role privilege).
+    Input: project_id, body.name (name or UUID), body.privilege (0 = highest).
+    Output: { steps } from CLI.
+    Side effects: CLI updates roles.privilege.
+    """
+    results = cli.run_scoped(
+        project_id,
+        ["role", "privilege", body.name, str(int(body.privilege))],
     )
     return {"steps": [r.to_dict() for r in results]}

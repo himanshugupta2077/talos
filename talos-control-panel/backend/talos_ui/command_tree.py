@@ -228,10 +228,17 @@ COMMAND_TREE: list[dict] = [
         "group": "role",
         "label": "Roles",
         "commands": [
-            cmd("role.create", ["role", "create"], "Create a role", [arg("name", required=True)]),
+            cmd("role.create", ["role", "create"], "Create a role", [
+                arg("name", required=True),
+                arg("privilege", flag="--privilege", kind="number", help="0 = highest; same rank = peer accounts"),
+            ]),
             cmd("role.list", ["role", "list"], "List roles"),
             cmd("role.set", ["role", "set"], "Set the active role", [arg("name", required=True)]),
             cmd("role.unset", ["role", "unset"], "Unset the active role"),
+            cmd("role.privilege", ["role", "privilege"], "Set a role privilege rank (0 = highest)", [
+                arg("name_or_id", required=True),
+                arg("privilege", required=True, kind="number"),
+            ]),
         ],
     },
     {
@@ -271,6 +278,9 @@ COMMAND_TREE: list[dict] = [
             cmd("access.show", ["access", "show"], "Show the access matrix"),
             cmd("access.coverage", ["access", "coverage"], "Expected vs observed coverage"),
             cmd("access.signals", ["access", "signals"], "BAC/IDOR signal report"),
+            cmd("access.privilege_diff", ["access", "privilege-diff"], "Automatic higher-vs-lower endpoint gaps", [
+                arg("attacker", flag="--attacker", help="Lower-privilege attacker role name or UUID"),
+            ]),
         ],
     },
     {
@@ -984,12 +994,19 @@ COMMAND_TREE: list[dict] = [
                 arg("endpoint", flag="--endpoint", help="Endpoint UUID scope; mutex with module / flow"),
                 arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); mutex with endpoint / module"),
                 arg("auto_generate", flag="--auto-generate", kind="boolean", help="Auto-generate missing session tokens"),
+                arg("source", flag="--source", kind="select", options=["all", "access_map", "privilege_diff"], help="Candidate source"),
             ])
             for tech in [
                 "session-swap", "method-fuzz", "content-type", "url-fuzz",
                 "header-inject", "host-fuzz", "role-inject", "parser-confuse",
             ]
         ] + [
+            cmd("attack.bac.candidates", ["attack", "bac", "candidates"], "List BAC candidates without running", [
+                arg("role", flag="--role", help="Attacker role name or UUID"),
+                arg("module", flag="--module"),
+                arg("endpoint", flag="--endpoint"),
+                arg("source", flag="--source", kind="select", options=["all", "access_map", "privilege_diff"]),
+            ]),
             cmd("attack.bac.filter.init", ["attack", "bac", "filter", "init"], "Create BAC decision filter template"),
             cmd("attack.bac.filter.show", ["attack", "bac", "filter", "show"], "Show BAC decision filter"),
             cmd("attack.bac.filter.validate", ["attack", "bac", "filter", "validate"], "Validate BAC decision filter"),

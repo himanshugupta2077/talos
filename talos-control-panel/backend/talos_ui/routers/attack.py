@@ -493,10 +493,10 @@ def _scan_bac_candidates(
 ) -> list:
     """Read-only candidate scan; empty list when Core unavailable or no data."""
     try:
-        from talos.projects.bac.candidates import scan_candidates
+        from talos.projects.bac.candidates import collect_bac_candidates
 
         return list(
-            scan_candidates(
+            collect_bac_candidates(
                 db_path,
                 project_id,
                 attacker_role_id=attacker_role_id,
@@ -513,6 +513,7 @@ def _bac_candidate_summary(candidates: list) -> dict:
     attacker_roles: set[str] = set()
     target_roles: set[str] = set()
     modules: set[str] = set()
+    by_source: dict[str, int] = {}
     for c in candidates:
         flow_ids = getattr(c, "flow_ids", None) or []
         flow_total += len(flow_ids)
@@ -522,12 +523,15 @@ def _bac_candidate_summary(candidates: list) -> dict:
             target_roles.add(c.target_role_name)
         if getattr(c, "module_name", None):
             modules.add(c.module_name)
+        src = getattr(c, "source", None) or "access_map"
+        by_source[src] = by_source.get(src, 0) + 1
     return {
         "candidate_count": len(candidates),
         "flow_count": flow_total,
         "attacker_roles": sorted(attacker_roles),
         "target_roles": sorted(target_roles),
         "modules": sorted(modules),
+        "by_source": by_source,
     }
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAction } from "../../../hooks/useAction";
 import { api } from "../../../api/client";
 import { ConfirmButton, Section } from "../../../components/Common";
@@ -30,7 +30,8 @@ export default function RunTab({
 }) {
   // Empty selected = all techniques (default product behaviour)
   const [selected, setSelected] = useState<string[]>([]);
-  const [role, setRole] = useState("");
+  const [searchParams] = useSearchParams();
+  const [role, setRole] = useState(searchParams.get("role") || "");
   const [scopeMode, setScopeMode] = useState<BacScopeMode>("project");
   const [moduleName, setModuleName] = useState("");
   const [endpointId, setEndpointId] = useState("");

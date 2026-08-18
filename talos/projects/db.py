@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 57
+SCHEMA_VERSION = 58
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -309,7 +309,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS roles (
     id        TEXT    PRIMARY KEY,   -- UUID
     name      TEXT    NOT NULL UNIQUE,
-    is_active INTEGER NOT NULL DEFAULT 0
+    is_active INTEGER NOT NULL DEFAULT 0,
+    privilege INTEGER NOT NULL DEFAULT 0  -- 0 = highest; same value = peer accounts
 );
 
 -- ------------------------------------------------------------------ --
@@ -2580,6 +2581,10 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
         # CORS misconfiguration: one unique replay flow per Origin technique.
         conn.executescript(_CORS_SCHEMA_V55_DDL)
 
+    if from_version < 58:
+        # Role privilege rank for automatic BAC candidate generation.
+        _ensure_roles_privilege_column(conn)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2720,6 +2725,7 @@ def migrate_project_db(db_path: Path) -> None:
         v54 → v55: cors_results — CORS misconfiguration (unique flow per probe).
         v55 → v56: input_validation_config.auto_run — IV scheduler auto-run.
         v56 → v57: role_platform_auth — per-role NTLM / platform-auth binding.
+        v57 → v58: roles.privilege — 0 = highest; drives privilege-diff BAC.
     """
     if not db_path.exists():
         return
@@ -4121,6 +4127,28 @@ def migrate_project_db(db_path: Path) -> None:
             )
             conn.execute("UPDATE schema_version SET version = 57")
             conn.commit()
+
+        if current < 58:
+            # Privilege rank: 0 = highest; same value = peer accounts.
+            _ensure_roles_privilege_column(conn)
+            conn.execute("UPDATE schema_version SET version = 58")
+            conn.commit()
+
+
+def _ensure_roles_privilege_column(conn: sqlite3.Connection) -> None:
+    """
+    Purpose:
+        Add roles.privilege when missing. Safe on fresh and upgraded DBs.
+    Side effects:
+        ALTER TABLE roles ADD COLUMN privilege when the column is absent.
+    """
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(roles)").fetchall()
+    }
+    if "privilege" not in existing:
+        conn.execute(
+            "ALTER TABLE roles ADD COLUMN privilege INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def get_schema_version(db_path: Path) -> int:

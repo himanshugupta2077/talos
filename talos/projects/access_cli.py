@@ -5,6 +5,7 @@ Purpose:
     Command-line interface for roles, modules, and access map management.
     Entry points for:
         talos role   create | add | list | show | rename | delete | set | unset
+                     | privilege
         talos module create | add | list | show | rename | delete | set | unset
         talos access client set | unset
                      server set | unset
@@ -12,6 +13,7 @@ Purpose:
                      show
                      coverage
                      signals
+                     privilege-diff
 
     All commands require a bound project (registry ACTIVE, --project, or
     TALOS_PROJECT) — they operate on that project's
@@ -53,6 +55,7 @@ from talos.projects.access import (
     list_roles,
     resolve_role,
     set_active_role,
+    set_role_privilege,
     rename_role,
     delete_role,
     role_dependency_counts,
@@ -98,13 +101,16 @@ def _require_active_project(manager: ProjectManager):
 def cmd_role_create(manager: ProjectManager, args: argparse.Namespace) -> None:
     """
     Purpose: Create a new role in the active project.
-    Input:   args.name — role label.
+    Input:   args.name — role label; args.privilege — rank (0 = highest).
     Side effects: Inserts role into DB; prints confirmation.
     """
     project = _require_active_project(manager)
+    privilege = getattr(args, "privilege", 0)
     try:
-        role_id = create_role(project.db_path, args.name)
-        print(f"Role created: {args.name}  (id: {role_id})")
+        role_id = create_role(project.db_path, args.name, privilege=privilege)
+        print(
+            f"Role created: {args.name}  (id: {role_id}, privilege: {int(privilege or 0)})"
+        )
     except Exception as exc:
         # sqlite3.IntegrityError surfaces as a duplicate name violation.
         cli_error(str(exc))
@@ -126,6 +132,7 @@ def cmd_role_list(manager: ProjectManager, args: argparse.Namespace) -> None:
                 "id": r["id"],
                 "name": r["name"],
                 "is_active": bool(r.get("is_active")),
+                "privilege": int(r.get("privilege") or 0),
             }
             for r in roles
         ])
@@ -137,15 +144,21 @@ def cmd_role_list(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     uuid_w = max(len("UUID"), max(len(r["id"]) for r in roles))
     name_w = max(len("Name"), max(len(r["name"]) for r in roles))
+    priv_w = max(len("Privilege"), 9)
     active_w = len("Active")
 
-    header = f"{'UUID':<{uuid_w}}  {'Name':<{name_w}}  {'Active':<{active_w}}"
+    header = (
+        f"{'UUID':<{uuid_w}}  {'Name':<{name_w}}  "
+        f"{'Privilege':<{priv_w}}  {'Active':<{active_w}}"
+    )
     print(header)
     print("-" * len(header))
     for r in roles:
         active_mark = "*" if r.get("is_active") else ""
+        priv = int(r.get("privilege") or 0)
         print(
-            f"{r['id']:<{uuid_w}}  {r['name']:<{name_w}}  {active_mark:<{active_w}}"
+            f"{r['id']:<{uuid_w}}  {r['name']:<{name_w}}  "
+            f"{priv:<{priv_w}}  {active_mark:<{active_w}}"
         )
 
 
@@ -188,12 +201,14 @@ def cmd_role_show(manager: ProjectManager, args: argparse.Namespace) -> None:
     flow_count = len(flow_configs)
     extractors_set = sum(1 for c in flow_configs if c.get("extractor_code"))
 
+    privilege = int(role.get("privilege") or 0)
     if wants_json(args):
         cli_json({
             "id": role_id,
             "name": role_name,
             "status": status,
             "is_active": bool(role.get("is_active")),
+            "privilege": privilege,
             "modules": modules,
             "provider": provider,
             "flow_count": flow_count,
@@ -204,6 +219,7 @@ def cmd_role_show(manager: ProjectManager, args: argparse.Namespace) -> None:
     print(f"Name            : {role_name}")
     print(f"UUID            : {role_id}")
     print(f"Status          : {status}")
+    print(f"Privilege       : {privilege}  (0 = highest)")
     print(f"Modules         : {modules_display}")
     print(f"Configured auth : {provider}")
     print(f"Flow count      : {flow_count}")
@@ -246,6 +262,29 @@ def cmd_role_unset(manager: ProjectManager, _args: argparse.Namespace) -> None:
 
     notify_proxy_config_changed(project.id, "role unset → global")
     print("Proxy will restart if running so capture uses the new role.")
+
+
+def cmd_role_privilege(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Set a role's privilege rank. 0 is highest; the same number on two
+        roles means peer accounts (no automatic BAC between them).
+    Input:
+        args.name_or_id — role name or UUID.
+        args.privilege  — non-negative integer.
+    Side effects: Updates roles.privilege; prints confirmation.
+    """
+    project = _require_active_project(manager)
+    try:
+        result = set_role_privilege(
+            project.db_path, args.name_or_id, args.privilege
+        )
+    except ValueError as exc:
+        cli_error(str(exc))
+    print(
+        f"Role '{result['name']}' privilege set to {result['privilege']} "
+        "(0 = highest)."
+    )
 
 
 # Human labels for role_dependency_counts keys (CLI-006 delete safety).
@@ -846,6 +885,69 @@ def cmd_access_signals(manager: ProjectManager, _args: object) -> None:
             )
 
 
+def cmd_access_privilege_diff(
+    manager: ProjectManager, args: argparse.Namespace
+) -> None:
+    """
+    Purpose:
+        Show endpoints seen under a higher-privilege role and absent from a
+        lower-privilege role. Those gaps are automatic BAC candidates.
+    Input:
+        args.attacker — optional lower-privilege role name/UUID filter.
+        args.format   — optional json.
+    Side effects: Prints privilege-diff report or JSON.
+    """
+    project = _require_active_project(manager)
+    from talos.projects.bac.candidates import list_privilege_gaps
+
+    attacker_id = None
+    attacker_filter = getattr(args, "attacker", None)
+    if attacker_filter:
+        role = resolve_role(project.db_path, attacker_filter)
+        if role is None:
+            cli_error(f"Role '{attacker_filter}' not found.")
+        attacker_id = role["id"]
+
+    gaps = list_privilege_gaps(
+        project.db_path,
+        project.id,
+        attacker_role_id=attacker_id,
+    )
+    payload = [g.to_dict() for g in gaps]
+    if wants_json(args):
+        cli_json({"gaps": payload, "count": len(payload)})
+        return
+
+    if not gaps:
+        print(
+            "No privilege-diff candidates.\n"
+            "Create two roles with different privilege ranks (0 = highest),\n"
+            "capture the app as each role, then re-run this command.\n"
+            "Same privilege = peer accounts and is not a candidate pair."
+        )
+        return
+
+    print("Privilege-diff BAC surface  [higher-privilege endpoints missing on lower]")
+    print("-" * 70)
+    for gap in gaps:
+        print(
+            f"\n{gap.target_role_name} (priv {gap.target_privilege}) → "
+            f"{gap.attacker_role_name} (priv {gap.attacker_privilege})  "
+            f"[{len(gap.endpoints)} endpoint"
+            f"{'' if len(gap.endpoints) == 1 else 's'}]"
+        )
+        print(
+            "  Test with "
+            f"{gap.attacker_role_name}'s identity "
+            "(NTLM profile or session)."
+        )
+        for ep in gap.endpoints:
+            print(
+                f"  {ep.method} {ep.host}{ep.path}  "
+                f"module={ep.module_name}  flows={len(ep.flow_ids)}"
+            )
+
+
 # ------------------------------------------------------------------ #
 # Parser construction                                                  #
 # ------------------------------------------------------------------ #
@@ -865,13 +967,27 @@ def build_role_parser() -> argparse.ArgumentParser:
     # create / add (aliases)
     p_create = sub.add_parser("create", help="Create a new role.")
     p_create.add_argument("name", help="Role name (e.g. user, admin, support).")
+    p_create.add_argument(
+        "--privilege",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Privilege rank (0 = highest). Same rank = peer accounts.",
+    )
     p_add = sub.add_parser("add", help="Create a new role (alias for create).")
     p_add.add_argument("name", help="Role name (e.g. user, admin, support).")
+    p_add.add_argument(
+        "--privilege",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Privilege rank (0 = highest). Same rank = peer accounts.",
+    )
 
     # list
     p_list = sub.add_parser(
         "list",
-        help="List all roles (UUID, name, active marker).",
+        help="List all roles (UUID, name, privilege, active marker).",
     )
     add_format_argument(p_list)
 
@@ -917,6 +1033,18 @@ def build_role_parser() -> argparse.ArgumentParser:
 
     # unset
     sub.add_parser("unset", help="Reset the active role back to 'global'.")
+
+    # privilege
+    p_priv = sub.add_parser(
+        "privilege",
+        help="Set a role's privilege rank (0 = highest).",
+    )
+    p_priv.add_argument("name_or_id", help="Role name or UUID.")
+    p_priv.add_argument(
+        "privilege",
+        type=int,
+        help="Privilege rank (0 = highest; same rank = peer accounts).",
+    )
 
     return parser
 
@@ -1007,6 +1135,7 @@ _ROLE_COMMAND_MAP = {
     "delete": cmd_role_delete,
     "set":    cmd_role_set,
     "unset":  cmd_role_unset,
+    "privilege": cmd_role_privilege,
 }
 
 _MODULE_COMMAND_MAP = {
@@ -1070,6 +1199,7 @@ def run_access_cli(manager: ProjectManager, argv: list[str]) -> None:
             access show
             access coverage
             access signals
+            access privilege-diff [--attacker NAME|UUID]
     Input:
         manager — ProjectManager instance.
         argv    — list of CLI arguments (excluding 'talos access').
@@ -1094,6 +1224,16 @@ def run_access_cli(manager: ProjectManager, argv: list[str]) -> None:
         cmd_access_coverage(manager, None)
     elif subcmd == "signals":
         cmd_access_signals(manager, None)
+    elif subcmd in ("privilege-diff", "privilege_diff"):
+        parser = argparse.ArgumentParser(prog="talos access privilege-diff")
+        parser.add_argument(
+            "--attacker",
+            metavar="NAME|UUID",
+            default=None,
+            help="Only show gaps where this lower-privilege role is the attacker.",
+        )
+        add_format_argument(parser)
+        cmd_access_privilege_diff(manager, parser.parse_args(rest))
     else:
         cli_error(f"Unknown access subcommand: '{subcmd}'.", exit_code=None)
         _print_access_usage()
@@ -1183,6 +1323,8 @@ def _print_access_usage() -> None:
         "  show                                               Display access matrix\n"
         "  coverage                                           Compare expected vs observed traffic\n"
         "  signals                                            Show immediate BAC signal candidates\n"
+        "  privilege-diff [--attacker NAME]                   Endpoints on a higher-privilege role\n"
+        "                                                     missing from a lower-privilege role\n"
     )
 
 

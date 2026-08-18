@@ -214,7 +214,7 @@ export default function PlatformNtlmAuth({
             >
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.name}
+                  {r.name} (priv {r.privilege ?? 0})
                 </option>
               ))}
             </select>

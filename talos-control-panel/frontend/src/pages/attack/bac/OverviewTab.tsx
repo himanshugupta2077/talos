@@ -56,6 +56,20 @@ export default function OverviewTab({
         <span className="badge badge-outline">
           {candidateCount} candidate{candidateCount === 1 ? "" : "s"}
         </span>
+        {cand?.by_source && Object.keys(cand.by_source).length > 0 && (
+          <span className="badge badge-ghost">
+            {cand.by_source.access_map
+              ? `${cand.by_source.access_map} access-map`
+              : ""}
+            {cand.by_source.access_map && cand.by_source.privilege_diff
+              ? " · "
+              : ""}
+            {cand.by_source.privilege_diff
+              ? `${cand.by_source.privilege_diff} privilege-diff`
+              : ""}
+            {cand.by_source.both ? ` · ${cand.by_source.both} both` : ""}
+          </span>
+        )}
         <span className="badge badge-ghost">
           {flowCount} flow{flowCount === 1 ? "" : "s"}
         </span>

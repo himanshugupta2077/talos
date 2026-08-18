@@ -25,8 +25,8 @@ Purpose:
         talos attack bac filter         init | show | validate
 
     Each command:
-        1. Scans the access matrix for BAC candidates (respecting Endpoint Policy
-           exclusions and optional scope filters).
+        1. Scans the access matrix and privilege-diff gaps for BAC candidates
+           (respecting Endpoint Policy exclusions and optional scope filters).
         2. Validates auth prerequisites for each attacker role.
         3. Generates scheduler jobs (one per flow × variant).
         4. Prints a summary of enqueued jobs.
@@ -62,9 +62,12 @@ Side effects:
     - Exits 1 on hard errors.
 """
 from talos.cli_output import (
+    add_format_argument,
     cli_error,
+    cli_json,
     cli_usage_error,
     cli_precondition_error,
+    wants_json,
 )
 
 import argparse
@@ -73,7 +76,11 @@ import sys
 import uuid
 
 from talos.projects.manager import ProjectManager
-from talos.projects.bac.candidates import restrict_candidates_to_flows, scan_candidates
+from talos.projects.bac.candidates import (
+    SOURCE_ALL,
+    collect_bac_candidates,
+    restrict_candidates_to_flows,
+)
 from talos.projects.bac.auth_prereq import check_auth_prereqs
 from talos.projects.bac.variants import variants_for_auth_mode
 from talos.scheduler import db as sched_db
@@ -183,6 +190,7 @@ def _enqueue_bac_jobs(
     endpoint_id: str | None = None,
     module_id: str | None = None,
     flow_ids: list[str] | None = None,
+    source: str = SOURCE_ALL,
 ) -> None:
     """
     Purpose:
@@ -197,6 +205,7 @@ def _enqueue_bac_jobs(
         endpoint_id      — Optional single-endpoint scope UUID.
         module_id        — Optional module scope as name or UUID (resolved here).
         flow_ids         — Optional operator-selected flow UUIDs (`--flow`).
+        source           — all | access_map | privilege_diff.
     Side effects:
         Reads from DB; inserts scheduler jobs; prints to stdout/stderr.
         Exits 1 when no candidates exist after prereq validation.
@@ -218,14 +227,18 @@ def _enqueue_bac_jobs(
         # CLI may pass a human name; resolve to UUID before candidate scan.
         module_id, module_name = _resolve_module_scope(db_path, module_id)
 
-    # Scan access matrix for BAC candidates (testable endpoints only).
-    candidates = scan_candidates(
-        db_path,
-        project_id,
-        attacker_role_id=attacker_role_id_filter,
-        endpoint_id=endpoint_id,
-        module_id=module_id,
-    )
+    # Scan access matrix + privilege-diff gaps (testable endpoints only).
+    try:
+        candidates = collect_bac_candidates(
+            db_path,
+            project_id,
+            attacker_role_id=attacker_role_id_filter,
+            endpoint_id=endpoint_id,
+            module_id=module_id,
+            source=source,
+        )
+    except ValueError as exc:
+        cli_error(str(exc))
     if flow_ids:
         candidates = restrict_candidates_to_flows(candidates, flow_ids)
 
@@ -242,17 +255,20 @@ def _enqueue_bac_jobs(
         if scope_hints:
             print(
                 f"No BAC candidates found for {' + '.join(scope_hints)}. "
-                "Check the access matrix (talos access show), ensure successful "
-                "2xx proxy_capture flows exist for the target role, and confirm "
+                "Check the access matrix (talos access show), privilege ranks "
+                "(talos access privilege-diff), ensure successful 2xx "
+                "proxy_capture flows exist for the target role, and confirm "
                 "the endpoint is not excluded (talos endpoint show).",
                 file=sys.stderr,
             )
         else:
             cli_error(
             "No BAC candidates found. "
-            "Configure the access matrix (talos access server set), "
-            "ensure flows are captured with tagged roles and modules, "
-            "and verify endpoints are not excluded (talos endpoint list)."
+            "Configure the access matrix (talos access server set) or set "
+            "different role privileges and recapture as each role "
+            "(talos access privilege-diff). Ensure flows are captured with "
+            "tagged roles and modules, and verify endpoints are not excluded "
+            "(talos endpoint list)."
         )
 
     from talos.projects.auth_mode import resolve_auth_mode
@@ -397,6 +413,7 @@ def cmd_bac_session_swap(manager: ProjectManager, args: argparse.Namespace) -> N
     _enqueue_bac_jobs(
         manager, BAC_SESSION_SWAP, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -410,6 +427,7 @@ def cmd_bac_method_fuzz(manager: ProjectManager, args: argparse.Namespace) -> No
     _enqueue_bac_jobs(
         manager, BAC_METHOD_FUZZ, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -423,6 +441,7 @@ def cmd_bac_content_type(manager: ProjectManager, args: argparse.Namespace) -> N
     _enqueue_bac_jobs(
         manager, BAC_CONTENT_TYPE, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -436,6 +455,7 @@ def cmd_bac_url_fuzz(manager: ProjectManager, args: argparse.Namespace) -> None:
     _enqueue_bac_jobs(
         manager, BAC_URL_FUZZ, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -449,6 +469,7 @@ def cmd_bac_header_inject(manager: ProjectManager, args: argparse.Namespace) -> 
     _enqueue_bac_jobs(
         manager, BAC_HEADER_INJECT, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -462,6 +483,7 @@ def cmd_bac_host_fuzz(manager: ProjectManager, args: argparse.Namespace) -> None
     _enqueue_bac_jobs(
         manager, BAC_HOST_FUZZ, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -475,6 +497,7 @@ def cmd_bac_role_inject(manager: ProjectManager, args: argparse.Namespace) -> No
     _enqueue_bac_jobs(
         manager, BAC_ROLE_INJECT, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
 
 
@@ -489,7 +512,84 @@ def cmd_bac_parser_confuse(manager: ProjectManager, args: argparse.Namespace) ->
     _enqueue_bac_jobs(
         manager, BAC_PARSER_CONFUSE, args.role, args.auto_generate,
         endpoint_id=endpoint_id, module_id=module_id, flow_ids=flow_ids,
+        source=getattr(args, "source", SOURCE_ALL),
     )
+
+
+def cmd_bac_candidates(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        List BAC candidates from the access map and/or privilege-diff
+        without enqueueing jobs.
+    """
+    project = _require_active(manager)
+    db_path = project.db_path    # type: ignore[attr-defined]
+    project_id = project.id      # type: ignore[attr-defined]
+
+    attacker_role_id = None
+    if args.role:
+        attacker_role_id = _resolve_attacker_role_id(db_path, args.role)
+
+    endpoint_id, module_id, flow_ids = _scope_from_args(args)
+    if endpoint_id is not None:
+        _validate_endpoint_scope(db_path, project_id, endpoint_id)
+    if module_id is not None:
+        module_id, _ = _resolve_module_scope(db_path, module_id)
+
+    try:
+        candidates = collect_bac_candidates(
+            db_path,
+            project_id,
+            attacker_role_id=attacker_role_id,
+            endpoint_id=endpoint_id,
+            module_id=module_id,
+            source=getattr(args, "source", SOURCE_ALL),
+        )
+    except ValueError as exc:
+        cli_error(str(exc))
+    if flow_ids:
+        candidates = restrict_candidates_to_flows(candidates, flow_ids)
+
+    payload = [
+        {
+            "source": c.source,
+            "target_role": c.target_role_name,
+            "target_role_id": c.target_role_id,
+            "target_privilege": c.target_privilege,
+            "attacker_role": c.attacker_role_name,
+            "attacker_role_id": c.attacker_role_id,
+            "attacker_privilege": c.attacker_privilege,
+            "module": c.module_name,
+            "module_id": c.module_id,
+            "flow_count": len(c.flow_ids),
+            "flow_ids": list(c.flow_ids),
+            "endpoint_ids": list(c.endpoint_ids),
+        }
+        for c in candidates
+    ]
+    if wants_json(args):
+        cli_json({"candidates": payload, "count": len(payload)})
+        return
+
+    if not candidates:
+        print("No BAC candidates.")
+        print(
+            "Set access-map ALLOW/DENY pairs, or give roles different "
+            "privilege ranks and capture the app as each role."
+        )
+        return
+
+    print(f"BAC candidates: {len(candidates)}")
+    for item in payload:
+        priv = ""
+        if item["target_privilege"] is not None and item["attacker_privilege"] is not None:
+            priv = (
+                f"  priv {item['target_privilege']}→{item['attacker_privilege']}"
+            )
+        print(
+            f"  [{item['source']}] {item['target_role']} → {item['attacker_role']}"
+            f"  module={item['module']}  flows={item['flow_count']}{priv}"
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -561,6 +661,15 @@ def _add_bac_shared_args(parser: argparse.ArgumentParser) -> None:
             "by replaying their configured login flow."
         ),
     )
+    parser.add_argument(
+        "--source",
+        choices=["all", "access_map", "privilege_diff"],
+        default=SOURCE_ALL,
+        help=(
+            "Candidate source: all (default), access_map (manual ALLOW/DENY), "
+            "or privilege_diff (automatic higher-vs-lower endpoint gaps)."
+        ),
+    )
 
 
 def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -577,9 +686,9 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
         help="BAC (Broken Access Control) attack modules.",
         description=(
             "Generate and schedule BAC attack jobs from the access matrix.\n\n"
-            "All commands scan the access matrix for BAC candidates, validate\n"
-            "auth prerequisites for each attacker role, and enqueue scheduler\n"
-            "jobs that the scheduler executes and reports on.\n\n"
+            "All commands scan the access matrix and privilege-diff gaps for\n"
+            "BAC candidates, validate auth prerequisites for each attacker\n"
+            "role, and enqueue scheduler jobs that the scheduler executes.\n\n"
             "Candidate generation only includes testable endpoints from the\n"
             "Endpoint Policy layer (qualified, not excluded). Use\n"
             "'talos endpoint exclude' to remove endpoints from BAC forever.\n\n"
@@ -588,7 +697,8 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
             "  --module NAME|UUID    only this module\n"
             "  --flow UUID           only these captures (repeatable)\n\n"
             "Additional filters:\n"
-            "  --role NAME|UUID      only this attacker role\n\n"
+            "  --role NAME|UUID      only this attacker role\n"
+            "  --source all|access_map|privilege_diff\n\n"
             "Auth prerequisites per attacker role:\n"
             "  - At least one auth flow + extractor  (talos auth-config add-flow + set-extractor)\n"
             "  - Auth requirements configured         (talos auth set)\n"
@@ -728,6 +838,22 @@ def build_bac_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[t
     )
     _add_bac_shared_args(p)
 
+    # candidates (preview only)
+    p = bac_sub.add_parser(
+        "candidates",
+        help="List BAC candidates without enqueueing jobs.",
+        description=(
+            "Show access-map and privilege-diff candidates. Does not enqueue\n"
+            "jobs. Use --source to restrict to one origin.\n\n"
+            "Example:\n"
+            "  talos attack bac candidates\n"
+            "  talos attack bac candidates --source privilege_diff --role beta"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_bac_shared_args(p)
+    add_format_argument(p)
+
     # filter
     from talos.projects.bac.filter_cli import build_filter_parser
     build_filter_parser(bac_sub)
@@ -761,6 +887,10 @@ def run_bac_cli(manager: ProjectManager, args: argparse.Namespace) -> None:
     if args.bac_cmd == "filter":
         from talos.projects.bac.filter_cli import run_filter_cli
         run_filter_cli(manager, args)
+        return
+
+    if args.bac_cmd == "candidates":
+        cmd_bac_candidates(manager, args)
         return
 
     handler = dispatch.get(args.bac_cmd)

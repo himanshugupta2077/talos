@@ -12,6 +12,7 @@ import AuthModeBadge from "../components/AuthModeBadge";
 import type { AccessCell } from "../types";
 import CoverageTab from "./access/CoverageTab";
 import MatrixTab from "./access/MatrixTab";
+import PrivilegeDiffTab from "./access/PrivilegeDiffTab";
 import SignalsTab from "./access/SignalsTab";
 import {
   AccessStats,
@@ -24,7 +25,9 @@ export default function Access() {
   const { selected } = useProject();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = (searchParams.get("tab") as AccessTab) || "matrix";
-  const tab: AccessTab = ["matrix", "coverage", "signals"].includes(tabParam)
+  const tab: AccessTab = ["matrix", "coverage", "signals", "privilege"].includes(
+    tabParam
+  )
     ? tabParam
     : "matrix";
 
@@ -74,7 +77,8 @@ export default function Access() {
           </h1>
           <p className="text-sm text-base-content/60 mt-0.5">
             Two-layer role × module map — client exposure vs server enforcement.
-            Feeds BAC candidate discovery.
+            Manual ALLOW/DENY feeds BAC; privilege-diff finds the rest
+            automatically from captured endpoints.
           </p>
           {selected.auth_mode === "platform_ntlm" && (
             <p className="text-xs text-warning mt-2 max-w-2xl">
@@ -135,7 +139,10 @@ export default function Access() {
               <Link className="link" to="/testing/bac">
                 Broken Access Control
               </Link>{" "}
-              testing (plus qualified 2xx proxy flows).
+              testing (plus qualified 2xx proxy flows). Give roles a privilege
+              rank (0 = highest) and capture the app as each identity — endpoints
+              only the higher role saw are automatic candidates for the lower
+              one. Same rank means peer accounts, not a privilege pair.
             </p>
             <p>
               <strong className="text-base-content/70">Example:</strong> admin /
@@ -205,6 +212,7 @@ export default function Access() {
             ["matrix", "Matrix"],
             ["coverage", "Coverage"],
             ["signals", "Signals"],
+            ["privilege", "Privilege diff"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -232,6 +240,7 @@ export default function Access() {
       {tab === "signals" && (
         <SignalsTab projectId={selected.id} onJumpMatrix={jumpMatrix} />
       )}
+      {tab === "privilege" && <PrivilegeDiffTab projectId={selected.id} />}
     </div>
   );
 }

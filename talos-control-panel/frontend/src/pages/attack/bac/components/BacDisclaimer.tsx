@@ -24,7 +24,9 @@ export default function BacDisclaimer({
             privilege injection, parser probes).
           </>
         )}{" "}
-        Scope with Endpoint Policy and the access matrix before large runs.
+        Scope with Endpoint Policy, the access matrix, and role privilege
+        ranks (0 = highest) before large runs. Privilege-diff candidates
+        come from endpoints a higher role mapped and a lower role did not.
         Monitor the <span className="mono">Scheduler</span> while jobs execute.
       </span>
     </div>

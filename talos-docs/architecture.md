@@ -530,6 +530,7 @@ talos
     CLI:
         talos access coverage
         talos access signals
+        talos access privilege-diff
     │
     ▼
 [FINDINGS]
@@ -1463,9 +1464,10 @@ role + module
 ### Access Map Commands
 
 ```
-talos role create <name>                                  create role (add = alias)
-talos role list                                           list roles (UUID, name, active)
-talos role show <name|uuid>                               role details + auth summary
+talos role create <name> [--privilege N]                  create role (0 = highest)
+talos role list                                           list roles (UUID, name, privilege, active)
+talos role show <name|uuid>                               role details + privilege + auth summary
+talos role privilege <name|uuid> <n>                      set privilege rank (0 = highest)
 talos role rename <name|uuid> <new_name>                  rename (UUID stable)
 talos role delete <name|uuid> [--force]                   delete (cascade config; reassign flows)
 talos role set <name>                                     activate for flow tagging
@@ -1487,6 +1489,7 @@ talos access delete       <role> <module> [--force]       remove entire row
 talos access show                                         display matrix
 talos access coverage                                     compare expected vs observed traffic
 talos access signals                                      show immediate BAC signal candidates
+talos access privilege-diff [--attacker NAME]             higher-privilege endpoints missing on a lower role
 
 talos endpoint list                                       inventory (UUID, method, host, path, priority, qualified, excluded)
 talos endpoint list --format json                         resolved policy JSON for Control Panel / scripts

@@ -6,7 +6,9 @@ Purpose:
     These three entities form the two-layer access-control model used to
     classify captured flows and define BAC (Broken Access Control) boundaries.
 
-    Roles   — identity types (user, admin, support, …).
+    Roles   — identity types (user, admin, support, …) with a privilege rank
+              (0 = highest). Same rank = peer accounts; a higher number is a
+              lower-privilege identity used for automatic BAC diffs.
     Modules — logical application feature areas (billing, auth, orders, …).
     Access map — (role, module) → client_allowed + server_expected, both
                  tri-state: ALLOW | DENY | UNKNOWN | NULL (not yet set).
@@ -42,25 +44,60 @@ from typing import Optional
 # Role operations                                                     #
 # ------------------------------------------------------------------ #
 
-def create_role(db_path: Path, name: str) -> str:
+_ROLE_COLUMNS = "id, name, is_active, COALESCE(privilege, 0) AS privilege"
+
+
+def normalize_privilege(value) -> int:
+    """
+    Purpose:
+        Validate a privilege rank. 0 is highest; larger numbers are weaker.
+    Input:
+        value — int-like privilege (None treated as 0).
+    Output:
+        Non-negative integer.
+    Raises:
+        ValueError when the value is not a non-negative integer.
+    """
+    if value is None or value == "":
+        return 0
+    try:
+        rank = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Privilege must be a non-negative integer (0 = highest)."
+        ) from exc
+    if rank < 0:
+        raise ValueError(
+            "Privilege must be a non-negative integer (0 = highest)."
+        )
+    return rank
+
+
+def create_role(db_path: Path, name: str, privilege: int = 0) -> str:
     """
     Purpose:
         Insert a new role into the roles table.
     Input:
-        db_path — path to the project SQLite database.
-        name    — unique role label (e.g. "admin", "user").
+        db_path    — path to the project SQLite database.
+        name       — unique role label (e.g. "admin", "user").
+        privilege  — rank (0 = highest). Same rank = peer accounts.
     Output:
         UUID string for the newly created role.
     Side effects:
         Inserts one row into roles.
     Raises:
+        ValueError if privilege is invalid.
         sqlite3.IntegrityError if a role with this name already exists.
     """
+    rank = normalize_privilege(privilege)
+    from talos.projects.db import migrate_project_db
+
+    migrate_project_db(db_path)
     role_id = str(uuid.uuid4())
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
-            "INSERT INTO roles (id, name, is_active) VALUES (?, ?, 0)",
-            (role_id, name),
+            "INSERT INTO roles (id, name, is_active, privilege) VALUES (?, ?, 0, ?)",
+            (role_id, name, rank),
         )
         conn.commit()
     return role_id
@@ -74,13 +111,16 @@ def get_role(db_path: Path, name: str) -> Optional[dict]:
         db_path — path to the project SQLite database.
         name    — exact role name to look up.
     Output:
-        Dict with keys {id, name, is_active} or None if not found.
+        Dict with keys {id, name, is_active, privilege} or None if not found.
     Side effects: None (read-only).
     """
+    from talos.projects.db import migrate_project_db
+
+    migrate_project_db(db_path)
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT id, name, is_active FROM roles WHERE name = ?", (name,)
+            f"SELECT {_ROLE_COLUMNS} FROM roles WHERE name = ?", (name,)
         ).fetchone()
     return dict(row) if row else None
 
@@ -93,13 +133,16 @@ def get_role_by_id(db_path: Path, role_id: str) -> Optional[dict]:
         db_path — path to the project SQLite database.
         role_id — exact role UUID to look up.
     Output:
-        Dict with keys {id, name, is_active} or None if not found.
+        Dict with keys {id, name, is_active, privilege} or None if not found.
     Side effects: None (read-only).
     """
+    from talos.projects.db import migrate_project_db
+
+    migrate_project_db(db_path)
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT id, name, is_active FROM roles WHERE id = ?", (role_id,)
+            f"SELECT {_ROLE_COLUMNS} FROM roles WHERE id = ?", (role_id,)
         ).fetchone()
     return dict(row) if row else None
 
@@ -114,7 +157,7 @@ def resolve_role(db_path: Path, name_or_id: str) -> Optional[dict]:
         db_path    — path to the project SQLite database.
         name_or_id — role name or full UUID string.
     Output:
-        Dict with keys {id, name, is_active} or None if not found.
+        Dict with keys {id, name, is_active, privilege} or None if not found.
     Side effects: None (read-only).
     """
     role = get_role(db_path, name_or_id)
@@ -126,19 +169,58 @@ def resolve_role(db_path: Path, name_or_id: str) -> Optional[dict]:
 def list_roles(db_path: Path) -> list[dict]:
     """
     Purpose:
-        Return all roles ordered by name.
+        Return all roles ordered by privilege (highest first), then name.
     Input:
         db_path — path to the project SQLite database.
     Output:
-        List of dicts with keys {id, name, is_active}.
+        List of dicts with keys {id, name, is_active, privilege}.
     Side effects: None (read-only).
     """
+    from talos.projects.db import migrate_project_db
+
+    migrate_project_db(db_path)
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, name, is_active FROM roles ORDER BY name"
+            f"SELECT {_ROLE_COLUMNS} FROM roles "
+            "ORDER BY privilege ASC, name ASC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_role_privilege(db_path: Path, name_or_id: str, privilege: int) -> dict:
+    """
+    Purpose:
+        Set the privilege rank for a role. 0 is highest; the same number
+        on two roles means peer accounts (no automatic BAC between them).
+    Input:
+        db_path    — path to the project SQLite database.
+        name_or_id — role name or UUID.
+        privilege  — non-negative integer rank.
+    Output:
+        Dict {id, name, is_active, privilege} after the update.
+    Side effects:
+        Updates roles.privilege for one row.
+    Raises:
+        ValueError if the role is missing or privilege is invalid.
+    """
+    rank = normalize_privilege(privilege)
+    from talos.projects.db import migrate_project_db
+
+    migrate_project_db(db_path)
+    role = resolve_role(db_path, name_or_id)
+    if role is None:
+        raise ValueError(f"Role '{name_or_id}' not found.")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE roles SET privilege = ? WHERE id = ?",
+            (rank, role["id"]),
+        )
+        conn.commit()
+    updated = resolve_role(db_path, role["id"])
+    if updated is None:
+        raise RuntimeError(f"Role '{role['id']}' vanished after privilege update.")
+    return updated
 
 
 def get_active_role(db_path: Path) -> str:

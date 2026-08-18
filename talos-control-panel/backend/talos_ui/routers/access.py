@@ -272,6 +272,48 @@ def get_signals(project_id: str):
     }
 
 
+@router.get("/privilege-diff")
+def get_privilege_diff(project_id: str, attacker: Optional[str] = None):
+    """
+    Endpoints seen under a higher-privilege role and missing from a
+    lower-privilege role. Same data as `talos access privilege-diff`.
+    """
+    db_path = _db_path(project_id)
+    if not db_path.exists():
+        return {"gaps": [], "count": 0, "roles": []}
+
+    from talos.projects.access import list_roles, resolve_role
+    from talos.projects.bac.candidates import list_privilege_gaps
+
+    attacker_id = None
+    if attacker:
+        role = resolve_role(db_path, attacker)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Role '{attacker}' not found.")
+        attacker_id = role["id"]
+
+    gaps = list_privilege_gaps(
+        db_path,
+        project_id,
+        attacker_role_id=attacker_id,
+    )
+    roles = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "is_active": bool(r.get("is_active")),
+            "privilege": int(r.get("privilege") or 0),
+        }
+        for r in list_roles(db_path)
+        if r.get("name") != "global"
+    ]
+    return {
+        "gaps": [g.to_dict() for g in gaps],
+        "count": len(gaps),
+        "roles": roles,
+    }
+
+
 @router.post("/coverage")
 def run_coverage(project_id: str):
     """CLI coverage report (stdout in steps) — Console / legacy parity."""
