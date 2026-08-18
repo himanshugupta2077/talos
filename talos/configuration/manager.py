@@ -55,6 +55,7 @@ from talos.configuration.merge import (
 from talos.configuration.http_rules import parse_rules, sort_rules
 from talos.configuration.model import (
     AttackConfigSection,
+    AuthConfigSection,
     BurpConfigSection,
     CaptureConfigSection,
     CrossFlowConfigSection,
@@ -538,6 +539,14 @@ class ConfigurationManager:
             header_prefix=header_prefix.strip(),
         )
 
+        auth_raw = merged.get("auth") or {}
+        if not isinstance(auth_raw, dict):
+            auth_raw = {}
+        auth_mode = str(auth_raw.get("mode") or "artifacts").strip().lower()
+        if auth_mode not in ("artifacts", "platform_ntlm"):
+            auth_mode = "artifacts"
+        auth = AuthConfigSection(mode=auth_mode)
+
         return EffectiveConfig(
             proxy=ProxyConfigSection(
                 upstream_enabled=enabled,
@@ -568,6 +577,7 @@ class ConfigurationManager:
             parameter_intel=ParameterIntelConfigSection(cross_flow=cross_flow),
             url_sink=url_sink,
             burp=burp,
+            auth=auth,
             raw=merged,
             sources=sources,
             global_path=str(self.global_path),

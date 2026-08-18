@@ -13,6 +13,10 @@ Purpose:
         mutation_family (str) — high-level family name (e.g. 'method-fuzz').
         mutation        (str) — specific mutation label (e.g. 'GET→POST').
     Additional keys are attack-type-specific (documented per section).
+    Optional:
+        ntlm_applicable (bool) — False when the variant mutates HTTP
+                                 artifacts that NTLM projects do not have
+                                 (authorization_null / whitespace). Default True.
 
 Dependencies: None
 Side effects: None (pure data definitions).
@@ -36,6 +40,7 @@ SESSION_SWAP_VARIANTS: list[dict[str, Any]] = [
         "mutation_family": "session-swap",
         "mutation": "session_swap",
         "auth_override": None,  # standard session swap — inject attacker credentials
+        "ntlm_applicable": True,
     },
     {
         "name": "authorization_null",
@@ -43,6 +48,7 @@ SESSION_SWAP_VARIANTS: list[dict[str, Any]] = [
         "mutation_family": "session-swap",
         "mutation": "authorization_null",
         "auth_override": "null",  # engine sets auth fields to string 'null'
+        "ntlm_applicable": False,
     },
     {
         "name": "authorization_whitespace",
@@ -50,6 +56,7 @@ SESSION_SWAP_VARIANTS: list[dict[str, Any]] = [
         "mutation_family": "session-swap",
         "mutation": "authorization_whitespace",
         "auth_override": " ",  # engine sets auth fields to single space
+        "ntlm_applicable": False,
     },
 ]
 
@@ -456,3 +463,26 @@ VARIANTS_BY_ATTACK: dict[str, list[dict[str, Any]]] = {
     "bac_role_inject":     ROLE_INJECT_VARIANTS,
     "bac_parser_confuse":  PARSER_CONFUSE_VARIANTS,
 }
+
+
+def variants_for_auth_mode(
+    attack_type: str,
+    auth_mode: str,
+) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Variants that apply to this project's auth model.
+        NTLM projects drop artifact-only session-swap probes (null /
+        whitespace Authorization). Recipes that mutate method/URL/host
+        stay — they run *after* the attacker NTLM handshake.
+    Input:
+        attack_type — BAC job type constant.
+        auth_mode   — artifacts | platform_ntlm.
+    Output:
+        Filtered variant list (possibly empty).
+    Side effects: None.
+    """
+    variants = list(VARIANTS_BY_ATTACK.get(attack_type, []))
+    if auth_mode != "platform_ntlm":
+        return variants
+    return [v for v in variants if v.get("ntlm_applicable", True)]

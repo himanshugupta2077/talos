@@ -4,11 +4,16 @@ Module: talos.projects.bac.auth_prereq
 Purpose:
     Validate auth prerequisites for a role before BAC attack jobs are generated.
 
-    A role is attack-ready when all three conditions hold:
+    Artifact (cookie/header) projects — a role is attack-ready when:
         1. At least one flow is configured in auth_flow_config with an extractor.
         2. auth_config is non-empty (at least one cookie or header name).
         3. A current auth state exists in role_auth_state (all required artifacts
            are present).
+
+    Platform-NTLM projects — a role is attack-ready when:
+        1. A credentialed NTLM profile is bound to the role
+           (talos auth-config bind-ntlm).
+        2. Cookie/header extractors are not required and are not used.
 
     If condition 3 fails and auto_generate=True, this module runs a full session
     refresh (replays all flows, executes extractors, stores state) before returning.
@@ -88,6 +93,14 @@ def check_auth_prereqs(
     """
     errors: list[str] = []
 
+    from talos.projects.auth_mode import (
+        AUTH_MODE_PLATFORM_NTLM,
+        resolve_auth_mode,
+    )
+
+    if resolve_auth_mode(db_path) == AUTH_MODE_PLATFORM_NTLM:
+        return _check_ntlm_prereqs(db_path, role_id, role_name)
+
     # Check 1: auth requirements must be non-empty.
     auth_req = get_auth_config(db_path)
     if not auth_req["cookies"] and not auth_req["headers"]:
@@ -165,4 +178,56 @@ def check_auth_prereqs(
         role_name=role_name,
         passed=True,
         auth_state=state,
+    )
+
+
+def _check_ntlm_prereqs(
+    db_path: Path,
+    role_id: str,
+    role_name: str,
+) -> PrereqResult:
+    """
+    Purpose:
+        NTLM identity check — the role must have a credentialed bound profile.
+    Side effects: None (read-only).
+    """
+    from talos.projects.role_ntlm import get_role_ntlm_profile
+
+    entry = get_role_ntlm_profile(db_path, role_id)
+    if entry is None:
+        return PrereqResult(
+            role_id=role_id,
+            role_name=role_name,
+            passed=False,
+            errors=[
+                f"No NTLM profile bound to role: {role_name}. "
+                f"Add profiles with 'talos proxy auth add', then "
+                f"'talos auth-config bind-ntlm {role_name} <profile>'."
+            ],
+        )
+    if not getattr(entry, "enabled", True):
+        return PrereqResult(
+            role_id=role_id,
+            role_name=role_name,
+            passed=False,
+            errors=[
+                f"NTLM profile {entry.display_name()!r} bound to {role_name} "
+                "is disabled. Enable it with 'talos proxy auth enable <id>'."
+            ],
+        )
+    if not entry.username or not entry.password:
+        return PrereqResult(
+            role_id=role_id,
+            role_name=role_name,
+            passed=False,
+            errors=[
+                f"NTLM profile {entry.display_name()!r} bound to {role_name} "
+                "has no username/password."
+            ],
+        )
+    return PrereqResult(
+        role_id=role_id,
+        role_name=role_name,
+        passed=True,
+        auth_state={"ntlm_profile": entry.id},
     )

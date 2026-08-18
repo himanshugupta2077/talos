@@ -4,7 +4,7 @@ Module: talos.projects.cli
 Purpose:
     Command-line interface for project management operations.
     Entry point for: create, open, close, delete, rename, description,
-    list, scope, constraints, status, outscope commands.
+    list, scope, constraints, auth-mode, status, outscope commands.
 
 Dependencies: argparse, talos.projects.manager, talos.config
 Data flow:
@@ -55,10 +55,19 @@ def _fmt_project(project: Project, label: str = "") -> str:
     prefix = f"  {label}" if label else ""
     scope_display = ", ".join(project.scope) if project.scope else "(none)"
     c = project.constraints
+    auth_line = ""
+    try:
+        from talos.projects.auth_mode import AUTH_MODE_LABELS, resolve_auth_mode
+
+        mode = resolve_auth_mode(project.db_path)
+        auth_line = f"    Auth model      : {AUTH_MODE_LABELS.get(mode, mode)}\n"
+    except Exception:
+        auth_line = ""
     return (
         f"{prefix}{status_tag} {project.name} ({project.id})\n"
         f"    Created         : {project.created_at}\n"
         f"    Scope           : {scope_display}\n"
+        f"{auth_line}"
         f"    Store bodies    : {c.store_bodies}\n"
         f"    Max body size   : {c.max_body_size:,} bytes\n"
         f"    DB              : {project.db_path}\n"
@@ -90,6 +99,7 @@ def _project_as_dict(
         "constraints": project.constraints.to_dict(),
         "data_dir": project.data_dir,
         "db_path": str(project.db_path),
+        "auth_mode": _safe_auth_mode(project),
     }
     if process_override is not None:
         payload["process_override"] = process_override
@@ -99,6 +109,64 @@ def _project_as_dict(
 # ------------------------------------------------------------------ #
 # Command handlers                                                     #
 # ------------------------------------------------------------------ #
+
+def _safe_auth_mode(project: Project) -> str:
+    """Best-effort auth.mode for JSON list/status. Side effects: none."""
+    try:
+        from talos.projects.auth_mode import resolve_auth_mode
+
+        return resolve_auth_mode(project.db_path)
+    except Exception:
+        return "artifacts"
+
+
+def cmd_auth_mode(manager: ProjectManager, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Show or set the project authentication model.
+    Side effects:
+        set writes project.yaml and may apply NTLM origin defaults.
+    """
+    project = manager.active()
+    if project is None:
+        from talos.cli_output import cli_precondition_error
+
+        cli_precondition_error(
+            "No active project. Run 'talos project open <id>', "
+            "or pass --project <id> / set TALOS_PROJECT."
+        )
+    from talos.projects.auth_mode import (
+        AUTH_MODE_LABELS,
+        UnknownAuthMode,
+        auth_mode_public_dict,
+        set_auth_mode,
+    )
+
+    if args.action == "show":
+        info = auth_mode_public_dict(project.db_path)
+        if wants_json(args):
+            cli_json(info)
+            return
+        print(f"Auth model : {info['label']} ({info['mode']})")
+        if info.get("inferred"):
+            print("  (inferred from NTLM-only profiles; stored default is artifacts)")
+        print(
+            f"  artifacts={info['has_artifacts']}  "
+            f"platform_ntlm={info['has_platform_ntlm']}"
+        )
+        return
+    if not args.mode:
+        cli_error("auth-mode set requires artifacts or platform_ntlm.")
+    try:
+        stored = set_auth_mode(project.db_path, args.mode)
+    except UnknownAuthMode as exc:
+        cli_error(str(exc))
+    info = auth_mode_public_dict(project.db_path)
+    if wants_json(args):
+        cli_json(info)
+        return
+    print(f"Auth model set to {AUTH_MODE_LABELS.get(stored, stored)} ({stored}).")
+
 
 def cmd_create(manager: ProjectManager, args: argparse.Namespace) -> None:
     """
@@ -112,6 +180,7 @@ def cmd_create(manager: ProjectManager, args: argparse.Namespace) -> None:
             name=args.name,
             description=args.description or "",
             scope=scope,
+            auth_mode=getattr(args, "auth_mode", "") or "",
         )
         print(f"Project created.\n{_fmt_project(project)}")
     except ProjectAlreadyExists as exc:
@@ -457,6 +526,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Can be set later with 'project scope add'."
         ),
     )
+    p_create.add_argument(
+        "--auth-mode",
+        choices=["artifacts", "platform_ntlm"],
+        default="artifacts",
+        help=(
+            "Authentication model. 'artifacts' (default) = cookie/header "
+            "session swap. 'platform_ntlm' = Windows / NTLM profiles bound "
+            "to roles (IIS Persistent-Auth). The two paths stay separate."
+        ),
+    )
 
     # open
     p_open = sub.add_parser("open", help="Open (activate) a project.")
@@ -568,6 +647,25 @@ def build_parser() -> argparse.ArgumentParser:
         add_help=False,
     )
 
+    p_auth_mode = sub.add_parser(
+        "auth-mode",
+        help=(
+            "Show or set the project authentication model "
+            "(artifacts vs platform_ntlm)."
+        ),
+    )
+    p_auth_mode.add_argument(
+        "action",
+        choices=["show", "set"],
+        help="show the effective mode, or set artifacts|platform_ntlm.",
+    )
+    p_auth_mode.add_argument(
+        "mode",
+        nargs="?",
+        help="Required with set: artifacts | platform_ntlm.",
+    )
+    add_format_argument(p_auth_mode)
+
     return parser
 
 
@@ -581,6 +679,7 @@ _COMMAND_MAP = {
     "list": cmd_list,
     "constraints": cmd_constraints,
     "status": cmd_status,
+    "auth-mode": cmd_auth_mode,
 }
 
 # Resource subcommands for `talos project scope add|remove|list|clear|import`.

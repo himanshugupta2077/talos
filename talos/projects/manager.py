@@ -261,6 +261,7 @@ class ProjectManager:
         name: str,
         description: str = "",
         scope: Optional[list[str]] = None,
+        auth_mode: str = "",
     ) -> Project:
         """
         Purpose:
@@ -270,6 +271,8 @@ class ProjectManager:
             name        — human label; used to derive the project id slug.
             description — optional context note.
             scope       — list of host/URL patterns (can be set later via edit).
+            auth_mode   — artifacts (default) or platform_ntlm. NTLM projects
+                          get HTTP/1.1 + keep-alive + platform-auth on.
         Output:
             The newly created Project instance.
         Side effects:
@@ -324,6 +327,10 @@ class ProjectManager:
         ensure_empty_project_config(data_dir)
         init_project_db(project.db_path)
         write_default_score_config(data_dir)
+        if auth_mode:
+            from talos.projects.auth_mode import set_auth_mode
+
+            set_auth_mode(project.db_path, auth_mode)
 
         registry[project_id] = project.to_dict()
         self._save_registry(registry)

@@ -65,7 +65,10 @@ export default function BacModule() {
         techniques: string[];
         items?: BacTechnique[];
         total_variants?: number;
-      }>("/api/attack/bac/techniques")
+      }>(
+        "/api/attack/bac/techniques",
+        { project_id: pid }
+      )
       .then((r) => {
         if (r.items?.length) {
           setTechniques(r.items);

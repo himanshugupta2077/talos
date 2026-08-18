@@ -732,6 +732,8 @@ def record_request(
         "technique": trace.extras.get("technique", ""),
         "variant": trace.extras.get("variant", ""),
         "detail": trace.extras.get("detail", ""),
+        "auth_mode": trace.extras.get("auth_mode", ""),
+        "ntlm_profile": trace.extras.get("ntlm_profile", ""),
         "method": (method or _method_from_label(trace.endpoint_label)).upper(),
         "url": url or _url_from_parts(resolved_host, path or "/", secure),
         "path": (path or (parsed.path if parsed else "") or "/"),

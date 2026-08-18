@@ -210,6 +210,7 @@ def client_kwargs(
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
     platform_auth: Optional[bool] = None,
+    platform_auth_entries: Optional[Sequence[PlatformAuthEntry]] = None,
     async_client: bool = False,
 ) -> dict[str, Any]:
     """
@@ -224,6 +225,10 @@ def client_kwargs(
         platform_auth    — None: honor project setting (authenticated send).
                            False: never attach NTLM (unauth / auth-test).
                            True: attach NTLM when credentialed profiles exist.
+        platform_auth_entries — when set, use *these* profiles only (BAC
+                           attacker identity). Ignores the project-wide
+                           enabled-row list so two NTLM accounts on the
+                           same host cannot collide.
         async_client     — True mounts AsyncHTTPTransport (required by
                            AsyncClient; sync HTTPTransport has no __aenter__).
     Output:
@@ -231,12 +236,20 @@ def client_kwargs(
     Side effects: May read layered config when transport is None.
     """
     settings = transport or load_proxy_transport(db_path)
+    entries = (
+        list(platform_auth_entries)
+        if platform_auth_entries is not None
+        else list(settings.platform_auth_entries)
+    )
     have_creds = any(
         row.enabled and row.username and row.password
-        for row in settings.platform_auth_entries
+        for row in entries
     )
     if platform_auth is False:
         auth_active = False
+    elif platform_auth_entries is not None:
+        # Caller selected the identity (BAC attacker profile).
+        auth_active = have_creds
     elif platform_auth is True:
         auth_active = have_creds
     else:
@@ -264,12 +277,12 @@ def client_kwargs(
     }
     if auth_active:
         kwargs["auth"] = HttpxPlatformAuth(
-            settings.platform_auth_entries,
+            entries,
             enabled=True,
         )
         if settings.upstream_url:
             mounts = platform_auth_direct_mounts(
-                settings.platform_auth_entries,
+                entries,
                 verify=verify,
                 limits=limits,
                 async_client=async_client,
@@ -287,6 +300,7 @@ def create_async_client(
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
     platform_auth: Optional[bool] = None,
+    platform_auth_entries: Optional[Sequence[PlatformAuthEntry]] = None,
 ) -> httpx.AsyncClient:
     """
     Purpose: Build an AsyncClient honoring project proxy transport.
@@ -300,6 +314,7 @@ def create_async_client(
             verify=verify,
             transport=transport,
             platform_auth=platform_auth,
+            platform_auth_entries=platform_auth_entries,
             async_client=True,
         )
     )
@@ -313,6 +328,7 @@ def create_client(
     verify: bool = False,
     transport: Optional[ProxyTransport] = None,
     platform_auth: Optional[bool] = None,
+    platform_auth_entries: Optional[Sequence[PlatformAuthEntry]] = None,
 ) -> httpx.Client:
     """
     Purpose: Build a sync Client honoring project proxy transport.
@@ -326,5 +342,6 @@ def create_client(
             verify=verify,
             transport=transport,
             platform_auth=platform_auth,
+            platform_auth_entries=platform_auth_entries,
         )
     )

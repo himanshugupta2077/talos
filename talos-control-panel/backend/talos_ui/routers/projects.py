@@ -39,6 +39,13 @@ def _augment(project_id: str, record: dict) -> dict:
         constraints = {}
     merged = {**_default_constraints(), **constraints}
     status = record.get("status") or "inactive"
+    auth_mode = "artifacts"
+    try:
+        from talos.projects.auth_mode import resolve_auth_mode
+
+        auth_mode = resolve_auth_mode(db_path)
+    except Exception:
+        auth_mode = "artifacts"
     return {
         "id": project_id,
         "name": record.get("name", project_id),
@@ -46,6 +53,7 @@ def _augment(project_id: str, record: dict) -> dict:
         "scope": record.get("scope", []) or [],
         "created_at": record.get("created_at"),
         "status": status,
+        "auth_mode": auth_mode,
         "constraints": {
             "capture_in_scope_only": bool(merged.get("capture_in_scope_only", True)),
             "store_bodies": bool(merged.get("store_bodies", True)),
@@ -111,6 +119,7 @@ class CreateProjectBody(BaseModel):
     name: str
     description: str = ""
     scope: list[str] = []
+    auth_mode: str = "artifacts"
 
 
 @router.post("")
@@ -118,10 +127,41 @@ def create_project(body: CreateProjectBody):
     args = ["project", "create", body.name]
     if body.description:
         args += ["--description", body.description]
+    mode = (body.auth_mode or "artifacts").strip() or "artifacts"
+    if mode not in ("artifacts", "platform_ntlm"):
+        raise HTTPException(400, "auth_mode must be artifacts or platform_ntlm")
+    args += ["--auth-mode", mode]
     for pattern in body.scope:
         args += ["--scope", pattern]
     result = cli.run(args)
     return result.to_dict()
+
+
+class AuthModeBody(BaseModel):
+    mode: str
+
+
+@router.get("/{project_id}/auth-mode")
+def get_auth_mode(project_id: str):
+    record = db.get_project_record(project_id)
+    if record is None:
+        raise HTTPException(404, "unknown project")
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.projects.auth_mode import auth_mode_public_dict
+
+        return auth_mode_public_dict(db_path)
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to read auth mode: {exc}") from exc
+
+
+@router.post("/{project_id}/auth-mode")
+def set_auth_mode(project_id: str, body: AuthModeBody):
+    mode = (body.mode or "").strip()
+    if mode not in ("artifacts", "platform_ntlm"):
+        raise HTTPException(400, "mode must be artifacts or platform_ntlm")
+    results = cli.run_scoped(project_id, ["project", "auth-mode", "set", mode])
+    return {"steps": [r.to_dict() for r in results]}
 
 
 # ------------------------------------------------------------------ #

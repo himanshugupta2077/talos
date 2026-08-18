@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 56
+SCHEMA_VERSION = 57
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -733,6 +733,17 @@ CREATE INDEX IF NOT EXISTS idx_policy_rules_project
 CREATE TABLE IF NOT EXISTS role_auth_provider (
     role_id    TEXT PRIMARY KEY REFERENCES roles(id),
     provider   TEXT NOT NULL DEFAULT 'auto',  -- 'auto' | 'manual'
+    updated_at TEXT NOT NULL
+);
+
+-- ------------------------------------------------------------------ --
+-- role_platform_auth: per-role NTLM / platform-auth identity          --
+-- profile_id matches proxy.platform_auth.entries[].id                 --
+-- Used only when the project auth.mode is platform_ntlm.              --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS role_platform_auth (
+    role_id    TEXT PRIMARY KEY REFERENCES roles(id) ON DELETE CASCADE,
+    profile_id TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
@@ -2708,6 +2719,7 @@ def migrate_project_db(db_path: Path) -> None:
                    auth_session_results (Authentication & Session Testing engine).
         v54 → v55: cors_results — CORS misconfiguration (unique flow per probe).
         v55 → v56: input_validation_config.auto_run — IV scheduler auto-run.
+        v56 → v57: role_platform_auth — per-role NTLM / platform-auth binding.
     """
     if not db_path.exists():
         return
@@ -4093,6 +4105,21 @@ def migrate_project_db(db_path: Path) -> None:
                     "ADD COLUMN auto_run INTEGER NOT NULL DEFAULT 0"
                 )
             conn.execute("UPDATE schema_version SET version = 56")
+            conn.commit()
+
+        if current < 57:
+            # Per-role NTLM / platform-auth identity (BAC session-swap).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS role_platform_auth (
+                    role_id    TEXT PRIMARY KEY REFERENCES roles(id)
+                               ON DELETE CASCADE,
+                    profile_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("UPDATE schema_version SET version = 57")
             conn.commit()
 
 

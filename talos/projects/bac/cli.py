@@ -75,7 +75,7 @@ import uuid
 from talos.projects.manager import ProjectManager
 from talos.projects.bac.candidates import restrict_candidates_to_flows, scan_candidates
 from talos.projects.bac.auth_prereq import check_auth_prereqs
-from talos.projects.bac.variants import VARIANTS_BY_ATTACK
+from talos.projects.bac.variants import variants_for_auth_mode
 from talos.scheduler import db as sched_db
 from talos.scheduler.job import (
     BAC_SESSION_SWAP, BAC_METHOD_FUZZ, BAC_CONTENT_TYPE,
@@ -255,7 +255,10 @@ def _enqueue_bac_jobs(
             "and verify endpoints are not excluded (talos endpoint list)."
         )
 
-    variants = VARIANTS_BY_ATTACK.get(attack_type, [])
+    from talos.projects.auth_mode import resolve_auth_mode
+
+    auth_mode = resolve_auth_mode(db_path)
+    variants = variants_for_auth_mode(attack_type, auth_mode)
     if not variants:
         cli_error(f"No variants defined for attack type '{attack_type}'.")
 
@@ -315,6 +318,7 @@ def _enqueue_bac_jobs(
                     "target_role_id": candidate.target_role_id,
                     "module_id": candidate.module_id,
                     "variant": variant_name,
+                    "auth_mode": auth_mode,
                 }
                 job_id = str(uuid.uuid4())
                 sched_db.enqueue_job(

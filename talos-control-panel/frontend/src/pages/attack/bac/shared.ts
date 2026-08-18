@@ -102,6 +102,11 @@ export interface BacOverview {
     jobs_in_flight?: boolean;
     auth_failed?: boolean;
   };
+  auth_model?: {
+    mode: string;
+    label: string;
+    identity: string;
+  };
 }
 
 export type BacScopeMode = "project" | "module" | "endpoint";

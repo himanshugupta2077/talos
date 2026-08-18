@@ -39,7 +39,18 @@ export default function OverviewTab({
 
   return (
     <div>
-      <BacDisclaimer />
+      <BacDisclaimer authMode={overview?.auth_model?.mode} />
+      {overview?.auth_model && (
+        <div className="text-xs mb-3">
+          Identity injector:{" "}
+          <span className="font-medium">
+            {overview.auth_model.identity === "ntlm_profile"
+              ? "NTLM profile (bound per role)"
+              : "cookie / header session"}
+          </span>
+          <span className="text-base-content/50"> · {overview.auth_model.label}</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
         <span className="badge badge-outline">

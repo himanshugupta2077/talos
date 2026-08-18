@@ -384,6 +384,32 @@ def run_auth_config_cli(manager: ProjectManager, argv: list[str]) -> None:
     )
     p_reset_health.add_argument("role_id", help="Role name or UUID.")
 
+    p_bind_ntlm = sub.add_parser(
+        "bind-ntlm",
+        help=(
+            "Bind a role to one NTLM / platform-auth profile. "
+            "Required for BAC on platform_ntlm projects."
+        ),
+    )
+    p_bind_ntlm.add_argument("role_id", help="Role name or UUID.")
+    p_bind_ntlm.add_argument(
+        "profile",
+        help="Platform-auth profile id, unique host, or unique name.",
+    )
+
+    p_unbind_ntlm = sub.add_parser(
+        "unbind-ntlm",
+        help="Remove the NTLM profile binding for a role.",
+    )
+    p_unbind_ntlm.add_argument("role_id", help="Role name or UUID.")
+
+    p_show_ntlm = sub.add_parser(
+        "show-ntlm",
+        help="Show NTLM profile binding(s). Role optional (all roles when omitted).",
+    )
+    p_show_ntlm.add_argument("role_id", nargs="?", help="Role name or UUID.")
+    add_format_argument(p_show_ntlm)
+
     args = parser.parse_args(argv)
 
     project = manager.active()
@@ -421,6 +447,9 @@ def run_auth_config_cli(manager: ProjectManager, argv: list[str]) -> None:
         "set-session":          lambda: cmd_set_session(project, args),
         "clear-session":        lambda: cmd_clear_session(db_path, args),
         "reset-health":         lambda: cmd_reset_health(db_path, args),
+        "bind-ntlm":            lambda: cmd_bind_ntlm(db_path, args),
+        "unbind-ntlm":          lambda: cmd_unbind_ntlm(db_path, args),
+        "show-ntlm":            lambda: cmd_show_ntlm(db_path, args),
     }
 
     handler = dispatch.get(args.cmd)
@@ -1560,6 +1589,90 @@ def cmd_reset_health(db_path: Path, args: argparse.Namespace) -> None:
 
     reset_suspicion(db_path, args.role_id)
     print("Health suspicion reset.")
+
+
+def cmd_bind_ntlm(db_path: Path, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Bind a role to one NTLM / platform-auth profile.
+    Side effects: Writes role_platform_auth.
+    """
+    from talos.projects.role_ntlm import RoleNtlmError, bind_role_ntlm
+
+    if not _role_exists(db_path, args.role_id):
+        cli_error(f"Role '{args.role_id}' not found.")
+    try:
+        entry = bind_role_ntlm(db_path, args.role_id, args.profile)
+    except RoleNtlmError as exc:
+        cli_error(str(exc))
+    print(
+        f"Bound role {args.role_id} to NTLM profile "
+        f"{entry.display_name()} ({entry.id}) host={entry.host} "
+        f"user={entry.username}."
+    )
+
+
+def cmd_unbind_ntlm(db_path: Path, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        Remove the NTLM profile binding for a role.
+    Side effects: Deletes role_platform_auth row.
+    """
+    from talos.projects.role_ntlm import unbind_role_ntlm
+
+    if not _role_exists(db_path, args.role_id):
+        cli_error(f"Role '{args.role_id}' not found.")
+    if unbind_role_ntlm(db_path, args.role_id):
+        print(f"Removed NTLM profile binding for role {args.role_id}.")
+    else:
+        print(f"No NTLM profile was bound to role {args.role_id}.")
+
+
+def cmd_show_ntlm(db_path: Path, args: argparse.Namespace) -> None:
+    """
+    Purpose:
+        List NTLM bindings (one role or all).
+    Side effects: None (read-only).
+    """
+    from talos.projects.role_ntlm import (
+        get_role_ntlm_profile,
+        list_role_ntlm_bindings,
+    )
+
+    if args.role_id:
+        if not _role_exists(db_path, args.role_id):
+            cli_error(f"Role '{args.role_id}' not found.")
+        entry = get_role_ntlm_profile(db_path, args.role_id)
+        payload = {
+            "role_id": args.role_id,
+            "bound": entry is not None,
+            "profile": entry.to_public_dict() if entry else None,
+        }
+        if wants_json(args):
+            cli_json(payload)
+            return
+        if entry is None:
+            print(f"Role {args.role_id}: no NTLM profile bound.")
+            return
+        print(
+            f"Role {args.role_id}: {entry.display_name()} ({entry.id}) "
+            f"host={entry.host} user={entry.username}"
+        )
+        return
+    rows = list_role_ntlm_bindings(db_path)
+    if wants_json(args):
+        cli_json({"bindings": rows})
+        return
+    if not rows:
+        print("No role NTLM bindings.")
+        return
+    for row in rows:
+        missing = " [profile missing]" if row.get("profile_missing") else ""
+        print(
+            f"{row['role_name']} ({row['role_id'][:8]}…) → "
+            f"{row['profile_name']} ({row['profile_id']}) "
+            f"host={row['host']} user={row['username']}{missing}"
+        )
 
 
 # ------------------------------------------------------------------ #

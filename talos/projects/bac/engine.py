@@ -144,21 +144,47 @@ async def execute_bac_job(
         if skip_reason:
             return _fail(flow_id, attack_type, variant, skip_reason)
 
-    # Retrieve attacker's current auth state.
-    state_info = get_role_auth_state(db_path, attacker_role_id)
-    auth_state = state_info["state"]
-    if not auth_state:
-        return _fail(flow_id, attack_type, variant, "no_active_token")
+    from talos.projects.auth_mode import (
+        AUTH_MODE_PLATFORM_NTLM,
+        resolve_auth_mode,
+    )
 
-    # Verify auth config exists.
-    auth_config = get_auth_config(db_path)
-    if not auth_config["cookies"] and not auth_config["headers"]:
-        return _fail(flow_id, attack_type, variant, "auth_config_empty")
+    auth_mode = resolve_auth_mode(db_path)
+    ntlm_profile = None
+    auth_state: dict = {}
+    auth_config = {"cookies": [], "headers": []}
+
+    if auth_mode == AUTH_MODE_PLATFORM_NTLM:
+        from talos.projects.role_ntlm import resolve_attacker_profile
+
+        ntlm_profile = resolve_attacker_profile(
+            db_path,
+            attacker_role_id,
+            host=str(flow.get("host") or ""),
+        )
+        if ntlm_profile is None:
+            return _fail(flow_id, attack_type, variant, "no_ntlm_profile")
+    else:
+        # Retrieve attacker's current auth state.
+        state_info = get_role_auth_state(db_path, attacker_role_id)
+        auth_state = state_info["state"]
+        if not auth_state:
+            return _fail(flow_id, attack_type, variant, "no_active_token")
+
+        # Verify auth config exists.
+        auth_config = get_auth_config(db_path)
+        if not auth_config["cookies"] and not auth_config["headers"]:
+            return _fail(flow_id, attack_type, variant, "auth_config_empty")
 
     # Apply the mutation.
     try:
         modified = _apply_mutation(
-            flow, auth_config, auth_state, attack_type, meta
+            flow,
+            auth_config,
+            auth_state,
+            attack_type,
+            meta,
+            inject_identity=(auth_mode != AUTH_MODE_PLATFORM_NTLM),
         )
     except Exception as exc:  # noqa: BLE001
         return _fail(flow_id, attack_type, variant, f"mutation_error: {exc}")
@@ -175,6 +201,8 @@ async def execute_bac_job(
         variant=variant,
         db_path=db_path,
         project_id=project_id,
+        auth_mode=auth_mode,
+        ntlm_profile=ntlm_profile,
     )
 
 
@@ -188,16 +216,19 @@ def _apply_mutation(
     auth_state: dict,
     attack_type: str,
     meta: dict,
+    inject_identity: bool = True,
 ) -> Optional[dict]:
     """
     Purpose:
         Build a modified copy of the flow with the attack mutation applied.
-        All BAC attacks first inject the attacker's full auth state, then apply
-        the type-specific mutation.
+        Artifact projects inject the attacker's full auth state first, then
+        apply the type-specific mutation. NTLM projects never inject tokens
+        and strip leftover Authorization so the handshake owns identity.
     Input:
-        flow        — original flow dict from replay_db.
-        auth_config — {'cookies': [...], 'headers': [...]}.
-        auth_state  — {artifact_name: value} dict from role_auth_state.
+        flow            — original flow dict from replay_db.
+        auth_config     — {'cookies': [...], 'headers': [...]}.
+        auth_state      — {artifact_name: value} dict from role_auth_state.
+        inject_identity — False for platform_ntlm (no cookie/header swap).
         attack_type — BAC job type constant.
         meta        — job metadata dict.
     Output:
@@ -235,13 +266,22 @@ def _apply_mutation(
     else:
         override_value = None
 
-    if override_value is not None:
-        # auth_override: set all configured auth fields to the override value.
-        headers, cookies = _inject_auth_override(
-            headers, cookies, auth_config, override_value
-        )
+    if inject_identity:
+        if override_value is not None:
+            # auth_override: set all configured auth fields to the override value.
+            headers, cookies = _inject_auth_override(
+                headers, cookies, auth_config, override_value
+            )
+        else:
+            headers, cookies = _inject_auth_state(
+                headers, cookies, auth_config, auth_state
+            )
     else:
-        headers, cookies = _inject_auth_state(headers, cookies, auth_config, auth_state)
+        # NTLM identity lives on the TCP handshake. Captured Negotiate /
+        # NTLM blobs are one-shot and must not be replayed.
+        headers = {
+            k: v for k, v in headers.items() if k.lower() != "authorization"
+        }
 
     # Step 2: apply attack-type-specific mutation.
     if attack_type == BAC_SESSION_SWAP:
@@ -760,6 +800,8 @@ async def _send_and_store(
     variant: str,
     db_path: Path,
     project_id: str,
+    auth_mode: str = "artifacts",
+    ntlm_profile=None,
 ) -> BacOutcome:
     """
     Purpose:
@@ -824,16 +866,27 @@ async def _send_and_store(
         "variant": variant,
         "attacker_role_id": meta.get("attacker_role_id", ""),
         "target_role_id": meta.get("target_role_id", ""),
+        "auth_mode": auth_mode,
     }
+    if ntlm_profile is not None:
+        flow_meta["ntlm_profile_id"] = getattr(ntlm_profile, "id", "")
+        flow_meta["ntlm_profile"] = ntlm_profile.display_name()
+    extras = {
+        "technique": attack_type,
+        "variant": variant,
+        "auth_mode": auth_mode,
+    }
+    if ntlm_profile is not None:
+        extras["ntlm_profile"] = ntlm_profile.display_name()
+        extras["detail"] = (
+            f"{variant} as {ntlm_profile.display_name()}"
+        )
     send_headers, flow_meta = prepare_send_headers(
         send_headers,
         db_path=db_path,
         engine=ENGINE_BAC,
         flow=replayed,
-        extras={
-            "technique": attack_type,
-            "variant": variant,
-        },
+        extras=extras,
         endpoint_id=str(original_flow.get("endpoint_id") or ""),
         host=str(replayed.get("host") or ""),
         flow_meta=flow_meta,
@@ -846,11 +899,13 @@ async def _send_and_store(
 
     try:
         # Upstream is project-configured only (proxy_config); None → direct.
+        ntlm_entries = [ntlm_profile] if ntlm_profile is not None else None
         async with create_async_client(
             db_path,
             timeout=_REPLAY_TIMEOUT,
             follow_redirects=False,
             verify=False,
+            platform_auth_entries=ntlm_entries,
         ) as client:
             resp = await client.request(
                 method=replayed["method"],

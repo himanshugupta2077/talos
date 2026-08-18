@@ -29,6 +29,8 @@ import {
 import StatusBadge from "../components/StatusBadge";
 import { formatIST } from "../lib/time";
 import { Role, StepsResponse } from "../types";
+import PlatformNtlmAuth from "./auth/PlatformNtlmAuth";
+import AuthModeBadge from "../components/AuthModeBadge";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -343,6 +345,17 @@ export default function Auth() {
   const [testStdout, setTestStdout] = useState("");
 
   const projectId = selected?.id;
+  const [authMode, setAuthMode] = useState<string>(selected?.auth_mode || "artifacts");
+
+  const loadAuthMode = useCallback(async () => {
+    if (!projectId) return;
+    const r = await api.get<{ mode: string }>(`/api/projects/${projectId}/auth-mode`);
+    setAuthMode(r.mode || "artifacts");
+  }, [projectId]);
+
+  useEffect(() => {
+    loadAuthMode().catch(() => setAuthMode(selected?.auth_mode || "artifacts"));
+  }, [loadAuthMode, selected?.auth_mode]);
 
   const hydrateManualForm = useCallback((session: ManualSession | null | undefined, path?: string) => {
     if (path) setSessionPath(path);
@@ -641,14 +654,58 @@ export default function Auth() {
 
   if (!selected) return <NoProjectNotice />;
 
+  if (authMode === "platform_ntlm" && projectId) {
+    return (
+      <div className="pb-10">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div>
+            <h1 className="text-xl font-semibold flex items-center gap-2">
+              Auth <AuthModeBadge mode="platform_ntlm" size="sm" />
+            </h1>
+            <p className="text-xs text-base-content/50 mt-0.5 max-w-2xl">
+              Windows Integrated Auth. Bind each role to an NTLM profile. Cookie and
+              header session tools stay on artifact projects.
+            </p>
+          </div>
+        </div>
+        <PlatformNtlmAuth
+          projectId={projectId}
+          onSwitchToArtifacts={async () => {
+            await api.post(`/api/projects/${projectId}/auth-mode`, {
+              mode: "artifacts",
+            });
+            await loadAuthMode();
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="pb-10">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div>
-          <h1 className="text-xl font-semibold">Auth</h1>
+          <h1 className="text-xl font-semibold flex items-center gap-2">
+            Auth <AuthModeBadge mode="artifacts" size="sm" />
+          </h1>
           <p className="text-xs text-base-content/50 mt-0.5 max-w-2xl">
             Configure what authentication means for this project, how each role acquires
             credentials, and how Talos keeps sessions healthy and validated.
+            IIS / NTLM instead?{" "}
+            <button
+              type="button"
+              className="link"
+              onClick={async () => {
+                if (!projectId) return;
+                await api.post(`/api/projects/${projectId}/auth-mode`, {
+                  mode: "platform_ntlm",
+                });
+                await loadAuthMode();
+              }}
+            >
+              Switch to Windows / NTLM mode
+            </button>
+            .
           </p>
         </div>
         <div className="flex items-center gap-2">

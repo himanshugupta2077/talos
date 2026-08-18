@@ -16,6 +16,7 @@ export interface Project {
   db_path?: string;
   db_exists: boolean;
   active: boolean;
+  auth_mode?: "artifacts" | "platform_ntlm" | string;
 }
 
 export interface ProjectSummary {

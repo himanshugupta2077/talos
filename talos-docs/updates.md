@@ -2,6 +2,37 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## BAC — NTLM / platform-auth identity (separate from cookies)
+
+**Shipped:** 2026-08-18
+
+BAC on IIS / Windows Integrated Auth cannot swap `Authorization` or
+cookies — NTLM identity lives on the origin TCP handshake. Projects now
+have an explicit auth model:
+
+| Mode | Identity | BAC session-swap |
+| --- | --- | --- |
+| `artifacts` (default) | cookie / header names | inject attacker tokens |
+| `platform_ntlm` | named NTLM profile bound to a role | fresh handshake as that profile |
+
+```
+talos project create app --auth-mode platform_ntlm
+talos proxy auth add --host app.example --type ntlmv2 --username LOW --password …
+talos auth-config bind-ntlm unpriv <profile>
+talos access server set unpriv admin-panel deny
+talos attack bac session-swap --role unpriv
+```
+
+Recipes (method/url/host/role/parser) still run **after** the attacker
+handshake. `authorization_null` / whitespace are skipped (no app token).
+Every BAC request is written to `~/.talos/burp/<project>.jsonl` with
+`auth_mode` + profile in the tree detail.
+
+Control Panel: create-project cards, Auth workspace, Access banner, BAC
+disclaimer, and header badge all distinguish the two models.
+
+Tests: `tests/test_bac_platform_ntlm.py`.
+
 ## IV — send unicode header values (`#6`)
 
 **Shipped:** 2026-08-17

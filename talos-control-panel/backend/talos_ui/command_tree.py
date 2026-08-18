@@ -87,6 +87,13 @@ COMMAND_TREE: list[dict] = [
                 arg("name", required=True, help="Project id/name"),
                 arg("description", flag="--description", help="Short description"),
                 arg(
+                    "auth_mode",
+                    flag="--auth-mode",
+                    kind="select",
+                    options=["artifacts", "platform_ntlm"],
+                    help="Cookie/header session vs Windows/NTLM platform auth",
+                ),
+                arg(
                     "scope",
                     flag="--scope",
                     kind="multi",
@@ -123,6 +130,10 @@ COMMAND_TREE: list[dict] = [
                 arg("id", required=True),
                 arg("store_bodies", flag="--store-bodies", kind="select", options=["true", "false"]),
                 arg("max_body_size", flag="--max-body-size", kind="number", help="Bytes"),
+            ]),
+            cmd("project.auth_mode", ["project", "auth-mode"], "Show or set artifacts vs platform_ntlm", [
+                arg("action", kind="select", options=["show", "set"], required=True),
+                arg("mode", kind="select", options=["artifacts", "platform_ntlm"]),
             ]),
             cmd("project.status", ["project", "status"], "Show active project status"),
             cmd("project.outscope.add", ["project", "outscope", "add"], "Add out-of-scope URL/host prefix", [
@@ -344,6 +355,16 @@ COMMAND_TREE: list[dict] = [
             ]),
             cmd("auth_config.reset_health", ["auth-config", "reset-health"], "Reset health suspicion counter", [
                 arg("role", required=True),
+            ]),
+            cmd("auth_config.bind_ntlm", ["auth-config", "bind-ntlm"], "Bind a role to an NTLM profile", [
+                arg("role_id", required=True),
+                arg("profile", required=True, help="Profile id, unique host, or unique name"),
+            ]),
+            cmd("auth_config.unbind_ntlm", ["auth-config", "unbind-ntlm"], "Remove a role's NTLM profile binding", [
+                arg("role_id", required=True),
+            ]),
+            cmd("auth_config.show_ntlm", ["auth-config", "show-ntlm"], "Show NTLM profile binding(s)", [
+                arg("role_id"),
             ]),
             cmd("auth_config.add_control_flow", ["auth-config", "add-control-flow"], "Add a control (validation) flow", [
                 arg("role", required=True), arg("flow_id", required=True),

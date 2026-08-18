@@ -102,6 +102,9 @@ BUILTIN_DEFAULTS: dict = {
         "enabled": True,
         "header_prefix": "X-Talos",
     },
+    "auth": {
+        "mode": "artifacts",
+    },
 }
 
 # Top-level sections exposed as first-class CLI resources.
@@ -114,6 +117,7 @@ CONFIG_SECTIONS: tuple[str, ...] = (
     "parameter_intel",
     "url_sink",
     "burp",
+    "auth",
 )
 
 # Dot-path keys that operators commonly get/set (for help and validation).
@@ -124,6 +128,7 @@ KNOWN_LEAF_PATHS: tuple[str, ...] = (
     "proxy.keep_alive",
     "proxy.platform_auth.enabled",
     "proxy.platform_auth.entries",
+    "auth.mode",
     "capture.store_bodies",
     "capture.max_body_size",
     "capture.drop_headers",
@@ -272,6 +277,19 @@ SETTING_SCHEMA: tuple[dict, ...] = (
             "username, password, domain, domain_hostname, spnego, negotiate). "
             "Multiple profiles may share a host; only enabled rows match. "
             "Manage via `talos proxy auth` or the Control Panel Proxy page."
+        ),
+    },
+    {
+        "key": "auth.mode",
+        "section": "auth",
+        "label": "Authentication model",
+        "type": "string",
+        "default": "artifacts",
+        "description": (
+            "Project auth model. 'artifacts' = cookie/header session swap "
+            "(ordinary web apps). 'platform_ntlm' = Windows Integrated Auth "
+            "via named NTLM profiles bound to roles. The two paths stay "
+            "separate: NTLM projects do not inject Authorization headers."
         ),
     },
     {

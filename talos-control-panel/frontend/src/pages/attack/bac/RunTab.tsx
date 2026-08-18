@@ -121,7 +121,7 @@ export default function RunTab({
 
   return (
     <div className="space-y-4">
-      <BacDisclaimer />
+      <BacDisclaimer authMode={overview?.auth_model?.mode} />
 
       {jobsInFlight && (
         <div className="alert alert-warning text-xs py-2">

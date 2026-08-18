@@ -10,6 +10,7 @@ import {
   ModuleHelp,
   Section,
 } from "../components/Common";
+import AuthModeBadge from "../components/AuthModeBadge";
 import PathField, {
   OpenDirectoryTarget,
   openDirectoryBody,
@@ -93,6 +94,7 @@ export default function Projects() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [scope, setScope] = useState("");
+  const [authMode, setAuthMode] = useState<"artifacts" | "platform_ntlm">("artifacts");
 
   // Workspace local edit state (synced when selection changes)
   const [editName, setEditName] = useState("");
@@ -158,6 +160,7 @@ export default function Projects() {
       .post("/api/projects", {
         name,
         description,
+        auth_mode: authMode,
         // One complete Basic Scope prefix per line (commas are not separators).
         scope: scope
           .split("\n")
@@ -406,7 +409,10 @@ export default function Projects() {
                       <span className="font-medium text-sm truncate">
                         {p.name}
                       </span>
-                      <ActiveBadge active={!!p.active} />
+                      <span className="flex items-center gap-1 shrink-0">
+                        <AuthModeBadge mode={p.auth_mode} />
+                        <ActiveBadge active={!!p.active} />
+                      </span>
                     </div>
                     <div className="text-[11px] mono text-base-content/40 truncate mt-0.5">
                       {p.id}
@@ -451,6 +457,7 @@ export default function Projects() {
                       <h2 className="text-lg font-semibold truncate">
                         {selected.name}
                       </h2>
+                      <AuthModeBadge mode={selected.auth_mode} size="sm" />
                       <ActiveBadge active={!!selected.active} />
                       {selected.db_exists ? (
                         <span className="badge badge-outline badge-sm">
@@ -1163,6 +1170,39 @@ export default function Projects() {
               placeholder="QA smoke run"
             />
           </label>
+          <div className="form-control">
+            <span className="label-text text-xs mb-1">Authentication model</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                className={`btn btn-sm h-auto py-2 justify-start text-left ${
+                  authMode === "artifacts" ? "btn-primary" : "btn-ghost border border-base-300"
+                }`}
+                onClick={() => setAuthMode("artifacts")}
+              >
+                <span>
+                  <span className="block font-medium">Cookie / header</span>
+                  <span className="block text-[11px] font-normal opacity-80">
+                    Session tokens, Bearer, cookies. BAC swaps headers.
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm h-auto py-2 justify-start text-left ${
+                  authMode === "platform_ntlm" ? "btn-warning" : "btn-ghost border border-base-300"
+                }`}
+                onClick={() => setAuthMode("platform_ntlm")}
+              >
+                <span>
+                  <span className="block font-medium">Windows / NTLM</span>
+                  <span className="block text-[11px] font-normal opacity-80">
+                    Platform-auth profiles per role. No header swap.
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
           <label className="form-control">
             <span className="label-text text-xs">
               In-scope prefixes (optional)
@@ -1192,6 +1232,7 @@ export default function Projects() {
               setName("");
               setDescription("");
               setScope("");
+              setAuthMode("artifacts");
               // New projects are activated via project open; Talos core owns
               // any proxy reconcile that follows the active-project change.
               const list = await api.get<{ projects: Project[] }>(

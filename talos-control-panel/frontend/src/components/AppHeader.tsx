@@ -8,6 +8,7 @@ import HeaderRoleModule from "./HeaderRoleModule";
 import HeaderSchedulerMenu from "./HeaderSchedulerMenu";
 import HeaderSearch from "./HeaderSearch";
 import ThemeToggle from "./ThemeToggle";
+import AuthModeBadge from "./AuthModeBadge";
 
 /**
  * Persistent global top header — runtime context + global actions.
@@ -40,6 +41,7 @@ export default function AppHeader() {
           <span className="text-sm font-medium truncate">
             {selected ? selected.name : "No project"}
           </span>
+          {selected && <AuthModeBadge mode={selected.auth_mode} />}
           {selected && !selected.active && (
             <span className="badge badge-ghost badge-xs shrink-0">inactive</span>
           )}

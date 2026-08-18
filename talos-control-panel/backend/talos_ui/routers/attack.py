@@ -417,7 +417,7 @@ BAC_TECHNIQUE_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _load_bac_technique_meta() -> list[dict]:
+def _load_bac_technique_meta(db_path=None) -> list[dict]:
     """
     Technique picker metadata for the BAC workspace.
 
@@ -425,12 +425,23 @@ def _load_bac_technique_meta() -> list[dict]:
     variant_count, variants (name + description).
     """
     variants_by_attack: dict[str, list] = {}
+    auth_mode = "artifacts"
     try:
-        from talos.projects.bac.variants import VARIANTS_BY_ATTACK
+        from talos.projects.auth_mode import resolve_auth_mode
+        from talos.projects.bac.variants import variants_for_auth_mode
 
-        variants_by_attack = VARIANTS_BY_ATTACK
+        if db_path is not None:
+            auth_mode = resolve_auth_mode(db_path)
+        for name in BAC_TECHNIQUES:
+            job_type = BAC_TECHNIQUE_TO_JOB.get(name, f"bac_{name.replace('-', '_')}")
+            variants_by_attack[job_type] = variants_for_auth_mode(job_type, auth_mode)
     except Exception:
-        variants_by_attack = {}
+        try:
+            from talos.projects.bac.variants import VARIANTS_BY_ATTACK
+
+            variants_by_attack = VARIANTS_BY_ATTACK
+        except Exception:
+            variants_by_attack = {}
 
     out: list[dict] = []
     for name in BAC_TECHNIQUES:
@@ -638,11 +649,17 @@ def _bac_resolve_techniques(techniques: list[str] | None) -> list[str]:
 
 
 @router.get("/bac/techniques")
-def bac_techniques():
+def bac_techniques(project_id: str | None = None):
     """
     Known BAC technique metadata for UI pickers (matches CLI subcommands).
+    When project_id is set, NTLM projects drop artifact-only variants.
     """
-    meta = _load_bac_technique_meta()
+    db_path = None
+    if project_id:
+        record = db.get_project_record(project_id)
+        if record:
+            db_path = config.project_db_path(project_id, record)
+    meta = _load_bac_technique_meta(db_path)
     names = [t["name"] for t in meta]
     return {
         "techniques": names,
@@ -761,7 +778,7 @@ def bac_overview(project_id: str, top_n: int = 8):
     cand_summary = _bac_candidate_summary(candidates)
     auth = _bac_auth_readiness(db_path, project_id, candidates)
     jobs = _bac_job_counts(db_path)
-    technique_meta = _load_bac_technique_meta()
+    technique_meta = _load_bac_technique_meta(db_path)
     total_variants = sum(int(t.get("variant_count") or 0) for t in technique_meta)
     flow_count = int(cand_summary.get("flow_count") or 0)
     estimated_jobs_all = flow_count * total_variants
@@ -778,6 +795,25 @@ def bac_overview(project_id: str, top_n: int = 8):
         and cand_summary["candidate_count"] > 0,
     }
 
+    auth_model = {}
+    try:
+        from talos.projects.auth_mode import AUTH_MODE_LABELS, resolve_auth_mode
+
+        mode = resolve_auth_mode(db_path)
+        auth_model = {
+            "mode": mode,
+            "label": AUTH_MODE_LABELS.get(mode, mode),
+            "identity": (
+                "ntlm_profile" if mode == "platform_ntlm" else "session_token"
+            ),
+        }
+    except Exception:
+        auth_model = {
+            "mode": "artifacts",
+            "label": "Cookie / header session",
+            "identity": "session_token",
+        }
+
     return {
         "counts": counts,
         "candidates": cand_summary,
@@ -787,6 +823,7 @@ def bac_overview(project_id: str, top_n: int = 8):
         "jobs_pending": pending,
         "jobs_running": running,
         "auth": auth,
+        "auth_model": auth_model,
         "techniques": technique_meta,
         "recent_possible": recent_possible,
         "empty_state": empty_state,

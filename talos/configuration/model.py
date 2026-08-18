@@ -173,6 +173,19 @@ class SchedulerConfigSection:
 
 
 @dataclass(frozen=True)
+class AuthConfigSection:
+    """
+    Purpose:
+        Project authentication model. Separate from proxy.platform_auth
+        (the NTLM credential rows) and from HTTP artifact *names*.
+    Fields:
+        mode — artifacts | platform_ntlm.
+    """
+
+    mode: str = "artifacts"
+
+
+@dataclass(frozen=True)
 class AttackConfigSection:
     """
     Purpose:
@@ -277,6 +290,7 @@ class EffectiveConfig:
         parameter_intel  — parameter intelligence (cross-flow reflection).
         url_sink         — URL Sink Discovery kill-switches + score gate.
         burp             — Burp Suite metadata headers for the Talos extension.
+        auth             — project authentication model (artifacts vs NTLM).
         raw              — full merged dict tree (for generic get / effective views).
         sources          — dotted path → ValueSource for inheritance display.
         global_path      — path to global config file (may not exist yet).
@@ -293,6 +307,7 @@ class EffectiveConfig:
     )
     url_sink: UrlSinkConfigSection = field(default_factory=UrlSinkConfigSection)
     burp: BurpConfigSection = field(default_factory=BurpConfigSection)
+    auth: AuthConfigSection = field(default_factory=AuthConfigSection)
     raw: dict = field(default_factory=dict)
     sources: dict[str, ValueSource] = field(default_factory=dict)
     global_path: Optional[str] = None

@@ -8,6 +8,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useProject } from "../state/ProjectContext";
 import { api } from "../api/client";
 import { ModuleHelp, NoProjectNotice } from "../components/Common";
+import AuthModeBadge from "../components/AuthModeBadge";
 import type { AccessCell } from "../types";
 import CoverageTab from "./access/CoverageTab";
 import MatrixTab from "./access/MatrixTab";
@@ -67,11 +68,21 @@ export default function Access() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Access Model</h1>
+          <h1 className="text-xl font-semibold flex items-center gap-2">
+            Access Model
+            <AuthModeBadge mode={selected.auth_mode} size="sm" />
+          </h1>
           <p className="text-sm text-base-content/60 mt-0.5">
             Two-layer role × module map — client exposure vs server enforcement.
             Feeds BAC candidate discovery.
           </p>
+          {selected.auth_mode === "platform_ntlm" && (
+            <p className="text-xs text-warning mt-2 max-w-2xl">
+              NTLM project: ALLOW / DENY is which Windows account may use a
+              module. BAC replays ALLOW flows as the DENY role’s bound NTLM
+              profile — not by swapping headers.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2 items-center">
           <Link to="/roles-modules" className="btn btn-xs btn-ghost">

@@ -565,11 +565,18 @@ There is **no** URL-based validation CLI. Layer 3 uses captured flows only.
 
 ## Project Commands
 
-### `talos project create <name> [-d TEXT] [-s HOST ...]`
+### `talos project create <name> [-d TEXT] [-s HOST ...] [--auth-mode artifacts|platform_ntlm]`
 
 ```bash
 talos project create qa-smoke --description "QA smoke run" --scope example.com api.example.com
+talos project create iis-app --auth-mode platform_ntlm --scope app.example.com
+talos project auth-mode show
+talos project auth-mode set platform_ntlm
 ```
+
+`artifacts` (default) = cookie/header session swap. `platform_ntlm` =
+Windows Integrated Auth via named NTLM profiles bound to roles. The two
+paths stay separate.
 
 ### `talos project open <id>` / `close` / `list` / `status`
 
@@ -1805,6 +1812,18 @@ Design: `docs/design-auth-session-testing-engine.md`.
 
 `--role NAME|UUID` filters attacker role within any scope.
 `--module` accepts a module **name or UUID** (same rule as roles).
+
+**NTLM / platform-auth projects** (`talos project auth-mode set platform_ntlm`):
+do **not** configure cookie/header names. Bind each role to a profile, then
+run the same BAC recipes. Identity is a fresh NTLM handshake as the attacker
+profile. Requests are written to `~/.talos/burp/<project>.jsonl`.
+
+```bash
+talos proxy auth add --host app.example.com --type ntlmv2 --username LOW --password …
+talos auth-config bind-ntlm unpriv <profile-id>
+talos access server set unpriv admin-panel deny
+talos attack bac session-swap --role unpriv
+```
 
 ```bash
 talos attack bac session-swap

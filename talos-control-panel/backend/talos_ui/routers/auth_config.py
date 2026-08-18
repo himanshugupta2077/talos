@@ -236,6 +236,41 @@ def _normalize_health(row: dict | None) -> dict:
     }
 
 
+@router.get("/ntlm")
+def list_ntlm_bindings(project_id: str):
+    """Role → NTLM profile bindings plus the project auth model."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.projects.auth_mode import auth_mode_public_dict
+        from talos.projects.role_ntlm import list_role_ntlm_bindings
+
+        return {
+            "auth": auth_mode_public_dict(db_path),
+            "bindings": list_role_ntlm_bindings(db_path),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to load NTLM bindings: {exc}") from exc
+
+
+class BindNtlmBody(BaseModel):
+    profile: str
+
+
+@router.post("/{role_id}/ntlm")
+def bind_ntlm(project_id: str, role_id: str, body: BindNtlmBody):
+    results = cli.run_scoped(
+        project_id, ["auth-config", "bind-ntlm", role_id, body.profile]
+    )
+    return {"steps": [r.to_dict() for r in results]}
+
+
+@router.delete("/{role_id}/ntlm")
+def unbind_ntlm(project_id: str, role_id: str):
+    results = cli.run_scoped(project_id, ["auth-config", "unbind-ntlm", role_id])
+    return {"steps": [r.to_dict() for r in results]}
+
+
 @router.get("/{role_id}/state")
 def role_auth_state(project_id: str, role_id: str):
     """
