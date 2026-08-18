@@ -80,6 +80,15 @@ def test_talos_helper_documents_cors_attack() -> None:
     assert "cors status" in text
 
 
+def test_talos_helper_documents_sqli_attack() -> None:
+    """Root help must advertise talos attack sqli commands."""
+    text = _root_help_text()
+    assert "sqli techniques" in text
+    assert "sqli run" in text
+    assert "sqli results list|show" in text
+    assert "sqli status" in text
+
+
 def test_talos_helper_documents_layered_config() -> None:
     """Root help must advertise CLI-022 talos config commands."""
     text = _root_help_text()

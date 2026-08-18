@@ -16,6 +16,7 @@ final class TalosTrace {
             Map.entry("bac", "BAC"),
             Map.entry("auth-session", "Auth-Session Testing"),
             Map.entry("cors", "CORS Misconfiguration"),
+            Map.entry("sqli", "SQL Injection"),
             Map.entry("intruder", "Intruder"),
             Map.entry("passive", "Secret Detection"),
             Map.entry("error-intel", "Error Intelligence")

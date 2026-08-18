@@ -22,6 +22,7 @@ import BacModule from "./pages/attack/modules/BacModule";
 import AuthSessionModule from "./pages/attack/modules/AuthSessionModule";
 import IntruderModule from "./pages/attack/modules/IntruderModule";
 import CorsModule from "./pages/attack/modules/CorsModule";
+import SqliModule from "./pages/attack/modules/SqliModule";
 import LegacySecretRedirect from "./pages/attack/LegacySecretRedirect";
 import LegacyIvRedirect from "./pages/attack/LegacyIvRedirect";
 import LegacyAttackRedirect from "./pages/attack/LegacyAttackRedirect";
@@ -70,6 +71,7 @@ export default function App() {
               <Route path="/testing/auth-session" element={<AuthSessionModule />} />
               <Route path="/testing/intruder" element={<IntruderModule />} />
               <Route path="/testing/cors" element={<CorsModule />} />
+              <Route path="/testing/sqli" element={<SqliModule />} />
               <Route path="/testing/secrets" element={<SecretDetection />} />
               <Route
                 path="/testing/secrets/detections/:detectionId"

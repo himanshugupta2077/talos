@@ -102,6 +102,15 @@ CORS_ATTACK = "cors_attack"
 CORS_JOB_TYPES: tuple[str, ...] = (CORS_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# SQLi attack job type                                                 #
+# ------------------------------------------------------------------ #
+
+SQLI_ATTACK = "sqli_attack"
+"""SQL injection: one (entry point × payload) per job, one unique replay flow."""
+
+SQLI_JOB_TYPES: tuple[str, ...] = (SQLI_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # Input Validation job type constants                                  #
 # ------------------------------------------------------------------ #
 
@@ -167,6 +176,7 @@ JOB_TYPES: tuple[str, ...] = (
     + UNAUTH_JOB_TYPES
     + AUTH_SESSION_JOB_TYPES
     + CORS_JOB_TYPES
+    + SQLI_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
 )

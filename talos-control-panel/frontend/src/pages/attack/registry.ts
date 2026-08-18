@@ -27,7 +27,8 @@ export type AttackKpiSource =
   | "errors"
   | "intruder"
   | "url_sinks"
-  | "cors";
+  | "cors"
+  | "sqli";
 
 export interface AttackModuleDef {
   id: string;
@@ -227,6 +228,27 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "acac",
     ],
     kpi: "cors",
+  },
+  {
+    id: "sqli",
+    class: "active",
+    name: "SQL Injection",
+    description:
+      "Scan a captured flow: inject error / UNION / boolean / time payloads into every query, JSON, and form field. One unique replay per probe.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/sqli`,
+    keywords: [
+      "sqli",
+      "sql injection",
+      "union",
+      "error based",
+      "odbc",
+      "sql server",
+      "mysql",
+      "payload",
+    ],
+    kpi: "sqli",
   },
   {
     id: "intruder",

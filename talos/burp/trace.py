@@ -26,6 +26,7 @@ ENGINE_UNAUTH = "unauth"
 ENGINE_BAC = "bac"
 ENGINE_AUTH_SESSION = "auth-session"
 ENGINE_CORS = "cors"
+ENGINE_SQLI = "sqli"
 ENGINE_INTRUDER = "intruder"
 ENGINE_PASSIVE = "passive"
 ENGINE_ERROR_INTEL = "error-intel"
@@ -40,6 +41,7 @@ ENGINE_LABELS: dict[str, str] = {
     ENGINE_BAC: "BAC",
     ENGINE_AUTH_SESSION: "Auth-Session Testing",
     ENGINE_CORS: "CORS Misconfiguration",
+    ENGINE_SQLI: "SQL Injection",
     ENGINE_INTRUDER: "Intruder",
     ENGINE_PASSIVE: "Secret Detection",
     ENGINE_ERROR_INTEL: "Error Intelligence",

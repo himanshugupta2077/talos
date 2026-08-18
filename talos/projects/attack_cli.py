@@ -7,6 +7,7 @@ Purpose:
                      talos attack bac <module>
                      talos attack auth-session <subcommand>
                      talos attack cors <subcommand>
+                     talos attack sqli <subcommand>
 
     Unauth commands (talos attack unauth):
       run     — Generate UNAUTH_ATTACK jobs for all testable endpoints using
@@ -36,6 +37,11 @@ Purpose:
     CORS commands (talos attack cors):
       candidates | techniques | run | results list|show | status
       One cors_attack job per (baseline flow, Origin technique);
+      each job stores a unique replay flow.
+
+    SQLi commands (talos attack sqli):
+      techniques | run --flow | results list|show | status
+      One sqli_attack job per (flow, entry point, payload);
       each job stores a unique replay flow.
 
     Shared BAC flags (all modules):
@@ -85,7 +91,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Attack modules: unauth (unauthenticated access), "
             "auth-session (token validation mutations), "
             "bac (broken access control), "
-            "cors (CORS misconfiguration)."
+            "cors (CORS misconfiguration), "
+            "sqli (SQL injection)."
         ),
     )
     sub = parser.add_subparsers(dest="attack_type", metavar="<attack>")
@@ -106,6 +113,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- cors ---- #
     from talos.cors.cli import build_cors_parser
     build_cors_parser(sub)
+
+    # ---- sqli ---- #
+    from talos.sqli.cli import build_sqli_parser
+    build_sqli_parser(sub)
 
     return parser
 
@@ -142,3 +153,7 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type == "cors":
         from talos.cors.cli import run_cors_cli
         run_cors_cli(manager, args)
+
+    elif args.attack_type == "sqli":
+        from talos.sqli.cli import run_sqli_cli
+        run_sqli_cli(manager, args)

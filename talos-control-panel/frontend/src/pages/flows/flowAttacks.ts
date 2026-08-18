@@ -49,6 +49,21 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       api.post("/api/attack/cors/run", { flows: flowIds }, { project_id: projectId }),
   },
   {
+    id: "sqli",
+    name: "SQL Injection",
+    shortLabel: "SQLi",
+    description:
+      "Inject SQL payloads into every query, JSON, and form field on these flows.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/sqli`,
+    cliHint: "talos attack sqli run --flow",
+    jobsPerFlow: 18,
+    run: (projectId, flowIds) =>
+      api.post("/api/attack/sqli/run", { flows: flowIds }, { project_id: projectId }),
+  },
+  {
     id: "unauth",
     name: "Unauthenticated Execution",
     shortLabel: "Unauth",

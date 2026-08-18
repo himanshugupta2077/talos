@@ -463,6 +463,6 @@ def test_filters_include_static_statuses_and_families(client):
         "cancelled",
     ):
         assert s in body["statuses"]
-    for f in ("replay", "bac", "iv", "unauth", "cors", "auth_session", "intruder"):
+    for f in ("replay", "bac", "iv", "unauth", "cors", "sqli", "auth_session", "intruder"):
         assert f in body["job_types"] or f in body.get("families", [])
     assert "done" in body["pruneable_statuses"]

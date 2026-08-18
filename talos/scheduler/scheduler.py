@@ -101,6 +101,7 @@ from talos.scheduler.job import (
     UNAUTH_ATTACK,
     UNAUTH_JOB_TYPES,
     CORS_JOB_TYPES,
+    SQLI_JOB_TYPES,
     IV_JOB_TYPES,
     INTRUDER_JOB_TYPES,
     INTRUDER_SESSION,
@@ -557,6 +558,9 @@ class ReplayScheduler:
 
             elif job.job_type in CORS_JOB_TYPES:
                 self._execute_cors_job(job)
+
+            elif job.job_type in SQLI_JOB_TYPES:
+                self._execute_sqli_job(job)
 
             elif job.job_type in IV_JOB_TYPES:
                 self._execute_iv_job(job)
@@ -1341,6 +1345,126 @@ class ReplayScheduler:
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("[findings] CORS finding creation error (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # SQLi job execution                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _execute_sqli_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute a SQLI_ATTACK job: unique replay flow with one payload.
+        Input:   job — ReplayJob with sqli_attack type and point/payload meta.
+        Side effects:
+            Outbound HTTP; new flow + sqli_results; finding on SQLI.
+        """
+        import json as _json
+        from talos.sqli.engine import execute_sqli_job
+        from talos.sqli.models import SqliOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "sqli_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "sqli_meta_parse_error")
+                return
+
+        try:
+            outcome: SqliOutcome = asyncio.run(
+                execute_sqli_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in sqli job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_sqli_outcome(job, outcome)
+
+    def _settle_sqli_outcome(self, job: ReplayJob, outcome: "SqliOutcome") -> None:
+        """
+        Purpose:
+            Map SqliOutcome to job terminal state; create finding on SQLI.
+        """
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "sqli_job_missing_flow_id",
+            "sqli_point_missing",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  sqli=%s  technique=%s  param=%s",
+            job.job_id[:8],
+            outcome.verdict,
+            outcome.technique,
+            outcome.param_name,
+        )
+
+        if outcome.verdict == "SQLI":
+            self._maybe_create_finding_sqli(job, outcome)
+
+    def _maybe_create_finding_sqli(
+        self, job: ReplayJob, outcome: "SqliOutcome"
+    ) -> None:
+        """
+        Purpose:
+            Create a PRIMARY/LINKED SQLi finding on a confirmed probe.
+        """
+        from talos.sqli.findings_bridge import maybe_create_sqli_finding
+
+        try:
+            maybe_create_sqli_finding(
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                outcome=outcome,
+                job_id=job.job_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[findings] SQLi finding creation error (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------ #
     # Finding creation hooks                                               #

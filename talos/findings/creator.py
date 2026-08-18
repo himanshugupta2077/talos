@@ -71,6 +71,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_UNAUTH_RESULT,
     EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_CORS_RESULT,
+    EVIDENCE_TYPE_SQLI_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
     TIMELINE_ACTOR_SYSTEM,
@@ -178,6 +179,7 @@ def create_finding_from_verdict(
             bac          → BAC:<endpoint_id>:<attacker>:<target>
             auth_session → AUTH_SESSION:<auth_type>
             cors         → CORS:<scheme://netloc>
+            sqli         → SQLI:<endpoint_id>
 
         The first finding in a cluster becomes PRIMARY; later findings in
         the same cluster become LINKED to that PRIMARY.  Every successful
@@ -576,6 +578,19 @@ def _attach_evidence(
                 "CORS misconfiguration probe"
                 + (f" — {variant}" if variant else ""),
                 cors_data,
+            )
+
+    elif attack_module == "sqli":
+        if replayed_flow_id_for_result:
+            sqli_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                sqli_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_SQLI_RESULT, replayed_flow_id_for_result,
+                "SQL injection probe"
+                + (f" — {variant}" if variant else ""),
+                sqli_data,
             )
 
 

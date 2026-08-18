@@ -360,6 +360,33 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // SQL injection (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/sqli/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.SQLI ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          sqli: {
+            chips: [
+              {
+                label: "sqli",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Intruder (active high-volume)
     api
       .get<{

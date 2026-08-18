@@ -10,6 +10,7 @@ export const ATTACK_DISPLAY: Record<string, string> = {
   auth_test: "Authentication Bypass",
   iv: "Input Validation",
   cors: "CORS Misconfiguration",
+  sqli: "SQL Injection",
   intruder: "Intruder",
   replay: "Replay",
 };
@@ -20,6 +21,7 @@ export const ATTACK_MODULE_SHORT: Record<string, string> = {
   bac: "BAC",
   unauth: "Unauth",
   cors: "CORS misconfig",
+  sqli: "SQLi",
   auth_session: "Auth-session",
   auth_test: "Auth test",
   intruder: "Intruder",

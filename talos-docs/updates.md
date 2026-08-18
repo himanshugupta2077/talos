@@ -2,6 +2,33 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## SQLi — scan any flow for SQL injection
+
+**Shipped:** 2026-08-18
+
+New active attack module (`talos attack sqli` / Control Panel `/testing/sqli`).
+
+Pick a captured flow and Talos walks every query parameter, JSON field or
+array index (including a root JSON array), and form field. Each payload is
+one `sqli_attack` scheduler job and one unique replay flow.
+
+Detection is conservative: a finding is created only when the probe shows a
+**new** DBMS error versus the captured baseline (SQL Server / MySQL /
+Postgres / Oracle / SQLite signatures, including the ODBC conversion /
+`Unclosed quotation mark` family), a UNION column-count leak, or a time
+delay. A baseline that already returns `Conversion failed when converting
+date` does not become a finding by itself.
+
+```
+talos attack sqli run --flow <uuid>
+talos attack sqli run --flow <uuid> --family error
+talos attack sqli results list
+```
+
+Schema **v59**: `sqli_results`. Tests: `tests/test_sqli_*.py`.
+
+---
+
 ## Roles — privilege ranks and automatic BAC diffs
 
 **Shipped:** 2026-08-18

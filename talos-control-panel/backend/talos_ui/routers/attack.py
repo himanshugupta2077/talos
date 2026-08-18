@@ -1174,3 +1174,201 @@ def run_cors(project_id: str, body: CorsRunBody):
         args.append("--right-now")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# SQL injection                                                        #
+# ------------------------------------------------------------------ #
+
+SQLI_TECHNIQUE_FALLBACK = [
+    "quote_single",
+    "quote_double",
+    "quote_paren",
+    "comment_dash",
+    "stacked_semi",
+    "tautology",
+    "mssql_convert",
+    "mysql_extractvalue",
+    "union_1",
+    "union_2",
+    "union_3",
+    "union_4",
+    "union_5",
+    "bool_true",
+    "bool_false",
+    "mssql_waitfor",
+    "mysql_sleep",
+    "pg_sleep",
+]
+
+SQLI_FAMILY_FALLBACK = ["error", "union", "boolean", "time"]
+
+
+def _load_sqli_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.sqli.models import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in SQLI_TECHNIQUE_FALLBACK
+        ]
+
+
+def _sqli_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'sqli_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/sqli/techniques")
+def sqli_techniques():
+    """SQLi payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_sqli_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(SQLI_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/sqli/results")
+def sqli_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.sqli.db import list_sqli_results
+
+        rows = list_sqli_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/sqli/summary")
+def sqli_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.sqli.db import count_sqli_verdicts
+
+        counts = count_sqli_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/sqli/overview")
+def sqli_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the SQLi workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.sqli.db import count_sqli_verdicts, list_sqli_results
+
+        counts = count_sqli_verdicts(db_path)
+        recent = list_sqli_results(db_path, verdict="SQLI", limit=top_n)
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _sqli_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_sqli_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(SQLI_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class SqliRunBody(BaseModel):
+    """Mirrors talos attack sqli run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    right_now: bool = False
+
+
+@router.post("/sqli/run")
+def run_sqli(project_id: str, body: SqliRunBody):
+    known = {t["name"] for t in _load_sqli_technique_meta()} or set(
+        SQLI_TECHNIQUE_FALLBACK
+    )
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "SQLi run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "sqli", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    if body.technique:
+        tech = body.technique.strip()
+        if tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown SQLi technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in SQLI_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown SQLi family '{fam}'; "
+                f"expected one of: {', '.join(SQLI_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.right_now:
+        args.append("--right-now")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

@@ -58,6 +58,7 @@ _KNOWN_FAMILIES = (
     "iv",
     "unauth",
     "cors",
+    "sqli",
     "auth_session",
     "auth_test",
     "intruder",
@@ -81,6 +82,8 @@ def _job_family(job_type: str | None) -> str:
         return "unauth"
     if raw.startswith("cors"):
         return "cors"
+    if raw.startswith("sqli"):
+        return "sqli"
     if raw.startswith("auth_session"):
         return "auth_session"
     if raw.startswith("intruder"):

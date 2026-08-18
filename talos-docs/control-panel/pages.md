@@ -471,6 +471,7 @@ Testing is a **hub + module** workspace (sidebar label **Attack Module** under t
 | `/testing/bac` | BAC (Active) — Overview / Run / Results / Filter workspace |
 | `/testing/auth-session` | Auth-Session Testing (Active) — full JWT mutation lifecycle (CLI parity) |
 | `/testing/cors` | CORS Misconfiguration (Active) — Origin reflection probes |
+| `/testing/sqli` | SQL Injection (Active) — error / UNION / time probes on a chosen flow |
 | `/testing/input-validation` | Input Validation (Active) — characterization workspace |
 | `/testing/input-validation/params/:id` | Parameter dossier |
 | `/testing/input-validation/endpoints/:id` | Endpoint intelligence dossier |
@@ -488,9 +489,9 @@ Testing is a **hub + module** workspace (sidebar label **Attack Module** under t
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Discover and launch security tests; module-specific run + results |
-| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity), `/api/attack/cors/*` (overview, techniques, run, results, summary); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
-| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `attack cors run\|candidates\|results\|status`; `talos input-validation …`; `talos passive …` for secrets |
-| **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results, cors_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
+| **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity), `/api/attack/cors/*` (overview, techniques, run, results, summary), `/api/attack/sqli/*` (overview, techniques, run, results, summary); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
+| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `attack cors run\|candidates\|results\|status`; `attack sqli run --flow`; `talos input-validation …`; `talos passive …` for secrets |
+| **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results, cors_results, sqli_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
 | **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
 | **Workflow** | Hub → open module card → run / triage → Findings for global lifecycle |
 | **Nav** | Sidebar group **Testing** → **Scheduler** + **Attack Module** (`/testing`). Available Active modules (Unauth, BAC, Auth-Session, Input Validation, CORS, Intruder) nest under Attack Module. Passive modules stay hub-only. |
@@ -508,6 +509,20 @@ Tabbed workspace for `talos attack cors …`. Same enqueue → unique replay flo
 | **Results** | Filterable table (verdict, technique, host); row opens the unique replay flow |
 
 Finding rule (core): only attacker origin / subdomain reflection creates a PRIMARY finding (`CORS:<origin>`); extra techniques LINKED. `ACAO: *` and credentials-only are not standalone issues.
+
+### SQL Injection (`/testing/sqli`)
+
+**Files:** `pages/attack/modules/SqliModule.tsx` + `pages/attack/sqli/*`
+
+Tabbed workspace for `talos attack sqli …`. Operator must pick a flow (paste UUIDs or use the Flows table attack bar).
+
+| Tab | Role |
+|-----|------|
+| **Overview** | SQLI / SECURE / UNKNOWN KPIs, job pressure, recent confirmed issues |
+| **Run** | Flow UUID list, family/technique picker, enqueue → `attack sqli run --flow …` |
+| **Results** | Filterable table (verdict, family, technique, host); row opens the unique replay flow |
+
+Finding rule (core): new DBMS error vs baseline, UNION column-count leak, or time delay → PRIMARY (`SQLI:<endpoint_id>`), later probes LINKED.
 
 ### Unauthenticated Execution (`/testing/unauth`)
 

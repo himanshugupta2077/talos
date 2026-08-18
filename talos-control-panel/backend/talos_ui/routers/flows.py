@@ -84,6 +84,7 @@ _KNOWN_ATTACK_MODULES = (
     "bac",
     "unauth",
     "cors",
+    "sqli",
     "auth_session",
     "auth_test",
     "intruder",
@@ -95,6 +96,8 @@ _ATTACK_MODULE_ALIASES = {
     "cors_attack": "cors",
     "cors_misconfig": "cors",
     "cors_misconfiguration": "cors",
+    "sqli_attack": "sqli",
+    "sql_injection": "sqli",
     "auth-session": "auth_session",
     "unauth_attack": "unauth",
 }

@@ -473,7 +473,7 @@ def test_filters_include_attack_modules(client):
     assert res.status_code == 200
     body = res.json()
     mods = body["attack_modules"]
-    for expected in ("iv", "bac", "unauth", "cors", "auth_session", "auth_test", "intruder"):
+    for expected in ("iv", "bac", "unauth", "cors", "sqli", "auth_session", "auth_test", "intruder"):
         assert expected in mods
 
 
