@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 63
+SCHEMA_VERSION = 64
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1732,6 +1732,38 @@ CREATE INDEX IF NOT EXISTS idx_host_header_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_host_header_results_original
     ON host_header_results (original_flow_id, verdict);
+
+-- ------------------------------------------------------------------ --
+-- xss_results: one unique replay per XSS / HTMLI probe (v64)           --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS xss_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    context_hint       TEXT,
+    encoding_hint      TEXT,
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_xss_results_verdict
+    ON xss_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_xss_results_original
+    ON xss_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -2019,6 +2051,38 @@ CREATE INDEX IF NOT EXISTS idx_host_header_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_host_header_results_original
     ON host_header_results (original_flow_id, verdict);
+"""
+
+# Shared CREATE statements for XSS / HTML injection (schema v64).
+_XSS_SCHEMA_V64_DDL = """
+CREATE TABLE IF NOT EXISTS xss_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    context_hint       TEXT,
+    encoding_hint      TEXT,
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_xss_results_verdict
+    ON xss_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_xss_results_original
+    ON xss_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -3115,6 +3179,7 @@ def migrate_project_db(db_path: Path) -> None:
         v60 → v61: path_traversal_results — path traversal / LFI.
         v61 → v62: ssrf_results + open_redirect_results.
         v62 → v63: host_header_results — host-header injection.
+        v63 → v64: xss_results — XSS / HTML injection.
     """
     if not db_path.exists():
         return
@@ -4551,6 +4616,12 @@ def migrate_project_db(db_path: Path) -> None:
             # Host-header injection: unique replay flow per (header × payload).
             conn.executescript(_HOST_HEADER_SCHEMA_V63_DDL)
             conn.execute("UPDATE schema_version SET version = 63")
+            conn.commit()
+
+        if current < 64:
+            # XSS / HTML injection: unique replay flow per (entry point × payload).
+            conn.executescript(_XSS_SCHEMA_V64_DDL)
+            conn.execute("UPDATE schema_version SET version = 64")
             conn.commit()
 
 

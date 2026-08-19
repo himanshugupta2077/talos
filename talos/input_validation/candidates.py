@@ -148,6 +148,32 @@ _NETWORK_ERROR_CLASSES: frozenset[str] = frozenset({
 # Minimum score to include a candidate in the default list (avoid noise).
 MIN_EMIT_SCORE = 25
 
+# Parameter-name tokens that often reflect into HTML / JS (XSS / HTMLI).
+# Avoid tokens that are substrings of common auth fields (e.g. "name" in username).
+_XSS_NAME_TOKENS: tuple[str, ...] = (
+    "q",
+    "query",
+    "search",
+    "keyword",
+    "comment",
+    "message",
+    "content",
+    "title",
+    "html",
+    "callback",
+    "jsonp",
+    "template",
+    "caption",
+    "bio",
+    "about",
+    "term",
+    "preview",
+    "note",
+    "slogan",
+    "headline",
+    "markup",
+)
+
 # Parameter-name tokens that often feed a filesystem include / download / template.
 _PATH_TRAVERSAL_NAME_TOKENS: tuple[str, ...] = (
     "path",
@@ -1160,7 +1186,7 @@ def _score_xss(ctx: _ProfileView) -> dict[str, Any] | None:
 
     Stored / cross-page evidence satisfies the reflection gate and contributes
     ordered reasons naming source and sink endpoints. Prioritization only —
-    not XSS confirmation.
+    not XSS confirmation (that is ``talos attack xss``).
     """
     score = 0
     reasons: list[str] = []
@@ -1267,6 +1293,19 @@ def _score_xss(ctx: _ProfileView) -> dict[str, Any] | None:
     if ctx.has(CAPABILITY_JS_CONTEXT):
         score += 22
         confs.append(75)
+
+    name_hits = _name_tokens_match(ctx.name, _XSS_NAME_TOKENS)
+    if name_hits:
+        score += 10
+        confs.append(60)
+
+    contexts: list[str] = []
+    for blob in (ctx.refl, same, cross):
+        if isinstance(blob, dict):
+            contexts.extend(str(item).lower() for item in (blob.get("contexts") or []))
+    if any(item in ("attr", "attribute", "html_attr", "event") for item in contexts):
+        score += 12
+        confs.append(70)
     if ctx.has(CAPABILITY_URL_CONTEXT) and reflected:
         score += 8
     if ctx.has(CAPABILITY_JSON_CONTEXT) and reflected:
@@ -1326,6 +1365,10 @@ def _score_xss(ctx: _ProfileView) -> dict[str, Any] | None:
         ordered.append("reflection context includes html")
     if ctx.has(CAPABILITY_JS_CONTEXT):
         ordered.append("reflection context includes javascript")
+    if name_hits:
+        ordered.append(f"name suggests reflected HTML ({', '.join(name_hits[:3])})")
+    if any(item in ("attr", "attribute", "html_attr", "event") for item in contexts):
+        ordered.append("reflection context includes html attribute / event")
     if ctx.has(CAPABILITY_URL_CONTEXT) and reflected:
         ordered.append("reflection in url context")
     if ctx.has(CAPABILITY_JSON_CONTEXT) and reflected:

@@ -114,6 +114,11 @@ SQLI_JOB_TYPES: tuple[str, ...] = (SQLI_ATTACK,)
 # Path traversal / LFI job type                                        #
 # ------------------------------------------------------------------ #
 
+XSS_ATTACK = "xss_attack"
+"""XSS / HTML injection: one (entry point × payload) per job, one unique replay flow."""
+
+XSS_JOB_TYPES: tuple[str, ...] = (XSS_ATTACK,)
+
 PATH_TRAVERSAL_ATTACK = "path_traversal_attack"
 """Path traversal / LFI: one (entry point × payload) per job, one unique replay flow."""
 
@@ -222,6 +227,7 @@ JOB_TYPES: tuple[str, ...] = (
     + AUTH_SESSION_JOB_TYPES
     + CORS_JOB_TYPES
     + SQLI_JOB_TYPES
+    + XSS_JOB_TYPES
     + PATH_TRAVERSAL_JOB_TYPES
     + SSRF_JOB_TYPES
     + OPEN_REDIRECT_JOB_TYPES

@@ -10,6 +10,7 @@ describe("availableModulesForClass", () => {
       "Input Validation",
       "CORS Misconfiguration",
       "SQL Injection",
+      "XSS / HTML Injection",
       "Path Traversal",
       "SSRF",
       "Open Redirect",

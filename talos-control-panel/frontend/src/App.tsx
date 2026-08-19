@@ -23,6 +23,7 @@ import AuthSessionModule from "./pages/attack/modules/AuthSessionModule";
 import IntruderModule from "./pages/attack/modules/IntruderModule";
 import CorsModule from "./pages/attack/modules/CorsModule";
 import SqliModule from "./pages/attack/modules/SqliModule";
+import XssModule from "./pages/attack/modules/XssModule";
 import PathTraversalModule from "./pages/attack/modules/PathTraversalModule";
 import SsrfModule from "./pages/attack/modules/SsrfModule";
 import OpenRedirectModule from "./pages/attack/modules/OpenRedirectModule";
@@ -77,6 +78,7 @@ export default function App() {
               <Route path="/testing/intruder" element={<IntruderModule />} />
               <Route path="/testing/cors" element={<CorsModule />} />
               <Route path="/testing/sqli" element={<SqliModule />} />
+              <Route path="/testing/xss" element={<XssModule />} />
               <Route path="/testing/path-traversal" element={<PathTraversalModule />} />
               <Route path="/testing/ssrf" element={<SsrfModule />} />
               <Route path="/testing/open-redirect" element={<OpenRedirectModule />} />

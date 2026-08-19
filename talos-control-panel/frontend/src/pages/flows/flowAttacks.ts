@@ -68,6 +68,25 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       ),
   },
   {
+    id: "xss",
+    name: "XSS / HTML Injection",
+    shortLabel: "XSS",
+    description:
+      "Inject XSS and HTMLI payloads into every query, JSON, form, and path field on these flows.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/xss`,
+    cliHint: "talos attack xss run --flow --high-priority",
+    jobsPerFlow: 82,
+    run: (projectId, flowIds) =>
+      api.post(
+        "/api/attack/xss/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
+  },
+  {
     id: "path-traversal",
     name: "Path Traversal",
     shortLabel: "LFI",

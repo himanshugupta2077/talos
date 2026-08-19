@@ -1163,6 +1163,51 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.xss",
+        "label": "Attack — XSS / HTML Injection",
+        "commands": [
+            cmd("attack.xss.techniques", ["attack", "xss", "techniques"], "List XSS / HTMLI payloads", [
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["html_tag", "htmli", "html_attr", "event", "js", "url", "encoded", "bypass", "polyglot"],
+                    help="Restrict to one payload family",
+                ),
+            ]),
+            cmd("attack.xss.run", ["attack", "xss", "run"], "Enqueue XSS / HTMLI probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to scan"),
+                arg(
+                    "param",
+                    flag="--param",
+                    help="Restrict to one entry point (query key, JSON path, form field, path param). Repeatable.",
+                ),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    help="Restrict to one payload technique (default: all)",
+                ),
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["html_tag", "htmli", "html_attr", "event", "js", "url", "encoded", "bypass", "polyglot"],
+                    help="Restrict to one payload family",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run XSS ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
+            ]),
+            cmd("attack.xss.results.list", ["attack", "xss", "results", "list"], "List XSS probe results"),
+            cmd("attack.xss.status", ["attack", "xss", "status"], "XSS verdict and job tallies"),
+        ],
+    },
+    {
         "group": "attack.path-traversal",
         "label": "Attack — Path Traversal / LFI",
         "commands": [

@@ -17,6 +17,7 @@ final class TalosTrace {
             Map.entry("auth-session", "Auth-Session Testing"),
             Map.entry("cors", "CORS Misconfiguration"),
             Map.entry("sqli", "SQL Injection"),
+            Map.entry("xss", "XSS"),
             Map.entry("path-traversal", "Path Traversal"),
             Map.entry("ssrf", "SSRF"),
             Map.entry("open-redirect", "Open Redirect"),

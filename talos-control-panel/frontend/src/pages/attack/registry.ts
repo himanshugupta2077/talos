@@ -29,6 +29,7 @@ export type AttackKpiSource =
   | "url_sinks"
   | "cors"
   | "sqli"
+  | "xss"
   | "path_traversal"
   | "ssrf"
   | "open_redirect"
@@ -254,6 +255,28 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "payload",
     ],
     kpi: "sqli",
+  },
+  {
+    id: "xss",
+    class: "active",
+    name: "XSS / HTML Injection",
+    description:
+      "Scan a captured flow for XSS and HTML injection: HTML/JS tags, HTMLI markup, attribute breakout, event handlers, JS-context, javascript:/data: URIs, encodings, WAF bypasses, and polyglots. Optional parameter. One unique replay per probe; shows in the Talos Burp extension.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/xss`,
+    keywords: [
+      "xss",
+      "html injection",
+      "htmli",
+      "cross-site scripting",
+      "script",
+      "onerror",
+      "javascript:",
+      "reflected",
+      "canary",
+    ],
+    kpi: "xss",
   },
   {
     id: "path-traversal",

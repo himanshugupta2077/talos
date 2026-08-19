@@ -115,7 +115,7 @@ talos
 │            prune / clear / pause / resume
 ├─ mutation  add / list / edit / enable / disable / delete
 ├─ attack    unauth (run, config, filter) / bac (8 modules + filter)
-│            / cors / sqli / path-traversal / ssrf / open-redirect / smuggle
+│            / cors / sqli / xss / path-traversal / ssrf / open-redirect / smuggle
 ├─ passive   status / config show|set / rules list /
 │            documents list|show / detections list|show /
 │            rescan --all|--document|--flow
@@ -2304,6 +2304,7 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 | `sqli_results` | SQLi: one verdict row per unique payload replay flow (v59) |
 | `smuggle_results` | Smuggle: one verdict row per unique CL/TE replay flow (v60) |
 | `path_traversal_results` | Path traversal / LFI: one verdict row per unique payload replay flow (v61) |
+| `xss_results` | XSS / HTMLI: one verdict row per unique payload replay flow (v64) |
 | `ssrf_results` | SSRF: one verdict row per unique payload replay flow (v62) |
 | `open_redirect_results` | Open redirect: one verdict row per unique payload replay flow (v62) |
 | `proxy_config` | Direct vs upstream URL |
@@ -2338,6 +2339,7 @@ From `talos.scheduler.job`:
 | Auth-session (Phase 4) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed + WEAK_VALIDATION findings) |
 | CORS | `cors_attack` (one unique replay flow per Origin technique) |
 | SQLi | `sqli_attack` (one unique replay flow per entry point × payload) |
+| XSS / HTML injection | `xss_attack` (one unique replay flow per entry point × payload) |
 | Path traversal / LFI | `path_traversal_attack` (one unique replay flow per entry point × payload) |
 | SSRF | `ssrf_attack` (one unique replay flow per entry point × payload) |
 | Open redirect | `open_redirect_attack` (one unique replay flow per entry point × payload) |
@@ -2396,6 +2398,8 @@ Notable milestones:
 | v60 | HTTP request smuggling: `smuggle_results` |
 | v61 | Path traversal / LFI: `path_traversal_results` |
 | v62 | SSRF + open redirect: `ssrf_results`, `open_redirect_results` |
+| v63 | Host-header injection: `host_header_results` |
+| v64 | XSS / HTML injection: `xss_results` |
 
 ---
 

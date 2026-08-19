@@ -2,6 +2,42 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## XSS / HTML Injection
+
+**Shipped:** 2026-08-19
+
+New active attack module (`talos attack xss` / Control Panel
+`/testing/xss`, aliases `htmli` and `html_injection`).
+
+Give one or more captured flow UUIDs. Talos injects query, JSON, form,
+multipart filename, and path-parameter values with a typed catalogue
+(HTML/JS execution tags, HTMLI markup, attribute breakout, event
+handlers, JS-context breakout, `javascript:` / `data:` URIs, URL /
+double-URL / HTML-entity / unicode encodings, WAF bypasses, and
+polyglots). Every payload embeds the canary `TalosXss`. Optional
+`--param` restricts the scan to one entry point.
+
+Each probe is one `xss_attack` scheduler job and one unique replay
+flow. The Talos Burp extension groups those flows under **XSS**. A
+finding is created when the canary reflects with an **unencoded JS
+sink** (XSS) or **unencoded HTML markup** (HTMLI) that was not already
+in the captured baseline. HTML-entity / URL-encoded echo is not a
+finding.
+
+IV candidate scoring for `xss` now also ranks reflected-HTML-ish names
+(`q`, `search`, `comment`, `callback`, `jsonp`, …) and attribute /
+event reflection contexts. IV still does not confirm.
+
+```bash
+talos attack xss run --flow <uuid>
+talos attack xss run --flow <uuid> --param q
+talos attack xss run --flow <uuid> --family html_tag
+talos attack xss run --flow <uuid> --technique script_alert
+talos attack xss run --flow <uuid> --family htmli
+```
+
+---
+
 ## SSRF and Open Redirect
 
 **Shipped:** 2026-08-19

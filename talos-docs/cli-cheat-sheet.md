@@ -1717,6 +1717,50 @@ Flows table multi-select (SQL Injection).
 
 ---
 
+## Attack — XSS / HTML injection (`xss`)
+
+Active module. Operator picks one or more captured flows (`--flow UUID`,
+required). The engine walks **query parameters**, **JSON body fields or
+array indexes**, **form fields**, **multipart filenames**, and **path
+parameters**, then **appends** (or replaces, for URI payloads) XSS and
+HTMLI payloads. Every payload embeds the canary `TalosXss`.
+
+Optional **`--param NAME`** (also `--parameter`) restricts the scan to one
+entry point: a query key, JSON path (`user.comment`, `[0]`), form field,
+path param, or `location:name` (`query:q`). Repeatable.
+
+Families: `html_tag` · `htmli` · `html_attr` · `event` · `js` · `url` ·
+`encoded` · `bypass` · `polyglot`.
+
+`talos attack xss run --flow <uuid>` enqueues one `xss_attack` scheduler job
+per (entry point × payload). Each job writes a **unique replay flow**. Jobs
+default to **high priority (200)**. A finding is created when the canary
+reflects with an unencoded JS sink (XSS) or unencoded HTML markup (HTMLI).
+Encoded echo (`&lt;`, `%3C`) is not a finding.
+
+```bash
+talos attack xss techniques
+talos attack xss techniques --family html_tag
+talos attack xss run --flow <uuid>
+talos attack xss run --flow <uuid> --param q
+talos attack xss run --flow <uuid> --param query:q
+talos attack xss run --flow <uuid> --family htmli
+talos attack xss run --flow <uuid> --technique script_alert
+talos attack xss run --flow <uuid1> --flow <uuid2>
+talos attack xss run --flow <uuid> --right-now
+talos attack xss run --flow <uuid> --high-priority
+talos attack xss run --flow <uuid> --no-high-priority
+talos attack xss results list
+talos attack xss results show <replay_flow_id>
+talos attack xss status
+```
+
+Control Panel: `/testing/xss` (Overview / Run / Results). Also run from the
+Flows table multi-select (XSS / HTML Injection). Aliases: `htmli`,
+`html_injection`.
+
+---
+
 ## Attack — Path traversal / LFI (`path-traversal`)
 
 Active module. Operator picks one or more captured flows (`--flow UUID`,

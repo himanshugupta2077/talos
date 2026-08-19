@@ -537,6 +537,8 @@ Negative evidence **lowers** scores and is recorded in `reasons` (e.g. “negati
 | `js_context` | +22 | JS/javascript context |
 | `url_context` + reflected | +8 | URL context |
 | `json_context` + reflected | +5 | JSON context (lower XSS relevance) |
+| Name tokens (`q`, `search`, `comment`, `callback`, `jsonp`, …) | +10 | Reflected-HTML-ish parameter name (not a substring of `username`) |
+| Attribute / event reflection context | +12 | `attr` / `html_attr` / `event` in reflection contexts |
 | Class `markup` soft-accept | +28 | Outcome on markup representative (`<`, etc.) accepted/modified/encoded/normalized |
 | Class `quote` soft-accept | +12 | Quote class soft-accept |
 | Class `markup` **rejected** | −20 | Negative evidence |

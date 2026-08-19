@@ -108,6 +108,15 @@ def test_talos_helper_documents_open_redirect_attack() -> None:
     assert "open-redirect status" in text
 
 
+def test_talos_helper_documents_xss_attack() -> None:
+    """Root help must advertise talos attack xss commands."""
+    text = _root_help_text()
+    assert "xss techniques" in text
+    assert "xss run" in text
+    assert "xss results list|show" in text
+    assert "xss status" in text
+
+
 def test_talos_helper_documents_path_traversal_attack() -> None:
     """Root help must advertise talos attack path-traversal commands."""
     text = _root_help_text()

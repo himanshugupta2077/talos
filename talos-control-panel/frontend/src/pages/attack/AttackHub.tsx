@@ -387,6 +387,33 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // XSS / HTML injection (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/xss/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = (c.XSS ?? 0) + (c.HTMLI ?? 0);
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          xss: {
+            chips: [
+              {
+                label: "xss",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // Path traversal / LFI (active)
     api
       .get<{ counts: Record<string, number> }>("/api/attack/path-traversal/summary", {

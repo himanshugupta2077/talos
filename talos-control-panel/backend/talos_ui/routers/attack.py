@@ -1691,6 +1691,285 @@ def run_smuggle(project_id: str, body: SmuggleRunBody):
 
 
 # ------------------------------------------------------------------ #
+# XSS / HTML injection                                                 #
+# ------------------------------------------------------------------ #
+
+XSS_FAMILY_FALLBACK = [
+    "html_tag",
+    "htmli",
+    "html_attr",
+    "event",
+    "js",
+    "url",
+    "encoded",
+    "bypass",
+    "polyglot",
+]
+
+
+def _load_xss_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.xss.payloads import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in (
+                "script_alert",
+                "img_onerror",
+                "h1_tag",
+                "dq_img_break",
+                "js_sq_break",
+                "enc_url_script",
+                "bypass_case",
+            )
+        ]
+
+
+def _xss_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'xss_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/xss/techniques")
+def xss_techniques():
+    """XSS payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_xss_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(XSS_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/xss/results")
+def xss_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.xss.db import list_xss_results
+
+        rows = list_xss_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/xss/summary")
+def xss_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.xss.db import count_xss_verdicts
+
+        counts = count_xss_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/xss/overview")
+def xss_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the XSS workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.xss.db import (
+            count_xss_verdicts,
+            list_xss_results,
+        )
+
+        counts = count_xss_verdicts(db_path)
+        hits = list_xss_results(db_path, verdict="XSS", limit=top_n)
+        if len(hits) < top_n:
+            htmlis = list_xss_results(db_path, verdict="HTMLI", limit=top_n)
+            seen = {row.get("replay_flow_id") for row in hits}
+            for row in htmlis:
+                if row.get("replay_flow_id") in seen:
+                    continue
+                hits.append(row)
+                if len(hits) >= top_n:
+                    break
+        recent = hits[:top_n]
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _xss_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_xss_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(XSS_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class XssRunBody(BaseModel):
+    """Mirrors talos attack xss run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
+    right_now: bool = False
+    high_priority: bool = True
+
+
+@router.get("/xss/points")
+def xss_points(project_id: str, flow: str):
+    """
+    Purpose:
+        List injectable entry points on one or more captured flows.
+    Input:
+        flow — comma-separated flow UUIDs.
+    Output:
+        {points: [{flow_id, location, name, original, surface_kind}, ...]}.
+    """
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.xss.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(
+            500, f"XSS inject module unavailable: {exc}"
+        ) from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT f.id, f.url, f.query, f.request_headers, f.request_body,
+                   COALESCE(e.normalized_path, '') AS normalized_path
+            FROM flows f
+            LEFT JOIN endpoints e ON e.id = f.endpoint_id
+            WHERE f.id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+            normalized_path=str(row.get("normalized_path") or ""),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
+
+
+@router.post("/xss/run")
+def run_xss(project_id: str, body: XssRunBody):
+    known = {t["name"] for t in _load_xss_technique_meta()}
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "XSS run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "xss", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--param", name]
+    if body.technique:
+        tech = body.technique.strip()
+        if known and tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown xss technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in XSS_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown xss family '{fam}'; "
+                f"expected one of: {', '.join(XSS_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.right_now:
+        args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
 # Path traversal / LFI                                                 #
 # ------------------------------------------------------------------ #
 

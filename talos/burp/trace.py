@@ -27,6 +27,7 @@ ENGINE_BAC = "bac"
 ENGINE_AUTH_SESSION = "auth-session"
 ENGINE_CORS = "cors"
 ENGINE_SQLI = "sqli"
+ENGINE_XSS = "xss"
 ENGINE_PATH_TRAVERSAL = "path-traversal"
 ENGINE_SSRF = "ssrf"
 ENGINE_OPEN_REDIRECT = "open-redirect"
@@ -47,6 +48,7 @@ ENGINE_LABELS: dict[str, str] = {
     ENGINE_AUTH_SESSION: "Auth-Session Testing",
     ENGINE_CORS: "CORS Misconfiguration",
     ENGINE_SQLI: "SQL Injection",
+    ENGINE_XSS: "XSS",
     ENGINE_PATH_TRAVERSAL: "Path Traversal",
     ENGINE_SSRF: "SSRF",
     ENGINE_OPEN_REDIRECT: "Open Redirect",

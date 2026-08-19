@@ -72,6 +72,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_CORS_RESULT,
     EVIDENCE_TYPE_SQLI_RESULT,
+    EVIDENCE_TYPE_XSS_RESULT,
     EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT,
     EVIDENCE_TYPE_SSRF_RESULT,
     EVIDENCE_TYPE_OPEN_REDIRECT_RESULT,
@@ -185,6 +186,7 @@ def create_finding_from_verdict(
             auth_session → AUTH_SESSION:<auth_type>
             cors         → CORS:<scheme://netloc>
             sqli            → SQLI:<endpoint_id>
+            xss             → XSS:<endpoint_id>
             path_traversal  → PATH_TRAVERSAL:<endpoint_id>
             ssrf            → SSRF:<endpoint_id>
             open_redirect   → OPEN_REDIRECT:<endpoint_id>
@@ -601,6 +603,19 @@ def _attach_evidence(
                 "SQL injection probe"
                 + (f" — {variant}" if variant else ""),
                 sqli_data,
+            )
+
+    elif attack_module == "xss":
+        if replayed_flow_id_for_result:
+            xss_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                xss_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_XSS_RESULT, replayed_flow_id_for_result,
+                "XSS / HTML injection probe"
+                + (f" — {variant}" if variant else ""),
+                xss_data,
             )
 
     elif attack_module == "path_traversal":

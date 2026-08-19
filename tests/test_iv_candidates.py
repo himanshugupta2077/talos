@@ -174,6 +174,7 @@ def test_xss_high_when_reflected_html_and_markup_accepted():
     assert "f-html" in xss["evidence_flow_ids"] or "f-markup" in xss["evidence_flow_ids"]
     assert has_capability(profile, CAPABILITY_REFLECTIVE_INPUT)
     assert has_capability(profile, CAPABILITY_HTML_CONTEXT)
+    assert any("name suggests reflected html" in r.lower() for r in xss["reasons"])
 
 
 def test_xss_absent_without_reflection():

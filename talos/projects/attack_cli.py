@@ -8,6 +8,7 @@ Purpose:
                      talos attack auth-session <subcommand>
                      talos attack cors <subcommand>
                      talos attack sqli <subcommand>
+                     talos attack xss <subcommand>
                      talos attack path-traversal <subcommand>
                      talos attack ssrf <subcommand>
                      talos attack open-redirect <subcommand>
@@ -48,6 +49,11 @@ Purpose:
       techniques | run --flow | results list|show | status
       One sqli_attack job per (flow, entry point, payload);
       each job stores a unique replay flow.
+
+    XSS commands (talos attack xss):
+      techniques | run --flow | results list|show | status
+      One xss_attack job per (flow, entry point, payload);
+      each job stores a unique replay flow. Aliases: htmli, html_injection.
 
     Path-traversal commands (talos attack path-traversal):
       techniques | run --flow | results list|show | status
@@ -123,6 +129,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "bac (broken access control), "
             "cors (CORS misconfiguration), "
             "sqli (SQL injection), "
+            "xss (XSS / HTML injection), "
             "path-traversal (LFI / path traversal), "
             "ssrf (server-side request forgery), "
             "open-redirect, "
@@ -152,6 +159,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- sqli ---- #
     from talos.sqli.cli import build_sqli_parser
     build_sqli_parser(sub)
+
+    # ---- xss / HTML injection ---- #
+    from talos.xss.cli import build_xss_parser
+    build_xss_parser(sub)
 
     # ---- path-traversal / LFI ---- #
     from talos.path_traversal.cli import build_path_traversal_parser
@@ -212,6 +223,10 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type == "sqli":
         from talos.sqli.cli import run_sqli_cli
         run_sqli_cli(manager, args)
+
+    elif args.attack_type in ("xss", "htmli", "html_injection"):
+        from talos.xss.cli import run_xss_cli
+        run_xss_cli(manager, args)
 
     elif args.attack_type in ("path-traversal", "lfi", "path_traversal"):
         from talos.path_traversal.cli import run_path_traversal_cli

@@ -113,6 +113,9 @@ EVIDENCE_TYPE_CORS_RESULT             = "cors_result"
 EVIDENCE_TYPE_SQLI_RESULT             = "sqli_result"
 """SQL injection probe result row reference."""
 
+EVIDENCE_TYPE_XSS_RESULT              = "xss_result"
+"""XSS / HTML injection probe result row reference."""
+
 EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT   = "path_traversal_result"
 """Path traversal / LFI probe result row reference."""
 
@@ -169,6 +172,7 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
     "auth_session": frozenset({"WEAK_VALIDATION"}),
     "cors":         frozenset({"CORS_MISCONFIG"}),
     "sqli":            frozenset({"SQLI"}),
+    "xss":             frozenset({"XSS", "HTMLI"}),
     "smuggle":         frozenset({"SMUGGLE"}),
     "path_traversal":  frozenset({"PATH_TRAVERSAL"}),
     "ssrf":            frozenset({"SSRF"}),
@@ -187,6 +191,7 @@ ATTACK_DISPLAY: dict[str, str] = {
     "auth_session":   "Authentication & Session Testing",
     "cors":           "CORS Misconfiguration",
     "sqli":            "SQL Injection",
+    "xss":             "XSS / HTML Injection",
     "smuggle":         "HTTP Request Smuggling",
     "path_traversal":  "Path Traversal / LFI",
     "ssrf":            "SSRF",
