@@ -586,3 +586,112 @@ def test_candidates_run_loads_from_board_when_no_targets(client):
     assert "--flow" in argv
     assert "flow-cap" in argv
     assert "--param" in argv
+
+
+def test_candidates_run_uses_evidence_flows_when_endpoint_lookup_fails(client):
+    """IV param_uuid is not parameters.id — still run from candidate evidence."""
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value=None,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=[],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "xss",
+                "candidates": [
+                    {
+                        "param_uuid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "name": "q",
+                        "location": "query",
+                        "host": "api.example.com",
+                        "attack": "xss",
+                        "score": 90,
+                        "evidence_flow_ids": ["flow-evidence"],
+                    }
+                ],
+            },
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["candidate_count"] == 1
+    assert body["flow_count"] == 1
+    argv = run_scoped.call_args[0][1]
+    assert argv[:3] == ["attack", "xss", "run"]
+    assert "flow-evidence" in argv
+    assert "query:q" in argv
+
+
+def test_candidates_run_uses_iv_probe_flow_when_no_evidence(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value=None,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=[],
+        ),
+        patch(
+            "talos_ui.routers.input_validation._existing_flow_ids",
+            return_value=[],
+        ),
+        patch(
+            "talos_ui.routers.input_validation._iv_source_flow_ids",
+            return_value=["flow-baseline"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "sqli",
+                "candidates": [
+                    {
+                        "param_uuid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "name": "q",
+                        "location": "query",
+                        "attack": "sqli",
+                    }
+                ],
+            },
+        )
+    assert res.status_code == 200
+    argv = run_scoped.call_args[0][1]
+    assert argv[:3] == ["attack", "sqli", "run"]
+    assert "flow-baseline" in argv
+
+
+def test_lookup_param_row_resolves_sha256_profile_uuid(client, home):
+    _tc, pid = client
+    _talos_home, projects, _registry = home
+    db_path = projects / pid / "talos.db"
+    from talos_ui.routers.input_validation import _lookup_param_row
+
+    row = _lookup_param_row(
+        db_path,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        name="q",
+        location="query",
+        host="api.example.com",
+    )
+    assert row is not None
+    assert row["endpoint_id"] == "ep1"
+    assert row["name"] == "q"
+    assert row["id"] == "p1"

@@ -97,6 +97,7 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
             param_uuid: c.param_uuid,
             name: c.name,
             location: c.location,
+            host: c.host,
             attack: c.attack,
             score: c.score,
             evidence_flow_ids: c.evidence_flow_ids,

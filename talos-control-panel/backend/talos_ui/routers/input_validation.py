@@ -660,6 +660,7 @@ class CandidateRunTarget(BaseModel):
     param_uuid: str | None = None
     name: str | None = None
     location: str | None = None
+    host: str | None = None
     attack: str | None = None
     score: int | None = None
     evidence_flow_ids: list[str] | None = None
@@ -697,17 +698,101 @@ def _param_spec(location: str | None, name: str) -> str:
     return f"{loc}:{name}" if loc else name
 
 
-def _lookup_param_row(db_path, param_uuid: str) -> dict[str, Any] | None:
-    if not param_uuid:
-        return None
+def _safe_query_one(db_path, sql: str, params: tuple) -> dict[str, Any] | None:
+    """Purpose: query_one that returns None on missing tables/columns."""
     try:
-        return db.query_one(
+        return db.query_one(db_path, sql, params)
+    except Exception:
+        return None
+
+
+def _safe_query_all(db_path, sql: str, params: tuple) -> list[dict[str, Any]]:
+    """Purpose: query_all that returns [] on missing tables/columns."""
+    try:
+        return db.query_all(db_path, sql, params)
+    except Exception:
+        return []
+
+
+def _lookup_param_row(
+    db_path,
+    param_uuid: str,
+    *,
+    name: str | None = None,
+    location: str | None = None,
+    host: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    Resolve a parameters row from an IV candidate.
+
+    Candidate ``param_uuid`` is sha256(host|location|name)[:32], not
+    ``parameters.id``. Look up by inventory id first, then profile /
+    probe identity, then host+name+location.
+    """
+    host = (host or "").strip() or None
+    name = (name or "").strip() or None
+    location = (location or "").strip() or None
+
+    if param_uuid:
+        row = _safe_query_one(
             db_path,
             "SELECT id, endpoint_id, name, location FROM parameters WHERE id = ?",
             (param_uuid,),
         )
-    except Exception:
-        return None
+        if row:
+            return row
+
+        prof = _safe_query_one(
+            db_path,
+            "SELECT host, location, param_name FROM iv_param_profiles "
+            "WHERE param_uuid = ?",
+            (param_uuid,),
+        )
+        if prof:
+            host = host or (str(prof.get("host") or "").strip() or None)
+            location = location or (str(prof.get("location") or "").strip() or None)
+            name = name or (str(prof.get("param_name") or "").strip() or None)
+
+        probe = _safe_query_one(
+            db_path,
+            "SELECT endpoint_id, host, location, param_name "
+            "FROM iv_probe_results WHERE param_uuid = ? "
+            "AND endpoint_id IS NOT NULL AND TRIM(endpoint_id) != '' "
+            "LIMIT 1",
+            (param_uuid,),
+        )
+        if probe:
+            host = host or (str(probe.get("host") or "").strip() or None)
+            location = location or (str(probe.get("location") or "").strip() or None)
+            name = name or (str(probe.get("param_name") or "").strip() or None)
+            eid = str(probe.get("endpoint_id") or "").strip()
+            if eid:
+                return {
+                    "id": param_uuid,
+                    "endpoint_id": eid,
+                    "name": name or "",
+                    "location": location or "",
+                }
+
+    if name and location and host:
+        row = _safe_query_one(
+            db_path,
+            "SELECT p.id, p.endpoint_id, p.name, p.location "
+            "FROM parameters p JOIN endpoints e ON e.id = p.endpoint_id "
+            "WHERE p.name = ? AND p.location = ? AND e.host = ? LIMIT 1",
+            (name, location, host),
+        )
+        if row:
+            return row
+
+    if name and location:
+        return _safe_query_one(
+            db_path,
+            "SELECT id, endpoint_id, name, location FROM parameters "
+            "WHERE name = ? AND location = ? LIMIT 1",
+            (name, location),
+        )
+    return None
 
 
 def _list_candidates_for_run(
@@ -752,6 +837,163 @@ def _flows_for_param(
     return [ref.flow_id for ref in refs if getattr(ref, "flow_id", None)]
 
 
+def _dedupe_flow_ids(flow_ids: list[str], *, limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in flow_ids:
+        fid = str(raw or "").strip()
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        out.append(fid)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _flows_table_usable(db_path) -> bool:
+    """True when the project DB has a flows table we can rank against."""
+    try:
+        db.query_all(db_path, "SELECT id FROM flows LIMIT 0", ())
+        return True
+    except Exception:
+        return False
+
+
+def _existing_flow_ids(db_path, flow_ids: list[str], *, limit: int) -> list[str]:
+    """
+    Keep candidate evidence flows that still exist.
+
+    If the flows table is missing (tests / partial DBs), trust the ids —
+    the attack CLI rejects unknown UUIDs. Prefer 2xx proxy_capture when
+    ranking is available.
+    """
+    wanted = _dedupe_flow_ids(flow_ids, limit=max(limit * 4, limit))
+    if not wanted:
+        return []
+    if not _flows_table_usable(db_path):
+        return wanted[:limit]
+    placeholders = ",".join("?" for _ in wanted)
+    rows = _safe_query_all(
+        db_path,
+        f"SELECT id, source, status_code FROM flows WHERE id IN ({placeholders})",
+        tuple(wanted),
+    )
+    if not rows:
+        return []
+    by_id = {str(r.get("id") or ""): r for r in rows}
+
+    def _rank(fid: str) -> tuple[int, int, int]:
+        row = by_id.get(fid) or {}
+        source = str(row.get("source") or "")
+        try:
+            status = int(row.get("status_code") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        two_xx = 0 if 200 <= status < 300 else 1
+        capture = 0 if source == "proxy_capture" else 1
+        return (two_xx, capture, 0)
+
+    existing = [fid for fid in wanted if fid in by_id]
+    existing.sort(key=_rank)
+    return existing[:limit]
+
+
+def _iv_source_flow_ids(db_path, param_uuid: str, *, limit: int) -> list[str]:
+    """Original capture (or baseline probe) IV already used for this param."""
+    if not param_uuid:
+        return []
+    rows = _safe_query_all(
+        db_path,
+        "SELECT pr.flow_id AS probe_flow_id, "
+        "       f.original_flow_id AS original_flow_id, "
+        "       pr.analysis AS analysis "
+        "FROM iv_probe_results pr "
+        "LEFT JOIN flows f ON f.id = pr.flow_id "
+        "WHERE pr.param_uuid = ? AND pr.flow_id IS NOT NULL "
+        "ORDER BY CASE pr.analysis WHEN 'baseline' THEN 0 ELSE 1 END, "
+        "         COALESCE(pr.payload_index, 0)",
+        (param_uuid,),
+    )
+    if not rows:
+        rows = _safe_query_all(
+            db_path,
+            "SELECT flow_id AS probe_flow_id, analysis "
+            "FROM iv_probe_results "
+            "WHERE param_uuid = ? AND flow_id IS NOT NULL "
+            "ORDER BY CASE analysis WHEN 'baseline' THEN 0 ELSE 1 END",
+            (param_uuid,),
+        )
+    ids: list[str] = []
+    for row in rows:
+        for key in ("original_flow_id", "probe_flow_id"):
+            fid = str(row.get(key) or "").strip()
+            if fid:
+                ids.append(fid)
+    return _existing_flow_ids(db_path, ids, limit=limit)
+
+
+def _any_replayable_flows(db_path, endpoint_id: str | None, *, limit: int) -> list[str]:
+    """Last-resort captures on the endpoint, including NTLM 401 handshakes."""
+    if not endpoint_id:
+        return []
+    rows = _safe_query_all(
+        db_path,
+        "SELECT id FROM flows "
+        "WHERE endpoint_id = ? "
+        "  AND source IN ('proxy_capture', 'auto_replay', 'manual_replay') "
+        "ORDER BY CASE WHEN status_code >= 200 AND status_code < 300 "
+        "              THEN 0 ELSE 1 END, "
+        "         CASE WHEN source = 'proxy_capture' THEN 0 ELSE 1 END, "
+        "         captured_at DESC "
+        "LIMIT ?",
+        (endpoint_id, limit),
+    )
+    return _dedupe_flow_ids([str(r.get("id") or "") for r in rows], limit=limit)
+
+
+def _flows_for_candidate(
+    db_path,
+    *,
+    param_uuid: str | None,
+    endpoint_id: str | None,
+    evidence_flow_ids: list[str] | None,
+    host: str | None,
+    name: str | None,
+    location: str | None,
+    max_flows: int,
+) -> list[str]:
+    """
+    Pick replayable flows once IV has already produced a candidate.
+
+    Order: ranked 2xx proxy_capture on the endpoint, then IV evidence
+    flows, then the capture IV itself replayed, then any replayable
+    flow on that endpoint (NTLM 401 captures included).
+    """
+    cap = max(1, int(max_flows))
+    ranked = _flows_for_param(
+        db_path, endpoint_id=endpoint_id, max_flows=cap
+    )
+    if ranked:
+        return ranked
+    evidence = _existing_flow_ids(db_path, list(evidence_flow_ids or []), limit=cap)
+    if evidence:
+        return evidence
+    iv_src = _iv_source_flow_ids(db_path, param_uuid or "", limit=cap)
+    if iv_src:
+        return iv_src
+    if host and name and location:
+        try:
+            from talos.input_validation.phases import find_best_flow_for_param
+
+            flow = find_best_flow_for_param(db_path, host, location, name)
+        except Exception:
+            flow = None
+        if flow and flow.get("id"):
+            return [str(flow["id"])]
+    return _any_replayable_flows(db_path, endpoint_id, limit=cap)
+
+
 @router.post("/candidates/run")
 def run_candidate_attack(project_id: str, body: CandidateRunBody):
     """
@@ -788,6 +1030,7 @@ def run_candidate_attack(project_id: str, body: CandidateRunBody):
                 "param_uuid": (item.param_uuid or "").strip(),
                 "name": (item.name or "").strip(),
                 "location": (item.location or "").strip(),
+                "host": (item.host or "").strip(),
                 "attack": attack,
                 "score": int(item.score or 0),
                 "evidence_flow_ids": list(item.evidence_flow_ids or []),
@@ -821,8 +1064,20 @@ def run_candidate_attack(project_id: str, body: CandidateRunBody):
     for row in rows:
         name = str(row.get("name") or "").strip()
         location = str(row.get("location") or "").strip()
+        host = str(row.get("host") or "").strip()
         param_uuid = str(row.get("param_uuid") or "").strip()
-        meta = _lookup_param_row(db_path, param_uuid) if param_uuid else None
+        evidence_ids = [
+            str(fid).strip()
+            for fid in (row.get("evidence_flow_ids") or [])
+            if str(fid).strip()
+        ]
+        meta = _lookup_param_row(
+            db_path,
+            param_uuid,
+            name=name,
+            location=location,
+            host=host,
+        )
         if meta:
             name = name or str(meta.get("name") or "").strip()
             location = location or str(meta.get("location") or "").strip()
@@ -845,15 +1100,22 @@ def run_candidate_attack(project_id: str, body: CandidateRunBody):
             })
             continue
 
-        flow_ids = _flows_for_param(
-            db_path, endpoint_id=endpoint_id, max_flows=flow_cap
+        flow_ids = _flows_for_candidate(
+            db_path,
+            param_uuid=param_uuid,
+            endpoint_id=endpoint_id,
+            evidence_flow_ids=evidence_ids,
+            host=host or None,
+            name=name,
+            location=location,
+            max_flows=flow_cap,
         )
         if not flow_ids:
             skipped.append({
                 "param_uuid": param_uuid,
                 "name": name,
                 "location": location,
-                "reason": "no 2xx captured flow on this parameter's endpoint",
+                "reason": "no captured or IV evidence flow to replay",
             })
             continue
 
