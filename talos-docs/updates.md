@@ -2,6 +2,47 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## SSRF and Open Redirect
+
+**Shipped:** 2026-08-19
+
+Two new active attack modules:
+
+- `talos attack ssrf` / Control Panel `/testing/ssrf`
+- `talos attack open-redirect` / Control Panel `/testing/open-redirect`
+
+Give one or more captured flow UUIDs. Talos replaces query, JSON, form,
+multipart filename, and path-parameter values with typed catalogues.
+Optional `--param` restricts the scan to one entry point.
+
+**SSRF** covers loopback (127.0.0.1 / localhost / IPv6 / decimal / octal /
+hex), cloud metadata (AWS / GCP / Azure / Alibaba / DigitalOcean / k8s),
+alternate schemes (`file://`, `gopher://`, `dict://`, Docker / etcd),
+parser bypasses, encodings, and internal RFC1918. Optional
+`--collaborator` (Burp Collaborator host or URL) enables OAST payloads with
+a unique subdomain per probe. Talos does not poll Collaborator; check Burp
+for DNS/HTTP hits. In-band findings require a **new** fetch signature
+versus the captured baseline (metadata documents, well-known files,
+service banners, Collaborator HTTP body). Payload echo is not a finding.
+
+**Open redirect** aims payloads at `talos-or.invalid` (absolute,
+protocol-relative, slash bypass, encoding, userinfo, javascript/data,
+fragment, CRLF). A finding is created when Location / Refresh / meta / JS
+navigates to that canary and the sink was not already in the baseline.
+
+Each probe is one scheduler job (`ssrf_attack` / `open_redirect_attack`)
+and one unique replay flow. The Talos Burp extension groups those flows
+under **SSRF** and **Open Redirect**.
+
+```bash
+talos attack ssrf run --flow <uuid>
+talos attack ssrf run --flow <uuid> --param url --collaborator abc.oastify.com
+talos attack open-redirect run --flow <uuid>
+talos attack open-redirect run --flow <uuid> --param next
+```
+
+---
+
 ## Path Traversal / LFI
 
 **Shipped:** 2026-08-19

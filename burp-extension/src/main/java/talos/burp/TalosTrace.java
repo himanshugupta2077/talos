@@ -18,6 +18,8 @@ final class TalosTrace {
             Map.entry("cors", "CORS Misconfiguration"),
             Map.entry("sqli", "SQL Injection"),
             Map.entry("path-traversal", "Path Traversal"),
+            Map.entry("ssrf", "SSRF"),
+            Map.entry("open-redirect", "Open Redirect"),
             Map.entry("smuggle", "HTTP Request Smuggling"),
             Map.entry("intruder", "Intruder"),
             Map.entry("passive", "Secret Detection"),

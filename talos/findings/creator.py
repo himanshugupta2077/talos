@@ -73,6 +73,8 @@ from talos.findings.model import (
     EVIDENCE_TYPE_CORS_RESULT,
     EVIDENCE_TYPE_SQLI_RESULT,
     EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT,
+    EVIDENCE_TYPE_SSRF_RESULT,
+    EVIDENCE_TYPE_OPEN_REDIRECT_RESULT,
     EVIDENCE_TYPE_SMUGGLE_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
@@ -183,6 +185,8 @@ def create_finding_from_verdict(
             cors         → CORS:<scheme://netloc>
             sqli            → SQLI:<endpoint_id>
             path_traversal  → PATH_TRAVERSAL:<endpoint_id>
+            ssrf            → SSRF:<endpoint_id>
+            open_redirect   → OPEN_REDIRECT:<endpoint_id>
             smuggle         → SMUGGLE:<scheme://netloc>
 
         The first finding in a cluster becomes PRIMARY; later findings in
@@ -608,6 +612,32 @@ def _attach_evidence(
                 "Path traversal / LFI probe"
                 + (f" — {variant}" if variant else ""),
                 pt_data,
+            )
+
+    elif attack_module == "ssrf":
+        if replayed_flow_id_for_result:
+            ssrf_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                ssrf_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_SSRF_RESULT, replayed_flow_id_for_result,
+                "SSRF probe"
+                + (f" — {variant}" if variant else ""),
+                ssrf_data,
+            )
+
+    elif attack_module == "open_redirect":
+        if replayed_flow_id_for_result:
+            or_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                or_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_OPEN_REDIRECT_RESULT, replayed_flow_id_for_result,
+                "Open-redirect probe"
+                + (f" — {variant}" if variant else ""),
+                or_data,
             )
 
     elif attack_module == "smuggle":

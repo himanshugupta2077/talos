@@ -1762,6 +1762,71 @@ from the Flows table multi-select (Path Traversal).
 
 ---
 
+## Attack — SSRF (`ssrf`)
+
+Active module. Operator picks one or more captured flows (`--flow UUID`,
+required). The engine walks **query parameters**, **JSON body fields or
+array indexes**, **form fields**, **multipart filenames**, and **path
+parameters**, then **replaces** the captured value with loopback, cloud
+metadata, protocol, encoding, bypass, and internal payloads.
+
+Optional **`--param NAME`** (also `--parameter`) restricts the scan to one
+entry point. Optional **`--collaborator HOST_OR_URL`** (Burp Collaborator /
+OAST host or URL) enables the **oast** family with a unique subdomain per
+probe. Talos does **not** poll Collaborator — check Burp for DNS/HTTP hits.
+In-band confirmation uses the target HTTP response (cloud metadata, file
+contents, service banners, Collaborator HTTP body that is **new vs
+baseline**). Echoed payload text is not a finding.
+
+```bash
+talos attack ssrf techniques
+talos attack ssrf techniques --family cloud
+talos attack ssrf run --flow <uuid>
+talos attack ssrf run --flow <uuid> --param url
+talos attack ssrf run --flow <uuid> --param query:url
+talos attack ssrf run --flow <uuid> --family loopback
+talos attack ssrf run --flow <uuid> --technique cloud_aws_meta
+talos attack ssrf run --flow <uuid> --collaborator abc.oastify.com
+talos attack ssrf run --flow <uuid> --right-now
+talos attack ssrf results list
+talos attack ssrf results show <replay_flow_id>
+talos attack ssrf status
+```
+
+Control Panel: `/testing/ssrf` (Overview / Run / Results). Also run from the
+Flows table multi-select (SSRF). Collaborator is set on the Run tab.
+
+---
+
+## Attack — Open redirect (`open-redirect`)
+
+Active module. Operator picks one or more captured flows (`--flow UUID`,
+required). Payloads **replace** query, JSON, form, multipart filename, and
+path fields with absolute, protocol-relative, slash-bypass, encoded,
+userinfo, javascript/data, fragment, and CRLF variants aimed at
+`talos-or.invalid`. Optional **`--param NAME`**.
+
+A finding is created when Location, Refresh, meta refresh, or JavaScript
+navigation points at the canary host and that sink was **not** in the
+captured baseline. Echoed payload text is not a finding. Alias:
+`talos attack open_redirect`.
+
+```bash
+talos attack open-redirect techniques
+talos attack open-redirect run --flow <uuid>
+talos attack open-redirect run --flow <uuid> --param next
+talos attack open-redirect run --flow <uuid> --family absolute
+talos attack open-redirect run --flow <uuid> --technique abs_https
+talos attack open-redirect results list
+talos attack open-redirect results show <replay_flow_id>
+talos attack open-redirect status
+```
+
+Control Panel: `/testing/open-redirect` (Overview / Run / Results). Also run
+from the Flows table multi-select (Open Redirect).
+
+---
+
 ## Attack — HTTP request smuggling (`smuggle`)
 
 Active module. Operator picks one or more captured flows (`--flow UUID`,

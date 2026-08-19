@@ -123,6 +123,8 @@ Wired engines and `X-Talos-Engine` tokens:
 | CORS Misconfiguration | `cors` |
 | SQL Injection | `sqli` |
 | Path Traversal | `path-traversal` |
+| SSRF | `ssrf` |
+| Open Redirect | `open-redirect` |
 | HTTP Request Smuggling | `smuggle` |
 | Intruder | `intruder` |
 | Secret Detection | `passive` |

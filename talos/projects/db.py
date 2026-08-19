@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 61
+SCHEMA_VERSION = 62
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1638,6 +1638,69 @@ CREATE INDEX IF NOT EXISTS idx_path_traversal_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_path_traversal_results_original
     ON path_traversal_results (original_flow_id, verdict);
+
+-- ------------------------------------------------------------------ --
+-- ssrf_results: one unique replay flow per SSRF probe (v62)            --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS ssrf_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    sink_hint          TEXT,
+    oast_host          TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ssrf_results_verdict
+    ON ssrf_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_ssrf_results_original
+    ON ssrf_results (original_flow_id, verdict);
+
+-- ------------------------------------------------------------------ --
+-- open_redirect_results: one unique replay per open-redirect probe (v62)
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS open_redirect_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    redirect_url       TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_redirect_results_verdict
+    ON open_redirect_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_open_redirect_results_original
+    ON open_redirect_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -1834,6 +1897,66 @@ CREATE INDEX IF NOT EXISTS idx_path_traversal_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_path_traversal_results_original
     ON path_traversal_results (original_flow_id, verdict);
+"""
+
+# Shared CREATE statements for SSRF + open redirect (schema v62).
+_SSRF_OPEN_REDIRECT_SCHEMA_V62_DDL = """
+CREATE TABLE IF NOT EXISTS ssrf_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    sink_hint          TEXT,
+    oast_host          TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ssrf_results_verdict
+    ON ssrf_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_ssrf_results_original
+    ON ssrf_results (original_flow_id, verdict);
+
+CREATE TABLE IF NOT EXISTS open_redirect_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    redirect_url       TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_redirect_results_verdict
+    ON open_redirect_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_open_redirect_results_original
+    ON open_redirect_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -2928,6 +3051,7 @@ def migrate_project_db(db_path: Path) -> None:
         v58 → v59: sqli_results — SQL injection (unique flow per probe).
         v59 → v60: smuggle_results — HTTP request smuggling.
         v60 → v61: path_traversal_results — path traversal / LFI.
+        v61 → v62: ssrf_results + open_redirect_results.
     """
     if not db_path.exists():
         return
@@ -4352,6 +4476,12 @@ def migrate_project_db(db_path: Path) -> None:
             # Path traversal / LFI: unique replay flow per (entry point × payload).
             conn.executescript(_PATH_TRAVERSAL_SCHEMA_V61_DDL)
             conn.execute("UPDATE schema_version SET version = 61")
+            conn.commit()
+
+        if current < 62:
+            # SSRF + open redirect: unique replay flow per (entry point × payload).
+            conn.executescript(_SSRF_OPEN_REDIRECT_SCHEMA_V62_DDL)
+            conn.execute("UPDATE schema_version SET version = 62")
             conn.commit()
 
 

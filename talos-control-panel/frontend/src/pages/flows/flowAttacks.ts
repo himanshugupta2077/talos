@@ -87,6 +87,44 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       ),
   },
   {
+    id: "ssrf",
+    name: "SSRF",
+    shortLabel: "SSRF",
+    description:
+      "Replace query, JSON, form, multipart filename, and path fields with SSRF payloads. Optional Collaborator URL from the SSRF workspace.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/ssrf`,
+    cliHint: "talos attack ssrf run --flow --high-priority",
+    jobsPerFlow: 64,
+    run: (projectId, flowIds) =>
+      api.post(
+        "/api/attack/ssrf/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
+  },
+  {
+    id: "open-redirect",
+    name: "Open Redirect",
+    shortLabel: "Redirect",
+    description:
+      "Replace query, JSON, form, multipart filename, and path fields with open-redirect payloads aimed at talos-or.invalid.",
+    class: "active",
+    risk: "medium",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/open-redirect`,
+    cliHint: "talos attack open-redirect run --flow --high-priority",
+    jobsPerFlow: 32,
+    run: (projectId, flowIds) =>
+      api.post(
+        "/api/attack/open-redirect/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
+  },
+  {
     id: "smuggle",
     name: "HTTP Request Smuggling",
     shortLabel: "Smuggle",

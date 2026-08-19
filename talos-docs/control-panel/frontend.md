@@ -81,7 +81,7 @@ Navigation groups (from `NAV_GROUPS`):
 | Overview | `/`, `/projects`, `/proxy` |
 | Model | `/roles-modules`, `/access`, `/auth` |
 | Capture | `/repeater`, `/endpoints`, `/flows`, `/mutations` (HTTP Rules) |
-| Testing | `/scheduler`, `/testing` (hub). Available Active modules nest under **Attack Module** (`/testing/unauth`, `/bac`, `/auth-session`, `/input-validation`, `/cors`, `/sqli`, `/smuggle`, `/intruder`). Passive workspaces stay hub/search only. `/attack/*` redirects to `/testing/*` |
+| Testing | `/scheduler`, `/testing` (hub). Available Active modules nest under **Attack Module** (`/testing/unauth`, `/bac`, `/auth-session`, `/input-validation`, `/cors`, `/sqli`, `/path-traversal`, `/ssrf`, `/open-redirect`, `/smuggle`, `/intruder`). Passive workspaces stay hub/search only. `/attack/*` redirects to `/testing/*` |
 | Configuration | `/talos-config` |
 | Results | `/findings`, `/console` |
 

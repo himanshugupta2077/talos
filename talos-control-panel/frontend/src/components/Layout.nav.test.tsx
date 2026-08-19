@@ -11,6 +11,8 @@ const ACTIVE_MODULES = [
   { name: "CORS Misconfiguration", path: "/testing/cors" },
   { name: "SQL Injection", path: "/testing/sqli" },
   { name: "Path Traversal", path: "/testing/path-traversal" },
+  { name: "SSRF", path: "/testing/ssrf" },
+  { name: "Open Redirect", path: "/testing/open-redirect" },
   { name: "Intruder", path: "/testing/intruder" },
 ] as const;
 

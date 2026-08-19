@@ -116,6 +116,12 @@ EVIDENCE_TYPE_SQLI_RESULT             = "sqli_result"
 EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT   = "path_traversal_result"
 """Path traversal / LFI probe result row reference."""
 
+EVIDENCE_TYPE_SSRF_RESULT             = "ssrf_result"
+"""SSRF probe result row reference."""
+
+EVIDENCE_TYPE_OPEN_REDIRECT_RESULT    = "open_redirect_result"
+"""Open-redirect probe result row reference."""
+
 EVIDENCE_TYPE_SMUGGLE_RESULT          = "smuggle_result"
 """HTTP request smuggling probe result row reference."""
 
@@ -162,6 +168,8 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
     "sqli":            frozenset({"SQLI"}),
     "smuggle":         frozenset({"SMUGGLE"}),
     "path_traversal":  frozenset({"PATH_TRAVERSAL"}),
+    "ssrf":            frozenset({"SSRF"}),
+    "open_redirect":   frozenset({"OPEN_REDIRECT"}),
 }
 
 # ------------------------------------------------------------------ #
@@ -177,6 +185,8 @@ ATTACK_DISPLAY: dict[str, str] = {
     "sqli":            "SQL Injection",
     "smuggle":         "HTTP Request Smuggling",
     "path_traversal":  "Path Traversal / LFI",
+    "ssrf":            "SSRF",
+    "open_redirect":   "Open Redirect",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
     "ai_draft":       "AI Draft (promoted)",

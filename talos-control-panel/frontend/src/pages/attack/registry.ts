@@ -30,6 +30,8 @@ export type AttackKpiSource =
   | "cors"
   | "sqli"
   | "path_traversal"
+  | "ssrf"
+  | "open_redirect"
   | "smuggle";
 
 export interface AttackModuleDef {
@@ -272,6 +274,47 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "php://filter",
     ],
     kpi: "path_traversal",
+  },
+  {
+    id: "ssrf",
+    class: "active",
+    name: "SSRF",
+    description:
+      "Scan a captured flow for server-side request forgery: loopback, cloud metadata, protocol, encoding, bypass, and optional Burp Collaborator payloads. Optional parameter. One unique replay per probe; shows in the Talos Burp extension.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/ssrf`,
+    keywords: [
+      "ssrf",
+      "server-side request forgery",
+      "collaborator",
+      "oast",
+      "169.254.169.254",
+      "metadata",
+      "gopher",
+      "file://",
+    ],
+    kpi: "ssrf",
+  },
+  {
+    id: "open-redirect",
+    class: "active",
+    name: "Open Redirect",
+    description:
+      "Scan a captured flow for open redirect: absolute, protocol-relative, slash-bypass, encoded, userinfo, javascript/data, fragment, and CRLF payloads. Optional parameter. One unique replay per probe; shows in the Talos Burp extension.",
+    risk: "medium",
+    status: "available",
+    path: `${TESTING_BASE}/open-redirect`,
+    keywords: [
+      "open redirect",
+      "redirect",
+      "location",
+      "javascript:",
+      "protocol relative",
+      "next",
+      "returnurl",
+    ],
+    kpi: "open_redirect",
   },
   {
     id: "smuggle",

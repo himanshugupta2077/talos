@@ -14,6 +14,8 @@ describe("flowAttacks catalog", () => {
       "cors",
       "sqli",
       "path-traversal",
+      "ssrf",
+      "open-redirect",
       "smuggle",
       "unauth",
       "bac",
@@ -26,6 +28,8 @@ describe("flowAttacks catalog", () => {
       "cors",
       "sqli",
       "path-traversal",
+      "ssrf",
+      "open-redirect",
       "smuggle",
       "unauth",
       "bac",
@@ -43,6 +47,8 @@ describe("flowAttacks catalog", () => {
     expect(estimateFlowAttackJobs(3, ["cors"])).toBe(60);
     expect(estimateFlowAttackJobs(2, ["sqli"])).toBe(100);
     expect(estimateFlowAttackJobs(1, ["path-traversal"])).toBe(53);
+    expect(estimateFlowAttackJobs(1, ["ssrf"])).toBe(64);
+    expect(estimateFlowAttackJobs(1, ["open-redirect"])).toBe(32);
     expect(getFlowAttack("sqli")?.cliHint).toContain("--flow");
     expect(getFlowAttack("sqli")?.cliHint).toContain("--high-priority");
     expect(getFlowAttack("path-traversal")?.cliHint).toContain("--flow");

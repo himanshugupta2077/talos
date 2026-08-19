@@ -1957,3 +1957,513 @@ def run_path_traversal(project_id: str, body: PathTraversalRunBody):
         args.append("--no-high-priority")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# SSRF                                                                 #
+# ------------------------------------------------------------------ #
+
+SSRF_FAMILY_FALLBACK = [
+    "loopback",
+    "cloud",
+    "protocol",
+    "bypass",
+    "encoded",
+    "internal",
+    "oast",
+]
+
+
+def _load_ssrf_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.ssrf.payloads import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in (
+                "lb_http_127",
+                "cloud_aws_meta",
+                "proto_file_passwd",
+                "oast_http",
+            )
+        ]
+
+
+def _ssrf_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'ssrf_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/ssrf/techniques")
+def ssrf_techniques():
+    """SSRF payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_ssrf_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(SSRF_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/ssrf/results")
+def ssrf_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.ssrf.db import list_ssrf_results
+
+        rows = list_ssrf_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/ssrf/summary")
+def ssrf_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.ssrf.db import count_ssrf_verdicts
+
+        counts = count_ssrf_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/ssrf/overview")
+def ssrf_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the SSRF workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.ssrf.db import count_ssrf_verdicts, list_ssrf_results
+
+        counts = count_ssrf_verdicts(db_path)
+        recent = list_ssrf_results(db_path, verdict="SSRF", limit=top_n)
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _ssrf_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_ssrf_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(SSRF_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class SsrfRunBody(BaseModel):
+    """Mirrors talos attack ssrf run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
+    collaborator: str | None = None
+    right_now: bool = False
+    high_priority: bool = True
+
+
+@router.get("/ssrf/points")
+def ssrf_points(project_id: str, flow: str):
+    """List injectable entry points on one or more captured flows."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.ssrf.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(500, f"SSRF inject module unavailable: {exc}") from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT f.id, f.url, f.query, f.request_headers, f.request_body,
+                   COALESCE(e.normalized_path, '') AS normalized_path
+            FROM flows f
+            LEFT JOIN endpoints e ON e.id = f.endpoint_id
+            WHERE f.id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+            normalized_path=str(row.get("normalized_path") or ""),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
+
+
+@router.post("/ssrf/run")
+def run_ssrf(project_id: str, body: SsrfRunBody):
+    known = {t["name"] for t in _load_ssrf_technique_meta()}
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "SSRF run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "ssrf", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--param", name]
+    if body.technique:
+        tech = body.technique.strip()
+        if known and tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown SSRF technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in SSRF_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown SSRF family '{fam}'; "
+                f"expected one of: {', '.join(SSRF_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.collaborator and body.collaborator.strip():
+        args += ["--collaborator", body.collaborator.strip()]
+    if body.right_now:
+        args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Open redirect                                                        #
+# ------------------------------------------------------------------ #
+
+OPEN_REDIRECT_FAMILY_FALLBACK = [
+    "absolute",
+    "proto_rel",
+    "slash",
+    "encoded",
+    "userinfo",
+    "data_js",
+    "fragment",
+    "crlf",
+]
+
+
+def _load_open_redirect_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.open_redirect.payloads import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in ("abs_https", "pr_slash", "js_alert", "crlf_location")
+        ]
+
+
+def _open_redirect_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'open_redirect_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/open-redirect/techniques")
+def open_redirect_techniques():
+    """Open-redirect payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_open_redirect_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(OPEN_REDIRECT_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/open-redirect/results")
+def open_redirect_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.open_redirect.db import list_open_redirect_results
+
+        rows = list_open_redirect_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/open-redirect/summary")
+def open_redirect_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.open_redirect.db import count_open_redirect_verdicts
+
+        counts = count_open_redirect_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/open-redirect/overview")
+def open_redirect_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the Open Redirect workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.open_redirect.db import (
+            count_open_redirect_verdicts,
+            list_open_redirect_results,
+        )
+
+        counts = count_open_redirect_verdicts(db_path)
+        recent = list_open_redirect_results(
+            db_path, verdict="OPEN_REDIRECT", limit=top_n
+        )
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _open_redirect_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_open_redirect_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(OPEN_REDIRECT_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class OpenRedirectRunBody(BaseModel):
+    """Mirrors talos attack open-redirect run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
+    right_now: bool = False
+    high_priority: bool = True
+
+
+@router.get("/open-redirect/points")
+def open_redirect_points(project_id: str, flow: str):
+    """List injectable entry points on one or more captured flows."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.open_redirect.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(
+            500, f"Open-redirect inject module unavailable: {exc}"
+        ) from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT f.id, f.url, f.query, f.request_headers, f.request_body,
+                   COALESCE(e.normalized_path, '') AS normalized_path
+            FROM flows f
+            LEFT JOIN endpoints e ON e.id = f.endpoint_id
+            WHERE f.id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+            normalized_path=str(row.get("normalized_path") or ""),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
+
+
+@router.post("/open-redirect/run")
+def run_open_redirect(project_id: str, body: OpenRedirectRunBody):
+    known = {t["name"] for t in _load_open_redirect_technique_meta()}
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "Open-redirect run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "open-redirect", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--param", name]
+    if body.technique:
+        tech = body.technique.strip()
+        if known and tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown open-redirect technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in OPEN_REDIRECT_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown open-redirect family '{fam}'; "
+                f"expected one of: {', '.join(OPEN_REDIRECT_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.right_now:
+        args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

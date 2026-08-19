@@ -414,6 +414,60 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // SSRF (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/ssrf/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.SSRF ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          ssrf: {
+            chips: [
+              {
+                label: "ssrf",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
+    // Open redirect (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/open-redirect/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.OPEN_REDIRECT ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          open_redirect: {
+            chips: [
+              {
+                label: "redirect",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // HTTP request smuggling (active)
     api
       .get<{ counts: Record<string, number> }>("/api/attack/smuggle/summary", {

@@ -120,6 +120,24 @@ PATH_TRAVERSAL_ATTACK = "path_traversal_attack"
 PATH_TRAVERSAL_JOB_TYPES: tuple[str, ...] = (PATH_TRAVERSAL_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# SSRF job type                                                        #
+# ------------------------------------------------------------------ #
+
+SSRF_ATTACK = "ssrf_attack"
+"""SSRF: one (entry point × payload) per job, one unique replay flow."""
+
+SSRF_JOB_TYPES: tuple[str, ...] = (SSRF_ATTACK,)
+
+# ------------------------------------------------------------------ #
+# Open redirect job type                                               #
+# ------------------------------------------------------------------ #
+
+OPEN_REDIRECT_ATTACK = "open_redirect_attack"
+"""Open redirect: one (entry point × payload) per job, one unique replay flow."""
+
+OPEN_REDIRECT_JOB_TYPES: tuple[str, ...] = (OPEN_REDIRECT_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # HTTP request smuggling job type                                      #
 # ------------------------------------------------------------------ #
 
@@ -196,6 +214,8 @@ JOB_TYPES: tuple[str, ...] = (
     + CORS_JOB_TYPES
     + SQLI_JOB_TYPES
     + PATH_TRAVERSAL_JOB_TYPES
+    + SSRF_JOB_TYPES
+    + OPEN_REDIRECT_JOB_TYPES
     + SMUGGLE_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES

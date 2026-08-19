@@ -103,6 +103,8 @@ from talos.scheduler.job import (
     CORS_JOB_TYPES,
     SQLI_JOB_TYPES,
     PATH_TRAVERSAL_JOB_TYPES,
+    SSRF_JOB_TYPES,
+    OPEN_REDIRECT_JOB_TYPES,
     SMUGGLE_JOB_TYPES,
     IV_JOB_TYPES,
     INTRUDER_JOB_TYPES,
@@ -566,6 +568,12 @@ class ReplayScheduler:
 
             elif job.job_type in PATH_TRAVERSAL_JOB_TYPES:
                 self._execute_path_traversal_job(job)
+
+            elif job.job_type in SSRF_JOB_TYPES:
+                self._execute_ssrf_job(job)
+
+            elif job.job_type in OPEN_REDIRECT_JOB_TYPES:
+                self._execute_open_redirect_job(job)
 
             elif job.job_type in SMUGGLE_JOB_TYPES:
                 self._execute_smuggle_job(job)
@@ -1596,6 +1604,234 @@ class ReplayScheduler:
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "[findings] path-traversal finding creation error (non-fatal): %s",
+                exc,
+            )
+
+    # ------------------------------------------------------------------ #
+    # SSRF job execution                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _execute_ssrf_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute an SSRF_ATTACK job: unique replay flow with one payload.
+        """
+        import json as _json
+        from talos.ssrf.engine import execute_ssrf_job
+        from talos.ssrf.models import SsrfOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "ssrf_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "ssrf_meta_parse_error")
+                return
+
+        try:
+            outcome: SsrfOutcome = asyncio.run(
+                execute_ssrf_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in SSRF job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_ssrf_outcome(job, outcome)
+
+    def _settle_ssrf_outcome(self, job: ReplayJob, outcome: "SsrfOutcome") -> None:
+        """Purpose: Map SsrfOutcome to job terminal state; create finding on hit."""
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "ssrf_job_missing_flow_id",
+            "ssrf_point_missing",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  ssrf=%s  technique=%s  param=%s",
+            job.job_id[:8],
+            outcome.verdict,
+            outcome.technique,
+            outcome.param_name,
+        )
+
+        if outcome.verdict == "SSRF":
+            self._maybe_create_finding_ssrf(job, outcome)
+
+    def _maybe_create_finding_ssrf(self, job: ReplayJob, outcome: "SsrfOutcome") -> None:
+        """Purpose: Create a PRIMARY/LINKED SSRF finding on a confirmed probe."""
+        from talos.ssrf.findings_bridge import maybe_create_ssrf_finding
+
+        try:
+            maybe_create_ssrf_finding(
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                outcome=outcome,
+                job_id=job.job_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "[findings] SSRF finding creation error (non-fatal): %s",
+                exc,
+            )
+
+    # ------------------------------------------------------------------ #
+    # Open-redirect job execution                                          #
+    # ------------------------------------------------------------------ #
+
+    def _execute_open_redirect_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute an OPEN_REDIRECT_ATTACK job: unique replay flow with one payload.
+        """
+        import json as _json
+        from talos.open_redirect.engine import execute_open_redirect_job
+        from talos.open_redirect.models import OpenRedirectOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "open_redirect_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "open_redirect_meta_parse_error")
+                return
+
+        try:
+            outcome: OpenRedirectOutcome = asyncio.run(
+                execute_open_redirect_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in open-redirect job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_open_redirect_outcome(job, outcome)
+
+    def _settle_open_redirect_outcome(
+        self, job: ReplayJob, outcome: "OpenRedirectOutcome"
+    ) -> None:
+        """Purpose: Map OpenRedirectOutcome to job terminal state; finding on hit."""
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "open_redirect_job_missing_flow_id",
+            "open_redirect_point_missing",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  open_redirect=%s  technique=%s  param=%s",
+            job.job_id[:8],
+            outcome.verdict,
+            outcome.technique,
+            outcome.param_name,
+        )
+
+        if outcome.verdict == "OPEN_REDIRECT":
+            self._maybe_create_finding_open_redirect(job, outcome)
+
+    def _maybe_create_finding_open_redirect(
+        self, job: ReplayJob, outcome: "OpenRedirectOutcome"
+    ) -> None:
+        """Purpose: Create a PRIMARY/LINKED open-redirect finding on a confirmed probe."""
+        from talos.open_redirect.findings_bridge import maybe_create_open_redirect_finding
+
+        try:
+            maybe_create_open_redirect_finding(
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                outcome=outcome,
+                job_id=job.job_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "[findings] open-redirect finding creation error (non-fatal): %s",
                 exc,
             )
 

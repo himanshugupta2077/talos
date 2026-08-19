@@ -89,6 +89,25 @@ def test_talos_helper_documents_sqli_attack() -> None:
     assert "sqli status" in text
 
 
+def test_talos_helper_documents_ssrf_attack() -> None:
+    """Root help must advertise talos attack ssrf commands."""
+    text = _root_help_text()
+    assert "ssrf techniques" in text
+    assert "ssrf run" in text
+    assert "ssrf results list|show" in text
+    assert "ssrf status" in text
+    assert "--collaborator" in text
+
+
+def test_talos_helper_documents_open_redirect_attack() -> None:
+    """Root help must advertise talos attack open-redirect commands."""
+    text = _root_help_text()
+    assert "open-redirect techniques" in text
+    assert "open-redirect run" in text
+    assert "open-redirect results list|show" in text
+    assert "open-redirect status" in text
+
+
 def test_talos_helper_documents_path_traversal_attack() -> None:
     """Root help must advertise talos attack path-traversal commands."""
     text = _root_help_text()

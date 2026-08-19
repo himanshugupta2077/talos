@@ -1208,6 +1208,101 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.ssrf",
+        "label": "Attack — SSRF",
+        "commands": [
+            cmd("attack.ssrf.techniques", ["attack", "ssrf", "techniques"], "List SSRF payloads", [
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["loopback", "cloud", "protocol", "bypass", "encoded", "internal", "oast"],
+                    help="Restrict to one payload family",
+                ),
+            ]),
+            cmd("attack.ssrf.run", ["attack", "ssrf", "run"], "Enqueue SSRF probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to scan"),
+                arg(
+                    "param",
+                    flag="--param",
+                    help="Restrict to one entry point (query key, JSON path, form field, path param). Repeatable.",
+                ),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    help="Restrict to one payload technique (default: all)",
+                ),
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["loopback", "cloud", "protocol", "bypass", "encoded", "internal", "oast"],
+                    help="Restrict to one payload family",
+                ),
+                arg(
+                    "collaborator",
+                    flag="--collaborator",
+                    help="Burp Collaborator host or URL (enables OAST payloads)",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run SSRF ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
+            ]),
+            cmd("attack.ssrf.results.list", ["attack", "ssrf", "results", "list"], "List SSRF probe results"),
+            cmd("attack.ssrf.status", ["attack", "ssrf", "status"], "SSRF verdict and job tallies"),
+        ],
+    },
+    {
+        "group": "attack.open-redirect",
+        "label": "Attack — Open Redirect",
+        "commands": [
+            cmd("attack.open-redirect.techniques", ["attack", "open-redirect", "techniques"], "List open-redirect payloads", [
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["absolute", "proto_rel", "slash", "encoded", "userinfo", "data_js", "fragment", "crlf"],
+                    help="Restrict to one payload family",
+                ),
+            ]),
+            cmd("attack.open-redirect.run", ["attack", "open-redirect", "run"], "Enqueue open-redirect probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to scan"),
+                arg(
+                    "param",
+                    flag="--param",
+                    help="Restrict to one entry point (query key, JSON path, form field, path param). Repeatable.",
+                ),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    help="Restrict to one payload technique (default: all)",
+                ),
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["absolute", "proto_rel", "slash", "encoded", "userinfo", "data_js", "fragment", "crlf"],
+                    help="Restrict to one payload family",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run open-redirect ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
+            ]),
+            cmd("attack.open-redirect.results.list", ["attack", "open-redirect", "results", "list"], "List open-redirect probe results"),
+            cmd("attack.open-redirect.status", ["attack", "open-redirect", "status"], "Open-redirect verdict and job tallies"),
+        ],
+    },
+    {
         "group": "attack.smuggle",
         "label": "Attack — HTTP Request Smuggling",
         "commands": [
