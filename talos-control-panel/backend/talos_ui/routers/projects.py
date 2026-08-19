@@ -206,9 +206,13 @@ def project_summary(project_id: str):
         "findings_primary": db.scalar(
             db_path,
             "SELECT COUNT(*) FROM findings "
-            "WHERE COALESCE(relation_type, 'PRIMARY') = 'PRIMARY'",
+            "WHERE COALESCE(relation_type, 'PRIMARY') = 'PRIMARY' "
+            "AND status != 'REJECTED'",
         ),
-        "findings_total": db.scalar(db_path, "SELECT COUNT(*) FROM findings"),
+        "findings_total": db.scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings WHERE status != 'REJECTED'",
+        ),
         "findings_triaging": db.scalar(
             db_path, "SELECT COUNT(*) FROM findings WHERE status='TRIAGING'"
         ),

@@ -3,7 +3,8 @@ import { useStatus } from "../state/StatusContext";
 
 /**
  * Header findings signal — PRIMARY count first, then total (PRIMARY + LINKED).
- * Warning highlight stays on TRIAGING (needs review). Links to Findings.
+ * REJECTED findings are omitted from both counts. Warning highlight stays on
+ * TRIAGING (needs review). Links to Findings.
  */
 export default function HeaderFindings() {
   const { findingsPrimary, findingsTotal, findingsTriaging } = useStatus();

@@ -588,6 +588,7 @@ def _bac_build_args(
     module: str | None = None,
     endpoint: str | None = None,
     flows: list[str] | None = None,
+    exclude_endpoints: list[str] | None = None,
     auto_generate: bool = False,
 ) -> list[str]:
     """Build argv for one `talos attack bac <technique>` invocation."""
@@ -600,6 +601,8 @@ def _bac_build_args(
         args += ["--endpoint", endpoint.strip()]
     for fid in [f.strip() for f in (flows or []) if f and f.strip()]:
         args += ["--flow", fid]
+    for eid in [e.strip() for e in (exclude_endpoints or []) if e and e.strip()]:
+        args += ["--exclude-endpoint", eid]
     if auto_generate:
         args.append("--auto-generate")
     return args
@@ -841,6 +844,7 @@ class BacRunBody(BaseModel):
     module: str | None = None
     endpoint: str | None = None
     flows: list[str] | None = None
+    exclude_endpoints: list[str] | None = None
     auto_generate: bool = False
     # Multi-run only (POST /bac/run). null/omit/[] => all techniques.
     techniques: list[str] | None = None
@@ -866,6 +870,7 @@ def run_bac_multi(project_id: str, body: BacRunBody):
             module=body.module,
             endpoint=body.endpoint,
             flows=body.flows,
+            exclude_endpoints=body.exclude_endpoints,
             auto_generate=body.auto_generate,
         )
         previews.append("talos " + " ".join(args))
@@ -894,6 +899,7 @@ def run_bac(project_id: str, technique: str, body: BacRunBody):
         module=body.module,
         endpoint=body.endpoint,
         flows=body.flows,
+        exclude_endpoints=body.exclude_endpoints,
         auto_generate=body.auto_generate,
     )
     results = cli.run_scoped(project_id, args)

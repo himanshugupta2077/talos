@@ -365,12 +365,13 @@ export default function Findings() {
           value={status}
           onChange={(e) => setStatus(e.target.value)}
         >
-          <option value="">All statuses</option>
+          <option value="">Not rejected</option>
           {STATUSES.map((s) => (
             <option key={s} value={s}>
               {s}
             </option>
           ))}
+          <option value="all">All statuses</option>
         </select>
         <select
           className={selectClass}

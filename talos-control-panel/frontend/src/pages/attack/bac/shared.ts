@@ -138,11 +138,25 @@ export function techniqueLabel(attackType?: string | null): string {
   return attackType;
 }
 
+export function parseUuidList(raw: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(/[\s,]+/)) {
+    const id = part.trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 export function buildCliPreview(opts: {
   techniques: string[];
   role?: string;
   module?: string;
   endpoint?: string;
+  excludeEndpoints?: string[];
   autoGenerate?: boolean;
 }): string[] {
   const techs =
@@ -152,6 +166,9 @@ export function buildCliPreview(opts: {
     if (opts.role) parts.push("--role", opts.role);
     if (opts.module) parts.push("--module", opts.module);
     if (opts.endpoint) parts.push("--endpoint", opts.endpoint);
+    for (const eid of opts.excludeEndpoints || []) {
+      parts.push("--exclude-endpoint", eid);
+    }
     if (opts.autoGenerate) parts.push("--auto-generate");
     return parts.join(" ");
   });

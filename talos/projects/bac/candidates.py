@@ -168,6 +168,55 @@ def restrict_candidates_to_flows(
     return out
 
 
+def exclude_endpoints_from_candidates(
+    candidates: list[BacCandidate],
+    endpoint_ids: list[str],
+    db_path: Path,
+) -> list[BacCandidate]:
+    """
+    Purpose:
+        Drop operator-excluded endpoints from each BAC candidate for this
+        run only. Matching flows are removed; candidates with no remaining
+        flows are dropped.
+    Input:
+        candidates   — scan_candidates() / collect_bac_candidates() output.
+        endpoint_ids — operator `--exclude-endpoint` values (repeatable /
+                       comma-separated).
+        db_path      — project talos.db, used to map flow_id → endpoint_id.
+    Output:
+        New BacCandidate list; remaining flow_ids keep original order.
+    """
+    from talos.projects.flow_scope import lookup_flows, normalize_flow_ids
+
+    skip = set(normalize_flow_ids(endpoint_ids))
+    if not skip:
+        return list(candidates)
+
+    all_flow_ids: list[str] = []
+    seen_flows: set[str] = set()
+    for candidate in candidates:
+        for fid in candidate.flow_ids:
+            if fid not in seen_flows:
+                seen_flows.add(fid)
+                all_flow_ids.append(fid)
+
+    blocked_flows: set[str] = set()
+    if all_flow_ids:
+        refs, _missing = lookup_flows(db_path, all_flow_ids)
+        for ref in refs:
+            if ref.endpoint_id and ref.endpoint_id in skip:
+                blocked_flows.add(ref.flow_id)
+
+    out: list[BacCandidate] = []
+    for candidate in candidates:
+        kept_flows = [fid for fid in candidate.flow_ids if fid not in blocked_flows]
+        if not kept_flows:
+            continue
+        kept_eps = [eid for eid in candidate.endpoint_ids if eid not in skip]
+        out.append(replace(candidate, flow_ids=kept_flows, endpoint_ids=kept_eps))
+    return out
+
+
 def scan_candidates(
     db_path: Path,
     project_id: str,

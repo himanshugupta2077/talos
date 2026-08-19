@@ -1882,6 +1882,11 @@ Design: `docs/design-auth-session-testing-engine.md`.
 | Endpoint | `--endpoint <uuid>` |
 | Selected flows | `--flow <uuid>` (repeatable) |
 
+`--exclude-endpoint UUID` (repeatable / comma-separated) skips those
+endpoints for **this run only**. It is not a scope mode: it combines with
+project, `--module`, `--endpoint`, or `--flow`, and does not persist as
+endpoint policy.
+
 `--role NAME|UUID` filters attacker role within any scope.
 `--module` accepts a module **name or UUID** (same rule as roles).
 
@@ -1908,6 +1913,8 @@ talos attack bac session-swap --module payments
 talos attack bac session-swap --module <module_uuid>
 talos attack bac session-swap --endpoint <endpoint_uuid>
 talos attack bac session-swap --flow <uuid> --flow <uuid>
+talos attack bac session-swap --exclude-endpoint <uuid> --exclude-endpoint <uuid>
+talos attack bac session-swap --module payments --exclude-endpoint <uuid>
 
 talos attack bac method-fuzz --role customer
 talos attack bac content-type --role customer

@@ -993,6 +993,7 @@ COMMAND_TREE: list[dict] = [
                 arg("module", flag="--module", help="Module scope (name or UUID); mutex with endpoint"),
                 arg("endpoint", flag="--endpoint", help="Endpoint UUID scope; mutex with module / flow"),
                 arg("flow", flag="--flow", kind="multi", help="Specific flow UUID(s); mutex with endpoint / module"),
+                arg("exclude_endpoint", flag="--exclude-endpoint", kind="multi", help="Skip these endpoint UUID(s) for this run only"),
                 arg("auto_generate", flag="--auto-generate", kind="boolean", help="Auto-generate missing session tokens"),
                 arg("source", flag="--source", kind="select", options=["all", "access_map", "privilege_diff"], help="Candidate source"),
             ])
@@ -1005,6 +1006,8 @@ COMMAND_TREE: list[dict] = [
                 arg("role", flag="--role", help="Attacker role name or UUID"),
                 arg("module", flag="--module"),
                 arg("endpoint", flag="--endpoint"),
+                arg("flow", flag="--flow", kind="multi"),
+                arg("exclude_endpoint", flag="--exclude-endpoint", kind="multi", help="Skip these endpoint UUID(s) for this run only"),
                 arg("source", flag="--source", kind="select", options=["all", "access_map", "privilege_diff"]),
             ]),
             cmd("attack.bac.filter.init", ["attack", "bac", "filter", "init"], "Create BAC decision filter template"),

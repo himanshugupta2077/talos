@@ -24,9 +24,9 @@ interface StatusContextValue {
   schedulerStateLabel: string;
   /** Active queue depth (pending + running + paused). */
   schedulerQueueCount: number;
-  /** PRIMARY findings count (header first number; null when no project). */
+  /** PRIMARY findings count excluding REJECTED (header first number; null when no project). */
   findingsPrimary: number | null;
-  /** PRIMARY + LINKED findings count (header second number). */
+  /** PRIMARY + LINKED findings count excluding REJECTED (header second number). */
   findingsTotal: number | null;
   /** Actionable findings signal: TRIAGING count (null when no project). */
   findingsTriaging: number | null;

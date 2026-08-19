@@ -234,6 +234,79 @@ def test_list_findings_defaults_to_primary(client, home):
     assert primary["linked_count"] == 2
 
 
+def test_list_findings_hides_rejected_by_default(client, home):
+    _talos_home, projects_root, registry = home
+    db_path = _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO findings
+        (id, project_id, attack_type, verdict, endpoint_id, status, duplicate_of,
+         created_at, updated_at, title, notes, relation_type, parent_finding_id, cluster_key)
+        VALUES
+        ('rej', ?, 'bac', 'POSSIBLE_BAC', NULL, 'REJECTED', NULL,
+         '2026-01-03T00:00:00', '2026-01-03T00:00:00', 'Rejected BAC', '',
+         'PRIMARY', NULL, NULL)
+        """,
+        ("demo",),
+    )
+    conn.commit()
+    conn.close()
+
+    hidden = client.get("/api/findings", params={"project_id": "demo"}).json()
+    assert {f["id"] for f in hidden["findings"]} == {"p1", "solo"}
+
+    only_rej = client.get(
+        "/api/findings", params={"project_id": "demo", "status": "REJECTED"}
+    ).json()
+    assert {f["id"] for f in only_rej["findings"]} == {"rej"}
+
+    all_rows = client.get(
+        "/api/findings", params={"project_id": "demo", "status": "all"}
+    ).json()
+    assert {f["id"] for f in all_rows["findings"]} == {"p1", "solo", "rej"}
+
+
+def test_project_summary_excludes_rejected_findings(client, home):
+    _talos_home, projects_root, registry = home
+    db_path = _seed_findings_db(projects_root)
+    _register_demo(registry, projects_root)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS endpoints (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS scheduler_jobs (
+          job_id TEXT PRIMARY KEY,
+          status TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO findings
+        (id, project_id, attack_type, verdict, endpoint_id, status, duplicate_of,
+         created_at, updated_at, title, notes, relation_type, parent_finding_id, cluster_key)
+        VALUES
+        ('rej', ?, 'bac', 'POSSIBLE_BAC', NULL, 'REJECTED', NULL,
+         '2026-01-03T00:00:00', '2026-01-03T00:00:00', 'Rejected BAC', '',
+         'PRIMARY', NULL, NULL)
+        """,
+        ("demo",),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/api/projects/demo/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["findings_primary"] == 2
+    assert body["findings_total"] == 4
+    assert body["findings_triaging"] == 3
+    assert body["findings_confirmed"] == 1
+
+
 def test_project_summary_primary_and_total_findings(client, home):
     _talos_home, projects_root, registry = home
     db_path = _seed_findings_db(projects_root)

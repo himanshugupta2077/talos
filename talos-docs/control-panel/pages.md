@@ -491,7 +491,7 @@ Testing is a **hub + module** workspace (sidebar label **Attack Module** under t
 |--------|--------|
 | **Purpose** | Discover and launch security tests; module-specific run + results |
 | **Backend** | `/api/attack/unauth/*` (overview, techniques, run, results, filter), `/api/attack/bac/*` (overview, techniques, run, results, filter), `/api/attack/auth-session/*` (summary, overview, bindings, candidates, approve/reject/unapprove, run, results, filter, suite — full parity), `/api/attack/cors/*` (overview, techniques, run, results, summary), `/api/attack/sqli/*` (overview, techniques, run, results, summary), `/api/attack/smuggle/*` (overview, techniques, run, results, summary); Input Validation via `/api/input-validation/*`; Secret Detection via `/api/passive/*`; Error Intelligence via `/api/error-intel/*`; unauth auto-run via configuration `attack.unauth_auto_run` |
-| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `attack cors run\|candidates\|results\|status`; `attack sqli run --flow`; `attack smuggle run --flow`; `talos input-validation …`; `talos passive …` for secrets |
+| **CLI** | `attack unauth run [--technique NAME]`, `attack unauth config [--auto-run on\|off]`, filter init/show/validate/apply; `attack bac <technique> [--role] [--module\|--endpoint] [--exclude-endpoint] [--auto-generate]`, filter init/show/validate; `attack auth-session bind\|unbind\|generate\|approve\|run …`; `attack cors run\|candidates\|results\|status`; `attack sqli run --flow`; `attack smuggle run --flow`; `talos input-validation …`; `talos passive …` for secrets |
 | **DB** | unauth_results, bac_results, auth_session_bindings/candidates/results, cors_results, sqli_results, smuggle_results (+ joins); IV profiles/probes; passive tables for secrets; overview also reads endpoints/policy + scheduler_jobs |
 | **Components** | Registry-driven hub (`pages/attack/registry.ts` — `TESTING_BASE`, `SECRETS_BASE`, `IV_BASE`, `ERRORS_BASE`), compact `ModuleCard` (title + KPIs only), `ModuleShell`, per-module workspaces |
 | **Workflow** | Hub → open module card → run / triage → Findings for global lifecycle |
@@ -565,11 +565,11 @@ Tabbed workspace with full Core CLI parity for `talos attack bac …`. Default p
 | Tab | Role |
 |-----|------|
 | **Overview** | Candidate/auth readiness chips, verdict KPIs, job pressure, recent POSSIBLE_BAC, one-click **Run all techniques** |
-| **Run** | Technique multi-select (default: all), role + project/module/endpoint scope, `--auto-generate`, job estimate, CLI preview, enqueue |
+| **Run** | Technique multi-select (default: all), role + project/module/endpoint scope, per-run `--exclude-endpoint` paste box, `--auto-generate`, job estimate, CLI preview, enqueue |
 | **Results** | Filterable DataTable (verdict, technique, module, attacker role, path search); row → flow detail; poll while jobs in flight |
 | **Filter** | Decision filter init/show/validate with inline YAML for `BAC-decision-filter.yaml`; **Apply filter** dry-run preview + confirm to reclassify stored BAC results and auto-reject TRIAGING findings that flip POSSIBLE_BAC→SECURE |
 
-Pipeline: access-matrix candidates → auth prereqs per attacker role → jobs per flow × variant → POSSIBLE_BAC \| SECURE \| UNKNOWN. Scope flags match CLI (`--role`, `--module` XOR `--endpoint`). Multi-technique run is sequential CLI invocations (no Core `bac run` command).
+Pipeline: access-matrix candidates → auth prereqs per attacker role → jobs per flow × variant → POSSIBLE_BAC \| SECURE \| UNKNOWN. Scope flags match CLI (`--role`, `--module` XOR `--endpoint`). Run tab can paste endpoint UUIDs to skip for that enqueue (`--exclude-endpoint`; not persisted). Multi-technique run is sequential CLI invocations (no Core `bac run` command).
 
 ### Auth-Session Testing (`/testing/auth-session`)
 
@@ -734,8 +734,8 @@ Error Intelligence workspace (Phase 9) — clusters error-like stored responses.
 
 | Aspect | Detail |
 |--------|--------|
-| **Purpose** | List findings (default PRIMARY + linked count); filters; manage groups |
-| **Backend** | list (`view=primary\|linked\|all`, status), groups list/create/delete/report |
+| **Purpose** | List findings (default PRIMARY + linked count); filters; manage groups. Default status view hides REJECTED (header counts do too). |
+| **Backend** | list (`view=primary\|linked\|all`, status omitted = not REJECTED, `status=all` includes rejected), groups list/create/delete/report |
 | **CLI** | parity with `finding list [--linked\|--all] [--status]`; groups/report via CLI |
 | **DB** | findings (+ relation_type, linked_count), groups |
 | **Components** | `DataTable` (Rel / notes columns), relation view select, group badges, report pre |

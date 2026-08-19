@@ -8,6 +8,7 @@ export default function JobEstimate({
   candidateCount,
   techniqueLabel,
   authFailed,
+  excludedEndpointCount = 0,
 }: {
   flowCount: number;
   variantCount: number;
@@ -15,6 +16,7 @@ export default function JobEstimate({
   /** Empty string means all techniques. */
   techniqueLabel: string;
   authFailed?: boolean;
+  excludedEndpointCount?: number;
 }) {
   const estimate = Math.max(0, flowCount) * Math.max(0, variantCount);
 
@@ -37,6 +39,9 @@ export default function JobEstimate({
         {" · "}
         {flowCount.toLocaleString()} candidate flow
         {flowCount === 1 ? "" : "s"}
+        {excludedEndpointCount > 0
+          ? ` (excluding ${excludedEndpointCount.toLocaleString()} endpoint${excludedEndpointCount === 1 ? "" : "s"} this run)`
+          : ""}
         {" × "}
         {variantCount} variant{variantCount === 1 ? "" : "s"}
         {techniqueLabel ? (

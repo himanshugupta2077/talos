@@ -8,6 +8,7 @@ import type { BacOverview, BacScopeMode, BacTechnique } from "./shared";
 import {
   buildCliPreview,
   estimateJobs,
+  parseUuidList,
   variantCountForTechniques,
 } from "./shared";
 import BacDisclaimer from "./components/BacDisclaimer";
@@ -36,6 +37,7 @@ export default function RunTab({
   const [moduleName, setModuleName] = useState("");
   const [endpointId, setEndpointId] = useState("");
   const [autoGenerate, setAutoGenerate] = useState(false);
+  const [excludeEndpointText, setExcludeEndpointText] = useState("");
   const [roles, setRoles] = useState<Role[]>([]);
   const [modules, setModules] = useState<Module[]>([]);
   const [lastStdout, setLastStdout] = useState<string | null>(null);
@@ -66,6 +68,10 @@ export default function RunTab({
   const moduleArg = scopeMode === "module" ? moduleName || undefined : undefined;
   const endpointArg =
     scopeMode === "endpoint" ? endpointId || undefined : undefined;
+  const excludeEndpoints = useMemo(
+    () => parseUuidList(excludeEndpointText),
+    [excludeEndpointText]
+  );
 
   const scopeReady =
     scopeMode === "project" ||
@@ -80,6 +86,7 @@ export default function RunTab({
         role: role || undefined,
         module: moduleArg,
         endpoint: endpointArg,
+        exclude_endpoints: excludeEndpoints.length > 0 ? excludeEndpoints : undefined,
         auto_generate: autoGenerate,
       },
       { project_id: projectId }
@@ -93,9 +100,10 @@ export default function RunTab({
         role: role || undefined,
         module: moduleArg,
         endpoint: endpointArg,
+        excludeEndpoints,
         autoGenerate,
       }),
-    [selected, role, moduleArg, endpointArg, autoGenerate]
+    [selected, role, moduleArg, endpointArg, excludeEndpoints, autoGenerate]
   );
 
   const techniqueLabel =
@@ -169,6 +177,34 @@ export default function RunTab({
             onAutoGenerate={setAutoGenerate}
             disabled={run.running}
           />
+
+          <div className="mt-4 pt-3 border-t border-base-300">
+            <label className="form-control w-full">
+              <span className="label-text text-xs">
+                Exclude endpoints{" "}
+                <span className="text-base-content/40">
+                  (this run only · --exclude-endpoint)
+                </span>
+              </span>
+              <textarea
+                className="textarea textarea-bordered textarea-xs w-full font-mono mt-1 min-h-20"
+                value={excludeEndpointText}
+                disabled={run.running}
+                placeholder="endpoint UUID, one per line or comma-separated"
+                onChange={(e) => setExcludeEndpointText(e.target.value)}
+              />
+            </label>
+            <p className="text-[10px] text-base-content/40 leading-snug mt-1 max-w-2xl">
+              Skip these endpoints for this enqueue only. Does not change
+              endpoint policy. Copy UUIDs from{" "}
+              <Link className="link" to="/endpoints">
+                Endpoints
+              </Link>
+              {excludeEndpoints.length > 0
+                ? `. ${excludeEndpoints.length} endpoint${excludeEndpoints.length === 1 ? "" : "s"} excluded.`
+                : "."}
+            </p>
+          </div>
         </div>
       </Section>
 
@@ -180,6 +216,7 @@ export default function RunTab({
             candidateCount={candidateCount}
             techniqueLabel={techniqueLabel}
             authFailed={authFailed}
+            excludedEndpointCount={excludeEndpoints.length}
           />
 
           <div className="space-y-1">

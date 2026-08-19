@@ -169,6 +169,32 @@ def test_bac_run_with_flows(client):
         ]
 
 
+def test_bac_run_with_exclude_endpoints(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/bac/run",
+            params={"project_id": "demo"},
+            json={
+                "techniques": ["session-swap"],
+                "module": "payments",
+                "exclude_endpoints": ["ep-skip", "ep-noise"],
+            },
+        )
+        assert res.status_code == 200
+        assert run_scoped.call_args[0][1] == [
+            "attack",
+            "bac",
+            "session-swap",
+            "--module",
+            "payments",
+            "--exclude-endpoint",
+            "ep-skip",
+            "--exclude-endpoint",
+            "ep-noise",
+        ]
+
+
 def test_bac_run_rejects_flows_and_endpoint(client):
     with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
         res = client.post(
@@ -358,6 +384,7 @@ def test_command_tree_bac_shared_flags():
         {
             "role": "customer",
             "module": "payments",
+            "exclude_endpoint": ["ep-skip"],
             "auto_generate": True,
         },
     )
@@ -369,6 +396,8 @@ def test_command_tree_bac_shared_flags():
         "customer",
         "--module",
         "payments",
+        "--exclude-endpoint",
+        "ep-skip",
         "--auto-generate",
     ]
     argv_ep = build_argv(cmd, {"endpoint": "ep-uuid"})

@@ -35,6 +35,19 @@ def _relation_clause(view: str) -> str:
     return "AND COALESCE(f.relation_type, 'PRIMARY') = 'PRIMARY'"
 
 
+def _status_clause(status: str | None) -> tuple[str, list]:
+    """
+    Default list hides REJECTED. Pass status=all to include every status,
+    or a specific FINDING_STATUS_* value to filter to that status.
+    """
+    raw = (status or "").strip()
+    if not raw:
+        return "AND f.status != 'REJECTED'", []
+    if raw.lower() == "all":
+        return "", []
+    return "AND f.status=?", [raw]
+
+
 @router.get("")
 def list_findings(
     project_id: str,
@@ -47,18 +60,13 @@ def list_findings(
     record = db.get_project_record(project_id)
     db_path = config.project_db_path(project_id, record)
     rel = _relation_clause(view)
-    if status:
-        rows = db.query_all(
-            db_path,
-            f"{_FINDING_SELECT} WHERE f.project_id=? AND f.status=? {rel} ORDER BY f.created_at DESC",
-            (project_id, status),
-        )
-    else:
-        rows = db.query_all(
-            db_path,
-            f"{_FINDING_SELECT} WHERE f.project_id=? {rel} ORDER BY f.created_at DESC",
-            (project_id,),
-        )
+    status_sql, status_params = _status_clause(status)
+    rows = db.query_all(
+        db_path,
+        f"{_FINDING_SELECT} WHERE f.project_id=? {status_sql} {rel} "
+        "ORDER BY f.created_at DESC",
+        (project_id, *status_params),
+    )
     return {"findings": rows, "view": (view or "primary").lower()}
 
 
@@ -72,9 +80,10 @@ def _adjacent_extra_filters(
     """Client-list filters that are not part of the default list query."""
     extra: list[str] = []
     params: list = []
-    if status:
-        extra.append("AND f.status=?")
-        params.append(status)
+    status_sql, status_params = _status_clause(status)
+    if status_sql:
+        extra.append(status_sql)
+        params.extend(status_params)
     if attack_type:
         extra.append("AND f.attack_type=?")
         params.append(attack_type)

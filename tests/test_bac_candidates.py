@@ -32,6 +32,7 @@ from talos.projects.policy import (
     set_path_rule,
 )
 from talos.projects.bac.candidates import (
+    exclude_endpoints_from_candidates,
     restrict_candidates_to_flows,
     scan_candidates,
 )
@@ -434,6 +435,23 @@ def test_restrict_candidates_to_selected_flows(db_path: Path):
     assert kept == {FLOW_ORDERS}
     empty = restrict_candidates_to_flows(all_cands, ["no-such-flow"])
     assert empty == []
+
+
+def test_exclude_endpoints_from_candidates(db_path: Path):
+    all_cands = scan_candidates(db_path, PROJECT_ID)
+    all_ids = {fid for c in all_cands for fid in c.flow_ids}
+    assert FLOW_ORDERS in all_ids
+    assert FLOW_ADMIN in all_ids
+    filtered = exclude_endpoints_from_candidates(all_cands, [EP_ORDERS], db_path)
+    kept = {fid for c in filtered for fid in c.flow_ids}
+    assert FLOW_ORDERS not in kept
+    assert FLOW_ADMIN in kept
+    none_left = exclude_endpoints_from_candidates(
+        all_cands, [EP_ORDERS, EP_ADMIN, EP_EXCLUDED], db_path
+    )
+    assert none_left == []
+    unchanged = exclude_endpoints_from_candidates(all_cands, [], db_path)
+    assert {fid for c in unchanged for fid in c.flow_ids} == all_ids
 
 
 def test_is_endpoint_testable(db_path: Path):
