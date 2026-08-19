@@ -13,6 +13,7 @@ const ACTIVE_MODULES = [
   { name: "Path Traversal", path: "/testing/path-traversal" },
   { name: "SSRF", path: "/testing/ssrf" },
   { name: "Open Redirect", path: "/testing/open-redirect" },
+  { name: "Host Header Injection", path: "/testing/host-header" },
   { name: "Intruder", path: "/testing/intruder" },
 ] as const;
 

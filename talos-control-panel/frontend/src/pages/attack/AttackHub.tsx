@@ -468,6 +468,33 @@ export default function AttackHub() {
       })
       .catch(() => undefined);
 
+    // Host-header injection (active)
+    api
+      .get<{ counts: Record<string, number> }>("/api/attack/host-header/summary", {
+        project_id: pid,
+      })
+      .then((summary) => {
+        const c = summary.counts || {};
+        const issues = c.HOST_HEADER ?? 0;
+        const secure = c.SECURE ?? 0;
+        const unknown = c.UNKNOWN ?? 0;
+        setKpiMap((prev) => ({
+          ...prev,
+          host_header: {
+            chips: [
+              {
+                label: "hhi",
+                value: issues,
+                tone: issues > 0 ? "danger" : "muted",
+              },
+              { label: "secure", value: secure, tone: "ok" },
+              { label: "unknown", value: unknown, tone: "muted" },
+            ],
+          },
+        }));
+      })
+      .catch(() => undefined);
+
     // HTTP request smuggling (active)
     api
       .get<{ counts: Record<string, number> }>("/api/attack/smuggle/summary", {

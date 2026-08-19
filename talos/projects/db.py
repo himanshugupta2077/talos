@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 62
+SCHEMA_VERSION = 63
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1701,6 +1701,37 @@ CREATE INDEX IF NOT EXISTS idx_open_redirect_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_open_redirect_results_original
     ON open_redirect_results (original_flow_id, verdict);
+
+-- ------------------------------------------------------------------ --
+-- host_header_results: one unique replay per host-header probe (v63)   --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS host_header_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    reflected_url      TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_header_results_verdict
+    ON host_header_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_host_header_results_original
+    ON host_header_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -1957,6 +1988,37 @@ CREATE INDEX IF NOT EXISTS idx_open_redirect_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_open_redirect_results_original
     ON open_redirect_results (original_flow_id, verdict);
+"""
+
+# Shared CREATE statements for host-header injection (schema v63).
+_HOST_HEADER_SCHEMA_V63_DDL = """
+CREATE TABLE IF NOT EXISTS host_header_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    reflected_url      TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_header_results_verdict
+    ON host_header_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_host_header_results_original
+    ON host_header_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -3052,6 +3114,7 @@ def migrate_project_db(db_path: Path) -> None:
         v59 → v60: smuggle_results — HTTP request smuggling.
         v60 → v61: path_traversal_results — path traversal / LFI.
         v61 → v62: ssrf_results + open_redirect_results.
+        v62 → v63: host_header_results — host-header injection.
     """
     if not db_path.exists():
         return
@@ -4482,6 +4545,12 @@ def migrate_project_db(db_path: Path) -> None:
             # SSRF + open redirect: unique replay flow per (entry point × payload).
             conn.executescript(_SSRF_OPEN_REDIRECT_SCHEMA_V62_DDL)
             conn.execute("UPDATE schema_version SET version = 62")
+            conn.commit()
+
+        if current < 63:
+            # Host-header injection: unique replay flow per (header × payload).
+            conn.executescript(_HOST_HEADER_SCHEMA_V63_DDL)
+            conn.execute("UPDATE schema_version SET version = 63")
             conn.commit()
 
 

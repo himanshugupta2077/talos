@@ -122,6 +122,9 @@ EVIDENCE_TYPE_SSRF_RESULT             = "ssrf_result"
 EVIDENCE_TYPE_OPEN_REDIRECT_RESULT    = "open_redirect_result"
 """Open-redirect probe result row reference."""
 
+EVIDENCE_TYPE_HOST_HEADER_RESULT      = "host_header_result"
+"""Host-header injection probe result row reference."""
+
 EVIDENCE_TYPE_SMUGGLE_RESULT          = "smuggle_result"
 """HTTP request smuggling probe result row reference."""
 
@@ -170,6 +173,7 @@ VERDICT_TRIGGERS: dict[str, frozenset[str]] = {
     "path_traversal":  frozenset({"PATH_TRAVERSAL"}),
     "ssrf":            frozenset({"SSRF"}),
     "open_redirect":   frozenset({"OPEN_REDIRECT"}),
+    "host_header":     frozenset({"HOST_HEADER"}),
 }
 
 # ------------------------------------------------------------------ #
@@ -187,6 +191,7 @@ ATTACK_DISPLAY: dict[str, str] = {
     "path_traversal":  "Path Traversal / LFI",
     "ssrf":            "SSRF",
     "open_redirect":   "Open Redirect",
+    "host_header":     "Host Header Injection",
     "passive_secret": "Client-Side Secret Exposure",
     "intruder":       "Intruder Match",
     "ai_draft":       "AI Draft (promoted)",

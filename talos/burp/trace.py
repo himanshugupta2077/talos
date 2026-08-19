@@ -30,6 +30,7 @@ ENGINE_SQLI = "sqli"
 ENGINE_PATH_TRAVERSAL = "path-traversal"
 ENGINE_SSRF = "ssrf"
 ENGINE_OPEN_REDIRECT = "open-redirect"
+ENGINE_HOST_HEADER = "host-header"
 ENGINE_SMUGGLE = "smuggle"
 ENGINE_INTRUDER = "intruder"
 ENGINE_PASSIVE = "passive"
@@ -49,6 +50,7 @@ ENGINE_LABELS: dict[str, str] = {
     ENGINE_PATH_TRAVERSAL: "Path Traversal",
     ENGINE_SSRF: "SSRF",
     ENGINE_OPEN_REDIRECT: "Open Redirect",
+    ENGINE_HOST_HEADER: "Host Header Injection",
     ENGINE_SMUGGLE: "HTTP Request Smuggling",
     ENGINE_INTRUDER: "Intruder",
     ENGINE_PASSIVE: "Secret Detection",

@@ -105,6 +105,7 @@ from talos.scheduler.job import (
     PATH_TRAVERSAL_JOB_TYPES,
     SSRF_JOB_TYPES,
     OPEN_REDIRECT_JOB_TYPES,
+    HOST_HEADER_JOB_TYPES,
     SMUGGLE_JOB_TYPES,
     IV_JOB_TYPES,
     INTRUDER_JOB_TYPES,
@@ -574,6 +575,9 @@ class ReplayScheduler:
 
             elif job.job_type in OPEN_REDIRECT_JOB_TYPES:
                 self._execute_open_redirect_job(job)
+
+            elif job.job_type in HOST_HEADER_JOB_TYPES:
+                self._execute_host_header_job(job)
 
             elif job.job_type in SMUGGLE_JOB_TYPES:
                 self._execute_smuggle_job(job)
@@ -1832,6 +1836,122 @@ class ReplayScheduler:
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "[findings] open-redirect finding creation error (non-fatal): %s",
+                exc,
+            )
+
+    # ------------------------------------------------------------------ #
+    # Host-header injection job execution                                  #
+    # ------------------------------------------------------------------ #
+
+    def _execute_host_header_job(self, job: ReplayJob) -> None:
+        """
+        Purpose:
+            Execute a HOST_HEADER_ATTACK job: unique replay flow with one payload.
+        """
+        import json as _json
+        from talos.host_header.engine import execute_host_header_job
+        from talos.host_header.models import HostHeaderOutcome
+
+        db_path = self._project.db_path
+        project_id = self._project.id
+
+        sched_db.mark_running(db_path, job.job_id)
+
+        flow_id = job.flow_id
+        if flow_id is None:
+            sched_db.mark_skipped(db_path, job.job_id, "host_header_job_missing_flow_id")
+            return
+
+        meta: dict = {}
+        if job.meta:
+            try:
+                meta = _json.loads(job.meta)
+            except (ValueError, TypeError):
+                sched_db.mark_failed(db_path, job.job_id, "host_header_meta_parse_error")
+                return
+
+        try:
+            outcome: HostHeaderOutcome = asyncio.run(
+                execute_host_header_job(
+                    flow_id=flow_id,
+                    meta=meta,
+                    db_path=db_path,
+                    project_id=project_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "[scheduler] Unexpected error in host-header job %s: %s",
+                job.job_id[:8],
+                exc,
+            )
+            sched_db.mark_failed(db_path, job.job_id, f"unexpected_error: {exc}")
+            return
+
+        self._settle_host_header_outcome(job, outcome)
+
+    def _settle_host_header_outcome(
+        self, job: ReplayJob, outcome: "HostHeaderOutcome"
+    ) -> None:
+        """Purpose: Map HostHeaderOutcome to job terminal state; finding on hit."""
+        db_path = self._project.db_path
+
+        skip_reasons = _SKIP_REASONS | frozenset({
+            "host_header_job_missing_flow_id",
+            "host_header_point_missing",
+        })
+
+        if outcome.failure_reason in skip_reasons:
+            sched_db.mark_skipped(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] SKIPPED  job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        if outcome.failure_reason is not None:
+            sched_db.mark_failed(db_path, job.job_id, outcome.failure_reason)
+            _log.info(
+                "[scheduler] FAILED   job=%s  reason=%s",
+                job.job_id[:8],
+                outcome.failure_reason,
+            )
+            return
+
+        sched_db.mark_done(
+            db_path,
+            job.job_id,
+            outcome.replayed_flow_id,
+            outcome.verdict,
+        )
+        _log.info(
+            "[scheduler] DONE     job=%s  host_header=%s  technique=%s  header=%s",
+            job.job_id[:8],
+            outcome.verdict,
+            outcome.technique,
+            outcome.param_name,
+        )
+
+        if outcome.verdict == "HOST_HEADER":
+            self._maybe_create_finding_host_header(job, outcome)
+
+    def _maybe_create_finding_host_header(
+        self, job: ReplayJob, outcome: "HostHeaderOutcome"
+    ) -> None:
+        """Purpose: Create a PRIMARY/LINKED host-header finding on a confirmed probe."""
+        from talos.host_header.findings_bridge import maybe_create_host_header_finding
+
+        try:
+            maybe_create_host_header_finding(
+                db_path=self._project.db_path,
+                project_id=self._project.id,
+                outcome=outcome,
+                job_id=job.job_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "[findings] host-header finding creation error (non-fatal): %s",
                 exc,
             )
 

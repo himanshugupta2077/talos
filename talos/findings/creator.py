@@ -75,6 +75,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT,
     EVIDENCE_TYPE_SSRF_RESULT,
     EVIDENCE_TYPE_OPEN_REDIRECT_RESULT,
+    EVIDENCE_TYPE_HOST_HEADER_RESULT,
     EVIDENCE_TYPE_SMUGGLE_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
@@ -187,6 +188,7 @@ def create_finding_from_verdict(
             path_traversal  → PATH_TRAVERSAL:<endpoint_id>
             ssrf            → SSRF:<endpoint_id>
             open_redirect   → OPEN_REDIRECT:<endpoint_id>
+            host_header     → HOST_HEADER:<endpoint_id>
             smuggle         → SMUGGLE:<scheme://netloc>
 
         The first finding in a cluster becomes PRIMARY; later findings in
@@ -638,6 +640,19 @@ def _attach_evidence(
                 "Open-redirect probe"
                 + (f" — {variant}" if variant else ""),
                 or_data,
+            )
+
+    elif attack_module == "host_header":
+        if replayed_flow_id_for_result:
+            hh_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                hh_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_HOST_HEADER_RESULT, replayed_flow_id_for_result,
+                "Host-header injection probe"
+                + (f" — {variant}" if variant else ""),
+                hh_data,
             )
 
     elif attack_module == "smuggle":

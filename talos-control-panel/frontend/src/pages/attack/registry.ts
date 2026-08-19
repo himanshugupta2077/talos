@@ -32,6 +32,7 @@ export type AttackKpiSource =
   | "path_traversal"
   | "ssrf"
   | "open_redirect"
+  | "host_header"
   | "smuggle";
 
 export interface AttackModuleDef {
@@ -315,6 +316,26 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "returnurl",
     ],
     kpi: "open_redirect",
+  },
+  {
+    id: "host-header",
+    class: "active",
+    name: "Host Header Injection",
+    description:
+      "Scan a captured flow for host-header injection: Host / X-Forwarded-Host / Forwarded payloads (absolute, port, ambiguous, encoded, bypass, CRLF). Optional header. Connects to the original origin. One unique replay per probe; shows in the Talos Burp extension.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/host-header`,
+    keywords: [
+      "host header",
+      "host header injection",
+      "x-forwarded-host",
+      "password reset",
+      "cache poisoning",
+      "forwarded",
+      "hhi",
+    ],
+    kpi: "host_header",
   },
   {
     id: "smuggle",

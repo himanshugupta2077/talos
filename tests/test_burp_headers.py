@@ -54,6 +54,7 @@ from talos.burp.trace import (
     ENGINE_CORS,
     ENGINE_SMUGGLE,
     ENGINE_PATH_TRAVERSAL,
+    ENGINE_HOST_HEADER,
     ENGINE_INPUT_VALIDATION,
     ENGINE_INTRUDER,
     ENGINE_UNAUTH,
@@ -326,6 +327,7 @@ def test_attach_other_engines() -> None:
         (ENGINE_CORS, "CORS Misconfiguration", {"technique": "reflected", "origin": "https://evil.test"}),
         (ENGINE_SMUGGLE, "HTTP Request Smuggling", {"technique": "cl_te", "variant": "cl_te"}),
         (ENGINE_PATH_TRAVERSAL, "Path Traversal", {"technique": "unix_passwd", "param": "file"}),
+        (ENGINE_HOST_HEADER, "Host Header Injection", {"technique": "abs_canary", "param": "Host"}),
         (ENGINE_INTRUDER, "Intruder", {"attempt": "12", "variant": "user=admin"}),
     )
     for token, label, extras in cases:

@@ -13,6 +13,7 @@ describe("availableModulesForClass", () => {
       "Path Traversal",
       "SSRF",
       "Open Redirect",
+      "Host Header Injection",
       "HTTP Request Smuggling",
       "Intruder",
     ]);

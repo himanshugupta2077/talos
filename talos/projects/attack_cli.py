@@ -11,6 +11,7 @@ Purpose:
                      talos attack path-traversal <subcommand>
                      talos attack ssrf <subcommand>
                      talos attack open-redirect <subcommand>
+                     talos attack host-header <subcommand>
                      talos attack smuggle <subcommand>
 
     Unauth commands (talos attack unauth):
@@ -62,6 +63,11 @@ Purpose:
       techniques | run --flow | results list|show | status
       One open_redirect_attack job per (flow, entry point, payload).
       Alias: open_redirect.
+
+    Host-header commands (talos attack host-header):
+      techniques | run --flow | results list|show | status
+      One host_header_attack job per (flow, header, payload);
+      each job stores a unique replay flow. Aliases: hhi, host_header.
 
     Smuggle commands (talos attack smuggle):
       techniques | run --flow | results list|show | status
@@ -120,6 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "path-traversal (LFI / path traversal), "
             "ssrf (server-side request forgery), "
             "open-redirect, "
+            "host-header (host-header injection), "
             "smuggle (HTTP request smuggling)."
         ),
     )
@@ -157,6 +164,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- open-redirect ---- #
     from talos.open_redirect.cli import build_open_redirect_parser
     build_open_redirect_parser(sub)
+
+    # ---- host-header injection ---- #
+    from talos.host_header.cli import build_host_header_parser
+    build_host_header_parser(sub)
 
     # ---- smuggle ---- #
     from talos.smuggle.cli import build_smuggle_parser
@@ -213,6 +224,10 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type in ("open-redirect", "open_redirect"):
         from talos.open_redirect.cli import run_open_redirect_cli
         run_open_redirect_cli(manager, args)
+
+    elif args.attack_type in ("host-header", "hhi", "host_header", "host-header-injection"):
+        from talos.host_header.cli import run_host_header_cli
+        run_host_header_cli(manager, args)
 
     elif args.attack_type == "smuggle":
         from talos.smuggle.cli import run_smuggle_cli

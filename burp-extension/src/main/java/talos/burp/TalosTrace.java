@@ -20,6 +20,7 @@ final class TalosTrace {
             Map.entry("path-traversal", "Path Traversal"),
             Map.entry("ssrf", "SSRF"),
             Map.entry("open-redirect", "Open Redirect"),
+            Map.entry("host-header", "Host Header Injection"),
             Map.entry("smuggle", "HTTP Request Smuggling"),
             Map.entry("intruder", "Intruder"),
             Map.entry("passive", "Secret Detection"),

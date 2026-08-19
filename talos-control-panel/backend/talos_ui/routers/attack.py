@@ -2467,3 +2467,272 @@ def run_open_redirect(project_id: str, body: OpenRedirectRunBody):
         args.append("--no-high-priority")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Host-header injection                                                #
+# ------------------------------------------------------------------ #
+
+HOST_HEADER_FAMILY_FALLBACK = [
+    "absolute",
+    "port",
+    "ambiguous",
+    "absolute_url",
+    "encoded",
+    "bypass",
+    "crlf",
+]
+
+
+def _load_host_header_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.host_header.payloads import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in (
+                "abs_canary",
+                "port_canary_443",
+                "amb_colon",
+                "url_https",
+                "enc_percent_dot",
+                "bypass_sub_poison",
+                "crlf_xfh",
+            )
+        ]
+
+
+def _host_header_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'host_header_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/host-header/techniques")
+def host_header_techniques():
+    """Host-header payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_host_header_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(HOST_HEADER_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/host-header/results")
+def host_header_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.host_header.db import list_host_header_results
+
+        rows = list_host_header_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/host-header/summary")
+def host_header_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.host_header.db import count_host_header_verdicts
+
+        counts = count_host_header_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/host-header/overview")
+def host_header_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the Host Header Injection workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.host_header.db import (
+            count_host_header_verdicts,
+            list_host_header_results,
+        )
+
+        counts = count_host_header_verdicts(db_path)
+        recent = list_host_header_results(
+            db_path, verdict="HOST_HEADER", limit=top_n
+        )
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _host_header_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_host_header_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(HOST_HEADER_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class HostHeaderRunBody(BaseModel):
+    """Mirrors talos attack host-header run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
+    right_now: bool = False
+    high_priority: bool = True
+
+
+@router.get("/host-header/points")
+def host_header_points(project_id: str, flow: str):
+    """
+    Purpose:
+        List host-related headers on one or more captured flows.
+    Input:
+        flow — comma-separated flow UUIDs.
+    Output:
+        {points: [{flow_id, location, name, original, surface_kind}, ...]}.
+    """
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.host_header.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(
+            500, f"Host-header inject module unavailable: {exc}"
+        ) from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT f.id, f.url, f.query, f.request_headers, f.request_body,
+                   COALESCE(e.normalized_path, '') AS normalized_path
+            FROM flows f
+            LEFT JOIN endpoints e ON e.id = f.endpoint_id
+            WHERE f.id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+            normalized_path=str(row.get("normalized_path") or ""),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
+
+
+@router.post("/host-header/run")
+def run_host_header(project_id: str, body: HostHeaderRunBody):
+    known = {t["name"] for t in _load_host_header_technique_meta()}
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "Host-header run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "host-header", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--header", name]
+    if body.technique:
+        tech = body.technique.strip()
+        if known and tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown host-header technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in HOST_HEADER_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown host-header family '{fam}'; "
+                f"expected one of: {', '.join(HOST_HEADER_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.right_now:
+        args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

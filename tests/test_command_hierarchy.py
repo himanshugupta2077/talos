@@ -117,6 +117,15 @@ def test_talos_helper_documents_path_traversal_attack() -> None:
     assert "path-traversal status" in text
 
 
+def test_talos_helper_documents_host_header_attack() -> None:
+    """Root help must advertise talos attack host-header commands."""
+    text = _root_help_text()
+    assert "host-header techniques" in text
+    assert "host-header run" in text
+    assert "host-header results list|show" in text
+    assert "host-header status" in text
+
+
 def test_talos_helper_documents_smuggle_attack() -> None:
     """Root help must advertise talos attack smuggle commands."""
     text = _root_help_text()

@@ -125,6 +125,25 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       ),
   },
   {
+    id: "host-header",
+    name: "Host Header Injection",
+    shortLabel: "Host",
+    description:
+      "Mutate Host / X-Forwarded-Host / Forwarded on these flows. Connects to the original origin. Canary talos-hhi.invalid.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/host-header`,
+    cliHint: "talos attack host-header run --flow --high-priority",
+    jobsPerFlow: 42,
+    run: (projectId, flowIds) =>
+      api.post(
+        "/api/attack/host-header/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
+  },
+  {
     id: "smuggle",
     name: "HTTP Request Smuggling",
     shortLabel: "Smuggle",

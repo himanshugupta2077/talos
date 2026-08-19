@@ -1303,6 +1303,51 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.host-header",
+        "label": "Attack — Host Header Injection",
+        "commands": [
+            cmd("attack.host-header.techniques", ["attack", "host-header", "techniques"], "List host-header injection payloads", [
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["absolute", "port", "ambiguous", "absolute_url", "encoded", "bypass", "crlf"],
+                    help="Restrict to one payload family",
+                ),
+            ]),
+            cmd("attack.host-header.run", ["attack", "host-header", "run"], "Enqueue host-header probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to scan"),
+                arg(
+                    "header",
+                    flag="--header",
+                    help="Restrict to one header (Host, X-Forwarded-Host, Forwarded). Repeatable.",
+                ),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    help="Restrict to one payload technique (default: all)",
+                ),
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["absolute", "port", "ambiguous", "absolute_url", "encoded", "bypass", "crlf"],
+                    help="Restrict to one payload family",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run host-header ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
+            ]),
+            cmd("attack.host-header.results.list", ["attack", "host-header", "results", "list"], "List host-header probe results"),
+            cmd("attack.host-header.status", ["attack", "host-header", "status"], "Host-header verdict and job tallies"),
+        ],
+    },
+    {
         "group": "attack.smuggle",
         "label": "Attack — HTTP Request Smuggling",
         "commands": [

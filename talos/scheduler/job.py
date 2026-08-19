@@ -138,6 +138,15 @@ OPEN_REDIRECT_ATTACK = "open_redirect_attack"
 OPEN_REDIRECT_JOB_TYPES: tuple[str, ...] = (OPEN_REDIRECT_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# Host-header injection job type                                       #
+# ------------------------------------------------------------------ #
+
+HOST_HEADER_ATTACK = "host_header_attack"
+"""Host-header injection: one (header × payload) per job, one unique replay flow."""
+
+HOST_HEADER_JOB_TYPES: tuple[str, ...] = (HOST_HEADER_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # HTTP request smuggling job type                                      #
 # ------------------------------------------------------------------ #
 
@@ -216,6 +225,7 @@ JOB_TYPES: tuple[str, ...] = (
     + PATH_TRAVERSAL_JOB_TYPES
     + SSRF_JOB_TYPES
     + OPEN_REDIRECT_JOB_TYPES
+    + HOST_HEADER_JOB_TYPES
     + SMUGGLE_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
