@@ -111,6 +111,11 @@ per-project snapshot as other engines (`finding:<id>`). Opening a
 Talos project backfills findings that were created before this tree
 existed.
 
+The request table shows **Param** and **Technique** so candidate-targeted
+runs (from Input Validation → Candidates) are easy to scan: XSS, SQLi,
+Path Traversal, SSRF, and Open Redirect probes land under those engine
+nodes with the injected parameter name.
+
 Wired engines and `X-Talos-Engine` tokens:
 
 | Engine | Token |

@@ -50,6 +50,57 @@ export const ATTACKS = [
   "mass_assignment",
 ] as const;
 
+/** IV candidate attacks that have a dedicated engine (row Run + Burp tree). */
+export const RUNNABLE_CANDIDATE_ATTACKS = {
+  xss: {
+    id: "xss",
+    label: "XSS",
+    shortLabel: "XSS",
+    workspace: "/testing/xss",
+    burpLabel: "XSS",
+  },
+  sqli: {
+    id: "sqli",
+    label: "SQLi",
+    shortLabel: "SQLi",
+    workspace: "/testing/sqli",
+    burpLabel: "SQL Injection",
+  },
+  path_traversal: {
+    id: "path_traversal",
+    label: "Path Traversal",
+    shortLabel: "LFI",
+    workspace: "/testing/path-traversal",
+    burpLabel: "Path Traversal",
+  },
+  ssrf: {
+    id: "ssrf",
+    label: "SSRF",
+    shortLabel: "SSRF",
+    workspace: "/testing/ssrf",
+    burpLabel: "SSRF",
+  },
+  open_redirect: {
+    id: "open_redirect",
+    label: "Open Redirect",
+    shortLabel: "Redirect",
+    workspace: "/testing/open-redirect",
+    burpLabel: "Open Redirect",
+  },
+} as const;
+
+export type RunnableCandidateAttack = keyof typeof RUNNABLE_CANDIDATE_ATTACKS;
+
+export function runnableCandidateAttack(
+  attack: string | undefined | null,
+): (typeof RUNNABLE_CANDIDATE_ATTACKS)[RunnableCandidateAttack] | null {
+  const key = (attack || "").trim().toLowerCase().replace(/-/g, "_");
+  if (key in RUNNABLE_CANDIDATE_ATTACKS) {
+    return RUNNABLE_CANDIDATE_ATTACKS[key as RunnableCandidateAttack];
+  }
+  return null;
+}
+
 export const LOCATIONS = [
   "",
   "query",

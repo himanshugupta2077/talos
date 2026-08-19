@@ -299,10 +299,12 @@ final class TalosSuiteTab extends JPanel implements TalosStore.Listener, TalosPr
     private void setColumnWidths() {
         TableColumnModel columns = table.getColumnModel();
         columns.getColumn(0).setPreferredWidth(80);
-        columns.getColumn(1).setPreferredWidth(80);
-        columns.getColumn(2).setPreferredWidth(520);
-        columns.getColumn(3).setPreferredWidth(70);
-        columns.getColumn(4).setPreferredWidth(360);
+        columns.getColumn(1).setPreferredWidth(70);
+        columns.getColumn(2).setPreferredWidth(420);
+        columns.getColumn(3).setPreferredWidth(60);
+        columns.getColumn(4).setPreferredWidth(120);
+        columns.getColumn(5).setPreferredWidth(140);
+        columns.getColumn(6).setPreferredWidth(280);
     }
 
     private void onTreeSelection() {
@@ -423,7 +425,7 @@ final class TalosSuiteTab extends JPanel implements TalosStore.Listener, TalosPr
 
     private static final class RequestTableModel extends AbstractTableModel {
         private static final String[] COLUMNS = {
-                "Time", "Method", "URL", "Status", "Detail"
+                "Time", "Method", "URL", "Status", "Param", "Technique", "Detail"
         };
 
         private final List<TalosStore.RequestRecord> rows = new ArrayList<>();
@@ -464,9 +466,15 @@ final class TalosSuiteTab extends JPanel implements TalosStore.Listener, TalosPr
                 case 1 -> row.request.method();
                 case 2 -> row.request.url();
                 case 3 -> row.status == 0 ? "" : Integer.toString(row.status);
-                case 4 -> row.trace.summary();
+                case 4 -> blankToEmpty(row.trace.param);
+                case 5 -> blankToEmpty(row.trace.technique);
+                case 6 -> row.trace.summary();
                 default -> "";
             };
+        }
+
+        private static String blankToEmpty(String value) {
+            return value == null || value.isBlank() ? "" : value;
         }
     }
 }

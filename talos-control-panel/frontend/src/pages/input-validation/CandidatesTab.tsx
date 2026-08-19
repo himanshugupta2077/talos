@@ -1,7 +1,10 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { Section } from "../../components/Common";
+import { ConfirmButton, Section } from "../../components/Common";
+import { isInventoryOnlySurface } from "../../components/url-sink";
+import { useAction } from "../../hooks/useAction";
+import type { StepsResponse } from "../../types";
 import CandidateScore from "./components/CandidateScore";
 import IvDisclaimer from "./components/IvDisclaimer";
 import {
@@ -11,8 +14,29 @@ import {
   downloadJson,
   inputClass,
   IV_BASE,
+  runnableCandidateAttack,
   selectClass,
 } from "./shared";
+
+const MAX_RUN_CANDIDATES = 6;
+
+interface CandidateRunResponse extends StepsResponse {
+  label?: string;
+  workspace?: string;
+  burp_label?: string;
+  candidate_count?: number;
+  flow_count?: number;
+  note?: string;
+}
+
+function runnableRowsFor(candidates: CandidateRow[], attack: string): CandidateRow[] {
+  return candidates.filter((c) => {
+    if ((c.attack || "") !== attack) return false;
+    if (isInventoryOnlySurface(c.location, c.name)) return false;
+    if (!(c.name || "").trim()) return false;
+    return true;
+  });
+}
 
 export default function CandidatesTab({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
@@ -27,6 +51,8 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
   const [search, setSearch] = useState(searchParams.get("q") || "");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [runNote, setRunNote] = useState<CandidateRunResponse | null>(null);
+  const [runningAttack, setRunningAttack] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -57,6 +83,68 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  const enqueueAttack = useAction(
+    "Run candidate attack",
+    (attack: string, rows: CandidateRow[]) =>
+      api.post<CandidateRunResponse>(
+        "/api/input-validation/candidates/run",
+        {
+          attack,
+          min_score: Number(minScore) || 0,
+          max_candidates: MAX_RUN_CANDIDATES,
+          candidates: rows.slice(0, MAX_RUN_CANDIDATES).map((c) => ({
+            param_uuid: c.param_uuid,
+            name: c.name,
+            location: c.location,
+            attack: c.attack,
+            score: c.score,
+            evidence_flow_ids: c.evidence_flow_ids,
+          })),
+        },
+        { project_id: projectId },
+      ),
+  );
+
+  const runAttack = async (attack: string, seed?: CandidateRow) => {
+    const spec = runnableCandidateAttack(attack);
+    if (!spec || enqueueAttack.running) return;
+    const pool = runnableRowsFor(candidates, attack);
+    const seedKey = seed?.param_uuid
+      ? `${seed.param_uuid}:${seed.attack}`
+      : "";
+    const ordered = seed
+      ? [
+          seed,
+          ...pool.filter((c) => `${c.param_uuid}:${c.attack}` !== seedKey),
+        ]
+      : pool;
+    const picked = ordered
+      .filter((c, i, all) => {
+        const key = `${c.param_uuid || c.name}:${c.location || ""}`;
+        return all.findIndex((x) => `${x.param_uuid || x.name}:${x.location || ""}` === key) === i;
+      })
+      .slice(0, MAX_RUN_CANDIDATES);
+    if (!picked.length) return;
+    setRunningAttack(attack);
+    setRunNote(null);
+    try {
+      const res = (await enqueueAttack.run(attack, picked)) as CandidateRunResponse | undefined;
+      if (res) setRunNote(res);
+    } catch {
+      /* useAction already logged */
+    } finally {
+      setRunningAttack(null);
+    }
+  };
+
+  const filteredRunnable = useMemo(
+    () => (attack ? runnableCandidateAttack(attack) : null),
+    [attack],
+  );
+  const filteredRunnableCount = filteredRunnable
+    ? runnableRowsFor(candidates, filteredRunnable.id).length
+    : 0;
 
   const applyFilters = () => {
     const next = new URLSearchParams(searchParams);
@@ -180,8 +268,43 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
           >
             Download JSON
           </button>
+          {filteredRunnable && filteredRunnableCount > 0 && (
+            <ConfirmButton
+              className="btn btn-xs btn-primary"
+              confirmText={`Enqueue ${filteredRunnable.label} on up to ${Math.min(filteredRunnableCount, MAX_RUN_CANDIDATES)} parameter(s)?`}
+              onConfirm={() => runAttack(filteredRunnable.id)}
+            >
+              {enqueueAttack.running && runningAttack === filteredRunnable.id ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                `Run ${filteredRunnable.shortLabel} on these`
+              )}
+            </ConfirmButton>
+          )}
         </div>
         {note && <p className="text-xs text-base-content/50 mb-2">{note}</p>}
+        <p className="text-xs text-base-content/50 mb-2">
+          Run XSS / SQLi / LFI / SSRF / open redirect on a row to enqueue that
+          engine against a few good candidates of the same type (this parameter
+          first). Probes show in the Talos Burp extension under that engine.
+        </p>
+        {runNote && (
+          <div className="alert alert-success text-xs py-2 mb-2">
+            <span>
+              {runNote.note ||
+                `Enqueued ${runNote.label || "attack"} on ${runNote.candidate_count ?? "?"} parameter(s).`}{" "}
+              {runNote.workspace && (
+                <Link className="link" to={`${runNote.workspace}?tab=results`}>
+                  Open results
+                </Link>
+              )}
+              {" · "}
+              <Link className="link" to="/scheduler">
+                Scheduler
+              </Link>
+            </span>
+          </div>
+        )}
 
         <div className="overflow-x-auto panel">
           <table className="table table-tight table-xs">
@@ -200,6 +323,12 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
               {candidates.map((c, i) => {
                 const key = `${c.param_uuid}-${c.attack}-${i}`;
                 const open = expanded === key;
+                const spec = runnableCandidateAttack(c.attack);
+                const canRun =
+                  !!spec &&
+                  !isInventoryOnlySurface(c.location, c.name) &&
+                  !!(c.name || "").trim();
+                const busy = enqueueAttack.running && runningAttack === c.attack;
                 return (
                   <Fragment key={key}>
                     <tr
@@ -221,7 +350,23 @@ export default function CandidatesTab({ projectId }: { projectId: string }) {
                           </span>
                         )}
                       </td>
-                      <td>
+                      <td className="whitespace-nowrap">
+                        {canRun && spec && (
+                          <ConfirmButton
+                            className="btn btn-ghost btn-xs"
+                            confirmText={`Enqueue ${spec.label} on up to ${Math.min(
+                              Math.max(runnableRowsFor(candidates, spec.id).length, 1),
+                              MAX_RUN_CANDIDATES,
+                            )} candidate parameter(s)? Shows in Burp under ${spec.burpLabel}.`}
+                            onConfirm={() => runAttack(spec.id, c)}
+                          >
+                            {busy ? (
+                              <span className="loading loading-spinner loading-xs" />
+                            ) : (
+                              `Run ${spec.shortLabel}`
+                            )}
+                          </ConfirmButton>
+                        )}
                         {c.param_uuid && (
                           <button
                             className="btn btn-ghost btn-xs"

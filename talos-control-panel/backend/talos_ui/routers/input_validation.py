@@ -19,8 +19,8 @@ import sys
 from typing import Any
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from .. import cli, config, db
 
@@ -44,6 +44,51 @@ PRIORITIZATION_NOTE = (
     "Candidate scores are prioritization only, not confirmed vulnerabilities. "
     "Stored/cross-page reflection is data-flow evidence, not XSS confirmation."
 )
+
+# Dedicated attack engines that can consume IV candidates (param + flows).
+# CLI tokens match `talos attack <module> run`. Burp tree uses engine.
+RUNNABLE_CANDIDATE_ATTACKS: dict[str, dict[str, str]] = {
+    "xss": {
+        "cli": "xss",
+        "label": "XSS",
+        "workspace": "/testing/xss",
+        "burp_engine": "xss",
+        "burp_label": "XSS",
+    },
+    "sqli": {
+        "cli": "sqli",
+        "label": "SQLi",
+        "workspace": "/testing/sqli",
+        "burp_engine": "sqli",
+        "burp_label": "SQL Injection",
+    },
+    "path_traversal": {
+        "cli": "path-traversal",
+        "label": "Path Traversal",
+        "workspace": "/testing/path-traversal",
+        "burp_engine": "path-traversal",
+        "burp_label": "Path Traversal",
+    },
+    "ssrf": {
+        "cli": "ssrf",
+        "label": "SSRF",
+        "workspace": "/testing/ssrf",
+        "burp_engine": "ssrf",
+        "burp_label": "SSRF",
+    },
+    "open_redirect": {
+        "cli": "open-redirect",
+        "label": "Open Redirect",
+        "workspace": "/testing/open-redirect",
+        "burp_engine": "open-redirect",
+        "burp_label": "Open Redirect",
+    },
+}
+
+DEFAULT_CANDIDATE_RUN_LIMIT = 6
+DEFAULT_FLOWS_PER_PARAM = 2
+MAX_CANDIDATE_RUN_LIMIT = 12
+MAX_FLOWS_PER_PARAM = 5
 
 
 def _ensure_talos_on_path() -> None:
@@ -607,6 +652,269 @@ def get_candidates(
         }
     except Exception as exc:
         return {"candidates": [], "count": 0, "error": str(exc)}
+
+
+class CandidateRunTarget(BaseModel):
+    """One IV candidate the operator wants to turn into an attack run."""
+
+    param_uuid: str | None = None
+    name: str | None = None
+    location: str | None = None
+    attack: str | None = None
+    score: int | None = None
+    evidence_flow_ids: list[str] | None = None
+
+
+class CandidateRunBody(BaseModel):
+    """
+    Enqueue a dedicated attack engine against a few good IV candidates.
+
+    Targets those parameter names on ranked 2xx proxy_capture flows.
+    Probe traffic is tagged for the Talos Burp extension under burp_engine.
+    """
+
+    attack: str
+    candidates: list[CandidateRunTarget] | None = None
+    min_score: int = Field(60, ge=0, le=100)
+    host: str | None = None
+    max_candidates: int = Field(DEFAULT_CANDIDATE_RUN_LIMIT, ge=1, le=MAX_CANDIDATE_RUN_LIMIT)
+    max_flows_per_param: int = Field(DEFAULT_FLOWS_PER_PARAM, ge=1, le=MAX_FLOWS_PER_PARAM)
+    high_priority: bool = True
+
+
+def _normalize_attack_key(raw: str | None) -> str:
+    return (raw or "").strip().lower().replace("-", "_")
+
+
+def _inventory_only_surface(location: str | None, name: str | None) -> bool:
+    loc = (location or "").strip().lower()
+    nm = (name or "").strip()
+    return loc == "response" or nm.startswith("jwt.")
+
+
+def _param_spec(location: str | None, name: str) -> str:
+    loc = (location or "").strip()
+    return f"{loc}:{name}" if loc else name
+
+
+def _lookup_param_row(db_path, param_uuid: str) -> dict[str, Any] | None:
+    if not param_uuid:
+        return None
+    try:
+        return db.query_one(
+            db_path,
+            "SELECT id, endpoint_id, name, location FROM parameters WHERE id = ?",
+            (param_uuid,),
+        )
+    except Exception:
+        return None
+
+
+def _list_candidates_for_run(
+    db_path,
+    *,
+    attack: str,
+    min_score: int,
+    host: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    _ensure_talos_on_path()
+    from talos.input_validation.candidates import list_candidates
+
+    return list_candidates(
+        db_path,
+        attack=attack,
+        min_score=min_score,
+        host=host,
+        limit=limit,
+    )
+
+
+def _flows_for_param(
+    db_path,
+    *,
+    endpoint_id: str | None,
+    max_flows: int,
+) -> list[str]:
+    """Ranked 2xx proxy_capture baselines for the parameter's endpoint."""
+    if not endpoint_id:
+        return []
+    try:
+        from talos.projects.flow_scope import select_test_flows_for_endpoints
+
+        refs, _skipped = select_test_flows_for_endpoints(
+            db_path,
+            [endpoint_id],
+            limit_per_endpoint=max_flows,
+        )
+    except Exception:
+        return []
+    return [ref.flow_id for ref in refs if getattr(ref, "flow_id", None)]
+
+
+@router.post("/candidates/run")
+def run_candidate_attack(project_id: str, body: CandidateRunBody):
+    """
+    Purpose:
+        Turn IV prioritization candidates into a targeted attack enqueue.
+        Picks a few good candidates of one attack family, binds each to
+        ranked captured flows on that parameter's endpoint, and runs the
+        matching engine with --param (not every field on the request).
+    Output:
+        CLI steps plus target/skip summary. Probes appear in Burp under
+        the engine node (XSS, SQLi, Path Traversal, SSRF, Open Redirect).
+    """
+    attack = _normalize_attack_key(body.attack)
+    spec = RUNNABLE_CANDIDATE_ATTACKS.get(attack)
+    if spec is None:
+        raise HTTPException(
+            400,
+            f"No dedicated attack runner for '{body.attack}'. "
+            f"Use one of: {', '.join(sorted(RUNNABLE_CANDIDATE_ATTACKS))}.",
+        )
+
+    db_path = _db_path(project_id)
+    cap = min(max(int(body.max_candidates), 1), MAX_CANDIDATE_RUN_LIMIT)
+    flow_cap = min(max(int(body.max_flows_per_param), 1), MAX_FLOWS_PER_PARAM)
+
+    supplied = [c for c in (body.candidates or []) if isinstance(c, CandidateRunTarget)]
+    rows: list[dict[str, Any]] = []
+    if supplied:
+        for item in supplied:
+            item_attack = _normalize_attack_key(item.attack) or attack
+            if item_attack != attack:
+                continue
+            rows.append({
+                "param_uuid": (item.param_uuid or "").strip(),
+                "name": (item.name or "").strip(),
+                "location": (item.location or "").strip(),
+                "attack": attack,
+                "score": int(item.score or 0),
+                "evidence_flow_ids": list(item.evidence_flow_ids or []),
+            })
+            if len(rows) >= cap:
+                break
+    else:
+        try:
+            rows = _list_candidates_for_run(
+                db_path,
+                attack=attack,
+                min_score=int(body.min_score),
+                host=body.host or None,
+                limit=cap,
+            )
+        except Exception as exc:
+            raise HTTPException(500, f"Could not load candidates: {exc}") from exc
+
+    if not rows:
+        raise HTTPException(
+            400,
+            f"No {spec['label']} candidates to run. "
+            "Raise the table first, or lower min score.",
+        )
+
+    skipped: list[dict[str, Any]] = []
+    targets: list[dict[str, Any]] = []
+    # flow_id → ordered unique param specs
+    by_flow: dict[str, list[str]] = {}
+
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        location = str(row.get("location") or "").strip()
+        param_uuid = str(row.get("param_uuid") or "").strip()
+        meta = _lookup_param_row(db_path, param_uuid) if param_uuid else None
+        if meta:
+            name = name or str(meta.get("name") or "").strip()
+            location = location or str(meta.get("location") or "").strip()
+            endpoint_id = str(meta.get("endpoint_id") or "").strip() or None
+        else:
+            endpoint_id = None
+
+        if _inventory_only_surface(location, name):
+            skipped.append({
+                "param_uuid": param_uuid,
+                "name": name,
+                "reason": "inventory-only surface (response / jwt claim)",
+            })
+            continue
+        if not name:
+            skipped.append({
+                "param_uuid": param_uuid,
+                "name": name,
+                "reason": "missing parameter name",
+            })
+            continue
+
+        flow_ids = _flows_for_param(
+            db_path, endpoint_id=endpoint_id, max_flows=flow_cap
+        )
+        if not flow_ids:
+            skipped.append({
+                "param_uuid": param_uuid,
+                "name": name,
+                "location": location,
+                "reason": "no 2xx captured flow on this parameter's endpoint",
+            })
+            continue
+
+        spec_name = _param_spec(location, name)
+        targets.append({
+            "param_uuid": param_uuid,
+            "name": name,
+            "location": location,
+            "param": spec_name,
+            "score": int(row.get("score") or 0),
+            "flow_ids": flow_ids,
+        })
+        for fid in flow_ids:
+            bucket = by_flow.setdefault(fid, [])
+            if spec_name not in bucket:
+                bucket.append(spec_name)
+
+    if not by_flow:
+        raise HTTPException(
+            400,
+            "None of the selected candidates have a usable captured flow "
+            "to replay. Capture in-scope traffic for those endpoints first.",
+        )
+
+    # One CLI call per identical param-set (params must exist on every --flow).
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for fid, params in by_flow.items():
+        key = tuple(params)
+        groups.setdefault(key, []).append(fid)
+
+    all_steps: list[dict[str, Any]] = []
+    for params, flow_ids in groups.items():
+        args = ["attack", spec["cli"], "run"]
+        for fid in flow_ids:
+            args += ["--flow", fid]
+        for param in params:
+            args += ["--param", param]
+        if body.high_priority:
+            args.append("--high-priority")
+        else:
+            args.append("--no-high-priority")
+        results = cli.run_scoped(project_id, args)
+        all_steps.extend(r.to_dict() for r in results)
+
+    return {
+        "steps": all_steps,
+        "attack": attack,
+        "label": spec["label"],
+        "workspace": spec["workspace"],
+        "burp_engine": spec["burp_engine"],
+        "burp_label": spec["burp_label"],
+        "targets": targets,
+        "skipped": skipped,
+        "candidate_count": len(targets),
+        "flow_count": len(by_flow),
+        "note": (
+            f"Enqueued {spec['label']} on {len(targets)} parameter(s) / "
+            f"{len(by_flow)} flow(s). Probes appear in the Talos Burp "
+            f"extension under {spec['burp_label']}."
+        ),
+    }
 
 
 @router.get("/show/{parameter_uuid}")

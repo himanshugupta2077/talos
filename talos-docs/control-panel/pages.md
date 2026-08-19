@@ -621,7 +621,7 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 | Route | Purpose |
 |-------|---------|
 | `/testing/input-validation?tab=overview` | Status KPIs, confidence, top candidates, empty-state CTAs |
-| `?tab=candidates` | Attack prioritization board (filters, drill-down) |
+| `?tab=candidates` | Attack prioritization board (filters, drill-down). Row **Run XSS / SQLi / LFI / SSRF / Redirect** enqueues that dedicated engine on a few good candidates of the same type (this parameter first; ranked 2xx captures). Probes appear in the Talos Burp extension under that engine. |
 | `?tab=parameters` | Parameter intelligence inventory |
 | `?tab=multi-level` | Endpoint + host profile lists (M10) |
 | `?tab=run` | Auto-run toggle, scope, run/resume/clear (clear + ignore-cache reset probes/profiles), phase shortcuts. Synthesis is automatic. |
@@ -634,7 +634,7 @@ IV **workspace** (tabbed shell + dossier routes) exposing the full M1–M12 inte
 | Aspect | Detail |
 |--------|--------|
 | **Purpose** | Operator UX for characterization intelligence — not an exploit runner |
-| **Backend** | `/api/input-validation/*` status, overview, profiles, candidates, endpoints, hosts, show, export JSON, config/run CLI wrappers |
+| **Backend** | `/api/input-validation/*` status, overview, profiles, candidates, `POST /candidates/run` (targeted XSS/SQLi/LFI/SSRF/open-redirect enqueue), endpoints, hosts, show, export JSON, config/run CLI wrappers |
 | **CLI** | Full `talos input-validation *` parity for config (`--auto-run`)/run/candidates/reflections/show/export/exclude; `synthesize` remains a recovery command |
 | **DB** | `input_validation_config`, `iv_param_profiles`, `iv_endpoint_profiles`, `iv_app_profiles`, `iv_probe_results`, caches; cross-flow via `value_index` / `cross_flow_reflections` when `parameter_intel.cross_flow.enabled` |
 | **Components** | `ModuleShell`, tabs (Endpoints-style), `CapabilityBadges` (reflection + URL sink family), `CandidateScore`, `ProfileCards` (dual reflection modes + passive URL features + active url_sink cards), `ProbeEvidenceTable`, `ScopeBar`, `components/url-sink/*` chips |

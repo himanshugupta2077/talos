@@ -367,3 +367,222 @@ def test_iv_run_with_flows(client):
         "--flow",
         "flow-b",
     ]
+
+
+def _ok_cli():
+    from unittest.mock import MagicMock
+
+    r = MagicMock()
+    r.ok = True
+    r.to_dict.return_value = {
+        "cmd": [],
+        "stdout": "enqueued",
+        "stderr": "",
+        "exit_code": 0,
+        "ok": True,
+    }
+    return r
+
+
+def test_candidates_run_rejects_unknown_attack(client):
+    tc, pid = client
+    res = tc.post(
+        "/api/input-validation/candidates/run",
+        params={"project_id": pid},
+        json={"attack": "mass_assignment"},
+    )
+    assert res.status_code == 400
+    assert "dedicated attack runner" in res.json()["detail"]
+
+
+def test_candidates_run_with_supplied_targets(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value={
+                "id": "p1",
+                "endpoint_id": "ep1",
+                "name": "file",
+                "location": "query",
+            },
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=["flow-a", "flow-b"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "path_traversal",
+                "candidates": [
+                    {
+                        "param_uuid": "p1",
+                        "name": "file",
+                        "location": "query",
+                        "attack": "path_traversal",
+                        "score": 80,
+                    },
+                    {
+                        "param_uuid": "p2",
+                        "name": "path",
+                        "location": "query",
+                        "attack": "path_traversal",
+                        "score": 70,
+                    },
+                ],
+            },
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["attack"] == "path_traversal"
+    assert body["burp_engine"] == "path-traversal"
+    assert body["workspace"] == "/testing/path-traversal"
+    assert body["candidate_count"] == 2
+    assert body["flow_count"] == 2
+    argv = run_scoped.call_args[0][1]
+    assert argv[:3] == ["attack", "path-traversal", "run"]
+    assert argv.count("--flow") == 2
+    assert "--param" in argv
+    assert "query:file" in argv
+    assert "query:path" in argv
+    assert "--high-priority" in argv
+    assert "Burp" in body["note"]
+
+
+def test_candidates_run_no_usable_flows(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value={"id": "p1", "endpoint_id": "ep1", "name": "q", "location": "query"},
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=[],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "xss",
+                "candidates": [{"param_uuid": "p1", "name": "q", "location": "query"}],
+            },
+        )
+    assert res.status_code == 400
+    assert "usable captured flow" in res.json()["detail"]
+    run_scoped.assert_not_called()
+
+
+def test_candidates_run_skips_inventory_only(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value=None,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=["flow-a"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "xss",
+                "candidates": [
+                    {
+                        "param_uuid": "jwt-1",
+                        "name": "jwt.sub",
+                        "location": "header",
+                        "attack": "xss",
+                    },
+                    {
+                        "param_uuid": "p-ok",
+                        "name": "q",
+                        "location": "query",
+                        "attack": "xss",
+                    },
+                ],
+            },
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["candidate_count"] == 1
+    assert body["targets"][0]["name"] == "q"
+    assert any("inventory-only" in (s.get("reason") or "") for s in body["skipped"])
+    argv = run_scoped.call_args[0][1]
+    assert argv == [
+        "attack",
+        "xss",
+        "run",
+        "--flow",
+        "flow-a",
+        "--param",
+        "query:q",
+        "--high-priority",
+    ]
+
+
+def test_candidates_run_loads_from_board_when_no_targets(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    board = [
+        {
+            "param_uuid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "name": "q",
+            "location": "query",
+            "attack": "xss",
+            "score": 90,
+        }
+    ]
+    with (
+        patch(
+            "talos_ui.routers.input_validation._list_candidates_for_run",
+            return_value=board,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value={
+                "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "endpoint_id": "ep1",
+                "name": "q",
+                "location": "query",
+            },
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_param",
+            return_value=["flow-cap"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={"attack": "xss", "min_score": 1},
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["candidate_count"] >= 1
+    argv = run_scoped.call_args[0][1]
+    assert argv[:3] == ["attack", "xss", "run"]
+    assert "--flow" in argv
+    assert "flow-cap" in argv
+    assert "--param" in argv
