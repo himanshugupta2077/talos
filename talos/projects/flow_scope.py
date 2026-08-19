@@ -181,6 +181,136 @@ def lookup_flows(
     return refs, missing
 
 
+def _existing_endpoint_ids(db_path: Path, ids: list[str]) -> list[str]:
+    """Purpose: Keep ids that exist in ``endpoints``. Order preserved."""
+    wanted = [eid for eid in ids if eid]
+    if not wanted or not db_path.exists():
+        return []
+    placeholders = ",".join("?" for _ in wanted)
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            rows = conn.execute(
+                f"SELECT id FROM endpoints WHERE id IN ({placeholders})",
+                tuple(wanted),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    found = {str(row[0]) for row in rows if row and row[0]}
+    return [eid for eid in wanted if eid in found]
+
+
+def _any_replayable_for_endpoints(
+    db_path: Path,
+    endpoint_ids: list[str],
+    *,
+    limit_per_endpoint: int,
+) -> list[FlowRef]:
+    """
+    Purpose:
+        Last-resort captures on an endpoint, including NTLM 401 handshakes.
+    """
+    wanted = [eid for eid in endpoint_ids if eid]
+    if not wanted or not db_path.exists():
+        return []
+    cap = max(1, int(limit_per_endpoint))
+    placeholders = ",".join("?" for _ in wanted)
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                {_FLOW_SELECT}
+                WHERE f.endpoint_id IN ({placeholders})
+                  AND f.source IN ('proxy_capture', 'auto_replay', 'manual_replay')
+                """,
+                tuple(wanted),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    by_ep: dict[str, list[FlowRef]] = {eid: [] for eid in wanted}
+    for row in rows:
+        ref = _row_to_ref(row)
+        if not ref.endpoint_id or ref.policy_blocked:
+            continue
+        by_ep.setdefault(ref.endpoint_id, []).append(ref)
+
+    picked: list[FlowRef] = []
+    for eid in wanted:
+        bucket = by_ep.get(eid) or []
+        if not bucket:
+            continue
+        bucket.sort(key=lambda r: r.captured_at or "", reverse=True)
+        bucket.sort(key=lambda r: 0 if r.source == "proxy_capture" else 1)
+        bucket.sort(key=lambda r: 0 if 200 <= r.status_code < 300 else 1)
+        picked.extend(bucket[:cap])
+    return picked
+
+
+def resolve_flow_or_endpoint_ids(
+    db_path: Path,
+    ids: list[str] | tuple[str, ...] | None,
+    *,
+    limit_per_endpoint: int = DEFAULT_TEST_FLOWS_PER_ENDPOINT,
+) -> tuple[list[str], list[str]]:
+    """
+    Purpose:
+        Accept --flow values that are either captured flow UUIDs or
+        endpoint UUIDs (inventory / candidate run).
+    Output:
+        (flow ids in operator order, ids that are neither a flow nor an
+        endpoint with a replayable capture).
+    Side effects: migrate_project_db.
+    """
+    wanted = normalize_flow_ids(ids)
+    if not wanted:
+        return [], []
+    migrate_project_db(db_path)
+    if not db_path.exists():
+        return [], list(wanted)
+
+    refs, _missing_as_flows = lookup_flows(db_path, wanted)
+    found_flows = {ref.flow_id for ref in refs}
+    leftover = [item for item in wanted if item not in found_flows]
+    endpoint_ids = _existing_endpoint_ids(db_path, leftover)
+    unknown = [item for item in leftover if item not in set(endpoint_ids)]
+
+    ranked, _skipped = select_test_flows_for_endpoints(
+        db_path,
+        endpoint_ids,
+        limit_per_endpoint=limit_per_endpoint,
+    )
+    by_ep: dict[str, list[str]] = {}
+    for ref in ranked:
+        if ref.endpoint_id:
+            by_ep.setdefault(ref.endpoint_id, []).append(ref.flow_id)
+    need_any = [eid for eid in endpoint_ids if eid not in by_ep]
+    for ref in _any_replayable_for_endpoints(
+        db_path, need_any, limit_per_endpoint=limit_per_endpoint
+    ):
+        if ref.endpoint_id:
+            by_ep.setdefault(ref.endpoint_id, []).append(ref.flow_id)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    empty_endpoints: list[str] = []
+    for item in wanted:
+        if item in found_flows:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+            continue
+        if item in by_ep:
+            for fid in by_ep[item]:
+                if fid not in seen:
+                    seen.add(fid)
+                    out.append(fid)
+            continue
+        if item in set(endpoint_ids):
+            empty_endpoints.append(item)
+    return out, unknown + empty_endpoints
+
+
 def select_test_flows_for_endpoints(
     db_path: Path,
     endpoint_ids: list[str],

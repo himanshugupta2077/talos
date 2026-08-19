@@ -12,8 +12,8 @@ Purpose:
         - multipart filenames
         - path parameters from the endpoint normalized path ({id}) and
           file-like last segments
-
-    Headers and cookies are skipped (auth artifacts).
+        - request headers named by --param header:Name (Host, Origin,
+          Referer, …). Auth / hop-by-hop headers stay skipped.
 
 Dependencies: json, re, urllib.parse, talos.input_validation.surface
 Data flow: candidates / engine → extract_injection_points / apply_payload
@@ -29,19 +29,24 @@ from urllib.parse import parse_qsl, quote, unquote, urlparse, urlunparse
 
 from talos.input_validation.surface import (
     LOCATION_BODY,
+    LOCATION_HEADER,
     LOCATION_PATH,
     LOCATION_QUERY,
     SURFACE_FORM_BODY,
+    SURFACE_HEADER,
     SURFACE_JSON_BODY,
     SURFACE_MULTIPART_FILENAME,
     SURFACE_PATH,
     SURFACE_QUERY,
     inject_path_param,
     inject_value,
+    injection_point_matches_spec,
+    is_auth_artifact,
+    is_hop_by_hop_header,
 )
 from talos.ssrf.models import InjectionPoint
 
-_POINT_LOCATIONS = frozenset({"query", "body", "path"})
+_POINT_LOCATIONS = frozenset({"query", "body", "path", "header"})
 
 _FILENAME_RE = re.compile(
     rb'name="([^"]+)"[^;]*;\s*filename="([^"]*)"',
@@ -245,6 +250,55 @@ def _extract_multipart_filenames(body: bytes) -> list[tuple[str, str]]:
     return out
 
 
+def _requested_header_points(
+    headers: dict[str, str],
+    header_names: list[str] | tuple[str, ...] | None,
+    *,
+    url: str = "",
+) -> list[InjectionPoint]:
+    """
+    Purpose:
+        Build header entry points for operator-named --param header:Name.
+        Auth artifacts and hop-by-hop names are omitted.
+    """
+    if not header_names:
+        return []
+    points: list[InjectionPoint] = []
+    seen: set[str] = set()
+    host_fallback = ""
+    parsed = urlparse(url or "")
+    if parsed.netloc:
+        host_fallback = parsed.netloc
+    for raw in header_names:
+        name = (raw or "").strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        if is_hop_by_hop_header(name) or is_auth_artifact(
+            location=LOCATION_HEADER, name=name
+        ):
+            continue
+        seen.add(key)
+        captured_name = name
+        original = ""
+        for header_key, header_val in headers.items():
+            if header_key.lower() == key:
+                captured_name = header_key
+                original = header_val
+                break
+        if key == "host" and not original:
+            original = host_fallback
+        points.append(
+            InjectionPoint(
+                location=LOCATION_HEADER,
+                name=captured_name,
+                original=original,
+                surface_kind=SURFACE_HEADER,
+            )
+        )
+    return points
+
+
 def extract_injection_points(
     *,
     url: str,
@@ -253,12 +307,14 @@ def extract_injection_points(
     request_body: object = None,
     normalized_path: str = "",
     include_static_path: bool = False,
+    header_names: list[str] | tuple[str, ...] | None = None,
 ) -> list[InjectionPoint]:
     """
     Purpose:
         List every v1 injectable field on a captured request.
     Output:
-        Ordered InjectionPoint list (path, query, then body).
+        Ordered InjectionPoint list (path, query, body, then requested
+        headers).
     """
     points: list[InjectionPoint] = []
     seen: set[tuple[str, str]] = set()
@@ -292,8 +348,18 @@ def extract_injection_points(
 
     headers = parse_headers(request_headers)
     body = _body_bytes(request_body)
-    if not body:
+
+    def _finish() -> list[InjectionPoint]:
+        for point in _requested_header_points(headers, header_names, url=url):
+            key = (point.location, point.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append(point)
         return points
+
+    if not body:
+        return _finish()
 
     ctype = _content_type(headers)
     stripped = body.lstrip()
@@ -311,7 +377,7 @@ def extract_injection_points(
                     surface_kind=SURFACE_MULTIPART_FILENAME,
                 )
             )
-        return points
+        return _finish()
 
     if "json" in ctype or stripped[:1] in (b"{", b"["):
         try:
@@ -334,7 +400,7 @@ def extract_injection_points(
                         surface_kind=SURFACE_JSON_BODY,
                     )
                 )
-            return points
+            return _finish()
 
     if "x-www-form-urlencoded" in ctype or b"=" in body[:200]:
         text = body.decode("utf-8", errors="replace")
@@ -351,7 +417,7 @@ def extract_injection_points(
                     surface_kind=SURFACE_FORM_BODY,
                 )
             )
-    return points
+    return _finish()
 
 
 def normalize_param_names(raw: object) -> list[str]:
@@ -417,26 +483,16 @@ def match_injection_points(
     missing: list[str] = []
 
     for spec in wanted:
-        location: Optional[str] = None
-        name = spec
-        if ":" in spec:
-            prefix, rest = spec.split(":", 1)
-            if prefix.lower() in _POINT_LOCATIONS and rest:
-                location = prefix.lower()
-                name = rest
         hits = [
             point
             for point in pool
-            if point.name == name and (location is None or point.location == location)
+            if injection_point_matches_spec(
+                spec,
+                point.location,
+                point.name,
+                allowed_locations=_POINT_LOCATIONS,
+            )
         ]
-        if not hits:
-            lowered = name.lower()
-            hits = [
-                point
-                for point in pool
-                if point.name.lower() == lowered
-                and (location is None or point.location == location)
-            ]
         if not hits:
             missing.append(spec)
             continue

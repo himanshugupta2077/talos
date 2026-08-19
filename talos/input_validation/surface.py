@@ -976,6 +976,101 @@ def parse_json_param_path(name: str) -> list[JsonPathPart]:
     return parts
 
 
+def json_param_path_matches(wanted: str, actual: str) -> bool:
+    """
+    Purpose:
+        True when ``wanted`` names the same JSON field as ``actual``,
+        including IV / Endpoint Intelligence ``items[]`` vs concrete
+        ``items[0]`` indexes.
+    Side effects: None.
+    """
+    left = (wanted or "").strip()
+    right = (actual or "").strip()
+    if not left or not right:
+        return False
+    if left == right or left.lower() == right.lower():
+        return True
+    wp = parse_json_param_path(left)
+    ap = parse_json_param_path(right)
+    if not wp or not ap or len(wp) != len(ap):
+        return False
+    for w_part, a_part in zip(wp, ap):
+        if w_part.kind != a_part.kind:
+            return False
+        if w_part.kind == "key":
+            if w_part.key != a_part.key and w_part.key.lower() != a_part.key.lower():
+                return False
+            continue
+        if (
+            w_part.index is not None
+            and a_part.index is not None
+            and w_part.index != a_part.index
+        ):
+            return False
+    return True
+
+
+def split_location_param_spec(
+    spec: str,
+    allowed_locations: frozenset[str] | set[str],
+) -> tuple[str | None, str]:
+    """
+    Purpose:
+        Split ``location:name`` when the prefix is a known surface.
+    Output:
+        (location or None, name). Bare names keep location None.
+    Side effects: None.
+    """
+    raw = (spec or "").strip()
+    if ":" not in raw:
+        return None, raw
+    prefix, rest = raw.split(":", 1)
+    if prefix.lower() in allowed_locations and rest:
+        return prefix.lower(), rest
+    return None, raw
+
+
+def header_names_from_param_specs(
+    param_names: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """
+    Purpose:
+        Collect ``header:Name`` values from operator --param filters.
+    Side effects: None.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in param_names or []:
+        location, name = split_location_param_spec(
+            str(spec), frozenset({LOCATION_HEADER})
+        )
+        key = name.lower()
+        if location == LOCATION_HEADER and name and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def injection_point_matches_spec(
+    spec: str,
+    location: str,
+    name: str,
+    *,
+    allowed_locations: frozenset[str] | set[str],
+) -> bool:
+    """
+    Purpose:
+        Match one extracted entry point to an operator --param spec.
+        ``body:[].Field`` hits ``body:[0].Field``; location prefixes are
+        optional when the name is unique.
+    Side effects: None.
+    """
+    want_loc, want_name = split_location_param_spec(spec, allowed_locations)
+    if want_loc is not None and (location or "").strip().lower() != want_loc:
+        return False
+    return json_param_path_matches(want_name, name)
+
+
 def set_json_path(root: Any, name: str, value: Any) -> Any:
     """
     Purpose:

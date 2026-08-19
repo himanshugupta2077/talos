@@ -11,6 +11,7 @@ from talos.projects.db import init_project_db
 from talos.projects.flow_scope import (
     lookup_flows,
     normalize_flow_ids,
+    resolve_flow_or_endpoint_ids,
     select_test_flows_for_endpoints,
     unique_endpoint_ids,
 )
@@ -127,3 +128,61 @@ def test_lookup_preserves_operator_order(db_path: Path) -> None:
     assert [r.flow_id for r in refs] == ["flow-b-get", "flow-a-post"]
     assert missing == ["nope"]
     assert unique_endpoint_ids(refs) == [EP_B, EP_A]
+
+
+def test_resolve_endpoint_id_expands_to_test_flows(db_path: Path) -> None:
+    flows, missing = resolve_flow_or_endpoint_ids(
+        db_path, [EP_A, "nope"], limit_per_endpoint=2
+    )
+    assert missing == ["nope"]
+    assert flows[0] == "flow-a-get"
+    assert flows[1] == "flow-a-post"
+    mixed, missing_mixed = resolve_flow_or_endpoint_ids(
+        db_path, ["flow-b-get", EP_A], limit_per_endpoint=1
+    )
+    assert missing_mixed == []
+    assert mixed[0] == "flow-b-get"
+    assert "flow-a-get" in mixed
+
+
+def test_resolve_endpoint_falls_back_to_non_2xx_capture(db_path: Path) -> None:
+    with sqlite3.connect(str(db_path)) as conn:
+        role = conn.execute("SELECT id FROM roles WHERE name='global'").fetchone()[0]
+        module = conn.execute("SELECT id FROM modules WHERE name='global'").fetchone()[0]
+        eid = "ep-ntlm"
+        conn.execute(
+            """
+            INSERT INTO endpoints
+                (id, project_id, method, host, path, normalized_path,
+                 content_type, auth_required, roles_seen, first_seen, last_seen)
+            VALUES (?, ?, 'GET', 'https://app.example.com', '/ntlm',
+                    '/ntlm', 'text/html', 1, '[]', ?, ?)
+            """,
+            (eid, PROJECT_ID, NOW, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO endpoint_policy
+                (endpoint_id, auto_priority, auto_score, excluded,
+                 dangerous, logout, qualified, qualification_reason,
+                 baseline_flow_id, baseline_status, updated_at)
+            VALUES (?, 'HIGH', 50, 0, 0, 0, 0, '', NULL, 401, ?)
+            """,
+            (eid, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO flows
+                (id, project_id, captured_at, method, url, host, path,
+                 query, request_headers, status_code, endpoint_id,
+                 role_id, module_id, tags, source)
+            VALUES (?, ?, ?, 'GET', 'https://app.example.com/ntlm',
+                    'app.example.com', '/ntlm', '', '{}', 401, ?,
+                    ?, ?, '[]', 'proxy_capture')
+            """,
+            ("flow-ntlm-401", PROJECT_ID, NOW, eid, role, module),
+        )
+        conn.commit()
+    flows, missing = resolve_flow_or_endpoint_ids(db_path, [eid])
+    assert missing == []
+    assert flows == ["flow-ntlm-401"]

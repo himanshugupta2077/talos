@@ -49,6 +49,7 @@ from talos.ssrf.db import (
     get_ssrf_result,
     list_ssrf_results,
 )
+from talos.input_validation.surface import header_names_from_param_specs
 from talos.ssrf.inject import match_injection_points, normalize_param_names
 from talos.ssrf.models import FAMILIES, InjectionPoint
 from talos.ssrf.payloads import (
@@ -74,13 +75,19 @@ def _require_active(manager: ProjectManager):
     return project
 
 
-def _select(manager: ProjectManager, args: argparse.Namespace) -> list[SsrfCandidate]:
+def _select(
+    manager: ProjectManager,
+    args: argparse.Namespace,
+    *,
+    header_names: list[str] | None = None,
+) -> list[SsrfCandidate]:
     """Purpose: Require --flow and load those captures."""
     project = _require_active(manager)
     flow_ids = normalize_flow_ids(getattr(args, "flows", None))
     if not flow_ids:
         cli_usage_error(
-            "Pass --flow UUID to scan a captured request. "
+            "Pass --flow UUID to scan a captured request "
+            "(or an endpoint UUID — Talos expands it to test flows). "
             "Use 'talos flow list' to copy a flow id. "
             "Repeat --flow or comma-separate to scan several."
         )
@@ -93,11 +100,13 @@ def _select(manager: ProjectManager, args: argparse.Namespace) -> list[SsrfCandi
         project.db_path,
         in_scope_prefixes=list(project.scope or []),
         flow_ids=flow_ids,
+        header_names=header_names,
     )
     if missing:
         cli_error(
-            "Unknown flow id(s): " + ", ".join(missing) + ". "
-            "Use 'talos flow list' to copy a captured flow UUID."
+            "Unknown flow or endpoint id(s): " + ", ".join(missing) + ". "
+            "Use 'talos flow list' to copy a captured flow UUID, "
+            "or pass an endpoint id from inventory."
         )
     return candidates
 
@@ -193,6 +202,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     technique = getattr(args, "technique", None)
     family = getattr(args, "family", None)
     param_filters = normalize_param_names(getattr(args, "params", None))
+    header_names = header_names_from_param_specs(param_filters)
     try:
         collaborator = normalize_collaborator(getattr(args, "collaborator", None) or "")
     except ValueError as exc:
@@ -212,7 +222,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     except ValueError as exc:
         cli_usage_error(str(exc))
 
-    candidates = _select(manager, args)
+    candidates = _select(manager, args, header_names=header_names)
     if not candidates:
         cli_error(
             "None of the specified flows are usable ssrf targets "
@@ -225,7 +235,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         cli_error(
             "No injectable entry points on the selected flow(s). "
             "v1 scans query parameters, JSON body fields/indexes, form fields, "
-            "multipart filenames, and path parameters."
+            "multipart filenames, path parameters, and --param header:Name."
         )
 
     if param_filters:

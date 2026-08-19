@@ -98,7 +98,7 @@ def _select(manager: ProjectManager, args: argparse.Namespace) -> list[OpenRedir
     )
     if missing:
         cli_error(
-            "Unknown flow id(s): " + ", ".join(missing) + ". "
+            "Unknown flow or endpoint id(s): " + ", ".join(missing) + ". "
             "Use 'talos flow list' to copy a captured flow UUID."
         )
     return candidates

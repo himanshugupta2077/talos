@@ -678,6 +678,91 @@ def test_candidates_run_uses_iv_probe_flow_when_no_evidence(client):
     assert "flow-baseline" in argv
 
 
+def test_candidates_run_skips_header_for_xss(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value=None,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_candidate",
+            return_value=["flow-a"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "xss",
+                "candidates": [
+                    {
+                        "param_uuid": "h1",
+                        "name": "host",
+                        "location": "header",
+                        "attack": "xss",
+                    },
+                    {
+                        "param_uuid": "p-ok",
+                        "name": "q",
+                        "location": "query",
+                        "attack": "xss",
+                    },
+                ],
+            },
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["candidate_count"] == 1
+    assert body["targets"][0]["name"] == "q"
+    assert any("does not inject header" in (s.get("reason") or "") for s in body["skipped"])
+    argv = run_scoped.call_args[0][1]
+    assert "query:q" in argv
+    assert "header:host" not in argv
+
+
+def test_candidates_run_ssrf_keeps_header_params(client):
+    from unittest.mock import patch
+
+    tc, pid = client
+    with (
+        patch(
+            "talos_ui.routers.input_validation._lookup_param_row",
+            return_value=None,
+        ),
+        patch(
+            "talos_ui.routers.input_validation._flows_for_candidate",
+            return_value=["flow-a"],
+        ),
+        patch("talos_ui.routers.input_validation.cli.run_scoped") as run_scoped,
+    ):
+        run_scoped.return_value = [_ok_cli()]
+        res = tc.post(
+            "/api/input-validation/candidates/run",
+            params={"project_id": pid},
+            json={
+                "attack": "ssrf",
+                "candidates": [
+                    {
+                        "param_uuid": "h1",
+                        "name": "origin",
+                        "location": "header",
+                        "attack": "ssrf",
+                        "evidence_flow_ids": ["flow-a"],
+                    }
+                ],
+            },
+        )
+    assert res.status_code == 200
+    argv = run_scoped.call_args[0][1]
+    assert argv[:3] == ["attack", "ssrf", "run"]
+    assert "header:origin" in argv
+
+
 def test_lookup_param_row_resolves_sha256_profile_uuid(client, home):
     _tc, pid = client
     _talos_home, projects, _registry = home

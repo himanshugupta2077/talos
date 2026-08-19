@@ -55,6 +55,9 @@ from talos.input_validation.surface import (
     is_http_header_value_legal,
     make_cookie_safe,
     make_header_safe,
+    header_names_from_param_specs,
+    injection_point_matches_spec,
+    json_param_path_matches,
     parse_json_param_path,
     should_skip_param,
     transport_skip_for_headers,
@@ -336,6 +339,23 @@ class TestMultipartGraphqlXml:
         assert parts[0].key == "items"
         assert parts[1].index is None
         assert parts[2].key == "id"
+
+    def test_json_param_path_matches_array_schema(self) -> None:
+        assert json_param_path_matches("[].Fiscal Year", "[0].Fiscal Year")
+        assert json_param_path_matches("items[].id", "items[0].id")
+        assert json_param_path_matches("items[0].id", "items[0].id")
+        assert not json_param_path_matches("items[1].id", "items[0].id")
+        assert not json_param_path_matches("items[].id", "items")
+        assert json_param_path_matches("q", "q")
+        assert injection_point_matches_spec(
+            "body:[].Fiscal Year",
+            "body",
+            "[0].Fiscal Year",
+            allowed_locations=frozenset({"query", "body"}),
+        )
+        assert header_names_from_param_specs(
+            ["header:host", "header:Origin", "query:url"]
+        ) == ["host", "Origin"]
 
     def test_prepare_iv_probe_json_boolean_false(self) -> None:
         flow = {

@@ -94,8 +94,9 @@ def _select(manager: ProjectManager, args: argparse.Namespace) -> list[PathTrave
     )
     if missing:
         cli_error(
-            "Unknown flow id(s): " + ", ".join(missing) + ". "
-            "Use 'talos flow list' to copy a captured flow UUID."
+            "Unknown flow or endpoint id(s): " + ", ".join(missing) + ". "
+            "Use 'talos flow list' to copy a captured flow UUID, "
+            "or pass an endpoint id from inventory."
         )
     return candidates
 

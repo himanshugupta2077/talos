@@ -33,6 +33,7 @@ from talos.input_validation.surface import (
     SURFACE_JSON_BODY,
     SURFACE_QUERY,
     inject_value,
+    injection_point_matches_spec,
 )
 from talos.sqli.models import InjectionPoint
 
@@ -238,26 +239,16 @@ def match_injection_points(
     missing: list[str] = []
 
     for spec in wanted:
-        location: Optional[str] = None
-        name = spec
-        if ":" in spec:
-            prefix, rest = spec.split(":", 1)
-            if prefix.lower() in _POINT_LOCATIONS and rest:
-                location = prefix.lower()
-                name = rest
         hits = [
             point
             for point in points
-            if point.name == name and (location is None or point.location == location)
+            if injection_point_matches_spec(
+                spec,
+                point.location,
+                point.name,
+                allowed_locations=_POINT_LOCATIONS,
+            )
         ]
-        if not hits:
-            lowered = name.lower()
-            hits = [
-                point
-                for point in points
-                if point.name.lower() == lowered
-                and (location is None or point.location == location)
-            ]
         if not hits:
             missing.append(spec)
             continue

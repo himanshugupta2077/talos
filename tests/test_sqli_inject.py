@@ -133,6 +133,30 @@ def test_match_injection_points_by_name_and_location() -> None:
     assert gone == ["nope"]
 
 
+def test_match_iv_array_schema_path() -> None:
+    points = extract_injection_points(
+        url="https://app.example.com/forecast",
+        request_headers={"Content-Type": "application/json"},
+        request_body=json.dumps(
+            [
+                {"Fiscal Year": "2026", "GL ID": "100"},
+                {"Fiscal Year": "2027", "GL ID": "200"},
+            ]
+        ).encode(),
+    )
+    matched, missing = match_injection_points(
+        points, ["body:[].Fiscal Year", "body:[].GL ID"]
+    )
+    assert missing == []
+    names = {(p.location, p.name) for p in matched}
+    assert names == {
+        ("body", "[0].Fiscal Year"),
+        ("body", "[1].Fiscal Year"),
+        ("body", "[0].GL ID"),
+        ("body", "[1].GL ID"),
+    }
+
+
 def test_normalize_db_type_aliases() -> None:
     assert normalize_db_type(None) == "unknown"
     assert normalize_db_type("Unknown") == "unknown"

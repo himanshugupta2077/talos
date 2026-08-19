@@ -29,6 +29,7 @@ from typing import Optional
 from talos.path_traversal.inject import extract_injection_points
 from talos.path_traversal.models import InjectionPoint
 from talos.projects.db import migrate_project_db
+from talos.projects.flow_scope import resolve_flow_or_endpoint_ids
 from talos.projects.outscope import list_prefixes as list_outscope
 from talos.proxy.scope import is_url_in_scope
 
@@ -155,12 +156,12 @@ def select_path_traversal_candidates_for_flows(
         (usable candidates, unknown flow ids). Logout / dangerous /
         excluded / out-of-scope flows are omitted, not listed as missing.
     """
-    wanted = normalize_flow_ids(flow_ids)
+    wanted, unknown = resolve_flow_or_endpoint_ids(db_path, flow_ids)
     if not wanted:
-        return [], []
+        return [], unknown
     migrate_project_db(db_path)
     if not db_path.exists():
-        return [], wanted
+        return [], unknown or list(wanted)
 
     out_prefixes = [row["prefix"] for row in list_outscope(db_path)]
     placeholders = ",".join("?" for _ in wanted)
@@ -172,7 +173,7 @@ def select_path_traversal_candidates_for_flows(
         ).fetchall()
 
     found = {row["flow_id"]: row for row in rows}
-    missing = [fid for fid in wanted if fid not in found]
+    missing = unknown + [fid for fid in wanted if fid not in found]
     candidates: list[PathTraversalCandidate] = []
     for fid in wanted:
         row = found.get(fid)

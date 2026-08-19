@@ -77,3 +77,14 @@ def test_match_param_filter() -> None:
     assert len(matched) == 1
     assert matched[0].location == "query"
     assert matched[0].name == "q"
+
+
+def test_match_iv_array_schema_path() -> None:
+    points = extract_injection_points(
+        url="https://app.example.com/forecast",
+        request_headers={"Content-Type": "application/json"},
+        request_body=b'[{"Expense Type":"opex"}]',
+    )
+    matched, missing = match_injection_points(points, ["body:[].Expense Type"])
+    assert missing == []
+    assert [p.name for p in matched] == ["[0].Expense Type"]

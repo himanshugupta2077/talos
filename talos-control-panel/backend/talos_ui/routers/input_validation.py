@@ -90,6 +90,16 @@ DEFAULT_FLOWS_PER_PARAM = 2
 MAX_CANDIDATE_RUN_LIMIT = 12
 MAX_FLOWS_PER_PARAM = 5
 
+# Surfaces each dedicated engine can inject into. IV may score headers
+# for SSRF; XSS/SQLi/LFI/redirect skip those so a mixed board still runs.
+_ENGINE_LOCATIONS: dict[str, frozenset[str]] = {
+    "xss": frozenset({"query", "body", "path"}),
+    "sqli": frozenset({"query", "body"}),
+    "path_traversal": frozenset({"query", "body", "path"}),
+    "ssrf": frozenset({"query", "body", "path", "header"}),
+    "open_redirect": frozenset({"query", "body", "path"}),
+}
+
 
 def _ensure_talos_on_path() -> None:
     root = str(config.TALOS_ROOT)
@@ -1092,6 +1102,16 @@ def run_candidate_attack(project_id: str, body: CandidateRunBody):
                 "reason": "inventory-only surface (response / jwt claim)",
             })
             continue
+        allowed = _ENGINE_LOCATIONS.get(attack)
+        loc_l = location.lower()
+        if allowed is not None and loc_l and loc_l not in allowed:
+            skipped.append({
+                "param_uuid": param_uuid,
+                "name": name,
+                "location": location,
+                "reason": f"{spec['label']} does not inject {loc_l} parameters",
+            })
+            continue
         if not name:
             skipped.append({
                 "param_uuid": param_uuid,
@@ -1134,6 +1154,20 @@ def run_candidate_attack(project_id: str, body: CandidateRunBody):
                 bucket.append(spec_name)
 
     if not by_flow:
+        unsupported = [
+            s
+            for s in skipped
+            if "does not inject" in str(s.get("reason") or "")
+        ]
+        if unsupported and len(unsupported) == len(skipped):
+            raise HTTPException(
+                400,
+                f"None of the selected candidates are injectable "
+                f"{spec['label']} surfaces. "
+                f"{spec['label']} v1 injects "
+                f"{', '.join(sorted(_ENGINE_LOCATIONS.get(attack) or []))} "
+                "parameters.",
+            )
         raise HTTPException(
             400,
             "None of the selected candidates have a usable captured flow "

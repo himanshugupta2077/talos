@@ -29,6 +29,7 @@ from typing import Optional
 from talos.ssrf.inject import extract_injection_points
 from talos.ssrf.models import InjectionPoint
 from talos.projects.db import migrate_project_db
+from talos.projects.flow_scope import resolve_flow_or_endpoint_ids
 from talos.projects.outscope import list_prefixes as list_outscope
 from talos.proxy.scope import is_url_in_scope
 
@@ -118,7 +119,11 @@ _FLOW_SELECT = """
 """
 
 
-def _candidate_from_row(row: sqlite3.Row) -> SsrfCandidate:
+def _candidate_from_row(
+    row: sqlite3.Row,
+    *,
+    header_names: list[str] | tuple[str, ...] | None = None,
+) -> SsrfCandidate:
     """Purpose: Build a candidate and extract entry points."""
     url = row["url"] or ""
     normalized_path = row["normalized_path"] or ""
@@ -128,6 +133,7 @@ def _candidate_from_row(row: sqlite3.Row) -> SsrfCandidate:
         request_headers=row["request_headers"],
         request_body=row["request_body"],
         normalized_path=normalized_path,
+        header_names=header_names,
     )
     return SsrfCandidate(
         flow_id=row["flow_id"],
@@ -147,20 +153,22 @@ def select_ssrf_candidates_for_flows(
     *,
     in_scope_prefixes: list[str],
     flow_ids: list[str],
+    header_names: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[list[SsrfCandidate], list[str]]:
     """
     Purpose:
         Load operator-picked flows and drop blocked / out-of-scope ones.
+        ``--flow`` may be a captured flow UUID or an endpoint UUID.
     Output:
         (usable candidates, unknown flow ids). Logout / dangerous /
         excluded / out-of-scope flows are omitted, not listed as missing.
     """
-    wanted = normalize_flow_ids(flow_ids)
+    wanted, unknown = resolve_flow_or_endpoint_ids(db_path, flow_ids)
     if not wanted:
-        return [], []
+        return [], unknown
     migrate_project_db(db_path)
     if not db_path.exists():
-        return [], wanted
+        return [], unknown or list(wanted)
 
     out_prefixes = [row["prefix"] for row in list_outscope(db_path)]
     placeholders = ",".join("?" for _ in wanted)
@@ -172,7 +180,7 @@ def select_ssrf_candidates_for_flows(
         ).fetchall()
 
     found = {row["flow_id"]: row for row in rows}
-    missing = [fid for fid in wanted if fid not in found]
+    missing = unknown + [fid for fid in wanted if fid not in found]
     candidates: list[SsrfCandidate] = []
     for fid in wanted:
         row = found.get(fid)
@@ -183,5 +191,5 @@ def select_ssrf_candidates_for_flows(
         url = row["url"] or ""
         if not is_url_in_scope(url, in_scope_prefixes, out_prefixes):
             continue
-        candidates.append(_candidate_from_row(row))
+        candidates.append(_candidate_from_row(row, header_names=header_names))
     return candidates, missing
