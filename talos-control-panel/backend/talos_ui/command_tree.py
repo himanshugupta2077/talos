@@ -1163,6 +1163,51 @@ COMMAND_TREE: list[dict] = [
         ],
     },
     {
+        "group": "attack.path-traversal",
+        "label": "Attack — Path Traversal / LFI",
+        "commands": [
+            cmd("attack.path-traversal.techniques", ["attack", "path-traversal", "techniques"], "List path-traversal / LFI payloads", [
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["unix", "windows", "dotdot", "encoded", "wrapper", "nullbyte", "bypass"],
+                    help="Restrict to one payload family",
+                ),
+            ]),
+            cmd("attack.path-traversal.run", ["attack", "path-traversal", "run"], "Enqueue path-traversal probes for selected flows", [
+                arg("flow", flag="--flow", kind="multi", help="Captured flow UUID(s) to scan"),
+                arg(
+                    "param",
+                    flag="--param",
+                    help="Restrict to one entry point (query key, JSON path, form field, path param). Repeatable.",
+                ),
+                arg(
+                    "technique",
+                    flag="--technique",
+                    help="Restrict to one payload technique (default: all)",
+                ),
+                arg(
+                    "family",
+                    flag="--family",
+                    kind="select",
+                    options=["unix", "windows", "dotdot", "encoded", "wrapper", "nullbyte", "bypass"],
+                    help="Restrict to one payload family",
+                ),
+                arg("right_now", flag="--right-now", kind="boolean", help="Execute immediately"),
+                arg(
+                    "high_priority",
+                    flag="--high-priority",
+                    kind="boolean",
+                    default="true",
+                    help="Run path-traversal ahead of other pending jobs (priority 200). Off = --no-high-priority",
+                ),
+            ]),
+            cmd("attack.path-traversal.results.list", ["attack", "path-traversal", "results", "list"], "List path-traversal probe results"),
+            cmd("attack.path-traversal.status", ["attack", "path-traversal", "status"], "Path-traversal verdict and job tallies"),
+        ],
+    },
+    {
         "group": "attack.smuggle",
         "label": "Attack — HTTP Request Smuggling",
         "commands": [

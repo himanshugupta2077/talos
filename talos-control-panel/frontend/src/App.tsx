@@ -23,6 +23,7 @@ import AuthSessionModule from "./pages/attack/modules/AuthSessionModule";
 import IntruderModule from "./pages/attack/modules/IntruderModule";
 import CorsModule from "./pages/attack/modules/CorsModule";
 import SqliModule from "./pages/attack/modules/SqliModule";
+import PathTraversalModule from "./pages/attack/modules/PathTraversalModule";
 import SmuggleModule from "./pages/attack/modules/SmuggleModule";
 import LegacySecretRedirect from "./pages/attack/LegacySecretRedirect";
 import LegacyIvRedirect from "./pages/attack/LegacyIvRedirect";
@@ -73,6 +74,7 @@ export default function App() {
               <Route path="/testing/intruder" element={<IntruderModule />} />
               <Route path="/testing/cors" element={<CorsModule />} />
               <Route path="/testing/sqli" element={<SqliModule />} />
+              <Route path="/testing/path-traversal" element={<PathTraversalModule />} />
               <Route path="/testing/smuggle" element={<SmuggleModule />} />
               <Route path="/testing/secrets" element={<SecretDetection />} />
               <Route

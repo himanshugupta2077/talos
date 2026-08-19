@@ -72,6 +72,7 @@ from talos.findings.model import (
     EVIDENCE_TYPE_AUTH_SESSION_RESULT,
     EVIDENCE_TYPE_CORS_RESULT,
     EVIDENCE_TYPE_SQLI_RESULT,
+    EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT,
     EVIDENCE_TYPE_SMUGGLE_RESULT,
     EVIDENCE_TYPE_MODULE,
     EVIDENCE_TYPE_ROLE,
@@ -180,8 +181,9 @@ def create_finding_from_verdict(
             bac          → BAC:<endpoint_id>:<attacker>:<target>
             auth_session → AUTH_SESSION:<auth_type>
             cors         → CORS:<scheme://netloc>
-            sqli         → SQLI:<endpoint_id>
-            smuggle      → SMUGGLE:<scheme://netloc>
+            sqli            → SQLI:<endpoint_id>
+            path_traversal  → PATH_TRAVERSAL:<endpoint_id>
+            smuggle         → SMUGGLE:<scheme://netloc>
 
         The first finding in a cluster becomes PRIMARY; later findings in
         the same cluster become LINKED to that PRIMARY.  Every successful
@@ -593,6 +595,19 @@ def _attach_evidence(
                 "SQL injection probe"
                 + (f" — {variant}" if variant else ""),
                 sqli_data,
+            )
+
+    elif attack_module == "path_traversal":
+        if replayed_flow_id_for_result:
+            pt_data: dict = {"variant": variant, "technique": variant}
+            if result_evidence_data:
+                pt_data.update(result_evidence_data)
+            _safe_add(
+                db_path, finding_id,
+                EVIDENCE_TYPE_PATH_TRAVERSAL_RESULT, replayed_flow_id_for_result,
+                "Path traversal / LFI probe"
+                + (f" — {variant}" if variant else ""),
+                pt_data,
             )
 
     elif attack_module == "smuggle":

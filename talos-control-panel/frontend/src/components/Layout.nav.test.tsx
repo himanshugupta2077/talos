@@ -10,6 +10,7 @@ const ACTIVE_MODULES = [
   { name: "Input Validation", path: "/testing/input-validation" },
   { name: "CORS Misconfiguration", path: "/testing/cors" },
   { name: "SQL Injection", path: "/testing/sqli" },
+  { name: "Path Traversal", path: "/testing/path-traversal" },
   { name: "Intruder", path: "/testing/intruder" },
 ] as const;
 

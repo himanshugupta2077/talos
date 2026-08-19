@@ -668,13 +668,20 @@ CRLF families are recorded under `tested` from validation synthesis (`payload_ty
 
 ### 7.9 Path traversal (`_score_path_traversal`)
 
+Prioritization only. Confirmation is `talos attack path-traversal` (file-content
+signatures vs the captured baseline). Any one gate is enough to continue:
+
 | Signal | Score delta | IV outcome / evidence |
 |--------|-------------|------------------------|
 | `path_parameter` **or** location `path` | +35 | Surface |
-| Else name tokens (`path`, `file`, `filename`, `dir`, …) | +20 | Name gate for non-path |
-| Else no path surface and no name hits | **no candidate** | |
+| `multipart_filename` | +35 | Upload filename surface |
+| Name tokens (`path`, `file`, `filename`, `include`, `template`, `download`, …) | +20 | LFI-ish name |
+| Semantic type `filename` / `filepath` / `path` / `file` | +20 | Passive type |
+| Observed value looks like a filesystem path (`../`, `/etc/`, `C:\`, `.php`, `file://`, PHP wrappers) | +25 | Value-first (no name required) |
+| Else none of the gates | **no candidate** | |
 | Class `path` soft-accept | +25 | Path class (`/`, `\`, `.`, …) outcomes |
 | Class `separator` soft-accept | +10 | |
+| Class `null` soft-accept | +10 | Null-byte truncation (classic LFI) |
 | Class `path` rejected | −25 | Negative |
 
 ---

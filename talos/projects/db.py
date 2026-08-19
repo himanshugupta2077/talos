@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 
-SCHEMA_VERSION = 60
+SCHEMA_VERSION = 61
 
 _DDL = """
 PRAGMA journal_mode = WAL;
@@ -1607,6 +1607,37 @@ CREATE INDEX IF NOT EXISTS idx_smuggle_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_smuggle_results_host
     ON smuggle_results (host, verdict);
+
+-- ------------------------------------------------------------------ --
+-- path_traversal_results: one unique replay flow per LFI probe (v61)  --
+-- ------------------------------------------------------------------ --
+CREATE TABLE IF NOT EXISTS path_traversal_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    os_hint            TEXT,
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_path_traversal_results_verdict
+    ON path_traversal_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_path_traversal_results_original
+    ON path_traversal_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for Auth-session engine tables (schema v54).
@@ -1772,6 +1803,37 @@ CREATE INDEX IF NOT EXISTS idx_smuggle_results_verdict
 
 CREATE INDEX IF NOT EXISTS idx_smuggle_results_host
     ON smuggle_results (host, verdict);
+"""
+
+# Shared CREATE statements for path traversal / LFI (schema v61).
+_PATH_TRAVERSAL_SCHEMA_V61_DDL = """
+CREATE TABLE IF NOT EXISTS path_traversal_results (
+    replay_flow_id     TEXT PRIMARY KEY REFERENCES flows(id),
+    original_flow_id   TEXT NOT NULL,
+    endpoint_id        TEXT,
+    host               TEXT NOT NULL,
+    technique          TEXT NOT NULL,
+    technique_family   TEXT NOT NULL DEFAULT '',
+    location           TEXT NOT NULL DEFAULT '',
+    param_name         TEXT NOT NULL DEFAULT '',
+    payload_sent       TEXT NOT NULL DEFAULT '',
+    original_value     TEXT NOT NULL DEFAULT '',
+    original_status    INTEGER,
+    replay_status      INTEGER,
+    elapsed_ms         INTEGER,
+    os_hint            TEXT,
+    evidence           TEXT NOT NULL DEFAULT '',
+    verdict            TEXT NOT NULL,
+    risk_hint          TEXT NOT NULL DEFAULT '',
+    failure_reason     TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_path_traversal_results_verdict
+    ON path_traversal_results (verdict, technique);
+
+CREATE INDEX IF NOT EXISTS idx_path_traversal_results_original
+    ON path_traversal_results (original_flow_id, verdict);
 """
 
 # Shared CREATE statements for AI Layer tables (schema v49).
@@ -2713,6 +2775,15 @@ def _migrate_schema(conn: sqlite3.Connection, from_version: int) -> None:
         # Role privilege rank for automatic BAC candidate generation.
         _ensure_roles_privilege_column(conn)
 
+    if from_version < 59:
+        conn.executescript(_SQLI_SCHEMA_V59_DDL)
+
+    if from_version < 60:
+        conn.executescript(_SMUGGLE_SCHEMA_V60_DDL)
+
+    if from_version < 61:
+        conn.executescript(_PATH_TRAVERSAL_SCHEMA_V61_DDL)
+
 
 def _seed_default_context(db_path: Path) -> None:
     """
@@ -2855,6 +2926,8 @@ def migrate_project_db(db_path: Path) -> None:
         v56 → v57: role_platform_auth — per-role NTLM / platform-auth binding.
         v57 → v58: roles.privilege — 0 = highest; drives privilege-diff BAC.
         v58 → v59: sqli_results — SQL injection (unique flow per probe).
+        v59 → v60: smuggle_results — HTTP request smuggling.
+        v60 → v61: path_traversal_results — path traversal / LFI.
     """
     if not db_path.exists():
         return
@@ -4273,6 +4346,12 @@ def migrate_project_db(db_path: Path) -> None:
             # HTTP request smuggling: unique replay flow per CL/TE technique.
             conn.executescript(_SMUGGLE_SCHEMA_V60_DDL)
             conn.execute("UPDATE schema_version SET version = 60")
+            conn.commit()
+
+        if current < 61:
+            # Path traversal / LFI: unique replay flow per (entry point × payload).
+            conn.executescript(_PATH_TRAVERSAL_SCHEMA_V61_DDL)
+            conn.execute("UPDATE schema_version SET version = 61")
             conn.commit()
 
 

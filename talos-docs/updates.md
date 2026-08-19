@@ -2,6 +2,39 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Path Traversal / LFI
+
+**Shipped:** 2026-08-19
+
+New active attack module (`talos attack path-traversal` / Control Panel
+`/testing/path-traversal`, aliases `lfi` and `path_traversal`).
+
+Give one or more captured flow UUIDs. Talos replaces query, JSON, form,
+multipart filename, and path-parameter values with a typed catalogue
+(Unix absolute LFI, Windows files, `../` depths, URL / double-URL /
+overlong / IIS encodings, PHP `php://filter` and `file://` wrappers,
+null-byte truncation, servlet `..;` and suffix bypasses). Optional
+`--param` restricts the scan to one entry point.
+
+Each probe is one `path_traversal_attack` scheduler job and one unique
+replay flow. The Talos Burp extension groups those flows under **Path
+Traversal**. A finding is created only when the HTTP response contains a
+**new** well-known file signature versus the captured baseline.
+
+IV candidate scoring for `path_traversal` now also ranks multipart
+filenames, LFI-ish names (`include`, `template`, `download`, …), filename
+semantic types, and values that already look like filesystem paths
+(`../`, `/etc/`, `C:\`, `.php`, `file://`). IV still does not confirm.
+
+```bash
+talos attack path-traversal run --flow <uuid>
+talos attack path-traversal run --flow <uuid> --param file
+talos attack path-traversal run --flow <uuid> --family unix
+talos attack path-traversal run --flow <uuid> --technique unix_passwd
+```
+
+---
+
 ## SQLi — Select DB and optional parameter
 
 **Shipped:** 2026-08-19

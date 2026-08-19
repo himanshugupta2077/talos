@@ -13,6 +13,8 @@ describe("flowAttacks catalog", () => {
     expect(ids).toEqual([
       "cors",
       "sqli",
+      "path-traversal",
+      "smuggle",
       "unauth",
       "bac",
       "auth-session",
@@ -23,6 +25,8 @@ describe("flowAttacks catalog", () => {
     expect(live.map((a) => a.id)).toEqual([
       "cors",
       "sqli",
+      "path-traversal",
+      "smuggle",
       "unauth",
       "bac",
       "auth-session",
@@ -38,8 +42,10 @@ describe("flowAttacks catalog", () => {
   it("estimates jobs only for selected available attacks", () => {
     expect(estimateFlowAttackJobs(3, ["cors"])).toBe(60);
     expect(estimateFlowAttackJobs(2, ["sqli"])).toBe(100);
+    expect(estimateFlowAttackJobs(1, ["path-traversal"])).toBe(53);
     expect(getFlowAttack("sqli")?.cliHint).toContain("--flow");
     expect(getFlowAttack("sqli")?.cliHint).toContain("--high-priority");
+    expect(getFlowAttack("path-traversal")?.cliHint).toContain("--flow");
     expect(estimateFlowAttackJobs(2, ["unauth"])).toBe(34);
     expect(estimateFlowAttackJobs(1, ["iv"])).toBe(9);
     expect(estimateFlowAttackJobs(2, ["auth-session"])).toBe(0);

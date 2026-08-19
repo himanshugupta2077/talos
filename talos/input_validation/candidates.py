@@ -75,6 +75,7 @@ from talos.input_validation.profile import (
     CAPABILITY_JS_CONTEXT,
     CAPABILITY_JSON_CONTEXT,
     CAPABILITY_JSON_PARSER,
+    CAPABILITY_MULTIPART_FILENAME,
     CAPABILITY_NETWORK_RESOURCE_SINK,
     CAPABILITY_PATH_PARAMETER,
     CAPABILITY_REDIRECT_LIKE,
@@ -146,6 +147,63 @@ _NETWORK_ERROR_CLASSES: frozenset[str] = frozenset({
 
 # Minimum score to include a candidate in the default list (avoid noise).
 MIN_EMIT_SCORE = 25
+
+# Parameter-name tokens that often feed a filesystem include / download / template.
+_PATH_TRAVERSAL_NAME_TOKENS: tuple[str, ...] = (
+    "path",
+    "file",
+    "filename",
+    "filepath",
+    "file_path",
+    "pathname",
+    "dir",
+    "directory",
+    "folder",
+    "template",
+    "tpl",
+    "layout",
+    "include",
+    "require",
+    "page",
+    "document",
+    "attachment",
+    "download",
+    "upload",
+    "image",
+    "img",
+    "asset",
+    "resource",
+    "content",
+    "view",
+    "partial",
+    "theme",
+    "catalog",
+    "basepath",
+    "docroot",
+    "document_root",
+    "include_path",
+    "static",
+)
+
+_PATH_TRAVERSAL_SEMANTIC: frozenset[str] = frozenset({
+    "filename",
+    "filepath",
+    "path",
+    "file",
+})
+
+_FILE_EXTENSIONS: tuple[str, ...] = (
+    ".php", ".phtml", ".php3", ".php4", ".php5", ".phar",
+    ".html", ".htm", ".jsp", ".jspx", ".asp", ".aspx", ".ashx",
+    ".cfm", ".cgi", ".pl", ".py", ".rb", ".js", ".ts",
+    ".css", ".xml", ".json", ".yml", ".yaml", ".ini", ".conf",
+    ".config", ".txt", ".log", ".bak", ".old", ".orig",
+    ".zip", ".tar", ".gz", ".tgz", ".rar", ".7z",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".tpl", ".twig", ".ejs", ".hbs", ".mustache", ".erb",
+    ".env", ".htaccess", ".htpasswd",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +889,88 @@ def _resolve_semantic(profile: dict[str, Any], types: dict[str, Any]) -> str:
 def _name_tokens_match(name: str, tokens: tuple[str, ...]) -> list[str]:
     n = (name or "").lower().replace("-", "_")
     return [t for t in tokens if t in n]
+
+
+def _profile_example_values(ctx: _ProfileView) -> list[str]:
+    """Purpose: Collect observed / passive example strings for value-first scoring."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: object) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, (list, tuple, set)):
+            for item in raw:
+                _add(item)
+            return
+        text = str(raw).strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        out.append(text)
+
+    inferred = ctx.profile.get("inferred") or {}
+    if isinstance(inferred, dict):
+        passive = inferred.get("passive") or {}
+        if isinstance(passive, dict):
+            _add(passive.get("examples"))
+            _add(passive.get("example_values"))
+            _add(passive.get("sample"))
+    _add(ctx.obs.get("examples"))
+    _add(ctx.obs.get("example_values"))
+    _add(ctx.obs.get("values"))
+    return out
+
+
+def _filesystem_path_reasons(values: list[str]) -> list[str]:
+    """
+    Purpose:
+        Describe why captured values look like filesystem / LFI inputs.
+    Output:
+        Reason tokens (empty when nothing looks path-like).
+    """
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = (value or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        hits: list[str] = []
+        if ".." in text and ("/" in text or "\\" in text):
+            hits.append("dot-dot traversal")
+        if lower.startswith("file:"):
+            hits.append("file:// URI")
+        if lower.startswith("php://") or lower.startswith("zip://") or lower.startswith("phar://"):
+            hits.append("PHP wrapper")
+        if len(text) >= 3 and (text[1:3] in (":\\", ":/") or text.startswith("\\\\")):
+            hits.append("windows path")
+        if text.startswith("/") and ("/" in text[1:] or any(lower.endswith(ext) for ext in _FILE_EXTENSIONS)):
+            hits.append("unix-style path")
+        if any(
+            lower.endswith(ext) or f"{ext}?" in lower or f"{ext}#" in lower
+            for ext in _FILE_EXTENSIONS
+        ):
+            hits.append("file extension")
+        if any(
+            token in lower
+            for token in (
+                "/etc/",
+                "/proc/",
+                "/var/www",
+                "/windows/",
+                "\\windows\\",
+                "win.ini",
+                "web.config",
+                "inetpub",
+            )
+        ):
+            hits.append("well-known filesystem prefix")
+        for hit in hits:
+            if hit not in seen:
+                seen.add(hit)
+                reasons.append(hit)
+    return reasons
 
 
 def _clamp(value: Any) -> int:
@@ -1779,27 +1919,55 @@ def _score_header_injection(ctx: _ProfileView) -> dict[str, Any] | None:
 
 
 def _score_path_traversal(ctx: _ProfileView) -> dict[str, Any] | None:
-    """Path param + path/separator classes accepted."""
+    """
+    Rank LFI / path-traversal surfaces.
+
+    Gates (any one is enough to continue):
+        path parameter / location=path, multipart filename, LFI-ish name,
+        filename semantic type, or an observed value that looks like a
+        filesystem path. Confirmation is the path-traversal attack module;
+        IV only ranks where to look.
+    """
     score = 0
     reasons: list[str] = []
     confs: list[int] = []
-    flows = ctx.flows_for_classes("path", "separator")
+    flows = ctx.flows_for_classes("path", "separator", "null")
+    gated = False
 
     if ctx.has(CAPABILITY_PATH_PARAMETER) or ctx.location == "path":
         score += 35
         reasons.append("path parameter surface")
         confs.append(85)
-    else:
-        # Non-path params can still be file-path-like.
-        name_hits = _name_tokens_match(
-            ctx.name,
-            ("path", "file", "filename", "filepath", "dir", "directory", "template"),
-        )
-        if not name_hits:
-            return None
+        gated = True
+
+    if ctx.has(CAPABILITY_MULTIPART_FILENAME):
+        score += 35
+        reasons.append("multipart filename surface")
+        confs.append(80)
+        gated = True
+
+    name_hits = _name_tokens_match(ctx.name, _PATH_TRAVERSAL_NAME_TOKENS)
+    if name_hits:
         score += 20
         reasons.append(f"name suggests path/file ({', '.join(name_hits[:3])})")
         confs.append(60)
+        gated = True
+
+    if ctx.semantic in _PATH_TRAVERSAL_SEMANTIC:
+        score += 20
+        reasons.append(f"semantic type {ctx.semantic} is file-path-like")
+        confs.append(65)
+        gated = True
+
+    value_hits = _filesystem_path_reasons(_profile_example_values(ctx))
+    if value_hits:
+        score += 25
+        reasons.append(f"value looks like a file path ({value_hits[0]})")
+        confs.append(70)
+        gated = True
+
+    if not gated:
+        return None
 
     if ctx.class_soft_accept("path"):
         score += 25
@@ -1808,6 +1976,10 @@ def _score_path_traversal(ctx: _ProfileView) -> dict[str, Any] | None:
     if ctx.class_soft_accept("separator"):
         score += 10
         reasons.append("separator characters accepted")
+    if ctx.class_soft_accept("null"):
+        score += 10
+        reasons.append("null byte soft-accepted (classic LFI truncation)")
+        confs.append(_entry_conf(ctx.acceptance.get("null"), 70))
 
     if ctx.class_rejected("path"):
         score -= 25

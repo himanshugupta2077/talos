@@ -29,6 +29,7 @@ from talos.input_validation.candidates import (
     ATTACK_HPP,
     ATTACK_OAUTH_REDIRECT,
     ATTACK_OPEN_REDIRECT,
+    ATTACK_PATH_TRAVERSAL,
     ATTACK_SQLI,
     ATTACK_SSRF,
     ATTACK_WEBHOOK_ABUSE,
@@ -1425,3 +1426,54 @@ def test_format_profile_summary_dual_reflection_modes():
     assert "cross_flow:" in joined
     assert "sink:" in joined
     assert "data-flow prioritization evidence" in joined
+
+
+# ---------------------------------------------------------------------------
+# Path traversal / LFI candidate ranking
+# ---------------------------------------------------------------------------
+
+
+def test_path_traversal_name_and_path_class():
+    profile = _profile(name="file", location="query")
+    profile["observed"]["acceptance"] = {
+        "classes": {
+            "path": {"outcome": "accepted", "confidence": 80, "evidence_flow_ids": ["f1"]},
+        }
+    }
+    cands = score_candidates(apply_capabilities(profile))
+    pt = _cand(cands, ATTACK_PATH_TRAVERSAL)
+    assert pt is not None
+    assert pt["score"] >= 45
+    reasons = " ".join(pt["reasons"]).lower()
+    assert "path/file" in reasons
+    assert "path characters" in reasons
+
+
+def test_path_traversal_value_first_without_name_gate():
+    profile = _profile(name="q", location="query")
+    profile["inferred"] = {
+        "passive": {
+            "semantic_type": "string",
+            "examples": ["../../templates/home.html"],
+        }
+    }
+    cands = score_candidates(apply_capabilities(profile))
+    pt = _cand(cands, ATTACK_PATH_TRAVERSAL)
+    assert pt is not None
+    reasons = " ".join(pt["reasons"]).lower()
+    assert "file path" in reasons or "dot-dot" in reasons
+
+
+def test_path_traversal_multipart_filename_surface():
+    profile = _profile(name="upload", location="body")
+    profile["capabilities"] = ["multipart_filename"]
+    cands = score_candidates(profile)
+    pt = _cand(cands, ATTACK_PATH_TRAVERSAL)
+    assert pt is not None
+    assert "multipart filename" in " ".join(pt["reasons"]).lower()
+
+
+def test_path_traversal_plain_string_is_not_a_candidate():
+    profile = _profile(name="q", location="query")
+    cands = score_candidates(apply_capabilities(profile))
+    assert _cand(cands, ATTACK_PATH_TRAVERSAL) is None

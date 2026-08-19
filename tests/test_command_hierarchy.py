@@ -89,6 +89,15 @@ def test_talos_helper_documents_sqli_attack() -> None:
     assert "sqli status" in text
 
 
+def test_talos_helper_documents_path_traversal_attack() -> None:
+    """Root help must advertise talos attack path-traversal commands."""
+    text = _root_help_text()
+    assert "path-traversal techniques" in text
+    assert "path-traversal run" in text
+    assert "path-traversal results list|show" in text
+    assert "path-traversal status" in text
+
+
 def test_talos_helper_documents_smuggle_attack() -> None:
     """Root help must advertise talos attack smuggle commands."""
     text = _root_help_text()

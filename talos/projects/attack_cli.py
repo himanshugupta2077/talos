@@ -8,6 +8,7 @@ Purpose:
                      talos attack auth-session <subcommand>
                      talos attack cors <subcommand>
                      talos attack sqli <subcommand>
+                     talos attack path-traversal <subcommand>
                      talos attack smuggle <subcommand>
 
     Unauth commands (talos attack unauth):
@@ -44,6 +45,11 @@ Purpose:
       techniques | run --flow | results list|show | status
       One sqli_attack job per (flow, entry point, payload);
       each job stores a unique replay flow.
+
+    Path-traversal commands (talos attack path-traversal):
+      techniques | run --flow | results list|show | status
+      One path_traversal_attack job per (flow, entry point, payload);
+      each job stores a unique replay flow. Aliases: lfi, path_traversal.
 
     Smuggle commands (talos attack smuggle):
       techniques | run --flow | results list|show | status
@@ -99,6 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "bac (broken access control), "
             "cors (CORS misconfiguration), "
             "sqli (SQL injection), "
+            "path-traversal (LFI / path traversal), "
             "smuggle (HTTP request smuggling)."
         ),
     )
@@ -124,6 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- sqli ---- #
     from talos.sqli.cli import build_sqli_parser
     build_sqli_parser(sub)
+
+    # ---- path-traversal / LFI ---- #
+    from talos.path_traversal.cli import build_path_traversal_parser
+    build_path_traversal_parser(sub)
 
     # ---- smuggle ---- #
     from talos.smuggle.cli import build_smuggle_parser
@@ -168,6 +179,10 @@ def run_attack_cli(manager: ProjectManager, argv: list[str]) -> None:
     elif args.attack_type == "sqli":
         from talos.sqli.cli import run_sqli_cli
         run_sqli_cli(manager, args)
+
+    elif args.attack_type in ("path-traversal", "lfi", "path_traversal"):
+        from talos.path_traversal.cli import run_path_traversal_cli
+        run_path_traversal_cli(manager, args)
 
     elif args.attack_type == "smuggle":
         from talos.smuggle.cli import run_smuggle_cli

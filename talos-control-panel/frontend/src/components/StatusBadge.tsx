@@ -7,6 +7,8 @@ const COLOR_MAP: Record<string, string> = {
   WEAK_VALIDATION: "badge-error",
   CORS_MISCONFIG: "badge-error",
   SQLI: "badge-error",
+  PATH_TRAVERSAL: "badge-error",
+  SMUGGLE: "badge-error",
   DIFFERENT: "badge-warning",
   UNKNOWN: "badge-ghost",
   ERROR: "badge-error",

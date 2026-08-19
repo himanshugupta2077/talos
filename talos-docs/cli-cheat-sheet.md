@@ -1717,6 +1717,51 @@ Flows table multi-select (SQL Injection).
 
 ---
 
+## Attack — Path traversal / LFI (`path-traversal`)
+
+Active module. Operator picks one or more captured flows (`--flow UUID`,
+required). The engine walks **query parameters**, **JSON body fields or
+array indexes**, **form fields**, **multipart filenames**, and **path
+parameters**, then **replaces** the captured value with Unix, Windows,
+encoded, PHP-wrapper, null-byte, and filter-bypass payloads.
+
+Optional **`--param NAME`** (also `--parameter`) restricts the scan to one
+entry point: a query key, JSON path (`user.file`, `[0]`), form field, path
+param, multipart filename, or `location:name` (`query:file`, `path:name`).
+Repeatable. Optional **`--family`** / **`--technique`** restrict the
+catalogue.
+
+`talos attack path-traversal run --flow <uuid>` enqueues one
+`path_traversal_attack` scheduler job per (entry point × payload). Each job
+writes a **unique replay flow** shown under **Path Traversal** in the Talos
+Burp extension. Jobs default to **high priority (200)**. A finding is created
+only when the probe leaks a **well-known file** that was **not** in the
+captured baseline (`root:x:0:0:`, `for 16-bit app support`, PHP filter
+base64 of those files, `/proc/version`, `web.config`, …). Aliases:
+`talos attack lfi`, `talos attack path_traversal`.
+
+```bash
+talos attack path-traversal techniques
+talos attack path-traversal techniques --family unix
+talos attack path-traversal run --flow <uuid>
+talos attack path-traversal run --flow <uuid> --param file
+talos attack path-traversal run --flow <uuid> --param query:file
+talos attack path-traversal run --flow <uuid> --family unix
+talos attack path-traversal run --flow <uuid> --technique unix_passwd
+talos attack path-traversal run --flow <uuid1> --flow <uuid2>
+talos attack path-traversal run --flow <uuid> --right-now
+talos attack path-traversal run --flow <uuid> --high-priority
+talos attack path-traversal run --flow <uuid> --no-high-priority
+talos attack path-traversal results list
+talos attack path-traversal results show <replay_flow_id>
+talos attack path-traversal status
+```
+
+Control Panel: `/testing/path-traversal` (Overview / Run / Results). Also run
+from the Flows table multi-select (Path Traversal).
+
+---
+
 ## Attack — HTTP request smuggling (`smuggle`)
 
 Active module. Operator picks one or more captured flows (`--flow UUID`,

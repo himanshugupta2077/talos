@@ -68,6 +68,25 @@ export const FLOW_ATTACKS: FlowAttackDef[] = [
       ),
   },
   {
+    id: "path-traversal",
+    name: "Path Traversal",
+    shortLabel: "LFI",
+    description:
+      "Replace query, JSON, form, multipart filename, and path fields with LFI / traversal payloads.",
+    class: "active",
+    risk: "high",
+    status: "available",
+    workspacePath: `${TESTING_BASE}/path-traversal`,
+    cliHint: "talos attack path-traversal run --flow --high-priority",
+    jobsPerFlow: 53,
+    run: (projectId, flowIds) =>
+      api.post(
+        "/api/attack/path-traversal/run",
+        { flows: flowIds, high_priority: true },
+        { project_id: projectId }
+      ),
+  },
+  {
     id: "smuggle",
     name: "HTTP Request Smuggling",
     shortLabel: "Smuggle",

@@ -122,6 +122,7 @@ Wired engines and `X-Talos-Engine` tokens:
 | Auth-Session Testing | `auth-session` |
 | CORS Misconfiguration | `cors` |
 | SQL Injection | `sqli` |
+| Path Traversal | `path-traversal` |
 | HTTP Request Smuggling | `smuggle` |
 | Intruder | `intruder` |
 | Secret Detection | `passive` |

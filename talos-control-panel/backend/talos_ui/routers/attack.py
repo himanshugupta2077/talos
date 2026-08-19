@@ -1688,3 +1688,272 @@ def run_smuggle(project_id: str, body: SmuggleRunBody):
         args.append("--right-now")
     results = cli.run_scoped(project_id, args)
     return {"steps": [r.to_dict() for r in results]}
+
+
+# ------------------------------------------------------------------ #
+# Path traversal / LFI                                                 #
+# ------------------------------------------------------------------ #
+
+PATH_TRAVERSAL_FAMILY_FALLBACK = [
+    "unix",
+    "windows",
+    "dotdot",
+    "encoded",
+    "wrapper",
+    "nullbyte",
+    "bypass",
+]
+
+
+def _load_path_traversal_technique_meta() -> list[dict]:
+    """Purpose: Technique picker from Core catalogue when importable."""
+    try:
+        from talos.path_traversal.payloads import TECHNIQUE_CATALOG
+
+        return [dict(item) for item in TECHNIQUE_CATALOG]
+    except Exception:
+        return [
+            {"name": name, "family": "", "description": ""}
+            for name in (
+                "unix_passwd",
+                "win_ini",
+                "dd_unix_8",
+                "enc_url_slash",
+                "php_filter_passwd",
+                "null_passwd_jpg",
+                "bypass_semicolon",
+            )
+        ]
+
+
+def _path_traversal_job_counts(db_path) -> dict[str, int]:
+    try:
+        rows = db.query_all(
+            db_path,
+            """
+            SELECT status, COUNT(*) AS n
+            FROM scheduler_jobs
+            WHERE job_type = 'path_traversal_attack'
+            GROUP BY status
+            """,
+        )
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception:
+        return {}
+
+
+@router.get("/path-traversal/techniques")
+def path_traversal_techniques():
+    """Path-traversal payload catalogue (matches CLI --technique / --family)."""
+    meta = _load_path_traversal_technique_meta()
+    return {
+        "techniques": [t["name"] for t in meta],
+        "families": list(PATH_TRAVERSAL_FAMILY_FALLBACK),
+        "items": meta,
+        "total_techniques": len(meta),
+    }
+
+
+@router.get("/path-traversal/results")
+def path_traversal_results(
+    project_id: str,
+    verdict: str | None = None,
+    technique: str | None = None,
+    family: str | None = None,
+    host: str | None = None,
+    flow_id: str | None = None,
+    limit: int = 200,
+):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.path_traversal.db import list_path_traversal_results
+
+        rows = list_path_traversal_results(
+            db_path,
+            verdict=verdict,
+            technique=technique,
+            family=family,
+            host=host,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    except Exception:
+        rows = []
+    return {"results": rows}
+
+
+@router.get("/path-traversal/summary")
+def path_traversal_summary(project_id: str):
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    try:
+        from talos.path_traversal.db import count_path_traversal_verdicts
+
+        counts = count_path_traversal_verdicts(db_path)
+    except Exception:
+        counts = {}
+    return {"counts": counts}
+
+
+@router.get("/path-traversal/overview")
+def path_traversal_overview(project_id: str, top_n: int = 8):
+    """Aggregate for the Path Traversal workspace Overview tab."""
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    top_n = min(max(top_n, 1), 50)
+
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    try:
+        from talos.path_traversal.db import (
+            count_path_traversal_verdicts,
+            list_path_traversal_results,
+        )
+
+        counts = count_path_traversal_verdicts(db_path)
+        recent = list_path_traversal_results(
+            db_path, verdict="PATH_TRAVERSAL", limit=top_n
+        )
+    except Exception:
+        counts = {}
+        recent = []
+
+    jobs = _path_traversal_job_counts(db_path)
+    pending = int(jobs.get("pending") or 0)
+    running = int(jobs.get("running") or 0)
+    techniques = _load_path_traversal_technique_meta()
+    total_results = sum(counts.values())
+
+    return {
+        "counts": counts,
+        "total_techniques": len(techniques),
+        "jobs": jobs,
+        "jobs_pending": pending,
+        "jobs_running": running,
+        "techniques": techniques,
+        "families": list(PATH_TRAVERSAL_FAMILY_FALLBACK),
+        "recent_issues": recent,
+        "empty_state": {
+            "no_results": total_results == 0,
+            "jobs_in_flight": (pending + running) > 0,
+        },
+    }
+
+
+class PathTraversalRunBody(BaseModel):
+    """Mirrors talos attack path-traversal run — --flow is required."""
+    flows: list[str] | None = None
+    technique: str | None = None
+    family: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
+    right_now: bool = False
+    high_priority: bool = True
+
+
+@router.get("/path-traversal/points")
+def path_traversal_points(project_id: str, flow: str):
+    """
+    Purpose:
+        List injectable entry points on one or more captured flows.
+    Input:
+        flow — comma-separated flow UUIDs.
+    Output:
+        {points: [{flow_id, location, name, original, surface_kind}, ...]}.
+    """
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.path_traversal.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(
+            500, f"Path-traversal inject module unavailable: {exc}"
+        ) from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT f.id, f.url, f.query, f.request_headers, f.request_body,
+                   COALESCE(e.normalized_path, '') AS normalized_path
+            FROM flows f
+            LEFT JOIN endpoints e ON e.id = f.endpoint_id
+            WHERE f.id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+            normalized_path=str(row.get("normalized_path") or ""),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
+
+
+@router.post("/path-traversal/run")
+def run_path_traversal(project_id: str, body: PathTraversalRunBody):
+    known = {t["name"] for t in _load_path_traversal_technique_meta()}
+    flow_ids = [fid.strip() for fid in (body.flows or []) if fid and fid.strip()]
+    if not flow_ids:
+        raise HTTPException(
+            400,
+            "Path-traversal run requires at least one flow UUID. "
+            "Select flows in the table or pass flows: [\"…\"].",
+        )
+    args = ["attack", "path-traversal", "run"]
+    for fid in flow_ids:
+        args += ["--flow", fid]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--param", name]
+    if body.technique:
+        tech = body.technique.strip()
+        if known and tech not in known:
+            raise HTTPException(
+                400,
+                f"unknown path-traversal technique '{tech}'; "
+                f"expected one of: {', '.join(sorted(known))}",
+            )
+        args += ["--technique", tech]
+    if body.family:
+        fam = body.family.strip()
+        if fam not in PATH_TRAVERSAL_FAMILY_FALLBACK:
+            raise HTTPException(
+                400,
+                f"unknown path-traversal family '{fam}'; "
+                f"expected one of: {', '.join(PATH_TRAVERSAL_FAMILY_FALLBACK)}",
+            )
+        args += ["--family", fam]
+    if body.right_now:
+        args.append("--right-now")
+    if body.high_priority:
+        args.append("--high-priority")
+    else:
+        args.append("--no-high-priority")
+    results = cli.run_scoped(project_id, args)
+    return {"steps": [r.to_dict() for r in results]}

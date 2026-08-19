@@ -29,6 +29,7 @@ export type AttackKpiSource =
   | "url_sinks"
   | "cors"
   | "sqli"
+  | "path_traversal"
   | "smuggle";
 
 export interface AttackModuleDef {
@@ -250,6 +251,27 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
       "payload",
     ],
     kpi: "sqli",
+  },
+  {
+    id: "path-traversal",
+    class: "active",
+    name: "Path Traversal",
+    description:
+      "Scan a captured flow for LFI / path traversal: Unix, Windows, encoded, PHP wrapper, null-byte, and bypass payloads. Optional parameter. One unique replay per probe; shows in the Talos Burp extension.",
+    risk: "high",
+    status: "available",
+    path: `${TESTING_BASE}/path-traversal`,
+    keywords: [
+      "path traversal",
+      "lfi",
+      "local file inclusion",
+      "directory traversal",
+      "/etc/passwd",
+      "win.ini",
+      "dotdot",
+      "php://filter",
+    ],
+    kpi: "path_traversal",
   },
   {
     id: "smuggle",

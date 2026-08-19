@@ -115,7 +115,7 @@ talos
 │            prune / clear / pause / resume
 ├─ mutation  add / list / edit / enable / disable / delete
 ├─ attack    unauth (run, config, filter) / bac (8 modules + filter)
-│            / cors / sqli / smuggle
+│            / cors / sqli / path-traversal / smuggle
 ├─ passive   status / config show|set / rules list /
 │            documents list|show / detections list|show /
 │            rescan --all|--document|--flow
@@ -2303,6 +2303,7 @@ cross-flow / stored reflection (`value_index`, `cross_flow_reflections`,
 | `cors_results` | CORS: one verdict row per unique Origin-probe replay flow (v55) |
 | `sqli_results` | SQLi: one verdict row per unique payload replay flow (v59) |
 | `smuggle_results` | Smuggle: one verdict row per unique CL/TE replay flow (v60) |
+| `path_traversal_results` | Path traversal / LFI: one verdict row per unique payload replay flow (v61) |
 | `proxy_config` | Direct vs upstream URL |
 | `input_validation_config` | IV enablement and phase toggles |
 | `iv_param_cache` | Parameter-level IV phase cache (resume) |
@@ -2335,6 +2336,7 @@ From `talos.scheduler.job`:
 | Auth-session (Phase 4) | `auth_session_attack` (one job per approved test_id; settle marks candidate done/failed + WEAK_VALIDATION findings) |
 | CORS | `cors_attack` (one unique replay flow per Origin technique) |
 | SQLi | `sqli_attack` (one unique replay flow per entry point × payload) |
+| Path traversal / LFI | `path_traversal_attack` (one unique replay flow per entry point × payload) |
 | HTTP Request Smuggling | `smuggle_attack` (one unique replay flow per CL/TE technique) |
 | Input Validation | `iv_baseline`, `iv_multiprobe`, `iv_identifier`, `iv_characters`, `iv_length`, `iv_types`, `iv_transformations`, `iv_reflection`, `iv_validation`, `iv_parser` |
 
@@ -2388,6 +2390,7 @@ Notable milestones:
 | v55 | CORS engine: `cors_results` (one unique replay flow per Origin technique) |
 | v59 | SQLi engine: `sqli_results` |
 | v60 | HTTP request smuggling: `smuggle_results` |
+| v61 | Path traversal / LFI: `path_traversal_results` |
 
 ---
 

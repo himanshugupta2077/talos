@@ -111,6 +111,15 @@ SQLI_ATTACK = "sqli_attack"
 SQLI_JOB_TYPES: tuple[str, ...] = (SQLI_ATTACK,)
 
 # ------------------------------------------------------------------ #
+# Path traversal / LFI job type                                        #
+# ------------------------------------------------------------------ #
+
+PATH_TRAVERSAL_ATTACK = "path_traversal_attack"
+"""Path traversal / LFI: one (entry point × payload) per job, one unique replay flow."""
+
+PATH_TRAVERSAL_JOB_TYPES: tuple[str, ...] = (PATH_TRAVERSAL_ATTACK,)
+
+# ------------------------------------------------------------------ #
 # HTTP request smuggling job type                                      #
 # ------------------------------------------------------------------ #
 
@@ -186,6 +195,7 @@ JOB_TYPES: tuple[str, ...] = (
     + AUTH_SESSION_JOB_TYPES
     + CORS_JOB_TYPES
     + SQLI_JOB_TYPES
+    + PATH_TRAVERSAL_JOB_TYPES
     + SMUGGLE_JOB_TYPES
     + IV_JOB_TYPES
     + INTRUDER_JOB_TYPES
