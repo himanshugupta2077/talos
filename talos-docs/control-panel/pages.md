@@ -520,7 +520,7 @@ Tabbed workspace for `talos attack sqli …`. Operator must pick a flow (paste U
 | Tab | Role |
 |-----|------|
 | **Overview** | SQLI / SECURE / UNKNOWN KPIs, job pressure, recent confirmed issues |
-| **Run** | Flow UUID list, family/technique picker, high-priority checkbox (default on), enqueue → `attack sqli run --flow … [--high-priority]` |
+| **Run** | Flow UUID list, Select DB (unknown / Microsoft SQL Server), optional parameter, family/technique picker, high-priority checkbox (default on), enqueue → `attack sqli run --flow … [--db mssql] [--param name] [--high-priority]` |
 | **Results** | Filterable table (verdict, family, technique, host); row opens the unique replay flow |
 
 Finding rule (core): new DBMS error vs baseline, UNION column-count leak, or time delay → PRIMARY (`SQLI:<endpoint_id>`), later probes LINKED.

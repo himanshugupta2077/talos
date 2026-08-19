@@ -2,6 +2,34 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## SQLi — Select DB and optional parameter
+
+**Shipped:** 2026-08-19
+
+`talos attack sqli run` accepts optional `--db` / `--dbms` and `--param` /
+`--parameter`.
+
+- **`--db unknown`** (default): multi-vendor error / UNION / boolean / time
+  payloads (SQL Server, MySQL, PostgreSQL, Oracle, SQLite) plus URL,
+  double-URL, and IIS `%uXXXX` encodings of the syntax breakers.
+- **`--db mssql`**: Microsoft SQL Server / T-SQL only (`CONVERT`, `CAST`,
+  `WAITFOR DELAY`, stacked comments, `CHAR()` tautology). No MySQL / Postgres
+  / Oracle payloads and no extra encodings.
+- **`--param NAME`**: scan one entry point on the flow (query key, JSON path
+  such as `user.id` / `[0]`, form field, or `location:name`). Repeatable.
+
+Control Panel `/testing/sqli` Run tab has the same Select DB and Parameter
+controls. `talos attack sqli techniques --db mssql` lists the focused set.
+
+```bash
+talos attack sqli run --flow <uuid>
+talos attack sqli run --flow <uuid> --db mssql
+talos attack sqli run --flow <uuid> --param id
+talos attack sqli run --flow <uuid> --db mssql --param body:user.id
+```
+
+---
+
 ## HTTP Request Smuggling
 
 **Shipped:** 2026-08-18

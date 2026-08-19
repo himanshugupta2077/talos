@@ -235,7 +235,7 @@ export const ATTACK_MODULES: AttackModuleDef[] = [
     class: "active",
     name: "SQL Injection",
     description:
-      "Scan a captured flow: inject error / UNION / boolean / time payloads into every query, JSON, and form field. One unique replay per probe.",
+      "Scan a captured flow: inject error / UNION / boolean / time payloads into query, JSON, and form fields. Optional Select DB (unknown or Microsoft SQL Server) and optional parameter. One unique replay per probe.",
     risk: "high",
     status: "available",
     path: `${TESTING_BASE}/sqli`,

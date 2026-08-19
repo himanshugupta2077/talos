@@ -26,6 +26,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from talos.cli_output import (
@@ -47,11 +48,12 @@ from talos.sqli.candidates import (
     select_sqli_candidates_for_flows,
 )
 from talos.sqli.db import count_sqli_verdicts, get_sqli_result, list_sqli_results
+from talos.sqli.inject import match_injection_points, normalize_param_names
 from talos.sqli.models import (
     FAMILIES,
     TECHNIQUE_CATALOG,
-    TECHNIQUE_NAMES,
     InjectionPoint,
+    normalize_db_type,
 )
 from talos.sqli.payloads import generate_sqli_payloads
 
@@ -122,13 +124,33 @@ def _has_pending_duplicate(
 def cmd_techniques(manager: ProjectManager, args: argparse.Namespace) -> None:
     """Purpose: Print the SQLi technique catalogue. manager unused."""
     del manager
+    db_raw = getattr(args, "db", None)
+    selected_db = None
+    if db_raw:
+        try:
+            selected_db = normalize_db_type(db_raw)
+        except ValueError as exc:
+            cli_usage_error(str(exc))
+    catalog = list(TECHNIQUE_CATALOG)
+    payload_n = None
+    if selected_db:
+        payloads = generate_sqli_payloads(db_type=selected_db)
+        payload_n = len(payloads)
+        base_names = {item.base_technique for item in payloads}
+        catalog = [row for row in catalog if str(row["name"]) in base_names]
     if wants_json(args):
-        cli_json(list(TECHNIQUE_CATALOG))
+        cli_json(catalog)
         return
-    print(f"{'TECHNIQUE':<22} {'FAMILY':<10} DESCRIPTION")
-    for item in TECHNIQUE_CATALOG:
+    print(f"{'TECHNIQUE':<24} {'FAMILY':<10} {'DBMS':<12} DESCRIPTION")
+    for item in catalog:
         print(
-            f"{item['name']:<22} {item['family']:<10} {item['description']}"
+            f"{str(item['name']):<24} {str(item['family']):<10} "
+            f"{str(item.get('dbms') or ''):<12} {item['description']}"
+        )
+    if payload_n is not None:
+        print(
+            f"\n{len(catalog)} technique(s) · {payload_n} payload(s) "
+            f"for --db {selected_db}."
         )
 
 
@@ -144,11 +166,11 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
 
     technique = getattr(args, "technique", None)
     family = getattr(args, "family", None)
-    if technique and technique not in TECHNIQUE_NAMES:
-        cli_usage_error(
-            f"unknown SQLi technique {technique!r}. "
-            f"See: talos attack sqli techniques"
-        )
+    try:
+        selected_db = normalize_db_type(getattr(args, "db", None))
+    except ValueError as exc:
+        cli_usage_error(str(exc))
+    param_filters = normalize_param_names(getattr(args, "params", None))
     if family and family not in FAMILIES:
         cli_usage_error(
             f"unknown SQLi family {family!r}. "
@@ -159,6 +181,7 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
         payloads = generate_sqli_payloads(
             techniques=[technique] if technique else None,
             families=[family] if family else None,
+            db_type=selected_db,
         )
     except ValueError as exc:
         cli_usage_error(str(exc))
@@ -177,6 +200,26 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             "No injectable entry points on the selected flow(s). "
             "v1 scans query parameters, JSON body fields/indexes, and form fields."
         )
+
+    if param_filters:
+        narrowed: list[SqliCandidate] = []
+        for cand in usable:
+            matched, missing = match_injection_points(cand.points, param_filters)
+            if missing:
+                available = ", ".join(
+                    f"{point.location}:{point.name}" for point in cand.points
+                ) or "(none)"
+                cli_error(
+                    f"No entry point matching {', '.join(missing)} "
+                    f"on flow {cand.flow_id}. Available: {available}"
+                )
+            if not matched:
+                cli_error(
+                    f"No entry point matching "
+                    f"{', '.join(param_filters)} on flow {cand.flow_id}."
+                )
+            narrowed.append(replace(cand, points=tuple(matched)))
+        usable = narrowed
 
     right_now = bool(getattr(args, "right_now", False))
     high_priority = bool(getattr(args, "high_priority", True))
@@ -209,6 +252,10 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
             "payload_sent": payload.payload,
             "original_value": point.original,
             "delay_s": payload.delay_s,
+            "encoding": payload.encoding,
+            "payload_dbms": payload.dbms,
+            "db_type": selected_db,
+            "base_technique": payload.base_technique or payload.technique,
         }
         job_id = str(uuid.uuid4())
         sched_db.enqueue_job(
@@ -240,6 +287,8 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
                 "flows_without_points": [c.flow_id for c in empty_points],
                 "entry_points": sum(len(c.points) for c in usable),
                 "payloads": len(payloads),
+                "db": selected_db,
+                "params": param_filters,
                 "jobs_enqueued": enqueued,
                 "jobs_skipped_dup": skipped,
                 "priority": priority,
@@ -252,6 +301,9 @@ def cmd_run(manager: ProjectManager, args: argparse.Namespace) -> None:
     print("\nSQLi attack generation complete.")
     print(f"  Flows scanned      : {len(usable)}")
     print(f"  Entry points       : {sum(len(c.points) for c in usable)}")
+    print(f"  Database           : {selected_db}")
+    if param_filters:
+        print(f"  Parameter filter   : {', '.join(param_filters)}")
     print(f"  Payloads each      : {len(payloads)}")
     print(f"  Jobs enqueued      : {enqueued}")
     print(
@@ -307,6 +359,9 @@ def _run_right_now(
             "payload_sent": payload.payload,
             "original_value": point.original,
             "delay_s": payload.delay_s,
+            "encoding": payload.encoding,
+            "payload_dbms": payload.dbms,
+            "base_technique": payload.base_technique or payload.technique,
         }
         outcome = asyncio.run(
             execute_sqli_job(
@@ -466,7 +521,9 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
             "Scan operator-picked flows for SQL injection.\n\n"
             "Pass --flow UUID (repeatable). The engine walks every query\n"
             "parameter, JSON body field/array index, and form field, then\n"
-            "appends error / UNION / boolean / time payloads.\n\n"
+            "appends error / UNION / boolean / time payloads. Optional\n"
+            "--db unknown|mssql selects the catalogue; optional --param\n"
+            "restricts the scan to one entry point on the flow.\n\n"
             "Each (entry point × payload) is one scheduler job and one\n"
             "unique replay flow. A finding is created when a probe shows a\n"
             "new DBMS error, a UNION column-count leak, or a time delay."
@@ -477,6 +534,14 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
     ssub.required = True
 
     tech_p = ssub.add_parser("techniques", help="List SQLi payload techniques.")
+    tech_p.add_argument(
+        "--db",
+        "--dbms",
+        dest="db",
+        default=None,
+        metavar="NAME",
+        help="Show techniques for unknown or mssql (default: all picker rows).",
+    )
     add_format_argument(tech_p)
 
     run_p = ssub.add_parser(
@@ -486,6 +551,9 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
             "Scan captured flows for SQL injection.\n\n"
             "Examples:\n"
             "  talos attack sqli run --flow <uuid>\n"
+            "  talos attack sqli run --flow <uuid> --db unknown\n"
+            "  talos attack sqli run --flow <uuid> --db mssql\n"
+            "  talos attack sqli run --flow <uuid> --param id\n"
             "  talos attack sqli run --flow <uuid> --family error\n"
             "  talos attack sqli run --flow <uuid> --technique quote_single\n"
             "  talos attack sqli run --flow <uuid> --right-now\n"
@@ -502,10 +570,33 @@ def build_sqli_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[
         help="Captured flow to scan (repeatable or comma-separated).",
     )
     run_p.add_argument(
+        "--db",
+        "--dbms",
+        dest="db",
+        default="unknown",
+        metavar="NAME",
+        help=(
+            "Target database (optional). unknown (default) sends multi-vendor "
+            "payloads plus URL / double-URL / IIS unicode encodings of the "
+            "syntax breakers. mssql sends Microsoft SQL Server payloads only."
+        ),
+    )
+    run_p.add_argument(
+        "--param",
+        "--parameter",
+        dest="params",
+        action="append",
+        metavar="NAME",
+        help=(
+            "Restrict to one entry point on the flow (optional). Query key, "
+            "JSON path (user.id / [0]), form field, or location:name "
+            "(query:id). Repeatable or comma-separated."
+        ),
+    )
+    run_p.add_argument(
         "--technique",
         metavar="NAME",
-        choices=list(TECHNIQUE_NAMES),
-        help="Restrict to one payload (default: all).",
+        help="Restrict to one payload or base technique (default: all for --db).",
     )
     run_p.add_argument(
         "--family",

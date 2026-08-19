@@ -1191,10 +1191,19 @@ SQLI_TECHNIQUE_FALLBACK = [
     "quote_double",
     "quote_paren",
     "comment_dash",
+    "comment_dash_space",
     "stacked_semi",
     "tautology",
+    "mssql_tautology",
     "mssql_convert",
+    "mssql_convert_db",
+    "mssql_cast",
+    "mssql_divzero",
+    "mssql_char_or",
     "mysql_extractvalue",
+    "pg_cast",
+    "oracle_to_number",
+    "sqlite_error",
     "union_1",
     "union_2",
     "union_3",
@@ -1202,12 +1211,18 @@ SQLI_TECHNIQUE_FALLBACK = [
     "union_5",
     "bool_true",
     "bool_false",
+    "mssql_bool_true",
+    "mssql_bool_false",
     "mssql_waitfor",
+    "mssql_waitfor_inline",
+    "mssql_waitfor_if",
     "mysql_sleep",
     "pg_sleep",
+    "oracle_pipe",
 ]
 
 SQLI_FAMILY_FALLBACK = ["error", "union", "boolean", "time"]
+SQLI_DB_FALLBACK = ["unknown", "mssql"]
 
 
 def _load_sqli_technique_meta() -> list[dict]:
@@ -1239,15 +1254,45 @@ def _sqli_job_counts(db_path) -> dict[str, int]:
         return {}
 
 
+def _sqli_db_meta() -> list[dict]:
+    """Purpose: Select DB picker rows from Core when importable."""
+    try:
+        from talos.sqli.models import DB_TYPE_CATALOG
+        from talos.sqli.payloads import payload_count_for_db
+
+        return [
+            {
+                **dict(item),
+                "payload_count": payload_count_for_db(str(item["name"])),
+            }
+            for item in DB_TYPE_CATALOG
+        ]
+    except Exception:
+        return [
+            {
+                "name": name,
+                "label": "Unknown" if name == "unknown" else "Microsoft SQL Server",
+                "description": "",
+                "payload_count": 0,
+            }
+            for name in SQLI_DB_FALLBACK
+        ]
+
+
 @router.get("/sqli/techniques")
 def sqli_techniques():
-    """SQLi payload catalogue (matches CLI --technique / --family)."""
+    """SQLi payload catalogue (matches CLI --technique / --family / --db)."""
     meta = _load_sqli_technique_meta()
+    db_types = _sqli_db_meta()
     return {
         "techniques": [t["name"] for t in meta],
         "families": list(SQLI_FAMILY_FALLBACK),
+        "db_types": db_types,
         "items": meta,
         "total_techniques": len(meta),
+        "payload_counts": {
+            row["name"]: int(row.get("payload_count") or 0) for row in db_types
+        },
     }
 
 
@@ -1315,16 +1360,25 @@ def sqli_overview(project_id: str, top_n: int = 8):
     pending = int(jobs.get("pending") or 0)
     running = int(jobs.get("running") or 0)
     techniques = _load_sqli_technique_meta()
+    db_types = _sqli_db_meta()
     total_results = sum(counts.values())
+    unknown_payloads = next(
+        (int(row.get("payload_count") or 0) for row in db_types if row["name"] == "unknown"),
+        len(techniques),
+    )
 
     return {
         "counts": counts,
-        "total_techniques": len(techniques),
+        "total_techniques": unknown_payloads or len(techniques),
         "jobs": jobs,
         "jobs_pending": pending,
         "jobs_running": running,
         "techniques": techniques,
         "families": list(SQLI_FAMILY_FALLBACK),
+        "db_types": db_types,
+        "payload_counts": {
+            row["name"]: int(row.get("payload_count") or 0) for row in db_types
+        },
         "recent_issues": recent,
         "empty_state": {
             "no_results": total_results == 0,
@@ -1338,8 +1392,64 @@ class SqliRunBody(BaseModel):
     flows: list[str] | None = None
     technique: str | None = None
     family: str | None = None
+    db: str | None = None
+    param: str | None = None
+    params: list[str] | None = None
     right_now: bool = False
     high_priority: bool = True
+
+
+@router.get("/sqli/points")
+def sqli_points(project_id: str, flow: str):
+    """
+    Purpose:
+        List injectable entry points on one or more captured flows.
+    Input:
+        flow — comma-separated flow UUIDs.
+    Output:
+        {points: [{flow_id, location, name, original, surface_kind}, ...]}.
+    """
+    record = db.get_project_record(project_id)
+    db_path = config.project_db_path(project_id, record)
+    flow_ids = [part.strip() for part in (flow or "").split(",") if part.strip()]
+    if not flow_ids:
+        raise HTTPException(400, "Pass flow as one or more comma-separated UUIDs.")
+    try:
+        from talos.sqli.inject import extract_injection_points
+    except Exception as exc:
+        raise HTTPException(500, f"SQLi inject module unavailable: {exc}") from exc
+
+    placeholders = ",".join("?" for _ in flow_ids)
+    try:
+        rows = db.query_all(
+            db_path,
+            f"""
+            SELECT id, url, query, request_headers, request_body
+            FROM flows
+            WHERE id IN ({placeholders})
+            """,
+            tuple(flow_ids),
+        )
+    except Exception:
+        rows = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    missing = [fid for fid in flow_ids if fid not in by_id]
+    points: list[dict] = []
+    for fid in flow_ids:
+        row = by_id.get(fid)
+        if row is None:
+            continue
+        extracted = extract_injection_points(
+            url=str(row.get("url") or ""),
+            query=str(row.get("query") or ""),
+            request_headers=row.get("request_headers"),
+            request_body=row.get("request_body"),
+        )
+        for point in extracted:
+            item = point.to_dict()
+            item["flow_id"] = fid
+            points.append(item)
+    return {"points": points, "missing": missing}
 
 
 @router.post("/sqli/run")
@@ -1357,9 +1467,33 @@ def run_sqli(project_id: str, body: SqliRunBody):
     args = ["attack", "sqli", "run"]
     for fid in flow_ids:
         args += ["--flow", fid]
+    if body.db:
+        db_name = body.db.strip().lower()
+        if db_name not in SQLI_DB_FALLBACK and db_name not in {
+            "sqlserver",
+            "sql-server",
+            "sql_server",
+            "microsoft",
+            "microsoft_sql_server",
+            "microsoft-sql-server",
+        }:
+            raise HTTPException(
+                400,
+                f"unknown SQLi database '{body.db}'; "
+                f"expected one of: {', '.join(SQLI_DB_FALLBACK)}",
+            )
+        args += ["--db", db_name]
+    param_values: list[str] = []
+    if body.param and body.param.strip():
+        param_values.append(body.param.strip())
+    for item in body.params or []:
+        if item and item.strip():
+            param_values.append(item.strip())
+    for name in param_values:
+        args += ["--param", name]
     if body.technique:
         tech = body.technique.strip()
-        if tech not in known:
+        if tech not in known and "__" not in tech:
             raise HTTPException(
                 400,
                 f"unknown SQLi technique '{tech}'; "

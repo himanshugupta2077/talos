@@ -18,10 +18,39 @@ export const inputClass = "input input-xs input-bordered";
 export const VERDICTS = ["SQLI", "SECURE", "UNKNOWN"] as const;
 export const FAMILIES = ["error", "union", "boolean", "time"] as const;
 
+export interface SqliDbType {
+  name: string;
+  label: string;
+  description: string;
+  payload_count?: number;
+}
+
 export interface SqliTechnique {
   name: string;
   family: string;
   description: string;
+  dbms?: string;
+  encodeable?: boolean | string;
+}
+
+export const DB_TYPES: SqliDbType[] = [
+  {
+    name: "unknown",
+    label: "Unknown",
+    description:
+      "DBMS not known. Multi-vendor payloads plus URL / double-URL / IIS unicode encodings.",
+  },
+  {
+    name: "mssql",
+    label: "Microsoft SQL Server",
+    description: "T-SQL / SQL Server CONVERT, WAITFOR, stacked comments.",
+  },
+];
+
+export function techniqueMatchesDb(tech: SqliTechnique, db: string): boolean {
+  if (!db || db === "unknown") return true;
+  const vendor = (tech.dbms || "generic").toLowerCase();
+  return vendor === "generic" || vendor === "mssql";
 }
 
 export interface SqliResultRow {
@@ -53,6 +82,8 @@ export interface SqliOverview {
   jobs_running: number;
   techniques: SqliTechnique[];
   families: string[];
+  db_types?: SqliDbType[];
+  payload_counts?: Record<string, number>;
   recent_issues: SqliResultRow[];
   empty_state: {
     no_results?: boolean;

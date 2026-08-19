@@ -24,6 +24,8 @@ import json
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlparse
 
+_POINT_LOCATIONS = frozenset({"query", "body"})
+
 from talos.input_validation.surface import (
     LOCATION_BODY,
     LOCATION_QUERY,
@@ -185,6 +187,87 @@ def extract_injection_points(
                 )
             )
     return points
+
+
+def normalize_param_names(raw: object) -> list[str]:
+    """
+    Purpose:
+        Flatten --param values (repeatable and/or comma-separated).
+    Output:
+        Deduped names in operator order.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item) for item in raw]
+    else:
+        items = [str(raw)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        for part in item.split(","):
+            name = part.strip()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def match_injection_points(
+    points: list[InjectionPoint] | tuple[InjectionPoint, ...],
+    param_names: list[str],
+) -> tuple[list[InjectionPoint], list[str]]:
+    """
+    Purpose:
+        Restrict entry points to operator --param values.
+    Input:
+        points      — extracted points on one flow.
+        param_names — query key, JSON path, form field, or ``location:name``.
+    Output:
+        (matched points in request order, names that hit nothing).
+    Side effects: None.
+    """
+    wanted = normalize_param_names(param_names)
+    if not wanted:
+        return list(points), []
+
+    matched: list[InjectionPoint] = []
+    seen: set[tuple[str, str]] = set()
+    missing: list[str] = []
+
+    for spec in wanted:
+        location: Optional[str] = None
+        name = spec
+        if ":" in spec:
+            prefix, rest = spec.split(":", 1)
+            if prefix.lower() in _POINT_LOCATIONS and rest:
+                location = prefix.lower()
+                name = rest
+        hits = [
+            point
+            for point in points
+            if point.name == name and (location is None or point.location == location)
+        ]
+        if not hits:
+            lowered = name.lower()
+            hits = [
+                point
+                for point in points
+                if point.name.lower() == lowered
+                and (location is None or point.location == location)
+            ]
+        if not hits:
+            missing.append(spec)
+            continue
+        for point in hits:
+            key = (point.location, point.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append(point)
+    return matched, missing
 
 
 def apply_payload(

@@ -37,7 +37,7 @@ describe("flowAttacks catalog", () => {
 
   it("estimates jobs only for selected available attacks", () => {
     expect(estimateFlowAttackJobs(3, ["cors"])).toBe(60);
-    expect(estimateFlowAttackJobs(2, ["sqli"])).toBe(36);
+    expect(estimateFlowAttackJobs(2, ["sqli"])).toBe(100);
     expect(getFlowAttack("sqli")?.cliHint).toContain("--flow");
     expect(getFlowAttack("sqli")?.cliHint).toContain("--high-priority");
     expect(estimateFlowAttackJobs(2, ["unauth"])).toBe(34);

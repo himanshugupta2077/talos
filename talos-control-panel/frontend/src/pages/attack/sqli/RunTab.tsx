@@ -1,11 +1,25 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAction } from "../../../hooks/useAction";
 import { api } from "../../../api/client";
 import { ConfirmButton, Section } from "../../../components/Common";
 import type { StepsResponse } from "../../../types";
-import { FAMILIES, type SqliOverview, type SqliTechnique } from "./shared";
+import {
+  DB_TYPES,
+  FAMILIES,
+  techniqueMatchesDb,
+  type SqliOverview,
+  type SqliTechnique,
+} from "./shared";
 import SqliDisclaimer from "./components/SqliDisclaimer";
+
+interface SqliPoint {
+  flow_id?: string;
+  location: string;
+  name: string;
+  original?: string;
+  surface_kind?: string;
+}
 
 function parseFlowIds(raw: string): string[] {
   const out: string[] = [];
@@ -32,26 +46,80 @@ export default function RunTab({
   onRefresh: () => void;
 }) {
   const [flowText, setFlowText] = useState("");
+  const [dbType, setDbType] = useState("unknown");
+  const [paramName, setParamName] = useState("");
   const [family, setFamily] = useState("");
   const [technique, setTechnique] = useState("");
   const [highPriority, setHighPriority] = useState(true);
   const [lastStdout, setLastStdout] = useState<string | null>(null);
+  const [points, setPoints] = useState<SqliPoint[]>([]);
 
   const flowIds = useMemo(() => parseFlowIds(flowText), [flowText]);
+  const dbTypes = overview?.db_types?.length ? overview.db_types : DB_TYPES;
+  const visibleTechniques = techniques.filter((t) =>
+    techniqueMatchesDb(t, dbType)
+  );
+  const selectedTech = visibleTechniques.find((t) => t.name === technique);
+  const familyTechs = visibleTechniques.filter((t) => t.family === family);
+  const encodingsForUnknown = (tech: SqliTechnique) =>
+    dbType === "unknown" && (tech.encodeable === true || tech.encodeable === "1")
+      ? 4
+      : 1;
   const techCount = technique
-    ? 1
+    ? selectedTech
+      ? encodingsForUnknown(selectedTech)
+      : 1
     : family
-      ? techniques.filter((t) => t.family === family).length
-      : techniques.length || overview?.total_techniques || 0;
+      ? familyTechs.reduce((sum, t) => sum + encodingsForUnknown(t), 0)
+      : overview?.payload_counts?.[dbType] ||
+        visibleTechniques.reduce((sum, t) => sum + encodingsForUnknown(t), 0) ||
+        overview?.total_techniques ||
+        0;
   const estimate = flowIds.length * techCount;
   const jobsInFlight =
     (overview?.jobs_pending ?? 0) + (overview?.jobs_running ?? 0) > 0;
+
+  useEffect(() => {
+    if (!projectId || flowIds.length === 0) {
+      setPoints([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get<{ points?: SqliPoint[] }>("/api/attack/sqli/points", {
+        project_id: projectId,
+        flow: flowIds.join(","),
+      })
+      .then((r) => {
+        if (!cancelled) setPoints(r.points || []);
+      })
+      .catch(() => {
+        if (!cancelled) setPoints([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, flowIds]);
+
+  const uniqueParams = useMemo(() => {
+    const seen = new Set<string>();
+    const out: SqliPoint[] = [];
+    for (const point of points) {
+      const key = `${point.location}:${point.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(point);
+    }
+    return out;
+  }, [points]);
 
   const run = useAction("Run SQLi attack", () =>
     api.post(
       "/api/attack/sqli/run",
       {
         flows: flowIds,
+        db: dbType || undefined,
+        param: paramName.trim() || undefined,
         technique: technique || undefined,
         family: family || undefined,
         high_priority: highPriority,
@@ -63,11 +131,13 @@ export default function RunTab({
   const cliPreview = useMemo(() => {
     const parts = ["talos attack sqli run"];
     for (const id of flowIds) parts.push(`--flow ${id}`);
+    if (dbType && dbType !== "unknown") parts.push(`--db ${dbType}`);
+    if (paramName.trim()) parts.push(`--param ${paramName.trim()}`);
     if (technique) parts.push(`--technique ${technique}`);
     else if (family) parts.push(`--family ${family}`);
     parts.push(highPriority ? "--high-priority" : "--no-high-priority");
     return parts.join(" ");
-  }, [flowIds, technique, family, highPriority]);
+  }, [flowIds, dbType, paramName, technique, family, highPriority]);
 
   const doRun = async () => {
     try {
@@ -114,9 +184,106 @@ export default function RunTab({
         />
         <p className="text-xs text-base-content/50 mt-1">
           {flowIds.length} flow{flowIds.length === 1 ? "" : "s"} · ~{techCount}{" "}
-          payload{techCount === 1 ? "" : "s"} each (times entry points on the
-          request)
+          payload{techCount === 1 ? "" : "s"} each
+          {paramName.trim()
+            ? ` on ${paramName.trim()}`
+            : " (times every entry point on the request)"}
         </p>
+      </Section>
+
+      <Section title="Select DB">
+        <p className="text-xs text-base-content/60 mb-2">
+          Optional. Unknown (default) sends multi-vendor payloads plus encoded
+          syntax breakers. Microsoft SQL Server sends T-SQL payloads only.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {dbTypes.map((item) => (
+            <button
+              key={item.name}
+              type="button"
+              className={`btn btn-sm ${dbType === item.name ? "btn-primary" : ""}`}
+              onClick={() => {
+                setDbType(item.name);
+                if (technique && !techniqueMatchesDb(
+                  techniques.find((t) => t.name === technique) || {
+                    name: technique,
+                    family: "",
+                    description: "",
+                    dbms: "generic",
+                  },
+                  item.name
+                )) {
+                  setTechnique("");
+                }
+              }}
+              disabled={run.running}
+            >
+              {item.label}
+              {typeof item.payload_count === "number" && item.payload_count > 0
+                ? ` (${item.payload_count})`
+                : ""}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-base-content/50 mt-2">
+          {(dbTypes.find((d) => d.name === dbType) || DB_TYPES[0]).description}
+        </p>
+      </Section>
+
+      <Section title="Parameter">
+        <p className="text-xs text-base-content/60 mb-2">
+          Optional. Leave as all entry points, or scan one query key, JSON
+          path, or form field on the selected flow.
+        </p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            className="select select-sm select-bordered"
+            value={
+              uniqueParams.some(
+                (p) => p.name === paramName || `${p.location}:${p.name}` === paramName
+              )
+                ? paramName
+                : paramName
+                  ? "__custom"
+                  : ""
+            }
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === "__custom") return;
+              setParamName(next);
+            }}
+            disabled={run.running}
+          >
+            <option value="">All entry points</option>
+            {paramName &&
+              !uniqueParams.some(
+                (p) =>
+                  p.name === paramName ||
+                  `${p.location}:${p.name}` === paramName
+              ) && <option value="__custom">Custom: {paramName}</option>}
+            {uniqueParams.map((point) => {
+              const value = `${point.location}:${point.name}`;
+              return (
+                <option key={value} value={value}>
+                  {value}
+                  {point.original ? ` = ${point.original.slice(0, 40)}` : ""}
+                </option>
+              );
+            })}
+          </select>
+          <input
+            className="input input-sm input-bordered font-mono text-xs min-w-48"
+            placeholder="or type name / location:name"
+            value={paramName}
+            onChange={(e) => setParamName(e.target.value)}
+            disabled={run.running}
+          />
+        </div>
+        {flowIds.length > 0 && uniqueParams.length === 0 && (
+          <p className="text-xs text-base-content/40 mt-1">
+            No entry points loaded yet for the pasted flow(s).
+          </p>
+        )}
       </Section>
 
       <Section title="Payloads">
@@ -148,7 +315,7 @@ export default function RunTab({
           ))}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {techniques
+          {visibleTechniques
             .filter((t) => !family || t.family === family)
             .map((t) => (
               <button
@@ -162,7 +329,14 @@ export default function RunTab({
               >
                 <div className="font-medium mono">{t.name}</div>
                 <div className="text-base-content/50">{t.description}</div>
-                <div className="text-base-content/40 mt-1">{t.family}</div>
+                <div className="text-base-content/40 mt-1">
+                  {t.family}
+                  {t.dbms && t.dbms !== "generic" ? ` · ${t.dbms}` : ""}
+                  {dbType === "unknown" &&
+                  (t.encodeable === true || t.encodeable === "1")
+                    ? " · + encodings"
+                    : ""}
+                </div>
               </button>
             ))}
         </div>

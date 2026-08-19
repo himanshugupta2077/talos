@@ -127,3 +127,40 @@ def test_sqli_run_unknown_technique(client):
         json={"flows": ["flow-a"], "technique": "not-a-real-tech"},
     )
     assert res.status_code == 400
+
+
+def test_sqli_run_with_db_and_param(client):
+    with patch("talos_ui.routers.attack.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [_ok_result()]
+        res = client.post(
+            "/api/attack/sqli/run",
+            params={"project_id": "demo"},
+            json={
+                "flows": ["flow-a"],
+                "db": "mssql",
+                "param": "body:user.id",
+            },
+        )
+        assert res.status_code == 200
+        assert run_scoped.call_args[0][1] == [
+            "attack",
+            "sqli",
+            "run",
+            "--flow",
+            "flow-a",
+            "--db",
+            "mssql",
+            "--param",
+            "body:user.id",
+            "--high-priority",
+        ]
+
+
+def test_sqli_techniques_include_db_types(client):
+    res = client.get("/api/attack/sqli/techniques")
+    assert res.status_code == 200
+    body = res.json()
+    names = {row["name"] for row in body["db_types"]}
+    assert names == {"unknown", "mssql"}
+    assert body["payload_counts"]["unknown"] > body["payload_counts"]["mssql"]
+    assert "mssql_cast" in body["techniques"]

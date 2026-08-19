@@ -88,7 +88,10 @@ export default function SqliModule() {
           <p>
             <strong>SQL Injection</strong> scans operator-picked flows. Every
             query parameter, JSON field or array index, and form field is an
-            entry point.
+            entry point. Select DB (optional): <span className="mono">unknown</span>{" "}
+            sends multi-vendor payloads plus encodings;{" "}
+            <span className="mono">mssql</span> sends Microsoft SQL Server
+            payloads. Optionally restrict to one parameter.
           </p>
           <p>
             Each payload is one <span className="mono">sqli_attack</span> job
@@ -101,7 +104,7 @@ export default function SqliModule() {
           <p>
             CLI:{" "}
             <span className="mono">
-              talos attack sqli run --flow &lt;uuid&gt;
+              talos attack sqli run --flow &lt;uuid&gt; [--db mssql] [--param name]
             </span>
           </p>
         </>

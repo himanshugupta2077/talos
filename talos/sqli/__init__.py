@@ -6,9 +6,12 @@ Purpose:
 
     Operator picks one or more captured flows. The engine walks every
     injectable entry point on that request (query, JSON body including
-    array indexes, form fields) and sends a small catalogue of error,
-    UNION, boolean, and time payloads. Each probe is one scheduler job
-    and one unique replay flow.
+    array indexes, form fields) and sends a catalogue of error, UNION,
+    boolean, and time payloads. ``--db unknown`` (default) covers several
+    DBMS families plus encoded syntax breakers; ``--db mssql`` sends
+    Microsoft SQL Server payloads only. ``--param`` optionally restricts
+    the scan to one entry point. Each probe is one scheduler job and
+    one unique replay flow.
 
     Detection:
         - New DBMS error signatures vs the captured baseline

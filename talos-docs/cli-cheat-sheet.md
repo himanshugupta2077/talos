@@ -1672,8 +1672,15 @@ Control Panel: `/testing/cors` (Overview / Run / Results).
 
 Active module. Operator picks one or more captured flows (`--flow UUID`,
 required). The engine walks every **query parameter**, **JSON body field or
-array index**, and **form field**, then appends a small catalogue of error,
-UNION, boolean, and time payloads.
+array index**, and **form field**, then appends error, UNION, boolean, and
+time payloads.
+
+Optional **`--db unknown|mssql`** (also `--dbms`) selects the catalogue.
+`unknown` (default) sends multi-vendor payloads plus URL / double-URL / IIS
+unicode encodings of the syntax breakers. `mssql` sends Microsoft SQL Server
+payloads only. Optional **`--param NAME`** (also `--parameter`) restricts the
+scan to one entry point: a query key, JSON path (`user.id`, `[0]`), form
+field, or `location:name` (`query:id`, `body:user.id`). Repeatable.
 
 `talos attack sqli run --flow <uuid>` enqueues one `sqli_attack` scheduler job
 per (entry point × payload). Each job writes a **unique replay flow**. Jobs
@@ -1686,7 +1693,12 @@ itself a finding.
 
 ```bash
 talos attack sqli techniques
+talos attack sqli techniques --db mssql
 talos attack sqli run --flow <uuid>
+talos attack sqli run --flow <uuid> --db unknown
+talos attack sqli run --flow <uuid> --db mssql
+talos attack sqli run --flow <uuid> --param id
+talos attack sqli run --flow <uuid> --db mssql --param body:user.id
 talos attack sqli run --flow <uuid> --family error
 talos attack sqli run --flow <uuid> --technique quote_single
 talos attack sqli run --flow <uuid1> --flow <uuid2>
