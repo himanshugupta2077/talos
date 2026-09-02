@@ -28,11 +28,13 @@ Side effects:
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
+from urllib.parse import urlparse
 
 from talos.burp.snapshot import finding_record_id, remove_matching_records
 from talos.findings.db import delete_findings
@@ -112,17 +114,89 @@ def _compile_regex(pattern: str) -> re.Pattern[str]:
 def _regex_pred(pattern: str) -> Callable[[str], bool]:
     compiled = _compile_regex(pattern)
 
-    def _match(path: str) -> bool:
-        return bool(path) and compiled.search(path) is not None
+    def _match(text: str) -> bool:
+        return bool(text) and compiled.search(text) is not None
 
     return _match
 
 
 def _path_pred(pattern: str) -> Callable[[str], bool]:
-    def _match(path: str) -> bool:
-        return bool(path) and path_matches_pattern(path, pattern)
+    def _match(text: str) -> bool:
+        return bool(text) and path_matches_pattern(text, pattern)
 
     return _match
+
+
+def _collapse_dot_segments(text: str) -> str:
+    """Turn `/tap-ui/./chunk-X.js` into `/tap-ui/chunk-X.js`."""
+    prev = text
+    while True:
+        nxt = prev.replace("/./", "/")
+        if nxt == prev:
+            return nxt
+        prev = nxt
+
+
+def location_texts(
+    *,
+    path: str = "",
+    host: str = "",
+    url: str = "",
+    extra: Optional[Iterable[str]] = None,
+) -> list[str]:
+    """
+    Strings a path/URL regex should be tested against.
+
+    Testers often paste a full-URL regex (`https://host/…/chunk-X.js`) into
+    a path field. Matching only `normalized_path` (`/…/chunk-X.js`) misses
+    those. Include path, host+path, full URL, and collapsed `/./` variants.
+    """
+    texts: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        value = (raw or "").strip()
+        if not value or value in seen:
+            return
+        seen.add(value)
+        texts.append(value)
+        collapsed = _collapse_dot_segments(value)
+        if collapsed != value and collapsed not in seen:
+            seen.add(collapsed)
+            texts.append(collapsed)
+
+    add(path)
+    add(url)
+    add(host)
+    parsed_path = ""
+    if url:
+        parsed = urlparse(url)
+        parsed_path = parsed.path or ""
+        add(parsed_path)
+        if parsed.netloc:
+            add(parsed.netloc + parsed_path)
+            if parsed.scheme:
+                add(f"{parsed.scheme}://{parsed.netloc}{parsed_path}")
+    resolved_path = path or parsed_path
+    if host and resolved_path:
+        host_clean = host.rstrip("/")
+        suffix = (
+            resolved_path
+            if resolved_path.startswith("/")
+            else f"/{resolved_path}"
+        )
+        if "://" in host_clean:
+            add(host_clean + suffix)
+        else:
+            add("https://" + host_clean + suffix)
+            add("http://" + host_clean + suffix)
+    for item in extra or []:
+        add(str(item))
+    return texts
+
+
+def _pred_hits(pred: Callable[[str], bool], texts: Iterable[str]) -> bool:
+    return any(pred(text) for text in texts if text)
 
 
 def resolve_match(
@@ -219,12 +293,16 @@ def _endpoints_matching(
 ) -> list[str]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, path, normalized_path FROM endpoints"
+            "SELECT id, path, normalized_path, host FROM endpoints"
         ).fetchall()
     matched: list[str] = []
     for row in rows:
-        path = str(row["normalized_path"] or row["path"] or "")
-        if pred(path):
+        texts = location_texts(
+            path=str(row["normalized_path"] or row["path"] or ""),
+            host=str(row["host"] or ""),
+            extra=[str(row["path"] or "")],
+        )
+        if _pred_hits(pred, texts):
             matched.append(str(row["id"]))
     return matched
 
@@ -278,8 +356,12 @@ def _job_rows(db_path: Path) -> list[sqlite3.Row]:
                 SELECT sj.job_id, sj.endpoint_id, sj.flow_id,
                        f.endpoint_id AS flow_endpoint_id,
                        f.path AS flow_path,
+                       f.host AS flow_host,
+                       f.url AS flow_url,
                        e.normalized_path AS endpoint_path,
-                       ef.normalized_path AS flow_endpoint_path
+                       e.host AS endpoint_host,
+                       ef.normalized_path AS flow_endpoint_path,
+                       ef.host AS flow_endpoint_host
                 FROM scheduler_jobs sj
                 LEFT JOIN flows f ON f.id = sj.flow_id
                 LEFT JOIN endpoints e ON e.id = sj.endpoint_id
@@ -300,15 +382,27 @@ def _job_matches_exclusion(row: sqlite3.Row, match: ExclusionMatch) -> bool:
         return True
     if match.path_pred is None:
         return False
-    for candidate in (
-        row["endpoint_path"],
-        row["flow_endpoint_path"],
-        row["flow_path"],
-    ):
-        path = str(candidate or "")
-        if path and match.path_pred(path):
-            return True
-    return False
+    texts = location_texts(
+        path=str(
+            row["endpoint_path"]
+            or row["flow_endpoint_path"]
+            or row["flow_path"]
+            or ""
+        ),
+        host=str(
+            row["endpoint_host"]
+            or row["flow_endpoint_host"]
+            or row["flow_host"]
+            or ""
+        ),
+        url=str(row["flow_url"] or ""),
+        extra=[
+            str(row["flow_path"] or ""),
+            str(row["endpoint_path"] or ""),
+            str(row["flow_endpoint_path"] or ""),
+        ],
+    )
+    return _pred_hits(match.path_pred, texts)
 
 
 def skip_jobs_for_match(db_path: Path, match: ExclusionMatch) -> int:
@@ -369,6 +463,30 @@ def job_is_excluded(db_path: Path, project_id: str, endpoint_id: Optional[str], 
     )
 
 
+def _urls_from_evidence_data(raw: object) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    parsed: object = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [text] if ("://" in text or text.startswith("/")) else []
+    if not isinstance(parsed, dict):
+        return []
+    out: list[str] = []
+    for key in ("url", "path", "host"):
+        value = parsed.get(key)
+        if value:
+            out.append(str(value))
+    return out
+
+
 def _finding_ids_for_match(db_path: Path, match: ExclusionMatch) -> list[str]:
     ids: list[str] = []
     with _connect(db_path) as conn:
@@ -390,17 +508,57 @@ def _finding_ids_for_match(db_path: Path, match: ExclusionMatch) -> list[str]:
             ).fetchall()
             ids.extend(str(r[0]) for r in rows)
         if match.path_pred is not None:
+            pred = match.path_pred
             rows = conn.execute(
                 """
-                SELECT f.id, f.endpoint_id, e.normalized_path, e.path
+                SELECT f.id, f.title, e.host, e.path, e.normalized_path
                 FROM findings f
                 LEFT JOIN endpoints e ON e.id = f.endpoint_id
                 """
             ).fetchall()
             for row in rows:
-                path = str(row["normalized_path"] or row["path"] or "")
-                if path and match.path_pred(path):
+                texts = location_texts(
+                    path=str(row["normalized_path"] or row["path"] or ""),
+                    host=str(row["host"] or ""),
+                    extra=[str(row["title"] or ""), str(row["path"] or "")],
+                )
+                if _pred_hits(pred, texts):
                     ids.append(str(row["id"]))
+            ev_rows = conn.execute(
+                """
+                SELECT ev.finding_id, ev.data, fl.url, fl.host, fl.path
+                FROM finding_evidence ev
+                LEFT JOIN flows fl ON fl.id = ev.reference_id
+                """
+            ).fetchall()
+            for row in ev_rows:
+                extras = _urls_from_evidence_data(row["data"])
+                texts = location_texts(
+                    path=str(row["path"] or ""),
+                    host=str(row["host"] or ""),
+                    url=str(row["url"] or ""),
+                    extra=extras,
+                )
+                if _pred_hits(pred, texts):
+                    ids.append(str(row["finding_id"]))
+            try:
+                occ_rows = conn.execute(
+                    """
+                    SELECT ev.finding_id, so.url, so.host, so.path
+                    FROM finding_evidence ev
+                    JOIN source_occurrences so ON so.id = ev.reference_id
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                occ_rows = []
+            for row in occ_rows:
+                texts = location_texts(
+                    path=str(row["path"] or ""),
+                    host=str(row["host"] or ""),
+                    url=str(row["url"] or ""),
+                )
+                if _pred_hits(pred, texts):
+                    ids.append(str(row["finding_id"]))
     return list(dict.fromkeys(ids))
 
 

@@ -285,6 +285,116 @@ def test_exclude_results_regex(db_path: Path) -> None:
     assert sched_db.get_job(db_path, PROJECT_ID, job).status == "skipped"
 
 
+CHUNK_RE = r'https?:\/\/[^\s"\'<>]*\/chunk-[A-Z0-9]+\.js'
+EP_CHUNK = "ep-chunk"
+EP_CHUNK_DOT = "ep-chunk-dot"
+
+
+def _seed_chunk_endpoints(db_path: Path) -> None:
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executemany(
+            """
+            INSERT INTO endpoints
+                (id, project_id, method, host, path, normalized_path,
+                 content_type, auth_required, roles_seen, first_seen, last_seen)
+            VALUES (?, ?, 'GET', ?, ?, ?, 'application/javascript', 0, '[]', ?, ?)
+            """,
+            [
+                (EP_CHUNK, PROJECT_ID, "https://uat-1-tap.charter.com",
+                 "/tap-ui/chunk-ZOPPBF22.js", "/tap-ui/chunk-ZOPPBF22.js",
+                 NOW, NOW),
+                (EP_CHUNK_DOT, PROJECT_ID, "https://uat-1-tap.charter.com",
+                 "/tap-ui/./chunk-GO5FZXLI.js", "/tap-ui/./chunk-GO5FZXLI.js",
+                 NOW, NOW),
+            ],
+        )
+        for eid in (EP_CHUNK, EP_CHUNK_DOT):
+            conn.execute(
+                """
+                INSERT INTO endpoint_policy
+                    (endpoint_id, auto_priority, auto_score, auto_breakdown,
+                     excluded, dangerous, logout, qualified, qualification_reason,
+                     baseline_flow_id, baseline_status, updated_at)
+                VALUES (?, 'LOW', 0, '{}', 0, 0, 0, 1, 'flow_2xx', NULL, 200, ?)
+                """,
+                (eid, NOW),
+            )
+        conn.commit()
+
+
+def test_exclude_results_url_regex_matches_chunk_js(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """URL-shaped regex must match path-only endpoints and ./chunk URLs."""
+    monkeypatch.setenv("TALOS_BURP_DIR", str(tmp_path / "burp"))
+    _seed_chunk_endpoints(db_path)
+    fid = create_finding(
+        db_path, PROJECT_ID, "passive", "SECRET", EP_CHUNK, "chunk secret"
+    )
+    fid_dot = create_finding(
+        db_path, PROJECT_ID, "passive", "SECRET", EP_CHUNK_DOT, "dot chunk"
+    )
+    keep = create_finding(
+        db_path, PROJECT_ID, "unauth", "BYPASS", EP_USERS, "keep me"
+    )
+    add_evidence(
+        db_path, fid, "source_occurrence", None, "occ",
+        {"url": "https://uat-1-tap.charter.com/tap-ui/chunk-ZOPPBF22.js"},
+    )
+    record_request(
+        _trace(PROJECT_ID, "/tap-ui/chunk-ZOPPBF22.js", "rec-chunk", EP_CHUNK),
+        method="GET",
+        host="uat-1-tap.charter.com",
+        path="/tap-ui/chunk-ZOPPBF22.js",
+        url="https://uat-1-tap.charter.com/tap-ui/chunk-ZOPPBF22.js",
+    )
+    record_request(
+        _trace(PROJECT_ID, "/tap-ui/./chunk-GO5FZXLI.js", "rec-dot", EP_CHUNK_DOT),
+        method="GET",
+        host="uat-1-tap.charter.com",
+        path="/tap-ui/./chunk-GO5FZXLI.js",
+        url="https://uat-1-tap.charter.com/tap-ui/./chunk-GO5FZXLI.js",
+    )
+    record_request(
+        _trace(PROJECT_ID, "/api/users", "rec-keep", EP_USERS),
+        method="GET",
+        host="api.example.com",
+        path="/api/users",
+        url="https://api.example.com/api/users",
+    )
+
+    outcome = exclude_and_purge(db_path, PROJECT_ID, "regex", CHUNK_RE)
+    assert EP_CHUNK in outcome.endpoint_ids
+    assert EP_CHUNK_DOT in outcome.endpoint_ids
+    assert EP_USERS not in outcome.endpoint_ids
+    assert outcome.findings_deleted >= 2
+    assert get_finding(db_path, fid) is None
+    assert get_finding(db_path, fid_dot) is None
+    assert get_finding(db_path, keep) is not None
+    remaining = {r["record_id"] for r in load_records(PROJECT_ID)}
+    assert "rec-chunk" not in remaining
+    assert "rec-dot" not in remaining
+    assert "rec-keep" in remaining
+
+
+def test_exclude_results_url_regex_matches_evidence_url_only(db_path: Path) -> None:
+    """Passive findings with a URL in evidence and no matching endpoint path."""
+    fid = create_finding(
+        db_path, PROJECT_ID, "passive", "SECRET", None, "orphan chunk"
+    )
+    add_evidence(
+        db_path, fid, "source_occurrence", None, "occ",
+        {"url": "https://uat-1-tap.charter.com/tap-ui/chunk-AAAA1111.js"},
+    )
+    keep = create_finding(
+        db_path, PROJECT_ID, "unauth", "BYPASS", EP_USERS, "keep"
+    )
+    outcome = exclude_and_purge(db_path, PROJECT_ID, "regex", CHUNK_RE)
+    assert outcome.findings_deleted == 1
+    assert get_finding(db_path, fid) is None
+    assert get_finding(db_path, keep) is not None
+
+
 def test_exclude_results_flow(db_path: Path) -> None:
     job = _enqueue(db_path, flow_id=FLOW_USERS, job_type=REPLAY_FLOW)
     fid = create_finding(

@@ -229,9 +229,11 @@ export default function PolicyTab({
           Exclude and purge results
         </div>
         <p className="text-xs text-base-content/60 mb-2">
-          Exclude a flow, endpoint, path glob, or regex. Matching scheduler jobs are
-          skipped; matching findings and Burp snapshot rows are deleted. Resume/play
-          also drops jobs for endpoints already marked excluded.
+          Exclude a flow, endpoint, path glob, or regex. Regex matches path{" "}
+          <em>and</em> full URL (so <span className="mono">https://host/…/chunk-X.js</span>{" "}
+          works). Matching scheduler jobs are skipped; matching findings and Burp
+          snapshot rows are deleted. Resume/play also drops jobs for endpoints already
+          marked excluded.
         </p>
         <div className="flex flex-wrap gap-2 items-end">
           <select
@@ -242,7 +244,7 @@ export default function PolicyTab({
             }
           >
             <option value="path">Path glob</option>
-            <option value="regex">Path regex</option>
+            <option value="regex">URL / path regex</option>
             <option value="endpoint">Endpoint UUID</option>
             <option value="flow">Flow UUID</option>
           </select>
@@ -252,7 +254,7 @@ export default function PolicyTab({
               purgeKind === "path"
                 ? "/static/*"
                 : purgeKind === "regex"
-                  ? "^/assets/.*\\.map$"
+                  ? "https?://.*/chunk-[A-Z0-9]+\\.js"
                   : "UUID"
             }
             value={purgeValue}

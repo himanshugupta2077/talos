@@ -492,9 +492,15 @@ def _build_exclude_results_parser(parser: argparse.ArgumentParser) -> None:
 
     p_rx = sub.add_parser(
         "regex",
-        help="Exclude endpoints whose path matches a regex and purge results.",
+        help="Exclude endpoints whose path or URL matches a regex and purge results.",
     )
-    p_rx.add_argument("pattern", help="Regular expression matched against endpoint path.")
+    p_rx.add_argument(
+        "pattern",
+        help=(
+            "Regular expression matched against path, host+path, and full URL "
+            "(e.g. chunk-[A-Z0-9]+\\.js or https?://.*/chunk-[A-Z0-9]+\\.js)."
+        ),
+    )
     add_force_argument(p_rx)
     add_format_argument(p_rx)
 

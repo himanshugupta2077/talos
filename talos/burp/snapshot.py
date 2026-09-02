@@ -853,14 +853,34 @@ def remove_matching_records(
     def _path_hit(row: Mapping[str, str]) -> bool:
         if pred is None:
             return False
-        candidates = [
-            str(row.get("path") or ""),
-            str(urlparse(str(row.get("url") or "")).path or ""),
-        ]
+        url = str(row.get("url") or "")
+        path = str(row.get("path") or "")
+        host = str(row.get("host") or "")
+        candidates = [path, url]
+        if url:
+            parsed = urlparse(url)
+            candidates.append(parsed.path)
+            if parsed.netloc:
+                candidates.append(parsed.netloc + parsed.path)
+        if host and path:
+            suffix = path if path.startswith("/") else f"/{path}"
+            if "://" in host:
+                candidates.append(host.rstrip("/") + suffix)
+            else:
+                candidates.append("https://" + host.rstrip("/") + suffix)
         endpoint_label = str(row.get("endpoint") or "")
         if " " in endpoint_label:
             candidates.append(endpoint_label.split(" ", 1)[1])
-        return any(part and pred(part) for part in candidates)
+        expanded: list[str] = []
+        for part in candidates:
+            text = (part or "").strip()
+            if not text:
+                continue
+            expanded.append(text)
+            collapsed = text.replace("/./", "/")
+            if collapsed != text:
+                expanded.append(collapsed)
+        return any(pred(part) for part in expanded)
 
     lock_path = path.with_suffix(path.suffix + ".lock")
     try:
