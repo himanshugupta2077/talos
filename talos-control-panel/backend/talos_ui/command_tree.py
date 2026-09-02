@@ -441,6 +441,26 @@ COMMAND_TREE: list[dict] = [
                 arg("format", flag="--format", kind="select", options=["table", "json"]),
             ]),
             cmd("endpoint.exclude.path", ["endpoint", "exclude", "path"], "Exclude a path pattern (legacy)", [arg("pattern", required=True)]),
+            cmd("endpoint.exclude_results.flow", ["endpoint", "exclude-results", "flow"], "Exclude a flow's endpoint and purge jobs/findings/Burp rows", [
+                arg("flow_id", required=True),
+                arg("force", flag="--force", kind="boolean"),
+                arg("format", flag="--format", kind="select", options=["table", "json"]),
+            ]),
+            cmd("endpoint.exclude_results.endpoint", ["endpoint", "exclude-results", "endpoint"], "Exclude endpoint(s) and purge jobs/findings/Burp rows", [
+                arg("endpoint_id", required=True),
+                arg("force", flag="--force", kind="boolean"),
+                arg("format", flag="--format", kind="select", options=["table", "json"]),
+            ]),
+            cmd("endpoint.exclude_results.path", ["endpoint", "exclude-results", "path"], "Exclude a path glob and purge jobs/findings/Burp rows", [
+                arg("pattern", required=True),
+                arg("force", flag="--force", kind="boolean"),
+                arg("format", flag="--format", kind="select", options=["table", "json"]),
+            ]),
+            cmd("endpoint.exclude_results.regex", ["endpoint", "exclude-results", "regex"], "Exclude a path regex and purge jobs/findings/Burp rows", [
+                arg("pattern", required=True),
+                arg("force", flag="--force", kind="boolean"),
+                arg("format", flag="--format", kind="select", options=["table", "json"]),
+            ]),
             cmd("endpoint.include.endpoint", ["endpoint", "include", "endpoint"], "Include endpoint(s) (multi-ID)", [
                 arg("endpoint_id", required=True),
                 arg("format", flag="--format", kind="select", options=["table", "json"]),

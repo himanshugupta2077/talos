@@ -23,6 +23,7 @@ Purpose:
 
         talos endpoint exclude|include endpoint <id> [<id> ...]
         talos endpoint exclude|include path "<pattern>"
+        talos endpoint exclude-results flow|endpoint|path|regex …
 
         talos endpoint rules              — list path rules (compat alias)
         talos endpoint rule add|update|delete|list|show|preview
@@ -53,11 +54,13 @@ import sys
 from pathlib import Path
 
 from talos.cli_output import (
+    add_force_argument,
     add_format_argument,
     cli_error,
     cli_json,
     cli_usage_error,
     cli_precondition_error,
+    confirm_or_exit,
     wants_json,
 )
 from talos.projects.manager import ProjectManager
@@ -202,6 +205,15 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
     )
     _build_target_parser(p_include)
 
+    p_excl_results = sub.add_parser(
+        "exclude-results",
+        help=(
+            "Exclude a flow/endpoint/path/regex and purge matching scheduler "
+            "jobs, findings, and Burp snapshot rows."
+        ),
+    )
+    _build_exclude_results_parser(p_excl_results)
+
     # talos endpoint rules  (compat alias for rule list)
     p_rules = sub.add_parser(
         "rules",
@@ -301,6 +313,8 @@ def run_endpoint_cli(manager: ProjectManager, argv: list[str]) -> None:
         cmd_priority(project, args)
     elif cmd == "exclude":
         cmd_exclude(project, args)
+    elif cmd == "exclude-results":
+        cmd_exclude_results(project, args)
     elif cmd == "include":
         cmd_include(project, args)
     elif cmd == "rules":
@@ -446,6 +460,43 @@ def _build_target_parser(parser: argparse.ArgumentParser) -> None:
     p_path = sub.add_parser("path", help="Target all endpoints matching a path pattern.")
     p_path.add_argument("pattern", help="Path glob pattern (e.g. /static/*).")
     add_format_argument(p_path)
+
+
+def _build_exclude_results_parser(parser: argparse.ArgumentParser) -> None:
+    """flow / endpoint / path / regex selectors for exclude-results."""
+    sub = parser.add_subparsers(
+        dest="excl_results_target", metavar="<flow|endpoint|path|regex>"
+    )
+    sub.required = True
+
+    p_flow = sub.add_parser("flow", help="Exclude the flow's endpoint and purge its results.")
+    p_flow.add_argument("flow_id", help="Flow UUID.")
+    add_force_argument(p_flow)
+    add_format_argument(p_flow)
+
+    p_ep = sub.add_parser("endpoint", help="Exclude endpoint(s) and purge matching results.")
+    p_ep.add_argument(
+        "endpoint_ids", nargs="+", metavar="ENDPOINT_ID",
+        help="Endpoint UUID(s).",
+    )
+    add_force_argument(p_ep)
+    add_format_argument(p_ep)
+
+    p_path = sub.add_parser(
+        "path",
+        help="Exclude a path glob/prefix and purge matching results.",
+    )
+    p_path.add_argument("pattern", help="Path glob pattern (e.g. /static/*).")
+    add_force_argument(p_path)
+    add_format_argument(p_path)
+
+    p_rx = sub.add_parser(
+        "regex",
+        help="Exclude endpoints whose path matches a regex and purge results.",
+    )
+    p_rx.add_argument("pattern", help="Regular expression matched against endpoint path.")
+    add_force_argument(p_rx)
+    add_format_argument(p_rx)
 
 
 def _build_rule_parser(parser: argparse.ArgumentParser) -> None:
@@ -1255,6 +1306,18 @@ def cmd_priority(project: object, args: argparse.Namespace) -> None:
                 print(f"No path rule found for pattern '{args.pattern}'")
 
 
+def _skip_excluded_jobs(project: object, args: argparse.Namespace | None = None) -> int:
+    """Skip pending/paused jobs for currently excluded endpoints."""
+    from talos.projects.exclude_results import skip_excluded_queue_jobs
+
+    db_path = project.db_path  # type: ignore[attr-defined]
+    project_id = project.id    # type: ignore[attr-defined]
+    dropped = skip_excluded_queue_jobs(db_path, project_id)
+    if dropped and args is not None and not wants_json(args):
+        print(f"Scheduler jobs skipped: {dropped}")
+    return dropped
+
+
 def cmd_exclude(project: object, args: argparse.Namespace) -> None:
     """Exclude endpoint(s) or a path pattern."""
     db_path = project.db_path    # type: ignore[attr-defined]
@@ -1270,6 +1333,7 @@ def cmd_exclude(project: object, args: argparse.Namespace) -> None:
             action="exclude",
             cli_args=args,
         )
+        _skip_excluded_jobs(project, args)
     elif args.excl_target == "path":
         existing_priority = None
         for rule in policy_mod.list_path_rules(db_path, project_id):
@@ -1281,11 +1345,68 @@ def cmd_exclude(project: object, args: argparse.Namespace) -> None:
             priority=existing_priority,
             excluded=True,
         )
+        dropped = _skip_excluded_jobs(project)
         if wants_json(args):
             rule = policy_mod.get_path_rule(db_path, project_id, rule_id)
-            cli_json({"action": "exclude path", "rule": rule})
+            cli_json({
+                "action": "exclude path",
+                "rule": rule,
+                "jobs_skipped": dropped,
+            })
             return
         print(f"Path exclusion rule added: '{args.pattern}'")
+        if dropped:
+            print(f"Scheduler jobs skipped: {dropped}")
+
+
+def cmd_exclude_results(project: object, args: argparse.Namespace) -> None:
+    """Exclude a selector and purge scheduler / findings / Burp snapshot rows."""
+    from talos.projects.exclude_results import (
+        ExcludeResultsError,
+        exclude_and_purge,
+    )
+
+    db_path = project.db_path  # type: ignore[attr-defined]
+    project_id = project.id    # type: ignore[attr-defined]
+    kind = args.excl_results_target
+    extra_ids: list[str] | None = None
+    if kind == "flow":
+        selector = args.flow_id
+    elif kind == "endpoint":
+        ids = list(args.endpoint_ids)
+        selector = ids[0]
+        extra_ids = ids
+    else:
+        selector = args.pattern
+
+    if not getattr(args, "force", False):
+        print(
+            "This will exclude matching endpoints, skip their scheduler jobs, "
+            "delete matching findings, and remove matching Burp snapshot rows."
+        )
+        confirm_or_exit("Confirm exclude-results?")
+
+    try:
+        outcome = exclude_and_purge(
+            db_path, project_id, kind, selector, extra_endpoint_ids=extra_ids
+        )
+    except ExcludeResultsError as exc:
+        cli_error(str(exc))
+    except policy_mod.BulkEndpointError as exc:
+        cli_error(str(exc))
+
+    payload = outcome.to_dict()
+    if wants_json(args):
+        cli_json(payload)
+        return
+    print("Excluded and purged matching results.")
+    print(f"  Selector              : {outcome.kind} {outcome.selector}")
+    print(f"  Endpoints excluded    : {outcome.endpoints_excluded}")
+    if outcome.path_rule_id:
+        print(f"  Path rule             : {outcome.path_rule_id}")
+    print(f"  Scheduler jobs skipped: {outcome.jobs_skipped}")
+    print(f"  Findings deleted      : {outcome.findings_deleted}")
+    print(f"  Burp snapshot rows    : {outcome.burp_records_removed}")
 
 
 def cmd_include(project: object, args: argparse.Namespace) -> None:
@@ -1439,8 +1560,12 @@ def _cmd_rule_add(project: object, args: argparse.Namespace) -> None:
         )
     except ValueError as exc:
         cli_error(str(exc))
+    dropped = _skip_excluded_jobs(project) if rule["excluded"] else 0
     if wants_json(args):
-        cli_json({"action": "rule add", "rule": rule})
+        payload = {"action": "rule add", "rule": rule}
+        if dropped:
+            payload["jobs_skipped"] = dropped
+        cli_json(payload)
         return
     prio = rule["priority"] or "—"
     excl = "excluded" if rule["excluded"] else "included"
@@ -1450,6 +1575,8 @@ def _cmd_rule_add(project: object, args: argparse.Namespace) -> None:
         f"  Priority : {prio}\n"
         f"  State    : {excl}"
     )
+    if dropped:
+        print(f"Scheduler jobs skipped: {dropped}")
 
 
 def _cmd_rule_update(project: object, args: argparse.Namespace) -> None:
@@ -1486,8 +1613,12 @@ def _cmd_rule_update(project: object, args: argparse.Namespace) -> None:
     except ValueError as exc:
         cli_error(str(exc))
 
+    dropped = _skip_excluded_jobs(project) if rule["excluded"] else 0
     if wants_json(args):
-        cli_json({"action": "rule update", "rule": rule})
+        payload = {"action": "rule update", "rule": rule}
+        if dropped:
+            payload["jobs_skipped"] = dropped
+        cli_json(payload)
         return
     prio = rule["priority"] or "—"
     excl = "excluded" if rule["excluded"] else "included"
@@ -1497,6 +1628,8 @@ def _cmd_rule_update(project: object, args: argparse.Namespace) -> None:
         f"  Priority : {prio}\n"
         f"  State    : {excl}"
     )
+    if dropped:
+        print(f"Scheduler jobs skipped: {dropped}")
 
 
 def _cmd_rule_delete(project: object, args: argparse.Namespace) -> None:

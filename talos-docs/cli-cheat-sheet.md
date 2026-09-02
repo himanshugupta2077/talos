@@ -1134,6 +1134,13 @@ talos endpoint exclude path "/static/*"
 talos endpoint include endpoint <id> [<id> ...]
 talos endpoint include path "/static/*"
 
+# Exclude and purge already-queued / recorded results (scheduler + findings + Burp JSONL)
+talos endpoint exclude-results flow <flow_id> --force
+talos endpoint exclude-results endpoint <id> [<id> ...] --force
+talos endpoint exclude-results path "/static/*" --force
+talos endpoint exclude-results regex "^/assets/.*\\.map$" --force
+talos endpoint exclude-results path "/health" --format json --force
+
 # Canonical path-rule resource (preferred for Control Panel Add/Edit/Delete Rule)
 talos endpoint rule add "/api/admin/*" --priority HIGH
 talos endpoint rule add "/static/*" --exclude
@@ -1528,7 +1535,7 @@ talos scheduler resume
 (`replay`, `bac`, `iv`). Prefer `jobs list` / `cancel` / `prune` over `clear`
 when debugging large queues.
 
-`resume` does **not** preflight BAC or role sessions — session health is checked when a job runs. Paused Intruder sessions are **not** auto-resumed (`talos intruder session resume <id>`).
+`resume` skips pending/paused jobs whose endpoints are excluded (endpoint flag or path rule) before returning remaining paused jobs to pending. It does **not** preflight BAC or role sessions — session health is checked when a job runs. Paused Intruder sessions are **not** auto-resumed (`talos intruder session resume <id>`).
 
 **Testing windows (IST):** Off by default. When on, the scheduler process may be running but it will **not** send HTTP or auto-enqueue IV/unauth work outside the configured India Standard Time ranges (`HH:MM-HH:MM`, overnight wrap allowed). Jobs stay pending until the next open window. Capture and review still work at any hour. Times are always IST (UTC+05:30).
 

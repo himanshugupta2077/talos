@@ -2,6 +2,32 @@
 
 All notable changes to Talos are documented here, organized by version.
 
+## Exclude results (scheduler + findings + Burp)
+
+**Shipped:** 2026-09-02
+
+`talos scheduler resume` (Control Panel play/resume) now skips pending
+and paused jobs whose endpoints are excluded by an endpoint flag or
+path rule, so work queued before an exclude never runs after resume.
+
+`talos endpoint exclude-results` excludes a flow, endpoint, path glob,
+or regex and purges matching results from:
+
+- the scheduler queue (pending/paused → skipped)
+- Talos findings (and linked children)
+- the Burp extension snapshot (`~/.talos/burp/<project>.jsonl`)
+
+Control Panel: Policy tab form, endpoint Exclusion menu, flow actions.
+
+```bash
+talos endpoint exclude-results flow <flow_id> --force
+talos endpoint exclude-results endpoint <id> --force
+talos endpoint exclude-results path "/static/*" --force
+talos endpoint exclude-results regex "^/assets/" --force
+```
+
+---
+
 ## XSS / HTML Injection
 
 **Shipped:** 2026-08-19

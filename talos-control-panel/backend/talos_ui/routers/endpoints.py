@@ -519,6 +519,38 @@ def bulk_exclude(project_id: str, body: BulkIdsBody):
     return _steps_with_bulk(results)
 
 
+class ExcludeResultsBody(BaseModel):
+    kind: str
+    value: str = ""
+    endpoint_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/exclude-results")
+def exclude_results(project_id: str, body: ExcludeResultsBody):
+    """Exclude a flow/endpoint/path/regex and purge scheduler, findings, Burp JSONL."""
+    kind = (body.kind or "").strip().lower()
+    if kind not in ("flow", "endpoint", "path", "regex"):
+        raise HTTPException(400, "kind must be flow, endpoint, path, or regex")
+    args = ["endpoint", "exclude-results", kind]
+    if kind == "endpoint":
+        ids = [i.strip() for i in body.endpoint_ids if i and i.strip()]
+        value = (body.value or "").strip()
+        if value:
+            ids.append(value)
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            raise HTTPException(400, "endpoint_ids or value is required")
+        args.extend(ids)
+    else:
+        value = (body.value or "").strip()
+        if not value:
+            raise HTTPException(400, "value is required")
+        args.append(value)
+    args.extend(["--force", "--format", "json"])
+    results = cli.run_scoped(project_id, args)
+    return _steps_with_bulk(results)
+
+
 @router.post("/bulk/include")
 def bulk_include(project_id: str, body: BulkIdsBody):
     ids = _require_ids(body.endpoint_ids)

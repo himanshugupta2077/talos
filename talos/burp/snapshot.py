@@ -822,6 +822,109 @@ def _reason_for(status: int) -> str:
     }.get(int(status or 0), "")
 
 
+def remove_matching_records(
+    project_id: str,
+    *,
+    record_ids: Optional[set[str]] = None,
+    endpoint_ids: Optional[set[str]] = None,
+    path_pred: Optional[Any] = None,
+) -> int:
+    """
+    Purpose:
+        Drop snapshot records (and their response lines) that match
+        endpoint ids, record ids, or a path predicate. Rewrites the
+        JSONL file under the same lock as compact.
+    Output:
+        Number of record rows removed. 0 when the file is missing.
+    """
+    from collections.abc import Callable
+
+    pid = safe_project_id(project_id)
+    path = snapshot_path(pid)
+    if path is None or not path.is_file():
+        return 0
+    wanted_ids = {rid for rid in (record_ids or set()) if rid}
+    wanted_eps = {eid for eid in (endpoint_ids or set()) if eid}
+    pred: Optional[Callable[[str], bool]]
+    pred = path_pred if callable(path_pred) else None
+    if not wanted_ids and not wanted_eps and pred is None:
+        return 0
+
+    def _path_hit(row: Mapping[str, str]) -> bool:
+        if pred is None:
+            return False
+        candidates = [
+            str(row.get("path") or ""),
+            str(urlparse(str(row.get("url") or "")).path or ""),
+        ]
+        endpoint_label = str(row.get("endpoint") or "")
+        if " " in endpoint_label:
+            candidates.append(endpoint_label.split(" ", 1)[1])
+        return any(part and pred(part) for part in candidates)
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with RuntimeLock(lock_path):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as exc:
+                logger.debug("burp snapshot read for remove failed: %s", exc)
+                return 0
+            drop_ids: set[str] = set()
+            kept_records: list[str] = []
+            meta_line = _line(_meta_row(pid, pid))
+            extras: list[str] = []
+            removed = 0
+            for line in lines:
+                row = _parse_line(line)
+                if row is None:
+                    continue
+                kind = row.get("kind")
+                if kind == KIND_META:
+                    meta_line = line if line.endswith("\n") else line + "\n"
+                    continue
+                if kind == KIND_RECORD:
+                    key = row.get("record_id") or row.get("id") or ""
+                    ep = str(row.get("endpoint_id") or "")
+                    drop = False
+                    if key and key in wanted_ids:
+                        drop = True
+                    elif ep and ep in wanted_eps:
+                        drop = True
+                    elif _path_hit(row):
+                        drop = True
+                    if drop:
+                        removed += 1
+                        if key:
+                            drop_ids.add(key)
+                        continue
+                    kept_records.append(line if line.endswith("\n") else line + "\n")
+                    continue
+                extras.append(line if line.endswith("\n") else line + "\n")
+            kept_responses = [
+                line
+                for line in extras
+                if _line_is_response(line) and _line_record_id(line) not in drop_ids
+            ]
+            other = [
+                line
+                for line in extras
+                if not _line_is_response(line)
+            ]
+            if not meta_line.endswith("\n"):
+                meta_line += "\n"
+            payload = meta_line + "".join(kept_records + kept_responses + other)
+            try:
+                atomic_write_text(path, payload, prefix=f".{path.name}.", suffix=".tmp")
+            except OSError as exc:
+                logger.debug("burp snapshot remove rewrite failed: %s", exc)
+                return 0
+            return removed
+    except OSError as exc:
+        logger.debug("burp snapshot remove lock failed: %s", exc)
+        return 0
+
+
 def load_records(project_id: str) -> list[dict[str, str]]:
     """
     Purpose:

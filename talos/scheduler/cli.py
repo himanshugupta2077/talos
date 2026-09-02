@@ -15,7 +15,8 @@ Purpose:
         talos scheduler prune --status <done|failed|…>      — delete terminal history
         talos scheduler clear                               — remove all pending jobs
         talos scheduler pause                               — pause execution (all pending → paused)
-        talos scheduler resume                              — resume execution (paused jobs → pending)
+        talos scheduler resume                              — resume execution (paused jobs → pending;
+                                                              skip jobs whose endpoints are excluded)
 
     Process lifecycle (standalone daemon, independent of the proxy)::
 
@@ -40,7 +41,8 @@ Side effects:
     - clear: deletes pending rows from scheduler_jobs.
     - status: read-only display.
     - pause: sets scheduler state to PAUSED and marks all pending jobs paused.
-    - resume: resumes paused jobs, sets state to RUNNING, warns on paused Intruder.
+    - resume: skips excluded-endpoint jobs, resumes remaining paused jobs,
+      sets state to RUNNING, warns on paused Intruder.
 """
 from talos.cli_output import (
     add_force_argument,
@@ -346,8 +348,9 @@ def run_scheduler_cli(
     sub.add_parser(
         "resume",
         help=(
-            "Resume execution.  Paused jobs are returned to 'pending' and the "
-            "scheduler loop restarts.  Session health is checked when a job runs."
+            "Resume execution.  Jobs for excluded endpoints are skipped, then "
+            "remaining paused jobs return to pending.  Session health is "
+            "checked when a job runs."
         ),
     )
 
@@ -857,8 +860,9 @@ def _warn_paused_intruder_sessions(db_path, project_id: str) -> None:
 def cmd_resume(project: object) -> None:
     """
     Purpose:
-        Resume scheduler execution.  Paused jobs return to 'pending'; the
-        scheduler loop restarts from the next DB poll cycle.
+        Resume scheduler execution.  Jobs whose endpoints are excluded
+        (endpoint flag or path rule) are skipped first; remaining paused
+        jobs return to 'pending' and the scheduler loop restarts.
 
         Session health is enforced when a job actually runs (BAC/IV call
         ``ensure_healthy``).  Resume does not scan pending/paused BAC jobs
@@ -868,16 +872,22 @@ def cmd_resume(project: object) -> None:
         Paused Intruder sessions are not auto-resumed; a warning lists them.
     Input:   project — Active Project instance.
     Side effects:
-        Resumes paused jobs; sets state to RUNNING; may print an Intruder warning.
+        Skips excluded jobs; resumes remaining paused jobs; sets state to
+        RUNNING; may print an Intruder warning.
     """
+    from talos.projects.exclude_results import skip_excluded_queue_jobs
+
     db_path = project.db_path  # type: ignore[attr-defined]
     project_id = project.id    # type: ignore[attr-defined]
 
+    skipped_excluded = skip_excluded_queue_jobs(db_path, project_id)
     resumed = sched_db.resume_paused_jobs(db_path)
     sched_db.set_scheduler_state(db_path, SCHED_STATE_RUNNING, reason=None)
 
     print("Scheduler resumed.")
     print(f"  Jobs returned to pending : {resumed}")
+    if skipped_excluded:
+        print(f"  Excluded jobs skipped    : {skipped_excluded}")
     print(
         "The scheduler process executes jobs when running "
         "(`talos scheduler start` / `talos scheduler status`)."

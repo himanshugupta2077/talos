@@ -30,6 +30,7 @@ Data flow:
     talos.findings.creator  → create_finding, add_evidence, add_timeline_event
     talos.findings.cli      → list_findings, get_finding, update_finding_status,
                               create_group, add_to_group, …
+    talos.projects.exclude_results → delete_findings
 Side effects:
     All write functions commit to the SQLite database.
 """
@@ -651,6 +652,57 @@ def list_groups(db_path: Path, project_id: str) -> list[dict]:
             (project_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def delete_findings(db_path: Path, finding_ids: list[str]) -> int:
+    """
+    Purpose:
+        Permanently delete findings and their evidence / timeline / group
+        membership rows. LINKED children of a deleted PRIMARY are removed
+        with the parent so the cluster is not left dangling.
+    Input:
+        db_path     — Path to the project's talos.db.
+        finding_ids — Finding UUIDs to delete (duplicates ignored).
+    Output:
+        Number of findings rows deleted.
+    Side effects:
+        Deletes from finding_evidence, finding_timeline,
+        finding_group_members, and findings.
+    """
+    ids = list(dict.fromkeys(fid for fid in finding_ids if fid))
+    if not ids:
+        return 0
+    with _connect(db_path) as conn:
+        expanded: set[str] = set(ids)
+        placeholders = ",".join("?" * len(ids))
+        children = conn.execute(
+            f"""
+            SELECT id FROM findings
+            WHERE parent_finding_id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        for row in children:
+            expanded.add(row[0])
+        all_ids = list(expanded)
+        ph = ",".join("?" * len(all_ids))
+        conn.execute(
+            f"DELETE FROM finding_evidence WHERE finding_id IN ({ph})",
+            all_ids,
+        )
+        conn.execute(
+            f"DELETE FROM finding_timeline WHERE finding_id IN ({ph})",
+            all_ids,
+        )
+        conn.execute(
+            f"DELETE FROM finding_group_members WHERE finding_id IN ({ph})",
+            all_ids,
+        )
+        cur = conn.execute(
+            f"DELETE FROM findings WHERE id IN ({ph})",
+            all_ids,
+        )
+        return int(cur.rowcount)
 
 
 def delete_group(db_path: Path, group_id: str, remove_findings: bool = False) -> int:

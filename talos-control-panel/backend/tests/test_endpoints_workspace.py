@@ -186,6 +186,49 @@ def test_bulk_priority_set_and_clear(client):
         assert argv[:4] == ["endpoint", "priority", "clear", "endpoint"]
 
 
+def test_exclude_results_route_uses_cli(client):
+    with patch("talos_ui.routers.endpoints.cli.run_scoped") as run_scoped:
+        run_scoped.return_value = [
+            _ok_result(
+                stdout='{"action":"exclude-results","kind":"path","jobs_skipped":2}'
+            )
+        ]
+        res = client.post(
+            "/api/endpoints/exclude-results",
+            params={"project_id": "demo"},
+            json={"kind": "path", "value": "/static/*"},
+        )
+        assert res.status_code == 200
+        argv = run_scoped.call_args[0][1]
+        assert argv[:3] == ["endpoint", "exclude-results", "path"]
+        assert "/static/*" in argv
+        assert "--force" in argv
+        assert "--format" in argv
+
+        run_scoped.reset_mock()
+        run_scoped.return_value = [
+            _ok_result(stdout='{"action":"exclude-results","kind":"endpoint"}')
+        ]
+        res = client.post(
+            "/api/endpoints/exclude-results",
+            params={"project_id": "demo"},
+            json={"kind": "endpoint", "endpoint_ids": ["ep-a", "ep-b"]},
+        )
+        assert res.status_code == 200
+        argv = run_scoped.call_args[0][1]
+        assert argv[:3] == ["endpoint", "exclude-results", "endpoint"]
+        assert "ep-a" in argv and "ep-b" in argv
+
+
+def test_exclude_results_rejects_bad_kind(client):
+    res = client.post(
+        "/api/endpoints/exclude-results",
+        params={"project_id": "demo"},
+        json={"kind": "host", "value": "example.com"},
+    )
+    assert res.status_code == 400
+
+
 def test_bulk_requires_ids(client):
     res = client.post(
         "/api/endpoints/bulk/exclude",

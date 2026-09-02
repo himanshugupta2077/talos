@@ -465,28 +465,55 @@ class ReplayScheduler:
     def _annotation_pre_check(self, job: ReplayJob) -> "str | None":
         """
         Purpose:
-            Check endpoint annotations before executing a job.
+            Check endpoint annotations / exclusion before executing a job.
             - logout    → skip in all modes (all job types).
             - dangerous → skip only for auto jobs (priority < PRIORITY_MANUAL).
+            - excluded  → skip (endpoint flag or matching path rule).
         Input:   job — pending ReplayJob.
         Output:  Skip reason string if the job should be skipped; None otherwise.
-        Side effects: Reads endpoint_policy table (dangerous/logout columns).
+        Side effects: Reads endpoint_policy / policy_rules / flows.
         """
+        from talos.projects.exclude_results import job_is_excluded
         from talos.scheduler.job import PRIORITY_MANUAL
 
-        # Flow-only jobs may not have an endpoint_id yet.
-        if job.endpoint_id is None:
-            return None
+        endpoint_id = job.endpoint_id
+        path = ""
+        if endpoint_id is None and job.flow_id:
+            flow = replay_db.get_flow_for_replay(self._project.db_path, job.flow_id)
+            if flow:
+                endpoint_id = flow.get("endpoint_id")
+                path = str(flow.get("path") or "")
 
-        tags = get_annotations(self._project.db_path, job.endpoint_id)
+        if endpoint_id:
+            tags = get_annotations(self._project.db_path, endpoint_id)
+            if "logout" in tags:
+                return "endpoint_annotated_logout"
+            if "dangerous" in tags and job.priority < PRIORITY_MANUAL:
+                return "endpoint_annotated_dangerous"
+            if not path:
+                path = self._endpoint_path(endpoint_id)
 
-        if "logout" in tags:
-            return "endpoint_annotated_logout"
-
-        if "dangerous" in tags and job.priority < PRIORITY_MANUAL:
-            return "endpoint_annotated_dangerous"
-
+        if job_is_excluded(
+            self._project.db_path, self._project.id, endpoint_id, path
+        ):
+            return "endpoint_excluded"
         return None
+
+    def _endpoint_path(self, endpoint_id: str) -> str:
+        """Look up normalized_path for exclusion matching. Empty if missing."""
+        import sqlite3
+
+        try:
+            with sqlite3.connect(str(self._project.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT normalized_path, path FROM endpoints WHERE id = ?",
+                    (endpoint_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            return ""
+        if row is None:
+            return ""
+        return str(row[0] or row[1] or "")
 
     # ------------------------------------------------------------------ #
     # Job execution                                                        #

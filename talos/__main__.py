@@ -373,6 +373,8 @@ def _print_usage() -> None:
         "    priority set|clear path \"pattern\" ...\n"
         "    exclude|include endpoint <id> [<id> ...]\n"
         "    exclude|include path \"pattern\"\n"
+        "    exclude-results flow|endpoint|path|regex …\n"
+        "                    Exclude and purge scheduler jobs, findings, Burp JSONL\n"
         "    rule add|update|delete|list|show|preview   Path policy-rule resource\n"
         "    rules                          List path rules (alias for rule list)\n\n"
         "  replay\n"

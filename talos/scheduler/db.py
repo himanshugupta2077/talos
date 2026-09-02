@@ -19,6 +19,7 @@ Purpose:
         list_jobs              — inventory with optional status/type filters.
         get_job                — resolve one job by full UUID or unique prefix.
         cancel_job             — mark a single pending/paused job cancelled.
+        skip_jobs              — mark pending/paused jobs skipped (exclusion).
         clear_pending_jobs     — bulk-delete pending jobs.
         prune_jobs             — delete terminal-status history (done/failed/…).
 
@@ -872,6 +873,48 @@ def cancel_job(db_path: Path, job_id: str) -> Optional[str]:
         )
         conn.commit()
     return previous
+
+
+def skip_jobs(db_path: Path, job_ids: list[str], reason: str) -> int:
+    """
+    Purpose:
+        Mark pending or paused jobs skipped (policy / exclusion guard).
+        Running and terminal jobs are left unchanged.
+    Input:
+        db_path — Path to the project's talos.db.
+        job_ids — Full job UUIDs.
+        reason  — failure_reason stored on each skipped row.
+    Output:
+        Number of rows transitioned to skipped.
+    Side effects:
+        Updates matching scheduler_jobs rows; commits.
+    """
+    ids = [jid for jid in job_ids if jid]
+    if not ids:
+        return 0
+    migrate_project_db(db_path)
+    now = _now_iso()
+    skipped = 0
+    with _connect_rw(db_path) as conn:
+        for jid in ids:
+            cursor = conn.execute(
+                """
+                UPDATE scheduler_jobs
+                SET status = ?, finished_at = ?, failure_reason = ?
+                WHERE job_id = ? AND status IN (?, ?)
+                """,
+                (
+                    STATUS_SKIPPED,
+                    now,
+                    reason,
+                    jid,
+                    STATUS_PENDING,
+                    STATUS_PAUSED,
+                ),
+            )
+            skipped += cursor.rowcount
+        conn.commit()
+    return skipped
 
 
 def count_jobs_by_status(db_path: Path, status: str) -> int:

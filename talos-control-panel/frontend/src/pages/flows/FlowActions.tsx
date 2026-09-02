@@ -93,6 +93,13 @@ export default function FlowActions({
   const runAttacks = useAction("Run attacks on this flow", () =>
     runFlowAttacks(projectId, [flow.id], attackIds)
   );
+  const excludeResults = useAction("Exclude and purge results", () =>
+    api.post(
+      "/api/endpoints/exclude-results",
+      { kind: "flow", value: flow.id },
+      { project_id: projectId }
+    )
+  );
 
   const flash = (msg: string) => {
     setCopyMsg(msg);
@@ -225,6 +232,26 @@ export default function FlowActions({
           Enqueue replay
         </button>,
         "enqueue"
+      )}
+      {wrapItem(
+        <button
+          type="button"
+          className={itemClass}
+          onClick={async () => {
+            if (
+              !window.confirm(
+                "Exclude this flow's endpoint and delete matching scheduler jobs, findings, and Burp snapshot rows?"
+              )
+            ) {
+              return;
+            }
+            await excludeResults.run();
+            finish();
+          }}
+        >
+          Exclude + purge results
+        </button>,
+        "exclude-results"
       )}
       {wrapItem(
         <button

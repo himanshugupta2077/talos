@@ -233,6 +233,11 @@ def _path_matches_pattern(path: str, pattern: str) -> bool:
     return fnmatch(path_lc, pattern_lc)
 
 
+def path_matches_pattern(path: str, pattern: str) -> bool:
+    """Public alias of the policy-rule path matcher (glob / prefix)."""
+    return _path_matches_pattern(path, pattern)
+
+
 # ------------------------------------------------------------------ #
 # DB connection helpers                                                #
 # ------------------------------------------------------------------ #

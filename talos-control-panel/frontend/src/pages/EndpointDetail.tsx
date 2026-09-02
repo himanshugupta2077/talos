@@ -354,7 +354,7 @@ export default function EndpointDetail() {
           <button tabIndex={0} className="btn btn-xs">
             Exclusion ▾
           </button>
-          <ul className="dropdown-content menu p-2 shadow bg-base-200 rounded-box w-36 border border-base-300 z-20">
+          <ul className="dropdown-content menu p-2 shadow bg-base-200 rounded-box w-48 border border-base-300 z-20">
             <li>
               <button
                 onClick={async () => {
@@ -363,6 +363,26 @@ export default function EndpointDetail() {
                 }}
               >
                 Exclude
+              </button>
+            </li>
+            <li>
+              <button
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      "Exclude this endpoint and delete matching scheduler jobs, findings, and Burp snapshot rows?"
+                    )
+                  ) {
+                    return;
+                  }
+                  await act.run("/api/endpoints/exclude-results", {
+                    kind: "endpoint",
+                    value: endpointId,
+                  });
+                  load();
+                }}
+              >
+                Exclude + purge
               </button>
             </li>
             <li>

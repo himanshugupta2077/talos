@@ -1515,6 +1515,7 @@ talos endpoint exclude endpoint <id> [<id> ...]
 talos endpoint exclude path "<pattern>"
 talos endpoint include endpoint <id> [<id> ...]
 talos endpoint include path "<pattern>"
+talos endpoint exclude-results flow|endpoint|path|regex …   # also purges scheduler + findings + Burp JSONL
 
 # Canonical path-rule resource (legacy priority/exclude path still work)
 talos endpoint rule add "<pattern>" [--priority LEVEL] [--exclude]

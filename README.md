@@ -234,7 +234,7 @@ talos [--project ID]
 │              set-ttl / expiry signals / reset-health / control-flows
 │              (<role> = name or UUID)
 ├─ endpoint  list / mark / unmark / show / export / notes / tags /
-│            priority / exclude / include / rules
+│            priority / exclude / include / exclude-results / rules
 ├─ replay    flow / endpoint
 ├─ flow      show / export
 ├─ scheduler status / config / enqueue / jobs / cancel / prune /

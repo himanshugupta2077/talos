@@ -6,6 +6,7 @@ import SideDrawer from "../../components/SideDrawer";
 import PolicyExplain from "../../components/PolicyExplain";
 import StatusBadge from "../../components/StatusBadge";
 import { UuidChip } from "../../components/Common";
+import { useAction } from "../../hooks/useAction";
 import {
   EndpointPolicyExplanation,
   EndpointPolicySummary,
@@ -51,6 +52,16 @@ export default function PolicyTab({
   const [loading, setLoading] = useState(false);
   const [explainId, setExplainId] = useState<string | null>(null);
   const [explain, setExplain] = useState<EndpointPolicyExplanation | null>(null);
+  const [purgeKind, setPurgeKind] = useState<"flow" | "endpoint" | "path" | "regex">("path");
+  const [purgeValue, setPurgeValue] = useState("");
+  const [purgeConfirm, setPurgeConfirm] = useState(false);
+  const purgeResults = useAction("Exclude and purge results", () =>
+    api.post(
+      "/api/endpoints/exclude-results",
+      { kind: purgeKind, value: purgeValue.trim() },
+      { project_id: projectId }
+    )
+  );
 
   const load = useCallback(() => {
     setLoading(true);
@@ -211,6 +222,64 @@ export default function PolicyTab({
         <CardStat label="Manual overrides" value={s?.manual_overrides ?? "—"} onClick={() => onJumpInventory({ priority_source: "MANUAL" })} />
         <CardStat label="Rule controlled" value={s?.rule_controlled ?? "—"} onClick={() => onJumpInventory({ priority_source: "RULE" })} />
         <CardStat label="Auto controlled" value={s?.auto_controlled ?? "—"} onClick={() => onJumpInventory({ priority_source: "AUTO" })} />
+      </div>
+
+      <div className="panel p-3 mb-4">
+        <div className="text-[10px] uppercase tracking-wide text-base-content/50 font-semibold mb-2">
+          Exclude and purge results
+        </div>
+        <p className="text-xs text-base-content/60 mb-2">
+          Exclude a flow, endpoint, path glob, or regex. Matching scheduler jobs are
+          skipped; matching findings and Burp snapshot rows are deleted. Resume/play
+          also drops jobs for endpoints already marked excluded.
+        </p>
+        <div className="flex flex-wrap gap-2 items-end">
+          <select
+            className="select select-xs select-bordered"
+            value={purgeKind}
+            onChange={(e) =>
+              setPurgeKind(e.target.value as "flow" | "endpoint" | "path" | "regex")
+            }
+          >
+            <option value="path">Path glob</option>
+            <option value="regex">Path regex</option>
+            <option value="endpoint">Endpoint UUID</option>
+            <option value="flow">Flow UUID</option>
+          </select>
+          <input
+            className="input input-xs input-bordered mono w-72"
+            placeholder={
+              purgeKind === "path"
+                ? "/static/*"
+                : purgeKind === "regex"
+                  ? "^/assets/.*\\.map$"
+                  : "UUID"
+            }
+            value={purgeValue}
+            onChange={(e) => setPurgeValue(e.target.value)}
+          />
+          <label className="label cursor-pointer gap-2 py-0">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-xs"
+              checked={purgeConfirm}
+              onChange={(e) => setPurgeConfirm(e.target.checked)}
+            />
+            <span className="label-text text-xs">Delete matching findings / Burp rows</span>
+          </label>
+          <button
+            className="btn btn-xs btn-warning"
+            disabled={!purgeValue.trim() || !purgeConfirm || purgeResults.running}
+            onClick={async () => {
+              await purgeResults.run();
+              setPurgeValue("");
+              setPurgeConfirm(false);
+              load();
+            }}
+          >
+            Exclude + purge
+          </button>
+        </div>
       </div>
 
       <div className="panel p-3 mb-4">
